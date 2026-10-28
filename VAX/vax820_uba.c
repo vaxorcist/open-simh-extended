@@ -387,8 +387,17 @@ if (ofs >= UBAMAP_OF) {                                 /* map? */
 switch (ofs) {                                          /* case on offset */
 
     case BI_CSR:
-        if (val & BICSR_RST)                            /* unibus power init */
+        /* BICSR bit 10 (BICSR_RST here) is the BIIC's Start Self-Test
+           bit.  On the DWBUA it runs the self-test, which re-initializes
+           the adapter, and the DWBUA asserts UNIBUS AC LO, which also
+           initializes the UNIBUS (EK-DWBUA-TM-001, 2.3.1 and 3.3.2 item 4).
+           Earlier versions reset only the adapter, so Unibus devices
+           kept running with stale state (a UDA50 still polling the rings
+           set up by VMB hit an invalid map register under VMS). */
+        if (val & BICSR_RST) {                          /* start self-test */
             uba_reset (&uba_dev);                       /* reset adapter */
+            uba_ubpdn (uba_uitime);                     /* and init the UNIBUS */
+            }
         uba_biic.csr = (uba_biic.csr & ~BICSR_RW) | (val & BICSR_RW);
         break;
 
