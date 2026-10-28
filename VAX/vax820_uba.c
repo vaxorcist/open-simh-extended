@@ -537,31 +537,36 @@ SET_IRQL;                                               /* update ints */
 return;
 }
 
-/* Update UBA nexus interrupts */
+/* Update UBA nexus interrupts
+
+   The adapter's own (error) interrupt is requested at the BI levels
+   selected in the error interrupt control register, the Unibus device
+   interrupts at their own levels; both are presented at the same time.
+
+   Earlier versions ran the level loops only
+   to IPL_HMAX - IPL_HMIN (3 levels) and missed IPL 17, which VMS selects
+   for the DWBUA error interrupt; the adapter interrupt was then never
+   delivered, and while it was pending no Unibus device interrupt was
+   passed on either (VMS V4.7 hung after the banner, its UDA50
+   initialization timing out every 15 seconds). */
 
 void uba_eval_int (void)
 {
 int32 i, lvl;
 
-// TODO: Check BIIC register?
-if (uba_int) {
+for (i = 0; i < IPL_HLVL; i++)                          /* clear all UBA req */
+    nexus_req[i] &= ~(1 << TR_UBA);
+if (uba_int) {                                          /* adapter int? */
     lvl = (uba_biic.eicr >> BIECR_V_LVL) & BIECR_M_LVL;
-    for (i = 0; i < (IPL_HMAX - IPL_HMIN); i++) {
-        if (lvl & (1u << i)) {
-            nexus_req[i] |= (1 << TR_UBA);
-            }
-        }
-    }
-else {
-    for (i = 0; i < (IPL_HMAX - IPL_HMIN); i++)             /* clear all UBA req */
-        nexus_req[i] &= ~(1 << TR_UBA);
-    for (i = 0; i < (IPL_HMAX - IPL_HMIN); i++) {
-        if (int_req[i])
+    for (i = 0; i < IPL_HLVL; i++) {
+        if (lvl & (1u << i))
             nexus_req[i] |= (1 << TR_UBA);
         }
     }
-//if (uba_int)                                            /* adapter int? */
-//    SET_NEXUS_INT (UBA);
+for (i = 0; i < IPL_HLVL; i++) {                        /* Unibus device ints */
+    if (int_req[i])
+        nexus_req[i] |= (1 << TR_UBA);
+    }
 return;
 }
 
