@@ -2733,10 +2733,17 @@ return (*controller->modem);
 
 void dmc_set_modem_dtr(CTLR *controller)
 {
-if (dmc_is_attached(controller->unit) && (!(DMC_SEL4_M_DTR & *controller->modem))) {
-    sim_debug(DBG_MDM, controller->device, "%s%d: DTR State Change to UP(ON)\n", controller->device->name, controller->index);
-    tmxr_set_get_modem_bits (controller->line, TMXR_MDM_DTR|TMXR_MDM_RTS, 0, NULL);
-    dmc_get_modem(controller);
+if (dmc_is_attached(controller->unit)) {
+    if (!(DMC_SEL4_M_DTR & *controller->modem)) {
+        sim_debug(DBG_MDM, controller->device, "%s%d: DTR State Change to UP(ON)\n", controller->device->name, controller->index);
+        tmxr_set_get_modem_bits (controller->line, TMXR_MDM_DTR|TMXR_MDM_RTS, 0, NULL);
+        dmc_get_modem(controller);
+        }
+    /* Enable reception whenever the host raises DTR, not only when DTR
+       changes: on a line that accepted the peer's incoming connection the
+       modem image can already show DTR, and the receiver then stayed off
+       for ever (seen with two ULTRIX V1.1 nodes: one side's socket filled
+       up, the other side never left ISTRT). */
     controller->line->rcve = 1;
     }
 }
@@ -2796,6 +2803,21 @@ while ((control = controller->control_out)) {
     free (control);
     }
 controller->control_out = NULL;
+if (dmc_is_dmc(controller)) {
+    /* DMC11/DMR11: master clear resets the host interface.  RQI, IEI, RDI
+       and the input command type (BSEL0) and RDO, IEO and the output type
+       (BSEL2) are cleared and pending interrupt requests are withdrawn;
+       only RUN comes back on (EK-DMC11-TM, master clear).  VMS sets MCLR
+       with a word write to SEL0, which clears BSEL0 anyway; the 4.2BSD
+       derived ULTRIX V1.1 if_dmc driver sets it with a byte write to
+       BSEL1, so a stale RQI|IEI from its probe survived, an unrequested
+       input transfer was started, and the BASE IN of dmcinit was never
+       answered (interface RUNNING, no DDCMP traffic). */
+    dmc_setreg(controller, 0, *controller->csrs->sel0 & 0xFF00, DBG_RGC);
+    dmc_setreg(controller, 2, *controller->csrs->sel2 & 0xFF00, DBG_RGC);
+    dmc_clrinint(controller);
+    dmc_clroutint(controller);
+    }
 if (controller->dev_type == DMR) {
     if (dmc_is_attached(controller->unit)) {
         /* Indicates microdiagnostics complete */
@@ -4517,9 +4539,17 @@ if (dmc_is_dmc(controller)) {
                                                        (sel6&DMC_SEL6_M_MAINT) ? "MAINTENANCE" : "DDCMP", 
                                                        (sel6&DMC_SEL6_M_HDX) ? ", Half Duples" : "", 
                                                        (sel6&DMC_SEL6_M_LONGSTRT) ? ", Long Start Timer" : "");
+                /* CONTROL IN starts the line: the DMC11 runs DDCMP start-up
+                   and receives from now on.  Before, the controller only
+                   became Running with its first transmit buffer, so a host
+                   that waits for the peer (ULTRIX V1.1 if_dmc as the TCP
+                   server) never took a message off the line.  VMS sends at
+                   once and did not notice. */
+                controller->state = Running;
                 dmc_set_modem_dtr (controller);
                 controller->transfer_state = Idle;
                 ddcmp_dispatch (controller, (sel6&DMC_SEL6_M_MAINT) ? DDCMP_EVENT_MAINTMODE : 0);
+                dmc_buffer_fill_receive_buffers (controller);
                 return;
             case DMC_C_TYPE_HALT:
                 sim_debug(DBG_INF, controller->device, "%s%d: Halt Command Received\n", controller->device->name, controller->index);
@@ -5398,6 +5428,20 @@ else {
 
 if (dmc_getsel(reg) == 0)    /* writes to SEL0 may need immediate action */
     dmc_process_immediate(controller);      /* Do any needed immediate actions */
+if (dmc_is_dmc(controller)) {
+    /* DMC11/DMR11: the interrupt requests are IEI AND RDI, and IEO AND RDO.
+       Setting an enable while its ready bit is already on interrupts at
+       once.  The ULTRIX V1.1 if_dmc driver relies on this: dmcload() sets
+       RQI first, then IEI with a second write, by which time RDI is
+       usually set already; without this rule the interrupt never came and
+       the BASE IN / CNTL IN of dmcinit hung. */
+    if ((dmc_getsel(reg) == 0) && !(oldValue & DMC_SEL0_M_IEI) &&
+        (*controller->csrs->sel0 & DMC_SEL0_M_IEI) && (*controller->csrs->sel0 & DMC_SEL0_M_RDI))
+        dmc_setinint(controller);
+    if ((dmc_getsel(reg) == 1) && !(oldValue & DMC_SEL2_M_IEO) &&
+        (*controller->csrs->sel2 & DMC_SEL2_M_IEO) && (*controller->csrs->sel2 & DMC_SEL2_M_RDO))
+        dmc_setoutint(controller);
+    }
 if ((dmc_getsel(reg) == 0) || (dmc_getsel(reg) == 1)) {/* writes to SEL0 and SEL2 are actionable */
     if (0 == controller->dmc_wr_delay) {    /* Not waiting? */
         controller->dmc_wr_delay = 10;      /* Wait a bit before acting on the changed register */
