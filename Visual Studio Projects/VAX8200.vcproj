@@ -356,6 +356,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\VAX\vax_dmf.c"
+				>
+			</File>
+			<File
 				RelativePath="..\VAX\vax820_uba.c"
 				>
 			</File>
