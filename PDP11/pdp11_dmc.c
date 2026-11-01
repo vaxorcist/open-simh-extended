@@ -197,6 +197,99 @@ extern int32 tmr_poll;                                  /* instructions per tick
 #define DMP_SEL2_M_RDI      0x0010
 #define DMP_SEL2_V_RDO       7
 #define DMP_SEL2_M_RDO      0x0080
+#define DMP_SEL2_V_STATION   8      /* BSEL3: tributary address */
+
+/* DMP/DMV control command: request key in BSEL6 bits 0-4.  When one of the
+   status access bits (BSEL6 bits 5-7) is set instead, bits 0-4 are a status
+   memory location.  BSEL7 carries independent tributary controls (common
+   buffer pool, polling state) that may accompany keys 000-004.  Values from
+   the DMV11 Technical Manual EK-DMV11-TM-001 and user's guide EK-DMVQM-UG-003. */
+#define DMP_KEY_MASK        037
+#define DMP_KEY_NOP         000     /* no request (BSEL7 controls only) */
+#define DMP_KEY_ESTABLISH   001     /* establish tributary status slot */
+#define DMP_KEY_DELETE      002     /* delete (halted) tributary */
+#define DMP_KEY_START       003     /* start DDCMP */
+#define DMP_KEY_MAINT       004     /* start maintenance (MOP) mode */
+#define DMP_KEY_HALT        005     /* halt tributary, or all with address 0 */
+#define DMP_KEY_READ_MODEM  020     /* read modem signals */
+#define DMP_KEY_WRITE_MODEM 021     /* write modem outputs (DTR, RTS) */
+#define DMP_STATUS_READ     0040    /* status access: read */
+#define DMP_STATUS_CLEAR    0100    /* status access: read and clear (counters) */
+#define DMP_STATUS_WRITE    0200    /* status access: write (parameters) */
+#define DMP_STATUS_MASK     0340
+
+/* Information response return keys (BSEL6) */
+#define DMP_RETKEY_MODEM    010     /* answer to read modem */
+#define DMP_RETKEY_HALT     020     /* halt complete */
+
+/* Control response output codes (BSEL6, or BSEL10 in the Q22 format), from
+   Table 3-7 "Output Codes" of the DMV11 Technical Manual EK-DMV11-TM-001.
+   002-030 are network errors and protocol/system events for one tributary,
+   0100-0276 procedural errors, 0300-0310 buffer errors and global events.
+   Not generated here: 002 receive threshold (no line errors on TCP), 006
+   select threshold, 022 polling state dead, 026 babbling and 030 streaming
+   tributary (multipoint/half duplex only), 016 start received in
+   maintenance state (the DDCMP engine ignores it). */
+#define DMP_RSP_RCV_THRESH  0002    /* receive threshold error (7 consecutive) */
+#define DMP_RSP_XMT_THRESH  0004    /* transmit threshold error (7 consecutive) */
+#define DMP_RSP_SEL_THRESH  0006    /* select threshold error */
+#define DMP_RSP_STRT_RUN    0010    /* start received while running: tributary halted */
+#define DMP_RSP_MAINT_RUN   0012    /* maintenance message received while running
+                                       (or ISTRT/ASTRT): now in maintenance state */
+#define DMP_RSP_MAINT_HALT  0014    /* maintenance message received while halted */
+#define DMP_RSP_STRT_MAINT  0016    /* start received in maintenance state */
+#define DMP_RSP_RUNNING     0024    /* DDCMP running (start-up complete) */
+#define DMP_RSP_BUF_SMALL   0300    /* receive buffer too small */
+#define DMP_RSP_NXM         0302    /* non-existent memory on a buffer */
+#define DMP_RSP_DISCONNECT  0304    /* modem disconnected (DSR lost) */
+#define DMP_RSP_OVERFLOW    0306    /* queue overflow */
+#define DMP_RSP_CARRIER     0310    /* carrier lost during receive */
+/* Procedural errors */
+#define DMP_ERR_NO_MODE     0100    /* command before mode definition */
+#define DMP_ERR_BAD_TYPE    0102    /* invalid command type */
+#define DMP_ERR_BAD_MODE    0104    /* second, different mode definition */
+#define DMP_ERR_NOT_ESTAB   0106    /* tributary not established */
+#define DMP_ERR_NEED_TRIB   0110    /* request needs a tributary address */
+#define DMP_ERR_NOT_HALTED  0112    /* tributary must be halted first */
+#define DMP_ERR_TOO_MANY    0114    /* no free tributary status slot */
+#define DMP_ERR_ESTAB       0116    /* tributary already established */
+#define DMP_ERR_BAD_KEY     0120    /* invalid request key */
+#define DMP_ERR_BUF_UNESTAB 0122    /* buffer for an unestablished tributary */
+#define DMP_ERR_BUF_HALTED  0124    /* buffer for a halted tributary */
+#define DMP_ERR_ZERO_COUNT  0126    /* buffer with zero byte count */
+#define DMP_ERR_XMT_TRIB0   0130    /* transmit buffer with tributary address 0 */
+#define DMP_ERR_BAD_ACCESS  0132    /* status location not accessible that way */
+#define DMP_ERR_BSEL7       0134    /* reserved BSEL7 bit used in a control command */
+#define DMP_ERR_POOL_INUSE  0136    /* global halt while the common pool is in use */
+#define DMP_ERR_QUOTA       0140    /* common pool quota raised to 0377 or more */
+
+/* Buffer disposition response types (BSEL2 bits 0-2, Figure 3-8) for
+   buffers handed back when a tributary halts */
+#define DMP_DISP_RCV_UNUSED 03      /* receive buffer unused */
+#define DMP_DISP_XMT_NOACK  06      /* transmit buffer sent but not acknowledged */
+#define DMP_DISP_XMT_UNSENT 07      /* transmit buffer not sent */
+
+/* Control command BSEL7 (SEL6 bits 8-15, Figure 3-6 and Table 3-5) */
+#define DMP_CTL_POOL_ENABLE 0x0100  /* enable common pool, quota += BSEL4 (0377 = unlimited) */
+#define DMP_CTL_POOL_DISABLE 0x0200 /* disable common pool, quota = 0 */
+#define DMP_CTL_UNLATCH     0x1000  /* unlatch polling state (multipoint only) */
+#define DMP_CTL_LATCH       0x2000  /* latch polling state from BSEL4 bits 0-1 */
+#define DMP_CTL_RESERVED    0xCC00  /* bits 10, 11, 14 and 15 */
+#define DMP_POOL_UNLIMITED  0377
+
+/* Tributary status slot words (Figure 5-11) maintained by this emulation */
+#define DMP_TSS_QUOTA       005     /* low byte: common pool quota */
+#define DMP_TSS_THRESH      006     /* low byte: transmit threshold error count */
+#define DMP_TSS_XMT_MSGS    007     /* data messages transmitted (16 bit) */
+#define DMP_TSS_RCV_MSGS    010     /* data messages received (16 bit) */
+#define DMP_TSS_REPLY_TO    017     /* low byte: local reply timeouts (REPs sent) */
+#define DMP_XMT_THRESHOLD   7       /* consecutive transmit errors for 004 */
+#define DDCMP_NAK_MSG_TOO_LONG 16   /* DDCMP NAK reason: message too long for the receive buffer */
+
+/* Self-test signature left in BSEL4/BSEL6 after master clear */
+#define DMV_SIGNATURE_BSEL4 033
+#define DMP_SIGNATURE_BSEL4 077
+#define DMP_SIGNATURE_BSEL6 0305
 
 /* DMC/DMR register SEL4 */
 #define DMC_SEL4_V_CAR       0
@@ -537,6 +630,10 @@ typedef struct buffer {
     BufferType type;          /* 0 = Receive Buffer, 1 = Transmit Buffer */
     uint32 address;           /* unibus address of the buffer (or 0 for DDCMP control messages) */
     uint16 count;             /* size of the buffer passed to the device by the driver */
+    uint8 station;            /* DMP/DMV: tributary address (BSEL3) the buffer was given
+                                 for, reported back in BSEL3 when it is returned */
+    t_bool q22;               /* DMP/DMV: buffer was given in the Q22 (22-bit) address and
+                                 count format; its return uses the same format */
     uint8 *transfer_buffer;   /* the buffer into which data is received or from which it is transmitted*/
     int actual_bytes_transferred;/* the number of bytes from the actual block that have been read or written */
     uint32 buffer_return_time;/* time to return buffer to host */
@@ -627,8 +724,56 @@ typedef struct {
 
 typedef struct control {
     struct control *next;       /* Link */
-    uint16  sel6;               /* Control Out Status Flags */
+    uint16  sel6;               /* Control Out Status Flags (DMC/DMR) */
+    t_bool  dmp;                /* DMP/DMV response: present the register images below */
+#define DMP_IMG_SEL2    0       /* type code, Q22 flag, tributary address (BSEL3) */
+#define DMP_IMG_SEL4    1       /* data, or buffer address bits 0-15 */
+#define DMP_IMG_SEL6    2       /* code, count, or address bits 16-21 */
+#define DMP_IMG_SEL10   3       /* Q22 format: code or count */
+    uint16  image[4];           /* DMP/DMV: register contents of the response */
     } CONTROL_OUT;
+
+/* DMP/DMV status memory: one global status slot (GSS) and one tributary
+   status slot (TSS) per established tributary, each 32 words, addressed by
+   the 5-bit location field of a control command. */
+#define DMP_STATUS_WORDS    32
+#define DMP_MAX_TRIBS       32          /* tributary status slots: DMP11 32, DMV11 12 */
+#define DMV_MAX_TRIBS       12          /* (see dmp_trib_limit) */
+#define DMP_SELECT_TIMER    10000       /* msec a tributary may keep the line.  Longer
+                                           than the 3 s default of Table 4-2: VMS V3.5
+                                           with a DMF32 tributary answers a poll with
+                                           an ACK that keeps the line and returns it
+                                           only about 3 s later; selecting it again
+                                           before that makes it restart the line. */
+#define DMP_POLL_INTERVAL   500         /* msec: an idle tributary that has returned the
+                                           line is polled (selected with an ACK) after this */
+
+typedef struct dmp_trib {
+    t_bool  in_use;                     /* established (request key 001) */
+    uint8   address;                    /* tributary address, 1-255 */
+    uint8   run;                        /* 0 halted, 1 DDCMP started, 2 maintenance */
+    uint16  tss[DMP_STATUS_WORDS];      /* tributary status slot */
+    t_bool  pool_enabled;               /* may use the common receive buffer pool */
+    uint8   pool_quota;                 /* common pool buffers it may still use (0377 = unlimited) */
+    /* Multipoint modes (4-7) only: this tributary's own DDCMP session.  It
+       is swapped into the controller (link, queue pointers, state) while
+       the DDCMP engine works on it; see dmp_session_load(). */
+    struct {
+        DDCMP           link;           /* protocol variables and state */
+        BUFFER_QUEUE    xmt;            /* messages waiting to be sent */
+        BUFFER_QUEUE    ackw;           /* sent, waiting for acknowledgement */
+        BUFFER_QUEUE    rcv;            /* private receive buffers */
+        ControllerState state;          /* Running after START, Halted after HALT */
+        uint8           xmt_errors;     /* consecutive transmit errors (code 004) */
+        TMLN            *drop;          /* control station hub: the drop line this
+                                           tributary was last heard on (NULL: unknown) */
+        t_bool          holds_select;   /* control station: the tributary owns the line -
+                                           it was selected and has not yet sent a message
+                                           with the select flag - so it must not be
+                                           selected again */
+        uint32          select_time;    /* when it got or returned the line (sim_os_msec) */
+        } ses;
+    } DMP_TRIB;
 
 typedef enum {
     DMC,
@@ -654,6 +799,28 @@ typedef struct dmc_controller {
     BUFFER **buffers;               /* Buffers */
     CONTROL_OUT *control_out;
     DEVTYPE dev_type;
+    /* DMP/DMV host interface state (reset by master clear) */
+    t_bool dmp_station_known;       /* a mode definition command was accepted */
+    uint16 dmp_station_type;        /* its mode field (Table 3-4): bit 2 multipoint,
+                                       bit 1 tributary, bit 0 full duplex */
+    uint16 dmp_gss[DMP_STATUS_WORDS];/* global status slot */
+    DMP_TRIB dmp_trib[DMP_MAX_TRIBS];/* established tributaries */
+    uint8 dmp_xmt_errors;           /* consecutive transmit errors (output code 004) */
+    /* Multipoint (modes 4-7): one DDCMP session per tributary */
+    int dmp_loaded;                 /* tributary slot whose session is in the
+                                       controller fields below, -1 = none */
+    struct {                        /* the controller's own values while a
+                                       tributary session is loaded */
+        DDCMP link;
+        BUFFER_QUEUE *xmt, *ackw, *rcv;
+        ControllerState state;
+        uint8 xmt_errors;
+        } dmp_own;
+    BUFFER_QUEUE *dmp_pool;         /* common receive pool (receive buffers given
+                                       for tributary 0) */
+    TMXR *dmp_hub;                  /* DMP/DMV attached without a PEER: the
+                                       multiplexer it listens on, else NULL */
+    t_bool dmp_down_reported;       /* 304 already sent for this line outage */
     uint32 in_int;
     uint32 out_int;
     uint32 dmc_wr_delay;
@@ -737,6 +904,7 @@ void ddcmp_ClearSACK              (CTLR *controller);
 void ddcmp_SetSNAK                (CTLR *controller);
 void ddcmp_ClearSNAK              (CTLR *controller);
 void ddcmp_SetSREP                (CTLR *controller);
+void ddcmp_CountTransmitError     (CTLR *controller);
 void ddcmp_ClearSREP              (CTLR *controller);
 void ddcmp_IncrementR             (CTLR *controller);
 void ddcmp_SetAeqRESP             (CTLR *controller);
@@ -783,7 +951,8 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
                                                                     ddcmp_StartTimer}},
     { 7, IStart,      {ddcmp_TimerExpired},        IStart,         {ddcmp_ResetVariables, 
                                                                     ddcmp_SendStrt, 
-                                                                    ddcmp_StartTimer}},
+                                                                    ddcmp_StartTimer,
+                                                                    ddcmp_CountTransmitError}},
     { 8, IStart,      {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_ResetVariables, 
                                                                     ddcmp_NotifyMaintRcvd}},
     { 9, IStart,      {ddcmp_ReceiveMessageError}, IStart,         {ddcmp_Ignore}},
@@ -796,7 +965,8 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
     {15, AStart,      {ddcmp_ReceiveStack},        Run,            {ddcmp_SetSACK, 
                                                                     ddcmp_StopTimer}},
     {16, AStart,      {ddcmp_TimerExpired},        AStart,         {ddcmp_SendStack, 
-                                                                    ddcmp_StartTimer}},
+                                                                    ddcmp_StartTimer,
+                                                                    ddcmp_CountTransmitError}},
     {17, AStart,      {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_ResetVariables, 
                                                                     ddcmp_NotifyMaintRcvd}},
     {18, AStart,      {ddcmp_ReceiveMessageError}, AStart,         {ddcmp_Ignore}},
@@ -839,7 +1009,8 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
                                                                     ddcmp_StopTimer}},
     {33, Run,         {ddcmp_ReceiveNak,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {34, Run,         {ddcmp_TimerExpired},        Run,            {ddcmp_SetSREP}},
+    {34, Run,         {ddcmp_TimerExpired},        Run,            {ddcmp_SetSREP,
+                                                                    ddcmp_CountTransmitError}},
     {35, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisSet},           Run,            {ddcmp_SendNak, 
                                                                     ddcmp_ClearSNAK}},
@@ -961,6 +1132,7 @@ DDCMP_ACTION_NAME ddcmp_Actions[] = {
     NAME(SetSNAK),
     NAME(ClearSNAK),
     NAME(SetSREP),
+    NAME(CountTransmitError),
     NAME(ClearSREP),
     NAME(IncrementR),
     NAME(SetAeqRESP),
@@ -1094,6 +1266,25 @@ BUFFER *dmc_buffer_allocate (CTLR *controller);
 t_bool dmc_transmit_queue_empty  (CTLR *controller);
 void dmc_ddcmp_start_transmitter (CTLR *controller);
 void dmc_queue_control_out (CTLR *controller, uint16 sel6);
+/* DMP/DMV host interface */
+void dmp_reset_host_state (CTLR *controller);
+void dmp_process_command (CTLR *controller);
+void dmp_queue_response (CTLR *controller, uint16 sel2, uint16 sel4, uint16 sel6, uint16 sel10);
+void dmp_ddcmp_event (CTLR *controller, uint16 dmc_sel6);
+void dmp_link_running (CTLR *controller);
+uint8 dmp_buffer_station (CTLR *controller, BUFFER *buffer);
+void dmp_count_event (CTLR *controller, int word, t_bool low_byte);
+t_bool dmp_multipoint (CTLR *controller);
+int dmp_trib_limit (CTLR *controller);
+t_bool dmp_hub_mp (CTLR *controller);
+TMLN *dmp_own_line (CTLR *controller);
+void dmp_session_load (CTLR *controller, int slot);
+void dmp_session_store (CTLR *controller);
+void dmp_dispatch (CTLR *controller, uint32 events);
+t_bool dmp_mp_receive (CTLR *controller);
+void dmp_mp_transmit (CTLR *controller);
+void dmp_mp_timers (CTLR *controller, int32 *active);
+int32 dmp_hub_poll (CTLR *controller);
 
 /* debugging bitmaps */
 #define DBG_TRC  0x0001                                 /* trace routine calls */
@@ -1177,7 +1368,18 @@ BUFFER *dmc_buffers[DMC_NUMDEVICE];
 
 TMLN dmp_ldsc[DMC_NUMDEVICE];               /* line descriptors */
 TMXR dmp_desc = { 1, NULL, 0, dmp_ldsc };   /* mux descriptor */
-uint32 dmp_connect_poll;                    /* seconds between polls when no connection */
+uint32 dmp_connect_poll = DMC_CONNECT_POLL;/* seconds between polls when no connection */
+
+/* Listening hub: a DMP11/DMV11 line attached without a PEER listens on its
+   port for as many stations as the controller has tributary status slots
+   (DMP11 32, DMV11 12), each on its own line ("drop line") of a private
+   multiplexer.  A multipoint control station uses every drop line; any
+   other station uses the one connection it gets.  The multiplexer has its
+   own (device-less) unit so that its polling cannot interfere with the
+   device's poll unit.  Indexed by the DMP/DMV line number. */
+TMLN dmp_hub_ldsc[DMP_NUMDEVICE][DMP_MAX_TRIBS];
+TMXR dmp_hub_desc[DMP_NUMDEVICE];
+UNIT dmp_hub_unit[DMP_NUMDEVICE];
 
 BUFFER_QUEUE dmp_rcv_queues[DMP_NUMDEVICE];
 BUFFER_QUEUE dmp_completion_queues[DMP_NUMDEVICE];
@@ -1296,6 +1498,10 @@ MTAB dmv_mod[] = {
         NULL, &dmc_showddcmp, NULL, "Display DDCMP state information" },
     { MTAB_XTD|MTAB_VDV,          0, "CONNECTPOLL", "CONNECTPOLL=seconds",
         &dmc_setconnectpoll, &dmc_showconnectpoll, (void *) &dmp_connect_poll, "Display connection poll interval" },
+    /* as on the DMP: the corruption troll for this line (shares dmp_corruption,
+       since the DMP and DMV devices share their lines) */
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "CORRUPTION", "CORRUPTION=factor (0=uncorrupted)" ,
+      &dmc_setcorrupt, &dmc_showcorrupt, NULL, "Display corruption factor (0.1% of packets)" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,        020, "ADDRESS", "ADDRESS",
         &set_addr, &show_addr, NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,          1, "VECTOR", "VECTOR",
@@ -1310,9 +1516,7 @@ DIB dmc_dib = { IOBA_AUTO, IOLN_DMC, &dmc_rd, &dmc_wr, 2, IVCL (DMCRX), VEC_AUTO
 
 DIB dmp_dib = { IOBA_AUTO, IOLN_DMP, &dmc_rd, &dmc_wr, 2, IVCL (DMCRX), VEC_AUTO, {&dmc_ininta, &dmc_outinta }, IOLN_DMP};
 
-#define IOLN_DMV        020
-
-DIB dmv_dib = { IOBA_AUTO, IOLN_DMV, &dmc_rd, &dmc_wr, 2, IVCL (DMCRX), VEC_AUTO, {&dmc_ininta, &dmc_outinta }, IOLN_DMV};
+#define IOLN_DMV        020             /* DMV11: BSEL0-BSEL17, shares dmp_dib with the DMP */
 
 DEVICE dmc_dev =
     { 
@@ -1374,8 +1578,11 @@ int i;
 
 for (i=0; i<DMC_NUMDEVICE + DMP_NUMDEVICE; i++) {
     DIB *dib = (DIB *)dmc_ctrls[i].device->ctxt;
+    /* i is the first controller of the matching device (DMC controllers
+       come first, then DMP/DMV); each line has 8 (Unibus) or 16 (Qbus)
+       bytes of registers. */
     if ((address >= dib->ba) && (address < (dib->ba + dib->lnt)))
-        return &dmc_ctrls[(address - dib->ba) >> ((UNIBUS) ? 3 : 4)];
+        return &dmc_ctrls[i + ((address - dib->ba) >> ((UNIBUS) ? 3 : 4))];
     }
 /* not found */
 return 0;
@@ -1776,6 +1983,25 @@ static const char *states[] = {"Halt", "IStart", "AStart", "Run", "Maintenance"}
 
 fprintf (st, "%s%d\n", controller->device->name, (int)(uptr-controller->device->units));
 
+if (dmp_multipoint(controller)) {           /* DMP/DMV: one session per tributary */
+    int slot;
+
+    for (slot = 0; slot < DMP_MAX_TRIBS; slot++) {
+        DMP_TRIB *trib = &controller->dmp_trib[slot];
+        DDCMP *l = (controller->dmp_loaded == slot) ? &controller->link : &trib->ses.link;
+
+        if (!trib->in_use)
+            continue;
+        fprintf(st, "Tributary %3d: %-11s R=%d N=%d A=%d T=%d X=%d%s%s%s timer=%s xmt=%d ackwait=%d rcv=%d%s\n",
+                trib->address, states[l->state], l->R, l->N, l->A, l->T, l->X,
+                l->SACK ? " SACK" : "", l->SNAK ? " SNAK" : "", l->SREP ? " SREP" : "",
+                l->TimerRunning ? "on" : "off", (int)trib->ses.xmt.count, (int)trib->ses.ackw.count,
+                (int)trib->ses.rcv.count,
+                controller->dmp_hub ? (trib->ses.drop ? "" : " (drop line unknown)") : "");
+        }
+    fprintf(st, "Common receive pool: %d buffers\n", (int)controller->dmp_pool->count);
+    return SCPE_OK;
+    }
 fprintf(st, "DDCMP Link State: %s\n", states[controller->link.state]);
 fprintf(st, "               R: %d\n", controller->link.R);
 fprintf(st, "               N: %d\n", controller->link.N);
@@ -1844,7 +2070,7 @@ const char helpString[] =
     " The minimum interval between attempts to connect to the other side is set\n"
     " using the following command:\n"
     "\n"
-    "+sim> SET %U CONNECTPOLL=n\n"
+    "+sim> SET %D CONNECTPOLL=n\n"
     "\n"
     " Where n is the number of seconds. The default is %3s seconds.\n"
     "3 Speed\n"
@@ -1858,16 +2084,22 @@ const char helpString[] =
     " runs at.  In practice this is implemented as a delay while transmitting\n"
     " bytes to the socket.  Use a value of zero to run at full speed with no\n"
     " artificial throttling.\n"
+    ;
+/* SET TYPE: DMC device only (the DMR11 is a variant of the DMC device; the
+   DMP11 and DMV11 are devices of their own) */
+const char helpType[] =
 #if !defined (VM_PDP10)
     "3 Type\n"
-    " The type of device being emulated can be changed with the following\n"
-    " command:\n"
+    " Each line of the DMC device emulates a DMC11 or a DMR11; the type can be\n"
+    " changed with the following command:\n"
     "\n"
     "+sim> SET %U TYPE={DMR|DMC}\n"
     "\n"
     " A SET TYPE command should be entered before the device is attached to a\n"
-    " listening port.\n"
+    " listening port.  The DMP11 and DMV11 are separate devices (DMP, DMV).\n"
 #endif
+    "";
+const char helpMid[] =
     "3 Corruption\n"
     " Corruption Troll - the DDCMP emulation includes a process that will\n"
     " intentionally drop or corrupt some messages.  This emulates the\n"
@@ -1875,7 +2107,7 @@ const char helpString[] =
     " and enables network monitoring software to see non-zero error counters.\n"
     "\n"
     " The troll selects messages with a probablility selected by the SET %U\n"
-    " CORRUPT command.  The units are 0.1%%; that is, a value of 1 means that\n"
+    " CORRUPTION command.  The units are 0.1%%; that is, a value of 1 means that\n"
     " every message has a 1/1000 chance of being selected to be corrupted\n"
     " or discarded.\n"
      /****************************************************************************/
@@ -1886,7 +2118,9 @@ const char helpString[] =
     "\n"
     "+sim> ATTACH %U port\n"
     "\n"
-    " The Peer host:port value must be specified before the attach command.\n"
+    " A DMC11 or DMR11 needs its PEER (host:port) set before the ATTACH command.\n"
+    " A DMP11 or DMV11 attached without a PEER listens for the other station(s)\n"
+    " (see Multipoint).\n"
     " The default connection uses TCP transport between the local system and\n"
     " the peer.  Alternatively, UDP can be used by specifying UDP on the\n"
     " ATTACH command:\n"
@@ -1921,6 +2155,20 @@ const char helpString[] =
     "\n"
     " To communicate with an \"integral modem\" DMC or similar, at 56 kbps:\n"
     "+sim> ATTACH %U SYNC=sync0:INTEGRAL:56000\n"
+    ;
+/* multipoint: DMP/DMV devices only */
+const char helpMpExample[] =
+    "\n"
+    " A %1s multipoint control station with two tributary stations:\n"
+    " \n"
+    " Control station (no PEER: it listens for the tributary stations)\n"
+    "+sim> ATTACH %U 1111\n"
+    " \n"
+    " Each tributary station\n"
+    "+sim> SET %U PEER=controlhost:1111\n"
+    "+sim> ATTACH %U 2222\n"
+    ;
+const char helpMonitor[] =
     "1 Monitoring\n"
     " The %D device and %U line configuration and state can be displayed with\n"
     " one of the available show commands.\n"
@@ -1931,21 +2179,50 @@ const char helpString[] =
     " less-than-perfect communications lines encountered in the real world,\n"
     " and enables network monitoring software to see non-zero error counters.\n"
     "\n"
-    " The troll selects messages with a probablility selected by the SET\n"
-    " CORRUPT command.  The units are 0.1%%; that is, a value of 1 means that\n"
+    " The troll selects messages with a probablility selected by the SET %U\n"
+    " CORRUPTION command.  The units are 0.1%%; that is, a value of 1 means that\n"
     " every message has a 1/1000 chance of being selected to be corrupted\n"
     " or discarded.\n"
-    "1 Restrictions\n"
-    " Real hardware synchronous connections could operate in Multi-Point mode.\n"
-    " Multi-Point mode was a way of sharing a single wire with multiple\n"
-    " destination systems or devices.  Multi-Point mode is not currently\n"
-    " emulated by this or other simulated synchronous devices.\n"
+    ;
+const char helpMp[] =
+    "1 Multipoint\n"
+    " Real hardware synchronous connections could operate in Multi-Point mode,\n"
+    " sharing a single line between a control station and several tributary\n"
+    " stations.  The DMP11 and DMV11 emulate it: the operating system selects\n"
+    " control station or tributary mode, and each tributary address gets its\n"
+    " own DDCMP session.  A DMP11 can establish up to 32 tributaries, a\n"
+    " DMV11 up to 12.\n"
     "\n"
+    " Each tributary station connects to the control station with its normal\n"
+    " PEER and ATTACH settings.  The control station is attached without a\n"
+    " PEER:\n"
+    "\n"
+    "+sim> ATTACH %U 1111\n"
+    "\n"
+    " It then listens on its port for as many stations as it has tributaries\n"
+    " and learns which tributary address answers on which connection (SHOW\n"
+    " %U DDCMP).  A control station with a single tributary station can also\n"
+    " use a normal PEER connection.  A DMP11 or DMV11 that is not a control\n"
+    " station uses the first connection it gets, so it can also be attached\n"
+    " without a PEER for a point-to-point line.\n"
+    "\n"
+    " Give a listening station's ATTACH only a port number, so that it listens\n"
+    " on all local addresses; an address such as localhost:1111 limits it to\n"
+    " one address (for example IPv4 only), and stations whose PEER name\n"
+    " resolves to another one (such as IPv6 ::1) cannot connect.\n"
+    "\n"
+    " Polling is not emulated: the TCP connections are full duplex.\n"
+    ;
+const char helpTail[] =
+    "1 Restrictions\n"
     " In real hardware, the DMC11 spoke a version of DDCMP which peer devices\n"
     " needed to be aware of.  The DMR11, DMP11, and DMV11 boards have\n"
     " configuration switches or programatic methods to indicate that the peer\n"
     " device was a DMC11.  The emulated devices all speak the same level of\n"
     " DDCMP so no special remote device awareness need be considered.\n"
+    "\n"
+    " The DMC11 and DMR11 are point-to-point devices; multipoint operation is\n"
+    " available with the DMP11 and DMV11 (devices DMP and DMV).\n"
     "1 Implementation\n"
     " A real %1s transports data using DDCMP via a synchronous connection, the\n"
     " emulated device makes a TCP/IP connection to another emulated device which\n"
@@ -1953,8 +2230,8 @@ const char helpString[] =
     " simulated computer where the operating system speaks the DDCMP protocol on\n"
     " the wire.\n"
     "\n"
-    " The %1s can be used for point-to-point DDCMP connections carrying\n"
-    " DECnet and other types of networking, e.g. from ULTRIX or DSM.\n"
+    " The %1s can be used for DDCMP connections carrying DECnet and other\n"
+    " types of networking, e.g. from ULTRIX or DSM.\n"
     "1 Debugging\n"
     " The simulator has a number of debug options, these are:\n"
     "\n"
@@ -1990,19 +2267,40 @@ const char helpString[] =
     "++DMR11        Unibus PDP11 simulators and Unibus VAX simulators\n"
     "++DMC11        Unibus PDP11 simulators and Unibus VAX simulators\n"
     "++DMP11        Unibus PDP11 simulators and Unibus VAX simulators\n"
-    "++DMV11        Qbus VAX simulators\n"
+    "++DMV11        Qbus VAX simulators and Qbus PDP11 simulators\n"
     "\n"
     "++* Indicates systems which have OS provided DDCMP implementations.\n"
     ;
 char devname[16];
 char devcount[16];
 char connectpoll[16];
+t_bool dmc = (dptr == &dmc_dev);
+char *help;
+t_stat r;
 
 sprintf (devname, "%s11" , dptr->name);
-sprintf (devcount, "%d", (dptr == &dmc_dev) ? DMC_NUMDEVICE : DMP_NUMDEVICE);
+sprintf (devcount, "%d", dmc ? DMC_NUMDEVICE : DMP_NUMDEVICE);
 sprintf (connectpoll, "%d", DMC_CONNECT_POLL);
-
-return scp_help (st, dptr, uptr, flag, helpString, cptr, devname, devcount, connectpoll);
+/* The help is put together from the parts that apply to this device: the
+   DMC device has SET TYPE, the DMP and DMV devices multipoint. */
+help = (char *)malloc (strlen (helpString) + strlen (helpType) + strlen (helpMid) +
+                       strlen (helpMpExample) + strlen (helpMonitor) + strlen (helpMp) +
+                       strlen (helpTail) + 1);
+if (help == NULL)
+    return SCPE_MEM;
+strcpy (help, helpString);
+if (dmc)
+    strcat (help, helpType);
+strcat (help, helpMid);
+if (!dmc)
+    strcat (help, helpMpExample);
+strcat (help, helpMonitor);
+if (!dmc)
+    strcat (help, helpMp);
+strcat (help, helpTail);
+r = scp_help (st, dptr, uptr, flag, help, cptr, devname, devcount, connectpoll);
+free (help);
+return r;
 }
 
 t_stat dmc_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
@@ -2387,7 +2685,7 @@ uint32 dmc_get_addr(CTLR *controller)
 if (dmc_is_dmc(controller) || (!(*controller->csrs->sel2 & DMP_SEL2_M_22BIT)))
     return ((uint32)dmc_getreg(controller, 4, DBG_RGC))  | ((((uint32)dmc_getreg(controller, 6, DBG_RGC) & 0xc000)) << 2);
 else
-    return ((uint32)dmc_getreg(controller, 4, DBG_RGC))  | (((uint32)dmc_getreg(controller, 6, DBG_RGC) & 0x3FF) << 16);
+    return ((uint32)dmc_getreg(controller, 4, DBG_RGC))  | (((uint32)dmc_getreg(controller, 6, DBG_RGC) & 0x3F) << 16);   /* Q22: BSEL6 bits 0-5 = address bits 16-21 */
 }
 
 void dmc_set_addr(CTLR *controller, uint32 addr)
@@ -2513,9 +2811,17 @@ if (controller->dev_type == DMR) {
         }
     }
 if (controller->dev_type == DMP) {
-    dmc_setreg(controller, 4, 077, DBG_RGC);
-    dmc_setreg(controller, 6, 0305, DBG_RGC);
+    /* Self-test passed signature; VMS treats anything else on a DMV as a
+       failed controller.  Master clear also forgets the mode and every
+       tributary. */
+    dmc_setreg(controller, 4, (controller->device == &dmv_dev) ? DMV_SIGNATURE_BSEL4 : DMP_SIGNATURE_BSEL4, DBG_RGC);
+    dmc_setreg(controller, 6, DMP_SIGNATURE_BSEL6, DBG_RGC);
+    dmp_reset_host_state(controller);
     }
+/* The buffer pool is rebuilt below; a transmission still marked as in
+   progress (possible with SET SPEED) would otherwise point into it. */
+controller->link.xmt_buffer = NULL;
+controller->link.xmt_done_buffer = NULL;
 dmc_buffer_queue_init_all(controller);
 
 controller->transfer_state = Idle;
@@ -2536,10 +2842,27 @@ if ((!controller->control_out) ||
     (controller->transfer_state != Idle) || 
     (dmc_is_rdyo_set(controller)))
     return;
-sim_debug(DBG_INF, controller->device, "%s%d: Starting control output transfer: SEL6 = 0x%04X\n", controller->device->name, controller->index, controller->control_out->sel6);
 controller->transfer_state = OutputControl;
-dmc_setreg (controller, 6, controller->control_out->sel6, DBG_RGC);
-dmc_set_type_output(controller, DMC_C_TYPE_CNTL);
+if (controller->control_out->dmp) {
+    /* DMP/DMV response: type code, Q22 flag and tributary in SEL2, then the
+       data/address, code and (Q22) code registers.  RDI stays clear here
+       because an output is only started while the input side is idle. */
+    const uint16 *img = controller->control_out->image;
+
+    sim_debug(DBG_INF, controller->device, "%s%d: Starting response output: SEL2 = 0x%04X SEL4 = 0x%04X SEL6 = 0x%04X SEL10 = 0x%04X\n",
+              controller->device->name, controller->index,
+              img[DMP_IMG_SEL2], img[DMP_IMG_SEL4], img[DMP_IMG_SEL6], img[DMP_IMG_SEL10]);
+    dmc_setreg (controller, 2, (*controller->csrs->sel2 & ~(0xFF00|DMP_SEL2_M_22BIT|DMP_SEL2_M_CODE)) | img[DMP_IMG_SEL2], DBG_RGC);
+    dmc_setreg (controller, 4, img[DMP_IMG_SEL4], DBG_RGC);
+    dmc_setreg (controller, 6, img[DMP_IMG_SEL6], DBG_RGC);
+    if (img[DMP_IMG_SEL2] & DMP_SEL2_M_22BIT)
+        dmc_setreg (controller, 010, img[DMP_IMG_SEL10], DBG_RGC);
+    }
+else {
+    sim_debug(DBG_INF, controller->device, "%s%d: Starting control output transfer: SEL6 = 0x%04X\n", controller->device->name, controller->index, controller->control_out->sel6);
+    dmc_setreg (controller, 6, controller->control_out->sel6, DBG_RGC);
+    dmc_set_type_output(controller, DMC_C_TYPE_CNTL);
+    }
 dmc_set_rdyo(controller);
 }
 
@@ -2571,6 +2894,14 @@ DEVICE *dptr = controller->device;
 
 sim_debug(DBG_TRC, dptr, "dmc_svc(%s%d)\n", controller->device->name, controller->index);
 
+/* DMP/DMV multipoint: ddcmp_dispatch() calls this routine directly at the
+   end of a recursive scan.  If that happens while a tributary session is
+   loaded, come back later instead of nesting another session load. */
+if (!dmc_is_dmc(controller) && (controller->dmp_loaded >= 0)) {
+    sim_clock_coschedule (uptr, tmxr_poll);
+    return SCPE_OK;
+    }
+
 /* Perform delayed register actions */
 if (controller->dmc_wr_delay) {
     controller->dmc_wr_delay = 0;
@@ -2581,6 +2912,14 @@ if (controller->dmc_wr_delay) {
         }
     }
 if (dmc_is_attached(controller->unit)) {
+    if (dmp_multipoint(controller)) {
+        /* Every tributary session: send what is queued and let the
+           protocol machine act on pending work (no SPEED limiting). */
+        dmp_mp_transmit (controller);
+        dmc_start_control_output_transfer(controller);
+        dmp_dispatch (controller, 0);
+        }
+    else {
     /* Speed limited transmissions are completed here after the appropriate service delay */
     if (controller->link.xmt_buffer) {
         dmc_complete_transmit(controller);
@@ -2591,6 +2930,7 @@ if (dmc_is_attached(controller->unit)) {
 
     if (controller->xmt_queue->count)
         ddcmp_dispatch (controller, 0);
+        }
     if (controller->transfer_state == Idle)
         dmc_start_transfer_buffer(controller);
 
@@ -2626,7 +2966,8 @@ if (dmc >= 0) {                                 /* new connection? */
     controller = (CTLR *)dptr->units[dmc].ctlr;
     dmc_get_modem (controller);
     sim_debug(DBG_MDM, dptr, "dmc_poll_svc(dmc=%d) - Connection State Change to UP(ON)\n", dmc);
-    ddcmp_dispatch (controller, 0);
+    controller->dmp_down_reported = FALSE;      /* DMP/DMV: a new outage gets a new 304 */
+    dmp_dispatch (controller, 0);
     sim_clock_coschedule (controller->unit, tmxr_poll); /* be sure to wake up soon to continue processing */
     }
 tmxr_poll_rx (mp);
@@ -2641,15 +2982,22 @@ for (dmc=active=attached=0; dmc < mp->lines; dmc++) {
         ++attached;
     if (lp->conn)
         ++active;
+    if (controller->dmp_hub)                    /* DMP/DMV multipoint control station */
+        active += dmp_hub_poll (controller);
     old_modem = *controller->modem;
     new_modem = dmc_get_modem (controller);
     if ((old_modem & DMC_SEL4_M_CAR) && 
         (!(new_modem & DMC_SEL4_M_CAR))) {
         sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - Connection State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_CAR) ? "UP(ON)" : "DOWN(OFF)");
-        ddcmp_dispatch (controller, 0);
+        dmp_dispatch (controller, 0);
         sim_clock_coschedule (controller->unit, tmxr_poll); /* wake up soon to finish processing */
         }
-    if ((lp->xmte && tmxr_tpbusyln(lp)) || 
+    if (dmp_multipoint(controller)) {
+        if (dmc_is_attached(controller->unit))  /* sessions: transmit, timers, host */
+            dmc_svc (&controller->device->units[dmc]);
+        }
+    else
+    if ((lp->xmte && tmxr_tpbusyln(lp)) ||
         (lp->xmte && controller->link.xmt_buffer) ||
         ddcmp_UserSendMessage(controller)) {
         if (tmxr_tpbusyln(lp)) {
@@ -2689,6 +3037,10 @@ sim_debug(DBG_TRC, dptr, "dmc_timer_svc()\n");
 
 for (dmc=active=0; dmc < mp->lines; dmc++) {
     controller = (CTLR *)dptr->units[dmc].ctlr;
+    if (dmp_multipoint(controller)) {           /* one reply timer per tributary */
+        dmp_mp_timers (controller, &active);
+        continue;
+        }
     if (controller->link.TimerRunning) {
         if (controller->link.TimeRemaining > 0) {
             --controller->link.TimeRemaining;
@@ -2721,7 +3073,9 @@ void dmc_buffer_queue_init_all(CTLR *controller)
 size_t queue_size = (controller->dev_type == DMC) ? DMC_QUEUE_SIZE : 
                                                     ((controller->dev_type == DMR) ? DMR_QUEUE_SIZE : 
                                                                                         DMP_QUEUE_SIZE);
-queue_size *= 2;
+/* DMP/DMV: the pool also feeds the multipoint tributary sessions, up to
+   12 on a DMV11 and 32 on a DMP11. */
+queue_size *= (controller->dev_type == DMP) ? (2 + (2 * dmp_trib_limit(controller)) / 3) : 2;
 *controller->buffers = (BUFFER *)realloc(*controller->buffers, queue_size*sizeof(**controller->buffers));
 memset (*controller->buffers, 0, queue_size*sizeof(**controller->buffers));
 dmc_buffer_queue_init(controller, controller->rcv_queue,        "receive",    0, NULL);
@@ -2758,6 +3112,8 @@ if (!buffer) {
     }
 buffer->address = 0;
 buffer->count = 0;
+buffer->station = 0;
+buffer->q22 = FALSE;
 free (buffer->transfer_buffer);
 buffer->transfer_buffer = NULL;
 buffer->actual_bytes_transferred = 0;
@@ -2774,6 +3130,10 @@ if (buffer) {
     buffer->type = type;
     buffer->address = address;
     buffer->count = count;
+    if (!dmc_is_dmc(q->controller)) {   /* DMP/DMV: remember tributary and format */
+        buffer->station = (uint8)(*q->controller->csrs->sel2 >> DMP_SEL2_V_STATION);
+        buffer->q22 = ((*q->controller->csrs->sel2 & DMP_SEL2_M_22BIT) != 0);
+        }
     ASSURE (insqueue (&buffer->hdr, q->hdr.prev)); /* Insert at tail */
     sim_debug(DBG_INF, q->controller->device, "%s%d: Queued %s buffer address=0x%08x count=%d %s\n", q->controller->device->name, q->controller->index, q->name, address, count, controller_queue_state(q->controller));
     }
@@ -2790,11 +3150,50 @@ BUFFER *dmc_buffer_queue_head(BUFFER_QUEUE *q)
 return ((q->hdr.next == &q->hdr) ? NULL : (BUFFER *)q->hdr.next);
 }
 
-void dmc_queue_control_out(CTLR *controller, uint16 sel6)
+/* Append a response to the controller's output queue (FIFO). */
+static void dmc_append_control_out(CTLR *controller, CONTROL_OUT *control)
+{
+CONTROL_OUT *last;
+
+if (controller->control_out) {
+    last = controller->control_out;
+    while (last->next)
+        last = last->next;
+    last->next = control;
+    }
+else
+    controller->control_out = control;
+}
+
+/* Queue a DMP/DMV response with all of its register values.  sel2 holds the
+   response type code (bits 0-2), the Q22 flag (bit 3) and the tributary
+   address (bits 8-15); the RDO handshake bit is added when it is presented. */
+void dmp_queue_response(CTLR *controller, uint16 sel2, uint16 sel4, uint16 sel6, uint16 sel10)
 {
 CONTROL_OUT *control = (CONTROL_OUT *)calloc(1, sizeof(*control));
+
+if (!control)
+    return;
+control->dmp = TRUE;
+control->image[DMP_IMG_SEL2] = sel2;
+control->image[DMP_IMG_SEL4] = sel4;
+control->image[DMP_IMG_SEL6] = sel6;
+control->image[DMP_IMG_SEL10] = sel10;
+dmc_append_control_out(controller, control);
+}
+
+void dmc_queue_control_out(CTLR *controller, uint16 sel6)
+{
+CONTROL_OUT *control;
 CONTROL_OUT *last = NULL;
 
+if (!dmc_is_dmc(controller)) {
+    /* The DDCMP engine reports link events with DMC control-out bits.  A
+       DMP/DMV has its own response codes; translate (or drop) them. */
+    dmp_ddcmp_event(controller, sel6);
+    return;
+    }
+control = (CONTROL_OUT *)calloc(1, sizeof(*control));
 control->sel6 = sel6;
 if (controller->control_out) {
     last = controller->control_out;
@@ -2810,6 +3209,9 @@ else
 t_bool dmc_buffer_fill_receive_buffers(CTLR *controller)
 {
 int ans = FALSE;
+
+if (dmp_multipoint(controller))             /* frames are routed by tributary address */
+    return dmp_mp_receive(controller);
 
 if (controller->state == Running) {
     BUFFER *buffer = dmc_buffer_queue_head(controller->rcv_queue);
@@ -2838,14 +3240,24 @@ if ((!head) ||
     (dmc_is_rdyo_set(controller)))
     return;
 count = (uint16)head->actual_bytes_transferred;
+if (!dmc_is_dmc(controller)) {
+    /* DMP/DMV: report the buffer for the tributary and in the address/count
+       format it was given with, not whatever the host last wrote to BSEL3
+       and the Q22 bit.  (VMS discards a buffer returned for tributary 0, and
+       its receive buffers then run out.)  Set SEL2 before the address and
+       count, whose layout depends on the Q22 bit. */
+    dmc_setreg(controller, 2, (*controller->csrs->sel2 & ~(0xFF00|DMP_SEL2_M_22BIT)) |
+                              ((uint16)dmp_buffer_station(controller, head) << DMP_SEL2_V_STATION) |
+                              (head->q22 ? DMP_SEL2_M_22BIT : 0), DBG_RGC);
+    }
 switch (head->type) {
     case Receive:
         sim_debug(DBG_INF, controller->device, "%s%d: Starting data output transfer for receive, address=0x%08x, count=%d %s\n", controller->device->name, controller->index, head->address, count, controller_queue_state(controller));
-        dmc_set_type_output(controller, DMC_C_TYPE_RBACC);
+        dmc_set_type_output(controller, dmc_is_dmc(controller) ? DMC_C_TYPE_RBACC : DMP_C_TYPE_RBACC);
         break;
     case TransmitData:
         sim_debug(DBG_INF, controller->device, "%s%d: Starting data output transfer for transmit, address=0x%08x, count=%d %s\n", controller->device->name, controller->index, head->address, count, controller_queue_state(controller));
-        dmc_set_type_output(controller, DMC_C_TYPE_XBACC);
+        dmc_set_type_output(controller, dmc_is_dmc(controller) ? DMC_C_TYPE_XBACC : DMP_C_TYPE_XBACC);
         break;
     default:
         break;
@@ -2886,6 +3298,1172 @@ controller->control_out = control->next;
 free(control);
 controller->control_out_operations_completed++;
 dmc_process_command(controller); // check for any other transfers
+}
+
+/* ---------------------------------------------------------------------------
+   DMP11/DMV11 host interface
+
+   Command and response protocol of the DMP11 (Unibus) and DMV11 (Qbus), as
+   described in the DMV11 Technical Manual (EK-DMV11-TM-001) and the DMV11
+   user's guide (EK-DMVQM-UG-003):
+
+   - The host requests a command with RQI; the controller answers with RDI.
+     The host then loads the command type (BSEL2 bits 0-2), the Q22 format
+     flag (BSEL2 bit 3), the tributary address (BSEL3) and the command
+     fields (BSEL4-BSEL7, and BSEL10-BSEL11 in Q22 format), and releases the
+     command by clearing RDI.
+   - Commands: mode definition (type 2), control (type 1: request keys and
+     status memory access), receive buffer (type 0), transmit buffer
+     (type 4).
+   - Responses use RDO: receive/transmit buffer complete (types 0/4),
+     control response (type 1: status and error codes) and information
+     response (type 2: status memory, modem signals, halt completion).
+
+   This implementation runs one DDCMP session per controller, which covers
+   point-to-point operation and a multipoint station with a single partner.
+   Multipoint with several tributaries needs one session per tributary.
+   --------------------------------------------------------------------------- */
+
+/* Forget the mode and every tributary (master clear). */
+void dmp_reset_host_state(CTLR *controller)
+{
+controller->dmp_station_known = FALSE;
+controller->dmp_station_type = 0;
+memset(controller->dmp_gss, 0, sizeof(controller->dmp_gss));
+memset(controller->dmp_trib, 0, sizeof(controller->dmp_trib));
+controller->dmp_xmt_errors = 0;
+controller->dmp_loaded = -1;                /* the sessions went with the tributaries */
+controller->dmp_down_reported = FALSE;
+/* Default global parameters (Table 4-3): NUMSYNC, streaming tributary
+   timer, DELTA T, DEAD T, poll delay */
+controller->dmp_gss[033] = 010;
+controller->dmp_gss[034] = 013560;
+controller->dmp_gss[035] = 0310;
+controller->dmp_gss[036] = 017500;
+controller->dmp_gss[037] = 0;
+}
+
+/* Default tributary parameters (Table 4-2), set when a tributary is
+   established: transmit delay, Q/R for the three polling states, NDM-INACT
+   and TO-UNRSP, TO-DEAD and MXMC, selection timer (3 s), babbling timer (6 s).
+   Low byte first, as the words are read by the host. */
+static void dmp_tss_defaults(DMP_TRIB *trib)
+{
+trib->tss[030] = 0;
+trib->tss[031] = 0377;                  /* Q 0377, R 0 */
+trib->tss[032] = 0100 << 8;             /* Q 0, R 0100 */
+trib->tss[033] = 020 << 8;              /* Q 0, R 020 */
+trib->tss[034] = 010 | (2 << 8);        /* NDM-INACT 010, TO-UNRSP 2 */
+trib->tss[035] = 020 | (4 << 8);        /* TO-DEAD 020, MXMC 4 */
+trib->tss[036] = 05670;
+trib->tss[037] = 013560;
+}
+
+/* Counters in a status slot latch at their maximum (Section 5.3). */
+static void dmp_count16(uint16 *word)
+{
+if (*word != 0xFFFF)
+    ++*word;
+}
+static void dmp_count_lo(uint16 *word)
+{
+if ((*word & 0xFF) != 0xFF)
+    ++*word;
+}
+
+/* Slot of the established tributary with this address, or -1. */
+static int dmp_find_trib(CTLR *controller, uint16 address)
+{
+int i;
+
+for (i = 0; i < DMP_MAX_TRIBS; i++)
+    if (controller->dmp_trib[i].in_use && (controller->dmp_trib[i].address == (address & 0xFF)))
+        return i;
+return -1;
+}
+
+/* Address of the tributary the DDCMP session belongs to.  Multipoint: the
+   tributary whose session is loaded.  Point-to-point: the started one if
+   any, else the first established one, else 0. */
+static uint8 dmp_link_station(CTLR *controller)
+{
+int i, first = -1;
+
+if (controller->dmp_loaded >= 0)
+    return controller->dmp_trib[controller->dmp_loaded].address;
+for (i = 0; i < DMP_MAX_TRIBS; i++)
+    if (controller->dmp_trib[i].in_use) {
+        if (controller->dmp_trib[i].run)
+            return controller->dmp_trib[i].address;
+        if (first < 0)
+            first = i;
+        }
+return (first < 0) ? 0 : controller->dmp_trib[first].address;
+}
+
+/* Status slot of the tributary the DDCMP session belongs to, or NULL. */
+static uint16 *dmp_session_tss(CTLR *controller)
+{
+int slot;
+
+if (dmc_is_dmc(controller) || ((slot = dmp_find_trib(controller, dmp_link_station(controller))) < 0))
+    return NULL;
+return controller->dmp_trib[slot].tss;
+}
+
+/* Count an event in the session tributary's status slot (16-bit word, or
+   the 8-bit counter in its low byte).  No-op for the DMC/DMR. */
+void dmp_count_event(CTLR *controller, int word, t_bool low_byte)
+{
+uint16 *tss = dmp_session_tss(controller);
+
+if (!tss)
+    return;
+if (low_byte)
+    dmp_count_lo(&tss[word]);
+else
+    dmp_count16(&tss[word]);
+}
+
+/* Tributary a completed buffer is reported for.  A buffer given with
+   tributary address 0 belongs to the common pool and is reported for the
+   tributary that used it. */
+uint8 dmp_buffer_station(CTLR *controller, BUFFER *buffer)
+{
+return buffer->station ? buffer->station : dmp_link_station(controller);
+}
+
+/* Control response (type 1) carrying a status or error code.  Responses
+   that are not about a buffer use the 18-bit format (code in BSEL6). */
+static void dmp_control_response(CTLR *controller, uint8 station, uint16 code)
+{
+sim_debug(DBG_INF, controller->device, "%s%d: Control response %03o for tributary %d\n",
+          controller->device->name, controller->index, code, station);
+dmp_queue_response(controller, ((uint16)station << DMP_SEL2_V_STATION) | DMP_C_TYPE_CNTL, 0, code, 0);
+}
+
+/* Control response about a buffer (non-existent memory, buffer too small):
+   BSEL4/BSEL5 = buffer address bits 0-15.  18-bit format (Figure 3-9 of
+   EK-DMV11-TM-001): output code in BSEL6, address bits 16-21 in BSEL7 bits
+   0-5.  Q22 format: BSEL6 = address bits 16-21 and the code is in BSEL10
+   (Figure 3-8, not yet checked against the manual). */
+static void dmp_buffer_response(CTLR *controller, uint8 station, uint32 address, t_bool q22, uint16 code)
+{
+uint16 sel2 = ((uint16)station << DMP_SEL2_V_STATION) | DMP_C_TYPE_CNTL;
+
+sim_debug(DBG_WRN, controller->device, "%s%d: Buffer response %03o for tributary %d, address 0x%06X\n",
+          controller->device->name, controller->index, code, station, address);
+if (q22)
+    dmp_queue_response(controller, sel2 | DMP_SEL2_M_22BIT, (uint16)(address & 0xFFFF),
+                       (uint16)((address >> 16) & 0x3F), code);
+else
+    dmp_queue_response(controller, sel2, (uint16)(address & 0xFFFF),
+                       (uint16)(((address >> 16) & 077) << 8) | (code & 0377), 0);
+}
+
+/* Information response (type 2): BSEL4/BSEL5 = data, BSEL6 = status memory
+   location with the access flag, or a return key. */
+static void dmp_info_response(CTLR *controller, uint8 station, uint16 data, uint16 sel6)
+{
+sim_debug(DBG_INF, controller->device, "%s%d: Information response %03o for tributary %d, data 0x%04X\n",
+          controller->device->name, controller->index, sel6, station, data);
+dmp_queue_response(controller, ((uint16)station << DMP_SEL2_V_STATION) | DMP_C_TYPE_MODE, data, sel6, 0);
+}
+
+/* Procedural error (codes 0100-0140).  Per the note under output code 302
+   in Table 3-7 only the type code in BSEL2 and the output code in BSEL6 are
+   set; every other field (tributary in BSEL3, 22-bit flag, SEL4, BSEL7)
+   stays as the user program wrote it in the rejected command, which is
+   still in the registers when this is called. */
+static void dmp_procedural_error(CTLR *controller, uint8 station, uint16 code)
+{
+uint16 sel2 = *controller->csrs->sel2;
+
+sim_debug(DBG_WRN, controller->device, "%s%d: Procedural error %03o (tributary %d, SEL2 0x%04X SEL4 0x%04X SEL6 0x%04X)\n",
+          controller->device->name, controller->index, code, station,
+          sel2, *controller->csrs->sel4, *controller->csrs->sel6);
+dmp_queue_response(controller,
+                   (sel2 & (0xFF00 | DMP_SEL2_M_22BIT)) | DMP_C_TYPE_CNTL,
+                   *controller->csrs->sel4,
+                   (*controller->csrs->sel6 & 0xFF00) | code,
+                   *controller->csrs->sel10);
+}
+
+/* The DDCMP session has completed start-up. */
+void dmp_link_running(CTLR *controller)
+{
+controller->dmp_xmt_errors = 0;
+dmp_control_response(controller, dmp_link_station(controller), DMP_RSP_RUNNING);
+}
+
+static void dmp_return_buffers(CTLR *controller, uint8 station);
+static void dmp_session_release(CTLR *controller, int slot);
+
+/* Mark the tributary of the DDCMP session as halted (run = 0) after the
+   protocol stopped on its own, so that the user program can start it again
+   without getting procedural error 112 ("not halted"). */
+static void dmp_session_halted(CTLR *controller, int new_run)
+{
+uint8 station = dmp_link_station(controller);
+int slot = dmp_find_trib(controller, station);
+
+if (slot >= 0)
+    controller->dmp_trib[slot].run = (uint8)new_run;
+}
+
+/* Link events the shared DDCMP engine reports with DMC control-out bits,
+   translated to the DMV11 output codes of Table 3-7.  The engine calls this
+   from the rule's actions, before the link state changes, so
+   controller->link.state is still the state the event happened in.
+     DISCONN   line/DSR dropped (rule 19)        -> 304, global (BSEL3 = 0)
+     STRTRCVD  STRT received in Run (rule 20)    -> 010, tributary halted
+               (rule 19 also reports STRTRCVD after a disconnect: the 304
+               already says it all, so no 010 then)
+     MAINTRCV  maintenance message in Run, ISTRT -> 012
+               or ASTRT (rules 8, 17, 21)
+               ... while halted (rule 3)         -> 014
+               both leave the tributary in the maintenance state.
+   On 010 and 012 the tributary's buffers are handed back, followed by
+   information response 020 (Table 3-8).
+   Other bits (DMC halt complete) have no DMV meaning and are dropped. */
+void dmp_ddcmp_event(CTLR *controller, uint16 dmc_sel6)
+{
+uint8 station = dmp_link_station(controller);
+
+if (dmc_sel6 & DMC_SEL6_M_DISCONN) {        /* the line (DSR) went away */
+    if (!controller->dmp_down_reported)     /* global: once, not once per session */
+        dmp_control_response(controller, 0, DMP_RSP_DISCONNECT);
+    controller->dmp_down_reported = TRUE;
+    dmp_session_halted(controller, 0);
+    }
+if ((dmc_sel6 & DMC_SEL6_M_STRTRCVD) && !ddcmp_LineDisconnected(controller)) {
+    dmp_control_response(controller, station, DMP_RSP_STRT_RUN);
+    dmp_session_halted(controller, 0);
+    dmp_return_buffers(controller, station);    /* Table 3-8 case 1 */
+    }
+if (dmc_sel6 & DMC_SEL6_M_MAINTRCV) {
+    t_bool was_halted = (controller->link.state == Halt);
+
+    dmp_control_response(controller, station, was_halted ? DMP_RSP_MAINT_HALT : DMP_RSP_MAINT_RUN);
+    dmp_session_halted(controller, 2);
+    if (!was_halted)
+        dmp_return_buffers(controller, station);/* Table 3-8 case 2 */
+    }
+if (dmc_sel6 & ~(DMC_SEL6_M_DISCONN|DMC_SEL6_M_STRTRCVD|DMC_SEL6_M_MAINTRCV))
+    sim_debug(DBG_INF, controller->device, "%s%d: DDCMP event 0x%04X not reported to the host\n",
+              controller->device->name, controller->index,
+              dmc_sel6 & ~(DMC_SEL6_M_DISCONN|DMC_SEL6_M_STRTRCVD|DMC_SEL6_M_MAINTRCV));
+}
+
+/* Status memory access: read, read-and-clear or write one word of the GSS
+   (tributary address 0) or of the addressed tributary's TSS.  Table 3-5:
+   any word can be read; only the error counters can be read and cleared
+   (TSS 07-17, GSS 15-17); only the parameters can be written (TSS 030-037,
+   GSS 033-037).  Anything else is procedural error 132. */
+static void dmp_status_access(CTLR *controller, uint8 station, uint16 sel6)
+{
+uint16 location = sel6 & DMP_KEY_MASK;
+uint16 access = sel6 & DMP_STATUS_MASK;
+uint16 *word;
+int slot;
+
+if (station) {
+    if ((slot = dmp_find_trib(controller, station)) < 0) {
+        dmp_procedural_error(controller, station, DMP_ERR_NOT_ESTAB);
+        return;
+        }
+    word = &controller->dmp_trib[slot].tss[location];
+    }
+else
+    word = &controller->dmp_gss[location];
+switch (access) {
+    case DMP_STATUS_WRITE:
+        if (location < (station ? 030 : 033)) {
+            dmp_procedural_error(controller, station, DMP_ERR_BAD_ACCESS);
+            return;
+            }
+        *word = *controller->csrs->sel4;
+        return;                             /* writes are not answered */
+    case DMP_STATUS_CLEAR:
+        if ((location < (station ? 07 : 015)) || (location > 017)) {
+            dmp_procedural_error(controller, station, DMP_ERR_BAD_ACCESS);
+            return;
+            }
+        dmp_info_response(controller, station, *word, location | DMP_STATUS_CLEAR);
+        *word = 0;
+        return;
+    case DMP_STATUS_READ:
+        dmp_info_response(controller, station, *word, location | DMP_STATUS_READ);
+        return;
+    default:                                /* more than one access bit */
+        dmp_procedural_error(controller, station, DMP_ERR_BAD_ACCESS);
+        return;
+    }
+}
+
+/* Hand one buffer back to the host with a buffer disposition response
+   (Figure 3-8), queued in order with the other responses: BSEL3 =
+   tributary, SEL4 = address bits 0-15; 18-bit format SEL6 bits 14-15 =
+   address bits 16-17 and bits 0-13 = count; Q22 format BSEL6 bits 0-5 =
+   address bits 16-21 and SEL10 = count.  The count is the buffer's size for
+   a receive buffer and the message length for a transmit buffer. */
+static void dmp_return_buffer(CTLR *controller, BUFFER *buffer, uint8 station, uint16 type)
+{
+uint16 count = (uint16)((buffer->type == Receive) ? buffer->count
+                                                  : buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE));
+uint16 sel2 = ((uint16)station << DMP_SEL2_V_STATION) | type | (buffer->q22 ? DMP_SEL2_M_22BIT : 0);
+
+sim_debug(DBG_INF, controller->device, "%s%d: Returning buffer (type %o) for tributary %d, address=0x%08x, count=%d\n",
+          controller->device->name, controller->index, type, station, buffer->address, count);
+if (buffer->q22)
+    dmp_queue_response(controller, sel2, (uint16)(buffer->address & 0xFFFF),
+                       (uint16)((buffer->address >> 16) & 077), count & 0x3FFF);
+else
+    dmp_queue_response(controller, sel2, (uint16)(buffer->address & 0xFFFF),
+                       (uint16)((((buffer->address >> 16) & 03) << 14) | (count & 0x3FFF)), 0);
+ASSURE (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+}
+
+/* Return the buffers of a halted tributary (Section 3.4.1, Table 3-8):
+   its private receive buffers as "receive buffer unused", transmit
+   buffers waiting for an acknowledgement as "sent but not acknowledged",
+   and queued transmit buffers as "not sent"; then information response 020
+   "buffer return complete".  With station 0 (global halt) only the unused
+   common pool receive buffers are returned.  A buffer that is on the wire
+   right now (speed-limited transmission) stays where it is. */
+static void dmp_return_buffers(CTLR *controller, uint8 station)
+{
+BUFFER_QUEUE *q;
+BUFFER *buffer, *next;
+
+for (buffer = dmc_buffer_queue_head(controller->rcv_queue); buffer; buffer = next) {
+    next = (buffer->hdr.next == &controller->rcv_queue->hdr) ? NULL : (BUFFER *)buffer->hdr.next;
+    if (buffer->station == station)
+        dmp_return_buffer(controller, (BUFFER *)remqueue(&buffer->hdr), station, DMP_DISP_RCV_UNUSED);
+    }
+if (station) {
+    q = controller->ack_wait_queue;
+    for (buffer = dmc_buffer_queue_head(q); buffer; buffer = next) {
+        next = (buffer->hdr.next == &q->hdr) ? NULL : (BUFFER *)buffer->hdr.next;
+        if ((buffer->type == TransmitData) && (buffer != controller->link.xmt_buffer))
+            dmp_return_buffer(controller, (BUFFER *)remqueue(&buffer->hdr), station, DMP_DISP_XMT_NOACK);
+        }
+    q = controller->xmt_queue;
+    for (buffer = dmc_buffer_queue_head(q); buffer; buffer = next) {
+        next = (buffer->hdr.next == &q->hdr) ? NULL : (BUFFER *)buffer->hdr.next;
+        if ((buffer->type == TransmitData) && (buffer != controller->link.xmt_buffer))
+            dmp_return_buffer(controller, (BUFFER *)remqueue(&buffer->hdr), station, DMP_DISP_XMT_UNSENT);
+        }
+    }
+dmp_info_response(controller, station, 0, DMP_RETKEY_HALT);
+}
+
+/* Halt one tributary's protocol. */
+static void dmp_halt_trib(CTLR *controller, int slot)
+{
+uint8 station = controller->dmp_trib[slot].address;
+
+controller->dmp_trib[slot].run = 0;
+if (dmp_multipoint(controller)) {
+    /* Halt just this tributary's session (the line stays up for the
+       others) and return its buffers while its queues are loaded. */
+    dmp_session_load(controller, slot);
+    controller->state = Halted;
+    ddcmp_dispatch(controller, 0);
+    dmp_return_buffers(controller, station);
+    dmp_session_store(controller);
+    return;
+    }
+controller->state = Halted;
+/* Drop DTR before running the protocol machine so that the halted link
+   cannot count as starting up again in the same scan. */
+dmc_clr_modem_dtr(controller);
+ddcmp_dispatch(controller, 0);
+dmp_return_buffers(controller, station);
+}
+
+/* Common receive pool controls of a control command (BSEL7 bits 0-1,
+   Table 3-5), applied after its request key so that they can accompany
+   ESTABLISH (VMS sends key 001 with "enable common pool") and START.
+   Enable adds BSEL4 to the quota (0377 = unlimited; a sum of 0377 or more
+   is error 140 and leaves 0376); disable clears it. */
+static void dmp_pool_controls(CTLR *controller, uint8 station, uint16 sel6)
+{
+int slot;
+
+if (sel6 & (DMP_CTL_POOL_ENABLE|DMP_CTL_POOL_DISABLE)) {
+    DMP_TRIB *trib;
+
+    if (!station) {
+        dmp_procedural_error(controller, station, DMP_ERR_NEED_TRIB);
+        return;
+        }
+    if ((slot = dmp_find_trib(controller, station)) < 0) {
+        dmp_procedural_error(controller, station, DMP_ERR_NOT_ESTAB);
+        return;
+        }
+    trib = &controller->dmp_trib[slot];
+    if (sel6 & DMP_CTL_POOL_DISABLE) {
+        trib->pool_enabled = FALSE;
+        trib->pool_quota = 0;
+        }
+    if (sel6 & DMP_CTL_POOL_ENABLE) {
+        uint16 add = *controller->csrs->sel4 & 0377;
+
+        trib->pool_enabled = TRUE;
+        if ((add == DMP_POOL_UNLIMITED) || (trib->pool_quota == DMP_POOL_UNLIMITED))
+            trib->pool_quota = DMP_POOL_UNLIMITED;
+        else if (trib->pool_quota + add >= DMP_POOL_UNLIMITED) {
+            trib->pool_quota = DMP_POOL_UNLIMITED - 1;
+            dmp_procedural_error(controller, station, DMP_ERR_QUOTA);
+            }
+        else
+            trib->pool_quota = (uint8)(trib->pool_quota + add);
+        }
+    trib->tss[DMP_TSS_QUOTA] = (trib->tss[DMP_TSS_QUOTA] & 0xFF00) | trib->pool_quota;
+    sim_debug(DBG_INF, controller->device, "%s%d: Tributary %d common pool %s, quota %o\n",
+              controller->device->name, controller->index, station,
+              trib->pool_enabled ? "enabled" : "disabled", trib->pool_quota);
+    }
+}
+
+/* Control command (type 1). */
+static void dmp_control_command(CTLR *controller, uint8 station)
+{
+uint16 sel6 = *controller->csrs->sel6;
+uint16 key = sel6 & DMP_KEY_MASK;
+int slot;
+
+if (!controller->dmp_station_known && (key != DMP_KEY_NOP)) {
+    dmp_procedural_error(controller, station, DMP_ERR_NO_MODE);
+    return;
+    }
+if (sel6 & DMP_STATUS_MASK) {
+    dmp_status_access(controller, station, sel6);
+    return;
+    }
+/* BSEL7 tributary controls (Table 3-5), allowed with keys 000-004:
+   enable the common receive pool with a quota increment in BSEL4 (0377 =
+   unlimited, a sum of 0377 or more is error 140 and leaves 0376), disable
+   it, or latch/unlatch the polling state (multipoint polling is not
+   emulated, so those are accepted and ignored).  Reserved bits: error 134,
+   and the command is ignored. */
+if (sel6 & DMP_CTL_RESERVED) {
+    dmp_procedural_error(controller, station, DMP_ERR_BSEL7);
+    return;
+    }
+if (sel6 & (DMP_CTL_LATCH|DMP_CTL_UNLATCH))
+    sim_debug(DBG_INF, controller->device, "%s%d: Tributary %d polling state control 0%o ignored\n",
+              controller->device->name, controller->index, station, sel6 >> 8);
+switch (key) {
+    case DMP_KEY_NOP:
+        dmp_pool_controls(controller, station, sel6);
+        return;
+    case DMP_KEY_ESTABLISH:
+        if (!station)
+            dmp_procedural_error(controller, station, DMP_ERR_NEED_TRIB);
+        else if (dmp_find_trib(controller, station) >= 0)
+            dmp_procedural_error(controller, station, DMP_ERR_ESTAB);
+        else {
+            for (slot = 0; slot < dmp_trib_limit(controller); slot++)
+                if (!controller->dmp_trib[slot].in_use)
+                    break;
+            if (slot == dmp_trib_limit(controller))     /* DMV11 12, DMP11 32 */
+                dmp_procedural_error(controller, station, DMP_ERR_TOO_MANY);
+            else {
+                memset(&controller->dmp_trib[slot], 0, sizeof(controller->dmp_trib[slot]));
+                controller->dmp_trib[slot].in_use = TRUE;
+                controller->dmp_trib[slot].address = station;
+                dmp_tss_defaults(&controller->dmp_trib[slot]);
+                if (dmp_multipoint(controller)) {   /* its own DDCMP session */
+                    DMP_TRIB *trib = &controller->dmp_trib[slot];
+
+                    dmc_buffer_queue_init(controller, &trib->ses.xmt, "transmit", 0, NULL);
+                    dmc_buffer_queue_init(controller, &trib->ses.ackw, "ack wait", 0, NULL);
+                    dmc_buffer_queue_init(controller, &trib->ses.rcv, "private receive", 0, NULL);
+                    trib->ses.link.state = Halt;
+                    trib->ses.state = Initialised;
+                    }
+                dmp_pool_controls(controller, station, sel6);
+                sim_debug(DBG_INF, controller->device, "%s%d: Established tributary %d\n",
+                          controller->device->name, controller->index, station);
+                }
+            }
+        return;
+    case DMP_KEY_DELETE:
+        if (!station)
+            dmp_procedural_error(controller, station, DMP_ERR_NEED_TRIB);
+        else if ((slot = dmp_find_trib(controller, station)) < 0)
+            dmp_procedural_error(controller, station, DMP_ERR_NOT_ESTAB);
+        else if (controller->dmp_trib[slot].run)
+            dmp_procedural_error(controller, station, DMP_ERR_NOT_HALTED);
+        else {
+            dmp_session_release(controller, slot);
+            controller->dmp_trib[slot].in_use = FALSE;
+            }
+        return;
+    case DMP_KEY_START:
+    case DMP_KEY_MAINT:
+        if (!station)
+            dmp_procedural_error(controller, station, DMP_ERR_NEED_TRIB);
+        else if ((slot = dmp_find_trib(controller, station)) < 0)
+            dmp_procedural_error(controller, station, DMP_ERR_NOT_ESTAB);
+        else if (controller->dmp_trib[slot].run)
+            dmp_procedural_error(controller, station, DMP_ERR_NOT_HALTED);
+        else {
+            t_bool mp = dmp_multipoint(controller);
+
+            controller->dmp_trib[slot].run = (key == DMP_KEY_START) ? 1 : 2;
+            if (mp)
+                dmp_session_load(controller, slot);
+            controller->state = Running;
+            if (!dmp_hub_mp(controller))        /* the line itself, shared by all sessions */
+                dmc_set_modem_dtr(controller);
+            ddcmp_dispatch(controller, (key == DMP_KEY_MAINT) ? DDCMP_EVENT_MAINTMODE : 0);
+            if (mp)
+                dmp_session_store(controller);
+            dmp_pool_controls(controller, station, sel6);
+            }
+        return;
+    case DMP_KEY_HALT:
+        /* Table 3-6: halting a tributary returns all of its outstanding
+           buffers; a "global" halt (tributary 0) does not halt anything but
+           returns the unused common pool buffers, and is error 136 while a
+           running tributary may still use the pool.  Either way the returns
+           end with information response 020 (Table 3-8). */
+        if (!station) {
+            for (slot = 0; slot < DMP_MAX_TRIBS; slot++)
+                if (controller->dmp_trib[slot].in_use && controller->dmp_trib[slot].run &&
+                    controller->dmp_trib[slot].pool_enabled && controller->dmp_trib[slot].pool_quota) {
+                    dmp_procedural_error(controller, station, DMP_ERR_POOL_INUSE);
+                    return;
+                    }
+            }
+        else if ((slot = dmp_find_trib(controller, station)) < 0) {
+            dmp_procedural_error(controller, station, DMP_ERR_NOT_ESTAB);
+            return;
+            }
+        else {
+            dmp_halt_trib(controller, slot);    /* also returns its buffers */
+            return;
+            }
+        dmp_return_buffers(controller, station);/* global: the common pool */
+        return;
+    case DMP_KEY_READ_MODEM:
+        dmp_info_response(controller, 0, dmc_get_modem(controller) |
+                          ((dmp_hub_mp(controller) && dmc_is_attached(controller->unit)) ? (DMC_SEL4_M_DSR|DMC_SEL4_M_CAR) : 0),
+                          DMP_RETKEY_MODEM);
+        return;
+    case DMP_KEY_WRITE_MODEM:
+        {
+        uint16 data = *controller->csrs->sel4;  /* only DTR and RTS are outputs */
+        int32 set_bits = 0, clear_bits = 0;
+
+        if (data & DMC_SEL4_M_DTR) set_bits |= TMXR_MDM_DTR; else clear_bits |= TMXR_MDM_DTR;
+        if (data & DMC_SEL4_M_RTS) set_bits |= TMXR_MDM_RTS; else clear_bits |= TMXR_MDM_RTS;
+        tmxr_set_get_modem_bits(controller->line, set_bits, clear_bits, NULL);
+        if (set_bits & TMXR_MDM_DTR)
+            controller->line->rcve = 1;
+        dmc_get_modem(controller);
+        }
+        return;
+    default:
+        dmp_procedural_error(controller, station, DMP_ERR_BAD_KEY);
+        return;
+    }
+}
+
+/* Transmit buffer command (type 4): read the message from host memory and
+   queue it for the DDCMP session. */
+static void dmp_queue_transmit(CTLR *controller, uint8 station, uint32 addr, uint16 count);
+
+static void dmp_transmit_command(CTLR *controller, uint8 station, uint32 addr, uint16 count)
+{
+int slot;
+
+if (!station) {                             /* transmit buffers need a tributary */
+    dmp_procedural_error(controller, station, DMP_ERR_XMT_TRIB0);
+    return;
+    }
+if ((slot = dmp_find_trib(controller, station)) < 0) {
+    dmp_procedural_error(controller, station, DMP_ERR_BUF_UNESTAB);
+    return;
+    }
+if (!controller->dmp_trib[slot].run) {
+    dmp_procedural_error(controller, station, DMP_ERR_BUF_HALTED);
+    return;
+    }
+if (dmp_multipoint(controller)) {           /* queue it in the tributary's session */
+    dmp_session_load(controller, slot);
+    dmp_queue_transmit(controller, station, addr, count);
+    dmp_session_store(controller);
+    }
+else
+    dmp_queue_transmit(controller, station, addr, count);
+}
+
+/* Read a transmit buffer from host memory and queue it for the (loaded)
+   DDCMP session, with room for the header in front and the CRC behind. */
+static void dmp_queue_transmit(CTLR *controller, uint8 station, uint32 addr, uint16 count)
+{
+BUFFER *buffer;
+int n;
+
+buffer = dmc_buffer_queue_add(controller->xmt_queue, addr, count, TransmitData);
+if (!buffer) {
+    dmp_control_response(controller, 0, DMP_RSP_OVERFLOW);   /* global: BSEL3 = 0 */
+    return;
+    }
+/* Room for the DDCMP header in front and the data CRC behind. */
+buffer->transfer_buffer = (uint8 *)realloc(buffer->transfer_buffer, count + DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
+memset(buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
+n = Map_ReadB(addr, count, buffer->transfer_buffer + DDCMP_HEADER_SIZE);
+if (n > 0) {                                /* ran into non-existent memory */
+    buffer = (BUFFER *)remqueue(&buffer->hdr);
+    dmp_buffer_response(controller, station, addr + count - n, buffer->q22, DMP_RSP_NXM);
+    free(buffer->transfer_buffer);
+    buffer->transfer_buffer = NULL;
+    ASSURE(insqueue(&buffer->hdr, controller->free_queue->hdr.prev));
+    return;
+    }
+buffer->count += DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE;
+controller->transmit_buffer_input_transfers_completed++;
+ddcmp_dispatch(controller, 0);
+}
+
+/* A complete DMP/DMV command is in the registers (RDI released). */
+void dmp_process_command(CTLR *controller)
+{
+uint16 sel2 = *controller->csrs->sel2;
+uint8 station = (uint8)(sel2 >> DMP_SEL2_V_STATION);
+uint32 addr = dmc_get_addr(controller);
+uint16 count = dmc_get_count(controller);
+
+switch (controller->transfer_type) {
+    case DMP_C_TYPE_MODE:
+        {
+        static const char *modes[] = {"half-duplex point-to-point", "full-duplex point-to-point",
+                                      "half-duplex point-to-point", "full-duplex point-to-point",
+                                      "half-duplex control station", "full-duplex control station",
+                                      "half-duplex tributary", "full-duplex tributary"};
+        uint16 mode = *controller->csrs->sel6 & DMP_TYPE_INPUT_MASK;
+
+        /* Bit 2 = multipoint, bit 1 = tributary, bit 0 = full duplex.  The
+           station type can only be changed by a master clear. */
+        if (controller->dmp_station_known && (controller->dmp_station_type != mode))
+            dmp_procedural_error(controller, station, DMP_ERR_BAD_MODE);
+        else {
+            controller->dmp_station_type = mode;
+            controller->dmp_station_known = TRUE;
+            sim_debug(DBG_INF, controller->device, "%s%d: Mode: %s\n",
+                      controller->device->name, controller->index, modes[mode]);
+            }
+        }
+        break;
+    case DMP_C_TYPE_CNTL:
+        dmp_control_command(controller, station);
+        break;
+    case DMP_C_TYPE_RBACC:
+        if (!controller->dmp_station_known)
+            dmp_procedural_error(controller, station, DMP_ERR_NO_MODE);
+        else if (count == 0)
+            dmp_procedural_error(controller, station, DMP_ERR_ZERO_COUNT);
+        /* tributary 0 = common buffer pool, always accepted; a buffer for a
+           specific tributary needs it established (122) and not halted (124) */
+        else if (station && (dmp_find_trib(controller, station) < 0))
+            dmp_procedural_error(controller, station, DMP_ERR_BUF_UNESTAB);
+        else if (station && !controller->dmp_trib[dmp_find_trib(controller, station)].run)
+            dmp_procedural_error(controller, station, DMP_ERR_BUF_HALTED);
+        else if (!dmc_buffer_queue_add((dmp_multipoint(controller) && station) ?
+                                       &controller->dmp_trib[dmp_find_trib(controller, station)].ses.rcv :
+                                       controller->rcv_queue,  /* tributary 0: common pool */
+                                       addr, count, Receive))
+            dmp_control_response(controller, 0, DMP_RSP_OVERFLOW);   /* global: BSEL3 = 0 */
+        else {
+            controller->receive_buffer_input_transfers_completed++;
+            dmc_buffer_fill_receive_buffers(controller);
+            dmp_dispatch(controller, 0);
+            }
+        break;
+    case DMP_C_TYPE_XBACC:
+        if (!controller->dmp_station_known)
+            dmp_procedural_error(controller, station, DMP_ERR_NO_MODE);
+        else if (count == 0)
+            dmp_procedural_error(controller, station, DMP_ERR_ZERO_COUNT);
+        else
+            dmp_transmit_command(controller, station, addr, count);
+        break;
+    default:
+        dmp_procedural_error(controller, station, DMP_ERR_BAD_TYPE);
+        break;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   DMP/DMV multipoint (mode definition bit 2: control station or tributary)
+
+   DDCMP multipoint runs one logical link per tributary address over the
+   shared line; every message carries the tributary address in its header
+   (byte 5).  The emulation keeps one complete DDCMP session per established
+   tributary (protocol variables, transmit and acknowledge queues, private
+   receive buffers, run state) in the tributary's slot and swaps it into the
+   controller while the unchanged DDCMP engine works on it:
+
+     dmp_session_load()   copy the session into controller->link and point
+                          xmt_queue/ack_wait_queue/rcv_queue at its queues
+     dmp_session_store()  copy it back and restore the controller's own values
+
+   Sessions are only loaded from the entry points below (service, receive,
+   timer and the host's START/HALT/transmit commands), never nested.
+
+   Transport.  A tributary station uses its normal line (PEER/ATTACH) for
+   all of its tributary addresses.  A control station either does the same
+   (one partner station) or, attached without a PEER, listens on its ATTACH
+   port for up to one tributary simulator per tributary status slot ("drop
+   lines").  It learns which drop
+   line each tributary address answers on; until then (and for MOP
+   messages) it sends to every drop line not claimed by another tributary,
+   and stations ignore messages that carry an address they do not have.
+   A drop line going away is not a modem disconnect at the control station
+   (VMS would master clear the whole DMV on 304); that tributary simply
+   stops answering, which ends in transmit threshold errors (004).
+
+   Receive buffers given for tributary 0 form the common pool; a message is
+   put into a pool buffer when the tributary may use the pool (BSEL7 enable
+   and quota), else into one of its private buffers (manual 4.6.2.2).
+   --------------------------------------------------------------------------- */
+
+t_bool dmp_multipoint(CTLR *controller)
+{
+return (!dmc_is_dmc(controller) && controller->dmp_station_known &&
+        (controller->dmp_station_type & 4));
+}
+
+/* A multipoint control station (mode field: multipoint, not tributary). */
+static t_bool dmp_control_station(CTLR *controller)
+{
+return dmp_multipoint(controller) && !(controller->dmp_station_type & 2);
+}
+
+/* Tributaries the controller can establish (tributary status slots): 12 on
+   the DMV11 (EK-DMV11-TM-001), 32 on the DMP11.  A listening station accepts
+   as many connections. */
+int dmp_trib_limit(CTLR *controller)
+{
+return (controller->device == &dmv_dev) ? DMV_MAX_TRIBS : DMP_MAX_TRIBS;
+}
+
+/* A multipoint control station listening for its tributary simulators:
+   every drop line of the hub is used, and the line itself is up as long as
+   the unit is attached.  Any other listening station (point-to-point, or a
+   station before the operating system has set its mode) uses one drop line
+   as its line, see dmp_hub_poll(). */
+t_bool dmp_hub_mp(CTLR *controller)
+{
+return (controller->dmp_hub != NULL) && dmp_multipoint(controller);
+}
+
+/* The controller's own line descriptor (in the DMP/DMV multiplexer). */
+TMLN *dmp_own_line(CTLR *controller)
+{
+return &dmp_desc.ldsc[controller->unit - controller->device->units];
+}
+
+void dmp_session_load(CTLR *controller, int slot)
+{
+DMP_TRIB *trib = &controller->dmp_trib[slot];
+
+if (controller->dmp_loaded >= 0) {          /* must not happen: keep the loaded one */
+    sim_debug(DBG_WRN, controller->device, "%s%d: Session %d still loaded, %d not loaded\n",
+              controller->device->name, controller->index, controller->dmp_loaded, slot);
+    return;
+    }
+controller->dmp_own.link = controller->link;
+controller->dmp_own.xmt = controller->xmt_queue;
+controller->dmp_own.ackw = controller->ack_wait_queue;
+controller->dmp_own.rcv = controller->rcv_queue;
+controller->dmp_own.state = controller->state;
+controller->dmp_own.xmt_errors = controller->dmp_xmt_errors;
+controller->link = trib->ses.link;
+controller->xmt_queue = &trib->ses.xmt;
+controller->ack_wait_queue = &trib->ses.ackw;
+controller->rcv_queue = &trib->ses.rcv;
+controller->state = trib->ses.state;
+controller->dmp_xmt_errors = trib->ses.xmt_errors;
+controller->dmp_loaded = slot;
+}
+
+void dmp_session_store(CTLR *controller)
+{
+DMP_TRIB *trib;
+
+if (controller->dmp_loaded < 0)
+    return;
+trib = &controller->dmp_trib[controller->dmp_loaded];
+trib->ses.link = controller->link;
+trib->ses.link.rcv_pkt = NULL;              /* points into a line buffer: stale later */
+trib->ses.state = controller->state;
+trib->ses.xmt_errors = controller->dmp_xmt_errors;
+controller->link = controller->dmp_own.link;
+controller->xmt_queue = controller->dmp_own.xmt;
+controller->ack_wait_queue = controller->dmp_own.ackw;
+controller->rcv_queue = controller->dmp_own.rcv;
+controller->state = controller->dmp_own.state;
+controller->dmp_xmt_errors = controller->dmp_own.xmt_errors;
+controller->dmp_loaded = -1;
+}
+
+/* Move every buffer of a tributary's session back to the free queue
+   (tributary deleted, or the controller is reset). */
+static void dmp_session_release(CTLR *controller, int slot)
+{
+DMP_TRIB *trib = &controller->dmp_trib[slot];
+BUFFER_QUEUE *queues[3];
+int i;
+
+if (!trib->in_use || !trib->ses.xmt.hdr.next)   /* no session queues set up */
+    return;
+queues[0] = &trib->ses.xmt; queues[1] = &trib->ses.ackw; queues[2] = &trib->ses.rcv;
+for (i = 0; i < 3; i++)
+    while (queues[i]->count) {
+        BUFFER *buffer = (BUFFER *)remqueue(queues[i]->hdr.next);
+
+        ASSURE(insqueue(&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+}
+
+/* Run the protocol machine: for every tributary session in multipoint
+   (unless one is loaded already), else for the controller's own link. */
+void dmp_dispatch(CTLR *controller, uint32 events)
+{
+int slot;
+
+if (!dmp_multipoint(controller) || (controller->dmp_loaded >= 0)) {
+    ddcmp_dispatch(controller, events);
+    return;
+    }
+for (slot = 0; slot < DMP_MAX_TRIBS; slot++)
+    if (controller->dmp_trib[slot].in_use) {
+        dmp_session_load(controller, slot);
+        ddcmp_dispatch(controller, events);
+        dmp_session_store(controller);
+        }
+}
+
+/* Can tributary 'trib' take a data message now (a pool or private buffer)? */
+static t_bool dmp_has_receive_buffer(CTLR *controller, DMP_TRIB *trib)
+{
+return ((trib->ses.rcv.count > 0) ||
+        (trib->pool_enabled && trib->pool_quota && (controller->dmp_pool->count > 0)));
+}
+
+/* Read from a line only while a tributary heard on it has a receive buffer,
+   as the point-to-point code does: otherwise the peer is held off by TCP
+   instead of by a stream of "no buffer" NAKs.  A line no tributary has been
+   heard on yet is always read (to learn who is there). */
+static t_bool dmp_line_may_receive(CTLR *controller, TMLN *lp)
+{
+int slot;
+t_bool bound = FALSE;
+
+for (slot = 0; slot < DMP_MAX_TRIBS; slot++) {
+    DMP_TRIB *trib = &controller->dmp_trib[slot];
+
+    if (!trib->in_use || (controller->dmp_hub && (trib->ses.drop != lp)))
+        continue;
+    bound = TRUE;
+    if (dmp_has_receive_buffer(controller, trib))
+        return TRUE;
+    }
+return !bound;
+}
+
+/* Pick the receive queue for a message to the loaded tributary (manual
+   4.6.2.2): the common pool when the tributary may use it and its next
+   buffer is big enough, else the private queue (whose next buffer may be
+   too small or missing: the engine answers that with NAK 16 or NAK 8),
+   else a too-small pool buffer. */
+static void dmp_choose_receive_queue(CTLR *controller, DMP_TRIB *trib, uint16 size)
+{
+BUFFER *pool = dmc_buffer_queue_head(controller->dmp_pool);
+int payload = size - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
+t_bool pool_ok = trib->pool_enabled && trib->pool_quota && pool;
+
+if (pool_ok && (pool->count >= payload))
+    controller->rcv_queue = controller->dmp_pool;
+else if (trib->ses.rcv.count || !pool_ok)
+    controller->rcv_queue = &trib->ses.rcv;
+else
+    controller->rcv_queue = controller->dmp_pool;
+}
+
+/* Receive: read messages from the line(s) and hand each one to the session
+   of the tributary address in its header. */
+t_bool dmp_mp_receive(CTLR *controller)
+{
+t_bool ans = FALSE;
+int nlines = controller->dmp_hub ? controller->dmp_hub->lines : 1;
+int i;
+
+if ((controller->dmp_loaded >= 0) || !dmc_is_attached(controller->unit))
+    return FALSE;
+for (i = 0; i < nlines; i++) {
+    TMLN *lp = controller->dmp_hub ? &controller->dmp_hub->ldsc[i] : controller->line;
+
+    while (lp->conn && dmp_line_may_receive(controller, lp)) {
+        const uint8 *pkt = NULL;
+        uint16 size = 0;
+        int slot;
+        DMP_TRIB *trib;
+        size_t pool_before;
+
+        ddcmp_tmxr_get_packet_ln (lp, &pkt, &size, *controller->corruption_factor);
+        if (!pkt)
+            break;
+        ans = TRUE;
+        controller->buffers_received_from_net++;
+        controller->ddcmp_control_packets_received += (pkt[0] == DDCMP_ENQ) ? 1 : 0;
+        if ((slot = dmp_find_trib(controller, pkt[5])) < 0) {
+            sim_debug(DBG_INF, controller->device, "%s%d: Message for tributary %d ignored (not established here)\n",
+                      controller->device->name, controller->index, pkt[5]);
+            continue;
+            }
+        trib = &controller->dmp_trib[slot];
+        if (controller->dmp_hub && (trib->ses.drop != lp)) {
+            sim_debug(DBG_INF, controller->device, "%s%d: Tributary %d answers on drop line %d\n",
+                      controller->device->name, controller->index, trib->address, i);
+            trib->ses.drop = lp;
+            }
+        /* Multipoint line discipline (DDCMP 4.1, 5.3): a selected tributary
+           owns the line until it sends a message with the select flag set.
+           While it does, the control station's messages to it (e.g. the
+           ACKs it waits for) must not select it again.  A tributary that
+           runs DDCMP in software (the DMF32 under VMS V3.5) answers extra
+           selects with REPs and finally restarts the line ("Line
+           synchronization lost"); the emulated DMP11/DMV11 tributaries
+           ignore the flag.  See also dmp_mp_send_session(). */
+        if ((pkt[0] != DDCMP_DLE) && dmp_control_station(controller)) {
+            t_bool holds = !(pkt[2] & (DDCMP_FLAG_SELECT << 6));
+
+            if (holds != trib->ses.holds_select)   /* took or returned the line: */
+                trib->ses.select_time = sim_os_msec();  /* selection timer or poll delay */
+            trib->ses.holds_select = holds;     /* select flag set: line returned */
+            }
+        dmp_session_load(controller, slot);
+        dmp_choose_receive_queue(controller, trib, size);
+        pool_before = controller->dmp_pool->count;
+        controller->link.rcv_pkt = (uint8 *)pkt;
+        controller->link.rcv_pkt_size = size;
+        ddcmp_dispatch(controller, DDCMP_EVENT_PKT_RCVD);
+        controller->link.rcv_pkt = NULL;
+        if ((controller->dmp_pool->count < pool_before) &&
+            (trib->pool_quota != DMP_POOL_UNLIMITED) && trib->pool_quota) {
+            --trib->pool_quota;                 /* a pool buffer was used */
+            trib->tss[DMP_TSS_QUOTA] = (trib->tss[DMP_TSS_QUOTA] & 0xFF00) | trib->pool_quota;
+            }
+        dmp_session_store(controller);
+        }
+    }
+return ans;
+}
+
+/* Polling (control station): a real DMP11/DMV11 selects its tributaries all
+   the time, so that a tributary which may only transmit when selected (VMS
+   running DDCMP in software on a DMF32) can send its routing hellos and
+   data.  A tributary that has returned the line (or whose selection timer
+   expired) and has not been selected for DMP_POLL_INTERVAL gets an ACK with
+   the select flag (the DDCMP way to select a station without sending data);
+   it owns the line from then on, until it returns it.  Without polling such
+   a tributary could only answer right after a message from the control
+   station; every couple of hours its hello missed the window and the
+   control station's listen timer expired ("adjacency down, listener receive
+   timeout").  The emulated DMP11/DMV11 tributaries ignore the select flag. */
+static void dmp_mp_poll_tributary(CTLR *controller)
+{
+DMP_TRIB *trib = &controller->dmp_trib[controller->dmp_loaded];
+TMLN *lp = controller->dmp_hub ? trib->ses.drop : controller->line;
+uint8 poll[DDCMP_HEADER_SIZE];
+uint32 now = sim_os_msec();
+
+if (!dmp_control_station(controller) ||
+    (controller->link.state != Run) ||          /* DDCMP running with it */
+    controller->link.xmt_buffer ||              /* something is going out anyway */
+    dmc_buffer_queue_head(controller->xmt_queue) ||
+    trib->ses.holds_select ||                   /* it owns the line */
+    ((now - trib->ses.select_time) < DMP_POLL_INTERVAL) ||
+    !lp || !lp->conn || tmxr_tpbusyln(lp))
+    return;
+ddcmp_build_ack_packet (poll, controller->link.R, DDCMP_FLAG_SELECT);
+poll[5] = trib->address;
+if (ddcmp_tmxr_put_packet_crc_ln (lp, poll, DDCMP_HEADER_SIZE, 0) == SCPE_OK) {
+    trib->ses.holds_select = TRUE;              /* selected: the line is its own */
+    trib->ses.select_time = now;
+    }
+}
+
+/* Send what the loaded session has queued, with its tributary address in
+   each DDCMP/DMC header (MOP messages keep address 1). */
+static void dmp_mp_send_session(CTLR *controller)
+{
+DMP_TRIB *trib = &controller->dmp_trib[controller->dmp_loaded];
+BUFFER *buffer;
+
+if (controller->link.xmt_buffer)
+    return;
+if (trib->ses.holds_select &&                   /* the tributary owns the line */
+    ((sim_os_msec() - trib->ses.select_time) >= DMP_SELECT_TIMER)) {
+    sim_debug(DBG_INF, controller->device, "%s%d: Selection timer expired for tributary %d\n",
+              controller->device->name, controller->index, trib->address);
+    trib->ses.holds_select = FALSE;             /* selection timer: take the line back */
+    }
+while ((buffer = dmc_buffer_queue_head(controller->xmt_queue)) != NULL) {
+    uint8 *msg = buffer->transfer_buffer;
+    t_stat r = SCPE_OK;
+
+    if (msg[0] == 0)                            /* not built yet */
+        return;
+    if ((controller->link.state != Maintenance) && (msg[DDCMP_RESP_OFFSET] != controller->link.R))
+        msg[DDCMP_RESP_OFFSET] = controller->link.R;    /* latest acknowledgement */
+    if (msg[0] != DDCMP_DLE) {
+        msg[5] = trib->address;
+        if (dmp_control_station(controller)) {
+            if (trib->ses.holds_select)         /* do not select it again */
+                msg[2] &= ~(DDCMP_FLAG_SELECT << 6);
+            else {                              /* select it: the line is its own */
+                msg[2] |= (DDCMP_FLAG_SELECT << 6);
+                trib->ses.holds_select = TRUE;
+                trib->ses.select_time = sim_os_msec();
+                }
+            }
+        }
+    if (!controller->dmp_hub) {                 /* the station's own line */
+        if (!controller->line->conn)
+            return;
+        r = ddcmp_tmxr_put_packet_crc_ln (controller->line, msg, buffer->count, *controller->corruption_factor);
+        }
+    else if (trib->ses.drop && trib->ses.drop->conn)    /* its drop line */
+        r = ddcmp_tmxr_put_packet_crc_ln (trib->ses.drop, msg, buffer->count, *controller->corruption_factor);
+    else {                                      /* not heard from yet: every free drop */
+        int i, slot;
+
+        for (i = 0; i < controller->dmp_hub->lines; i++) {
+            TMLN *lp = &controller->dmp_hub->ldsc[i];
+            t_bool claimed = FALSE;
+
+            for (slot = 0; slot < DMP_MAX_TRIBS; slot++)
+                if (controller->dmp_trib[slot].in_use && (controller->dmp_trib[slot].ses.drop == lp) &&
+                    (&controller->dmp_trib[slot] != trib))
+                    claimed = TRUE;
+            if (lp->conn && !claimed)
+                ddcmp_tmxr_put_packet_crc_ln (lp, msg, buffer->count, *controller->corruption_factor);
+            }
+        }
+    if (r != SCPE_OK)                           /* line busy: try again later */
+        return;
+    controller->link.xmt_buffer = buffer;
+    controller->ddcmp_control_packets_sent += (msg[0] == DDCMP_ENQ) ? 1 : 0;
+    dmc_complete_transmit (controller);
+    }
+dmp_mp_poll_tributary(controller);
+}
+
+void dmp_mp_transmit(CTLR *controller)
+{
+int slot;
+
+if (controller->dmp_loaded >= 0) {
+    dmp_mp_send_session(controller);
+    return;
+    }
+for (slot = 0; slot < DMP_MAX_TRIBS; slot++)
+    if (controller->dmp_trib[slot].in_use) {
+        dmp_session_load(controller, slot);
+        dmp_mp_send_session(controller);
+        dmp_session_store(controller);
+        }
+}
+
+/* One-second tick of the reply timers of all sessions. */
+void dmp_mp_timers(CTLR *controller, int32 *active)
+{
+int slot;
+
+for (slot = 0; slot < DMP_MAX_TRIBS; slot++) {
+    DMP_TRIB *trib = &controller->dmp_trib[slot];
+
+    if (!trib->in_use || !trib->ses.link.TimerRunning ||
+        (trib->ses.link.TimeRemaining <= 0))    /* expired already: wait for a restart */
+        continue;
+    if (--trib->ses.link.TimeRemaining > 0) {
+        ++*active;
+        continue;
+        }
+    dmp_session_load(controller, slot);
+    ddcmp_dispatch(controller, DDCMP_EVENT_TIMER);
+    dmp_session_store(controller);
+    if (trib->ses.link.TimerRunning)
+        ++*active;
+    }
+}
+
+/* Poll the drop multiplexer of a control station hub; returns the number
+   of connected drop lines. */
+int32 dmp_hub_poll(CTLR *controller)
+{
+TMXR *hub = controller->dmp_hub;
+int32 ln, connected = 0;
+int slot;
+
+ln = tmxr_poll_conn(hub);
+if (ln >= 0) {
+    hub->ldsc[ln].rcve = 1;
+    sim_debug(DBG_MDM, controller->device, "%s%d: Drop line %d connected\n",
+              controller->device->name, controller->index, ln);
+    }
+tmxr_poll_rx(hub);
+tmxr_poll_tx(hub);
+for (ln = 0; ln < hub->lines; ln++)
+    if (hub->ldsc[ln].conn)
+        ++connected;
+for (slot = 0; slot < DMP_MAX_TRIBS; slot++) {
+    DMP_TRIB *trib = &controller->dmp_trib[slot];
+
+    if (trib->in_use && trib->ses.drop && !trib->ses.drop->conn) {
+        sim_debug(DBG_MDM, controller->device, "%s%d: Drop line of tributary %d disconnected\n",
+                  controller->device->name, controller->index, trib->address);
+        trib->ses.drop = NULL;
+        }
+    }
+/* A station that is not a multipoint control station uses one drop line
+   as its line (controller->line), so that the point-to-point code works on
+   it unchanged: the first connected one, and the next one after it went
+   away.  Further connections are left unused.  A multipoint control station
+   uses all drop lines and keeps its own (unconnected) line. */
+if (dmp_multipoint(controller)) {
+    if (controller->line != dmp_own_line(controller))
+        controller->line = dmp_own_line(controller);
+    }
+else if ((controller->line == dmp_own_line(controller)) || !controller->line->conn) {
+    for (ln = 0; ln < hub->lines; ln++) {
+        TMLN *lp = &hub->ldsc[ln];
+
+        if (lp->conn && (lp != controller->line)) {
+            int32 dtr = (controller->line->modembits & TMXR_MDM_DTR);
+
+            sim_debug(DBG_MDM, controller->device, "%s%d: Using drop line %d as the line\n",
+                      controller->device->name, controller->index, ln);
+            controller->line = lp;
+            if (dtr)                            /* carry the host's DTR over */
+                tmxr_set_get_modem_bits (lp, TMXR_MDM_DTR|TMXR_MDM_RTS, 0, NULL);
+            lp->rcve = 1;
+            controller->dmp_down_reported = FALSE;
+            dmc_get_modem (controller);
+            dmp_dispatch (controller, 0);
+            break;
+            }
+        }
+    }
+return connected;
 }
 
 void dmc_process_input_transfer_completion(CTLR *controller)
@@ -2955,39 +4533,14 @@ if (dmc_is_dmc(controller)) {
         dmc_process_command (controller);
         }
     }
-else {  /* DMP */
+else {  /* DMP/DMV */
+    /* The host loads BSEL2-BSEL11 while RDI is set and releases the command
+       by clearing RDI; only then are the registers complete. */
     if (!dmc_is_rdyi_set(controller)) {
-        uint16 sel6 = *controller->csrs->sel6;
-
-        if (controller->transfer_type == DMP_C_TYPE_MODE) {
-            uint16 mode = sel6 & DMP_TYPE_INPUT_MASK;
-            const char * duplex = (mode & 1) ? "Full-Duplex" : "Half-Duplex";
-            const char * config;
-
-            if (mode & 4)
-                config = "Point-to-point";
-            else
-                config = (mode & 2) ? "Tributary station" : "Control Station";
-
-            sim_debug(DBG_INF, controller->device, "%s%d: Completing Mode input transfer, %s %s\n", controller->device->name, controller->index, duplex, config);
-            }
-        else 
-            if (controller->transfer_type == DMP_C_TYPE_CNTL) {
-                sim_debug(DBG_WRN, controller->device, "%s%d: Control command (not processed yet)\n", controller->device->name, controller->index);
-                }
-            else 
-                if (controller->transfer_type == DMP_C_TYPE_RBACC) {
-                    sim_debug(DBG_WRN, controller->device, "%s%d: Receive Buffer command (not processed yet)\n", controller->device->name, controller->index);
-                    }
-                else 
-                    if (controller->transfer_type == DMP_C_TYPE_XBACC) {
-                        sim_debug(DBG_WRN, controller->device, "%s%d: Transmit Buffer command (not processed yet)\n", controller->device->name, controller->index);
-                        }
-                    else {
-                        sim_debug(DBG_WRN, controller->device, "%s%d: Unrecognised command code 0x%X\n", controller->device->name, controller->index, controller->transfer_type);
-                        }
-
+        controller->transfer_type = dmc_get_input_transfer_type(controller);
+        dmp_process_command(controller);
         controller->transfer_state = Idle;
+        dmc_process_command(controller);            /* start any pending output */
         }
     }
 }
@@ -3024,7 +4577,14 @@ return ans;
 
 t_bool ddcmp_compare (uint8 a, CompareOP Op, uint8 b, CTLR *controller)
 {
-int cmp = Mod256Cmp(a & 0xFF, b & 0xFF, controller->free_queue->size);
+/* The window for modulo 256 sequence number comparison is twice the
+   device's queue size: the size the buffer pool always had.  It is
+   computed here because the DMP/DMV pool is larger (one set of queues per
+   multipoint tributary), and a window of 256 or more would make every
+   comparison ignore the wrap-around of the message numbers. */
+size_t window = 2 * ((controller->dev_type == DMC) ? DMC_QUEUE_SIZE :
+                     ((controller->dev_type == DMR) ? DMR_QUEUE_SIZE : DMP_QUEUE_SIZE));
+int cmp = Mod256Cmp(a & 0xFF, b & 0xFF, window);
 
 switch (Op) {
     case EQ:
@@ -3143,6 +4703,7 @@ BUFFER *buffer = dmc_buffer_allocate(controller);
 buffer->transfer_buffer = (uint8 *)malloc (DDCMP_HEADER_SIZE);
 buffer->count = DDCMP_HEADER_SIZE;
 ddcmp_build_rep_packet (buffer->transfer_buffer, controller->link.N, DDCMP_FLAG_SELECT);
+dmp_count_event(controller, DMP_TSS_REPLY_TO, TRUE);      /* DMP/DMV: TSS 017 low byte */
 ASSURE (insqueue (&buffer->hdr, &controller->xmt_queue->hdr));
 dmc_ddcmp_start_transmitter (controller);
 }
@@ -3161,6 +4722,30 @@ controller->link.SNAK = TRUE;
 void ddcmp_ClearSNAK              (CTLR *controller)
 {
 controller->link.SNAK = FALSE;
+}
+/* A transmit error for output code 004: the STRT, STACK or data message
+   timer expired (rules 7, 16, 34).  Seven in a row are reported to a DMP or
+   DMV host as a transmit threshold error.  The count restarts after each
+   report, except while the link stays in ISTRT or ASTRT (Table 3-7), and
+   whenever a message is acknowledged or the link reaches Run.  DMC/DMR
+   hosts have no such response, so this does nothing for them. */
+void ddcmp_CountTransmitError     (CTLR *controller)
+{
+if (dmc_is_dmc(controller))
+    return;
+if (controller->dmp_xmt_errors < DMP_XMT_THRESHOLD)
+    ++controller->dmp_xmt_errors;
+{
+uint16 *tss = dmp_session_tss(controller);
+
+if (tss)                                    /* TSS 06 low byte: threshold count */
+    tss[DMP_TSS_THRESH] = (tss[DMP_TSS_THRESH] & 0xFF00) | controller->dmp_xmt_errors;
+}
+if (controller->dmp_xmt_errors >= DMP_XMT_THRESHOLD) {
+    dmp_control_response(controller, dmp_link_station(controller), DMP_RSP_XMT_THRESH);
+    if (controller->link.state == Run)
+        controller->dmp_xmt_errors = 0;
+    }
 }
 void ddcmp_SetSREP                (CTLR *controller)
 {
@@ -3242,23 +4827,49 @@ void ddcmp_Ignore                 (CTLR *controller)
 }
 void ddcmp_GiveBufferToUser       (CTLR *controller)
 {
-BUFFER *buffer = (BUFFER *)remqueue (controller->rcv_queue->hdr.next);
+BUFFER *buffer = dmc_buffer_queue_head(controller->rcv_queue);
+int payload = controller->link.rcv_pkt_size - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
+int remaining;
 
 if (!buffer) {
     ddcmp_SetSNAK (controller);
     controller->link.nak_reason = 8;    /* buffer temporarily unavailable */
     return;
     }
-
-buffer->actual_bytes_transferred = controller->link.rcv_pkt_size - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
-Map_WriteB(buffer->address, buffer->actual_bytes_transferred, controller->link.rcv_pkt + DDCMP_HEADER_SIZE);
+if (!dmc_is_dmc(controller) && (payload > buffer->count)) {
+    /* DMP/DMV: the message does not fit.  Report "buffer too small", keep
+       the buffer, and NAK (reason 16) so the peer sends it again. */
+    dmp_buffer_response(controller, dmp_buffer_station(controller, buffer), buffer->address,
+                        buffer->q22, DMP_RSP_BUF_SMALL);
+    ddcmp_SetSNAK (controller);
+    controller->link.nak_reason = DDCMP_NAK_MSG_TOO_LONG; /* message longer than the buffer */
+    return;
+    }
+buffer = (BUFFER *)remqueue (controller->rcv_queue->hdr.next);
+buffer->actual_bytes_transferred = payload;
+if (!dmc_is_dmc(controller) && (buffer->station == 0))
+    buffer->station = dmp_link_station(controller); /* common pool: report the receiving tributary */
+remaining = Map_WriteB(buffer->address, buffer->actual_bytes_transferred, controller->link.rcv_pkt + DDCMP_HEADER_SIZE);
+if ((remaining > 0) && !dmc_is_dmc(controller)) {
+    /* DMP/DMV: the buffer runs into non-existent memory. */
+    dmp_buffer_response(controller, dmp_buffer_station(controller, buffer),
+                        buffer->address + buffer->actual_bytes_transferred - remaining,
+                        buffer->q22, DMP_RSP_NXM);
+    ASSURE (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+    ddcmp_SetSNAK (controller);
+    controller->link.nak_reason = 8;    /* treat as no buffer: the peer resends */
+    return;
+    }
 ASSURE (insqueue (&buffer->hdr, controller->completion_queue->hdr.prev));     /* Insert at tail */
+dmp_count_event(controller, DMP_TSS_RCV_MSGS, FALSE);     /* DMP/DMV: TSS 010 */
 ddcmp_IncrementR (controller);
 ddcmp_SetSACK (controller);
 }
 void ddcmp_CompleteAckedTransmits (CTLR *controller)
 {
 BUFFER *buffer = dmc_buffer_queue_head(controller->ack_wait_queue);
+
+controller->dmp_xmt_errors = 0;             /* acknowledged: errors no longer consecutive */
 
 while (buffer != NULL) {
     if ((!buffer->transfer_buffer) || 
@@ -3308,6 +4919,7 @@ ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_
 controller->link.N += 1;
 controller->link.T = controller->link.N + 1;
 controller->link.SACK = 0;
+dmp_count_event(controller, DMP_TSS_XMT_MSGS, FALSE);     /* DMP/DMV: TSS 07 */
 dmc_ddcmp_start_transmitter (controller);
 }
 void ddcmp_SendMaintMessage       (CTLR *controller)
@@ -3330,6 +4942,15 @@ return (controller->state == Halted);
 }
 t_bool ddcmp_UserStartup          (CTLR *controller)
 {
+/* DMP/DMV: the protocol is started only by control request key 003 (START),
+   which sets the controller Running.  DTR alone is not enough: the host can
+   raise DTR with a modem write while the tributary is still halted, and a
+   halted link that also counted as "starting" would be halted and restarted
+   by the same scan over and over. */
+if (!dmc_is_dmc(controller) && (controller->state != Running))
+    return FALSE;
+if (dmp_hub_mp(controller))                 /* hub: no modem on the drop multiplexer */
+    return TRUE;
 return (*controller->modem & DMC_SEL4_M_DTR);
 }
 t_bool ddcmp_UserMaintenanceMode  (CTLR *controller)
@@ -3519,10 +5140,14 @@ return (buffer && (buffer->transfer_buffer[0] == 0));
 }
 t_bool ddcmp_LineConnected        (CTLR *controller)
 {
+if (dmp_hub_mp(controller))                 /* DMP/DMV control station hub */
+    return dmc_is_attached(controller->unit);
 return (*controller->modem & DMC_SEL4_M_CAR);
 }
 t_bool ddcmp_LineDisconnected     (CTLR *controller)
 {
+if (dmp_hub_mp(controller))                 /* DMP/DMV control station hub */
+    return !dmc_is_attached(controller->unit);
 return (!(*controller->modem & DMC_SEL4_M_CAR));
 }
 t_bool ddcmp_DataMessageSent      (CTLR *controller)
@@ -3579,6 +5204,10 @@ for (table=DDCMP_TABLE; table->Conditions[0] != NULL; ++table) {
             }
         if (table->NewState != controller->link.state) {
             sim_debug (DBG_INF, controller->device, "%s%d: ddcmp_dispatch(%X) - state changing from %s to %s\n", controller->device->name, controller->index, EventMask, states[controller->link.state], states[table->NewState]);
+            if ((table->NewState == Run) && !dmc_is_dmc(controller))
+                dmp_link_running(controller);       /* DMP/DMV: "DDCMP running" response */
+            if ((table->NewState == IStart) || (table->NewState == AStart))
+                controller->dmp_xmt_errors = 0;     /* DMP/DMV: threshold count restarts (5.3.3.1) */
             controller->link.state = table->NewState;
             }
         }
@@ -3602,6 +5231,11 @@ void dmc_ddcmp_start_transmitter (CTLR *controller)
 {
 BUFFER *buffer = dmc_buffer_queue_head(controller->xmt_queue);
 t_stat r;
+
+if (dmp_multipoint(controller)) {           /* per tributary session and drop line */
+    dmp_mp_transmit(controller);
+    return;
+    }
 
 if ((controller->link.xmt_buffer) ||        /* if Already Transmitting */
     (!buffer) ||                            /*    or nothing pending */
@@ -3873,6 +5507,9 @@ for (i=0; i < DMP_NUMDEVICE; i++) {
     controller->unit = &controller->device->units[i];
     controller->unit->ctlr = (void *)controller;
     controller->index = i + DMC_NUMDEVICE;
+    controller->dmp_pool = controller->rcv_queue;   /* receive buffers for tributary 0 */
+    if (controller->dmp_hub == NULL)
+        controller->dmp_loaded = -1;
     }
 tmxr_connection_poll_interval (&dmp_desc, dmp_connect_poll);
 if (0 == dmc_units[0].flags) {       /* First Time Initializations */
@@ -3920,6 +5557,13 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
     dmp_desc.uptr = dmp_units+dmp_desc.lines;      /* Identify polling unit */
     }
 
+/* The DMP (Unibus) and DMV (Qbus) share their units and so one DIB.  Size
+   it for the variant being reset: 8 bytes per DMP line, 16 per DMV line
+   (the DMV adds BSEL10-BSEL17 for the Q22 address and count fields). */
+if ((dptr == &dmp_dev) || (dptr == &dmv_dev)) {
+    dmp_dib.ulnt = (dptr == &dmv_dev) ? IOLN_DMV : IOLN_DMP;
+    dmp_dib.lnt = (dptr->numunits - 2) * dmp_dib.ulnt;
+    }
 ans = auto_config (dptr->name, (dptr->flags & DEV_DIS) ? 0 : dptr->numunits - 2);
 
 if (!(dptr->flags & DEV_DIS)) {
@@ -3930,6 +5574,13 @@ if (!(dptr->flags & DEV_DIS)) {
             BUFFER *buffer;
 
             controller = &dmc_ctrls[i];
+            if (!dmc_is_dmc(controller)) {      /* DMP/DMV: buffers held by tributary sessions */
+                int slot;
+
+                dmp_session_store(controller);
+                for (slot = 0; slot < DMP_MAX_TRIBS; slot++)
+                    dmp_session_release(controller, slot);
+                }
             /* Avoid memory leaks by moving all buffers back to the free queue
                and then freeing any allocated transfer buffers for each buffer
                on the free queue */
@@ -3988,6 +5639,39 @@ if (!cptr || !*cptr)
     return SCPE_ARG;
 if (!(uptr->flags & UNIT_ATTABLE))
     return SCPE_NOATT;
+if ((((CTLR *)uptr->ctlr)->dev_type == DMP) && !peer[0] && strncasecmp (cptr, "SYNC", 4)) {
+    /* DMP/DMV without a PEER: listen on the port for as many stations as
+       the controller has tributaries (DMV11 12, DMP11 32), each on its own
+       drop line.  A multipoint control station uses them all, any other
+       station the first one (see dmp_hub_poll). */
+    CTLR *controller = (CTLR *)uptr->ctlr;
+    int ci = dmc;                           /* hub tables are per DMP/DMV line */
+    TMXR *hub = &dmp_hub_desc[ci];
+
+    memset (hub, 0, sizeof(*hub));
+    memset (dmp_hub_ldsc[ci], 0, sizeof(dmp_hub_ldsc[ci]));
+    memset (&dmp_hub_unit[ci], 0, sizeof(dmp_hub_unit[ci]));
+    dmp_hub_unit[ci].dptr = dptr;
+    dmp_hub_unit[ci].flags = UNIT_ATT;
+    dmp_hub_unit[ci].dynflags = TMUF_NOASYNCH;
+    hub->lines = dmp_trib_limit(controller);
+    hub->ldsc = dmp_hub_ldsc[ci];
+    hub->packet = TRUE;
+    hub->buffered = 16384;
+    hub->notelnet = TRUE;
+    hub->dptr = dptr;
+    hub->uptr = &dmp_hub_unit[ci];
+    ans = tmxr_open_master (hub, cptr);
+    if (ans != SCPE_OK)
+        return ans;
+    controller->dmp_hub = hub;
+    strncpy (port, cptr, sizeof(dmc_port[0]));
+    uptr->filename = (char *)malloc (strlen(port)+1);
+    strcpy (uptr->filename, port);
+    uptr->flags |= UNIT_ATT;
+    sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
+    return SCPE_OK;
+    }
 if (0 == strncasecmp (cptr, "SYNC", 4)) {
     sprintf (attach_string, "Line=%d,%s", dmc, cptr);
     ans = tmxr_open_master (mp, attach_string);
@@ -4030,6 +5714,19 @@ for (i=attached=0; i<mp->lines; i++)
 if (!attached) {
     sim_cancel (dptr->units+mp->lines);              /* stop poll on last detach */
     sim_cancel (dptr->units+(mp->lines+1));          /* stop timer on last detach */
+    }
+if (((CTLR *)uptr->ctlr)->dmp_hub) {     /* DMP/DMV multipoint hub */
+    CTLR *controller = (CTLR *)uptr->ctlr;
+    int slot;
+
+    r = tmxr_close_master (controller->dmp_hub);
+    controller->dmp_hub = NULL;
+    controller->line = dmp_own_line(controller);
+    for (slot = 0; slot < DMP_MAX_TRIBS; slot++)
+        controller->dmp_trib[slot].ses.drop = NULL;
+    free (uptr->filename);
+    uptr->filename = NULL;
+    return r;
     }
 r = tmxr_detach_ln (lp);
 free (uptr->filename);

@@ -44,7 +44,8 @@ set(VAX
     ${PDP11D}/pdp11_cr.c
     ${PDP11D}/pdp11_td.c
     ${PDP11D}/pdp11_io_lib.c
-    ${PDP11D}/pdp11_dup.c)
+    ${PDP11D}/pdp11_dup.c
+    ${PDP11D}/pdp11_dmc.c)
 
 set(VAX420
     ${VAXD}/vax_cpu.c
@@ -125,7 +126,8 @@ set(VAX630
     ${PDP11D}/pdp11_cr.c
     ${PDP11D}/pdp11_td.c
     ${PDP11D}/pdp11_io_lib.c
-    ${PDP11D}/pdp11_dup.c)
+    ${PDP11D}/pdp11_dup.c
+    ${PDP11D}/pdp11_dmc.c)
 
 
 add_simulator(infoserver100

@@ -119,6 +119,8 @@ extern DEVICE kg_dev;
 extern DEVICE dmc_dev;
 extern DEVICE dup_dev;
 extern DEVICE dpv_dev;
+extern DEVICE dmp_dev;
+extern DEVICE dmv_dev;
 extern DEVICE kmc_dev;
 extern DEVICE uca_dev, ucb_dev;
 extern DEVICE rom_dev;
@@ -206,6 +208,8 @@ DEVICE *sim_devices[] = {
     &dmc_dev,
     &dup_dev,
     &dpv_dev,
+    &dmp_dev,
+    &dmv_dev,
     &kmc_dev,
     &ke_dev,
     &rom_dev,
