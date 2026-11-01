@@ -234,7 +234,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
         ba      =       Nexus number
         lnt     =       number of consecutive nexi */
 
-#define VEC_DEVMAX      4                               /* max device vec */
+#define VEC_DEVMAX      8                               /* max device vec (DMF32 has 8) */
 
 typedef struct {
     uint32              ba;                             /* base addr */
@@ -325,6 +325,32 @@ typedef struct {
 #define IPL_CR          (0x16 - IPL_HMIN)
 #define IPL_DZRX        (0x15 - IPL_HMIN)
 #define IPL_DZTX        (0x15 - IPL_HMIN)
+/* DMF32: eight vectors at BR5, bits 24-31 (sync rx/tx, parallel A/B,
+   async rx/tx, line printer, unused) */
+#define INT_V_DMFSRX    24
+#define INT_V_DMFSTX    25
+#define INT_V_DMFDRA    26
+#define INT_V_DMFDRB    27
+#define INT_V_DMFARX    28
+#define INT_V_DMFATX    29
+#define INT_V_DMFLP     30
+#define INT_V_DMFUN     31
+#define INT_DMFSRX      (1u << INT_V_DMFSRX)
+#define INT_DMFSTX      (1u << INT_V_DMFSTX)
+#define INT_DMFDRA      (1u << INT_V_DMFDRA)
+#define INT_DMFDRB      (1u << INT_V_DMFDRB)
+#define INT_DMFARX      (1u << INT_V_DMFARX)
+#define INT_DMFATX      (1u << INT_V_DMFATX)
+#define INT_DMFLP       (1u << INT_V_DMFLP)
+#define INT_DMFUN       (1u << INT_V_DMFUN)
+#define IPL_DMFSRX      (0x15 - IPL_HMIN)
+#define IPL_DMFSTX      (0x15 - IPL_HMIN)
+#define IPL_DMFDRA      (0x15 - IPL_HMIN)
+#define IPL_DMFDRB      (0x15 - IPL_HMIN)
+#define IPL_DMFARX      (0x15 - IPL_HMIN)
+#define IPL_DMFATX      (0x15 - IPL_HMIN)
+#define IPL_DMFLP       (0x15 - IPL_HMIN)
+#define IPL_DMFUN       (0x15 - IPL_HMIN)
 #define IPL_HK          (0x15 - IPL_HMIN)
 #define IPL_RL          (0x15 - IPL_HMIN)
 #define IPL_RQ          (0x15 - IPL_HMIN)

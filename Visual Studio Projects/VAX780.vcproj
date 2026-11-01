@@ -368,6 +368,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\VAX\vax_dmf.c"
+				>
+			</File>
+			<File
 				RelativePath="..\VAX\vax780_uba.c"
 				>
 			</File>

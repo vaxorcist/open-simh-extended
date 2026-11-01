@@ -372,6 +372,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\VAX\vax_dmf.c"
+				>
+			</File>
+			<File
 				RelativePath="..\VAX\vax_cis.c"
 				>
 			</File>
