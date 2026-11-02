@@ -72,6 +72,9 @@
     <ClCompile Include="..\sim_sock.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\sim_sound.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\sim_tape.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -117,6 +120,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\sim_sock.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\sim_sound.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\sim_tape.h">

@@ -33,6 +33,7 @@ set(SIM_SOURCES
     ${CMAKE_SOURCE_DIR}/sim_scsi.c
     ${CMAKE_SOURCE_DIR}/sim_serial.c
     ${CMAKE_SOURCE_DIR}/sim_sock.c
+    ${CMAKE_SOURCE_DIR}/sim_sound.c
     ${CMAKE_SOURCE_DIR}/sim_tape.c
     ${CMAKE_SOURCE_DIR}/sim_timer.c
     ${CMAKE_SOURCE_DIR}/sim_tmxr.c
@@ -100,6 +101,7 @@ function(build_simcore _targ)
         target_link_libraries(${lib} PUBLIC
             simh_network
             simh_regexp
+            simh_sound
             os_features
             thread_lib
         )

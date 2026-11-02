@@ -205,6 +205,9 @@ option(WITH_TAP
 option(WITH_VIDEO
        "Enable (=1)/disable (=0) simulator display and graphics support (def: enabled)"
        TRUE)
+option(WITH_SOUND
+       "Enable (=1)/disable (=0) SDL2 sound output for all simulators (def: enabled)"
+       TRUE)
 option(DONT_USE_ROMS
        "Enable (=1)/disable (=0) building support ROMs. (def: disabled)"
        FALSE)
@@ -371,6 +374,7 @@ endif ()
 
 set(_feature_text "Libraries and features:\n")
 string(APPEND _feature_text "\n    * Build with video/graphics support. ${BUILD_WITH_VIDEO}")
+string(APPEND _feature_text "\n    * Build with sound support ......... ${BUILD_WITH_SOUND}")
 string(APPEND _feature_text "\n    * Build with networking support .... ${BUILD_WITH_NETWORK}")
 string(APPEND _feature_text "\n    * Build internal ROMS .............. ")
 if (DONT_SET_ROMS)

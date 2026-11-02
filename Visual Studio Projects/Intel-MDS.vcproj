@@ -323,6 +323,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\sim_sound.c"
+				>
+			</File>
+			<File
 				RelativePath="..\sim_tape.c"
 				>
 			</File>
@@ -385,6 +389,10 @@
 			</File>
 			<File
 				RelativePath="..\sim_sock.h"
+				>
+			</File>
+			<File
+				RelativePath="..\sim_sound.h"
 				>
 			</File>
 			<File

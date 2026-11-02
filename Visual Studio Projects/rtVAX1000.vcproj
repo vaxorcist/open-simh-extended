@@ -41,7 +41,7 @@
 				Name="VCCLCompilerTool"
 				Optimization="0"
 				AdditionalIncludeDirectories="../VAX/;../pdp11/;./;../;../slirp;../slirp_glue;../slirp_glue/qemu;../slirp_glue/qemu/win32/include;../../windows-build/include;;../../windows-build/include/SDL2"
-				PreprocessorDefinitions="USE_INT64;USE_ADDR64;VM_VAX;VAX_620;USE_SHARED;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG"
+				PreprocessorDefinitions="USE_INT64;USE_ADDR64;VM_VAX;VAX_620;USE_SHARED;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;USE_SIM_SOUND"
 				KeepComments="false"
 				BasicRuntimeChecks="0"
 				RuntimeLibrary="1"
@@ -129,7 +129,7 @@
 				OmitFramePointers="true"
 				WholeProgramOptimization="true"
 				AdditionalIncludeDirectories="../VAX/;../pdp11/;./;../;../slirp;../slirp_glue;../slirp_glue/qemu;../slirp_glue/qemu/win32/include;../../windows-build/include;;../../windows-build/include/SDL2"
-				PreprocessorDefinitions="USE_INT64;USE_ADDR64;VM_VAX;VAX_620;USE_SHARED;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG"
+				PreprocessorDefinitions="USE_INT64;USE_ADDR64;VM_VAX;VAX_620;USE_SHARED;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;USE_SIM_SOUND"
 				KeepComments="false"
 				StringPooling="true"
 				RuntimeLibrary="0"
@@ -291,6 +291,10 @@
 			</File>
 			<File
 				RelativePath="..\sim_sock.c"
+				>
+			</File>
+			<File
+				RelativePath="..\sim_sound.c"
 				>
 			</File>
 			<File
@@ -612,6 +616,10 @@
 			</File>
 			<File
 				RelativePath="..\sim_sock.h"
+				>
+			</File>
+			<File
+				RelativePath="..\sim_sound.h"
 				>
 			</File>
 			<File

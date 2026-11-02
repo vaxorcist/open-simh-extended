@@ -5,6 +5,7 @@
 add_library(simh_regexp INTERFACE)
 add_library(simh_video INTERFACE)
 add_library(simh_network INTERFACE)
+add_library(simh_sound INTERFACE)
         
 ## LIBPCAP is a special case
 set(LIBPCAP_PROJECT "libpcap")
@@ -169,6 +170,32 @@ IF (WITH_VIDEO)
 ELSE ()
     set(VIDEO_PKG_STATUS "video support disabled")
 ENDIF()
+
+## Sound: sim_sound.c is part of every simulator's core library. With SDL2 it
+## plays sounds (USE_SIM_SOUND); without SDL2 it compiles to stubs and all
+## sounds are ignored. The SDL2 flavor follows the video library's choice so
+## that a simulator never links two different SDL2 libraries.
+set(BUILD_WITH_SOUND FALSE)
+IF (WITH_SOUND AND SDL2_FOUND)
+    target_compile_definitions(simh_sound INTERFACE USE_SIM_SOUND)
+    IF (WIN32 AND TARGET SDL2::SDL2-static AND TARGET SDL2_ttf::SDL2_ttf-static)
+        target_link_libraries(simh_sound INTERFACE SDL2::SDL2-static)
+        set(BUILD_WITH_SOUND TRUE)
+    ELSEIF (TARGET SDL2::SDL2)
+        target_link_libraries(simh_sound INTERFACE SDL2::SDL2)
+        set(BUILD_WITH_SOUND TRUE)
+    ELSEIF (TARGET SDL2::SDL2-static)
+        target_link_libraries(simh_sound INTERFACE SDL2::SDL2-static)
+        set(BUILD_WITH_SOUND TRUE)
+    ELSEIF (TARGET PkgConfig::SDL2)
+        target_link_libraries(simh_sound INTERFACE PkgConfig::SDL2)
+        set(BUILD_WITH_SOUND TRUE)
+    ELSEIF (DEFINED SDL2_LIBRARIES AND DEFINED SDL2_INCLUDE_DIRS)
+        target_link_libraries(simh_sound INTERFACE ${SDL2_LIBRARIES})
+        target_include_directories(simh_sound INTERFACE ${SDL2_INCLUDE_DIRS})
+        set(BUILD_WITH_SOUND TRUE)
+    ENDIF ()
+ENDIF ()
 
 if (WITH_REGEX)
     ## TEMP: Use PCRE until patches for PCRE2 are avaiable.

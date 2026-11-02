@@ -24,16 +24,23 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author(s).
 
+   02-Nov-2026  Ulli    Added the default system sounds (sim_sound)
    21-Oct-2012  MB      First Version
 */
 
 #include "vax_defs.h"
+#include "sim_sound.h"
 
 char sim_name[] = "VAX 11/750";
 
 void vax_init(void)
 {
 sim_savename = "VAX750";
+/* Sound: the bundled VAX-11/750 recordings in sound/vax750/ - the power
+   relay and blower start-up, the running blower (loop) and the power-off
+   with the blower running down */
+sim_sound_set_system ("vax750", "blower_starting.wav", "blower_running.wav",
+                      "blower_stopping.wav");
 }
 
 extern DEVICE cpu_dev;

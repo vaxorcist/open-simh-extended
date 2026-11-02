@@ -45,6 +45,16 @@ if (WITH_VIDEO)
     endif ()
 endif ()
 
+## Sound (sim_sound.c) only needs SDL2 itself; look for it even if video
+## support is disabled.
+if (WITH_SOUND AND NOT WITH_VIDEO)
+    if (NOT USING_VCPKG)
+        find_package(SDL2 NAMES sdl2 SDL2)
+    else ()
+        find_package(SDL2 CONFIG)
+    endif ()
+endif ()
+
 if (WITH_NETWORK)
     if (WITH_VDE)
         find_package(VDE)
@@ -91,6 +101,13 @@ if (NOT WIN32 OR MINGW)
                 endif ()
             endif ()
         endif (WITH_VIDEO)
+
+        if (WITH_SOUND AND NOT SDL2_FOUND)
+            pkg_check_modules(SDL2 IMPORTED_TARGET sdl2)
+            if (NOT SDL2_FOUND)
+                pkg_check_modules(SDL2 IMPORTED_TARGET SDL2)
+            endif ()
+        endif ()
 
         if (WITH_NETWORK)
             if (WITH_VDE AND NOT VDE_FOUND)

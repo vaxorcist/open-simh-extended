@@ -92,7 +92,7 @@
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>../PDP10/;../PDP11/;../VAX/;./;../;../slirp;../slirp_glue;../slirp_glue/qemu;../slirp_glue/qemu/win32/include;../../windows-build/include;../../windows-build/include/SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>USE_INT64;KS=1;USE_SHARED;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>USE_INT64;KS=1;USE_SHARED;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;USE_SIM_SOUND;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessKeepComments>false</PreprocessKeepComments>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -128,7 +128,7 @@
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>../PDP10/;../PDP11/;../VAX/;./;../;../slirp;../slirp_glue;../slirp_glue/qemu;../slirp_glue/qemu/win32/include;../../windows-build/include;../../windows-build/include/SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>USE_INT64;KS=1;USE_SHARED;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>USE_INT64;KS=1;USE_SHARED;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;USE_SIM_SOUND;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessKeepComments>false</PreprocessKeepComments>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -168,7 +168,7 @@
       <OmitFramePointers>true</OmitFramePointers>
       <WholeProgramOptimization>true</WholeProgramOptimization>
       <AdditionalIncludeDirectories>../PDP10/;../PDP11/;../VAX/;./;../;../slirp;../slirp_glue;../slirp_glue/qemu;../slirp_glue/qemu/win32/include;../../windows-build/include;../../windows-build/include/SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>USE_INT64;KS=1;USE_SHARED;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>USE_INT64;KS=1;USE_SHARED;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;USE_SIM_SOUND;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -209,7 +209,7 @@
       <OmitFramePointers>true</OmitFramePointers>
       <WholeProgramOptimization>true</WholeProgramOptimization>
       <AdditionalIncludeDirectories>../PDP10/;../PDP11/;../VAX/;./;../;../slirp;../slirp_glue;../slirp_glue/qemu;../slirp_glue/qemu/win32/include;../../windows-build/include;../../windows-build/include/SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>USE_INT64;KS=1;USE_SHARED;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>USE_INT64;KS=1;USE_SHARED;HAVE_SLIRP_NETWORK;USE_SIMH_SLIRP_DEBUG;SIM_BUILD_TOOL=simh-Visual-Studio-Project;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;SIM_NEED_GIT_COMMIT_ID;HAVE_PCRE_H;PCRE_STATIC;PTW32_STATIC_LIB;USE_READER_THREAD;SIM_ASYNCH_IO;USE_SIM_SOUND;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -276,6 +276,7 @@
     <ClCompile Include="..\sim_fio.c" />
     <ClCompile Include="..\sim_serial.c" />
     <ClCompile Include="..\sim_sock.c" />
+    <ClCompile Include="..\sim_sound.c" />
     <ClCompile Include="..\sim_tape.c" />
     <ClCompile Include="..\sim_timer.c" />
     <ClCompile Include="..\sim_tmxr.c" />
@@ -316,6 +317,7 @@
     <ClInclude Include="..\sim_rev.h" />
     <ClInclude Include="..\sim_serial.h" />
     <ClInclude Include="..\sim_sock.h" />
+    <ClInclude Include="..\sim_sound.h" />
     <ClInclude Include="..\sim_tape.h" />
     <ClInclude Include="..\sim_timer.h" />
     <ClInclude Include="..\sim_tmxr.h" />

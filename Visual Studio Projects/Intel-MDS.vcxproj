@@ -280,6 +280,7 @@
     <ClCompile Include="..\sim_fio.c" />
     <ClCompile Include="..\sim_serial.c" />
     <ClCompile Include="..\sim_sock.c" />
+    <ClCompile Include="..\sim_sound.c" />
     <ClCompile Include="..\sim_tape.c" />
     <ClCompile Include="..\sim_timer.c" />
     <ClCompile Include="..\sim_tmxr.c" />
@@ -296,6 +297,7 @@
     <ClInclude Include="..\sim_rev.h" />
     <ClInclude Include="..\sim_serial.h" />
     <ClInclude Include="..\sim_sock.h" />
+    <ClInclude Include="..\sim_sound.h" />
     <ClInclude Include="..\sim_tape.h" />
     <ClInclude Include="..\sim_timer.h" />
     <ClInclude Include="..\sim_tmxr.h" />

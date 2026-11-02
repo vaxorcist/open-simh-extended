@@ -233,6 +233,7 @@
 #include "sim_card.h"
 #include "sim_serial.h"
 #include "sim_video.h"
+#include "sim_sound.h"
 #include "sim_sock.h"
 #include "sim_frontpanel.h"
 #include "sim_printf_fmts.h"
@@ -1470,6 +1471,45 @@ static const char simh_help1[] =
       "3Asynch\n"
       "+SET ASYNCH                  enable asynchronous I/O\n"
       "+SET NOASYNCH                disable asynchronous I/O\n"
+#define HLP_SET_SOUND "*Commands SET Sound"
+      "3Sound\n"
+      " Sound output with SDL2 audio: system sounds (power relay, fans), unit\n"
+      " loops (spindles) and events (seeks).  Without SDL2 or without an audio\n"
+      " device, sounds are silently ignored.\n\n"
+      "+SET SOUND ENABLED            enable sound and the realism mode\n"
+      "+SET SOUND DISABLED           disable sound and the realism mode\n"
+      "+SET SOUND VOLUME=n           set the master volume (0..200 %%)\n"
+      "+SET SOUND VOLUME=group:n     set a group volume (0..200 %%)\n"
+      "+SET SOUND MUTE{=group}       mute everything or one group\n"
+      "+SET SOUND NOMUTE{=group}     unmute everything or one group\n"
+      "+SET SOUND POWER=ON|OFF       switch the system power by hand\n"
+      "+SET SOUND PATH=dir{;dir...}  directories searched for user sounds\n"
+      "+SET SOUND STARTING=file      use another power-on sound\n"
+      "+SET SOUND RUNNING=file       use another running (loop) sound\n"
+      "+SET SOUND STOPPING=file      use another power-off sound\n\n"
+      " Several items can be given, separated by commas.  PATH, STARTING,\n"
+      " RUNNING and STOPPING take the rest of the line; an empty value\n"
+      " restores the default.  The groups are SYSTEM, DISK, TAPE and EVENT.\n\n"
+      "4Realism mode\n"
+      " SET SOUND ENABLED also switches on the realism mode, even if no audio\n"
+      " output is available: devices use realistic timing and operator\n"
+      " behavior.  Therefore SET SOUND ENABLED and DISABLED are only allowed\n"
+      " while no disk or tape unit is attached.\n"
+      "4Power\n"
+      " The system power is switched on by the first RUN or BOOT command, which\n"
+      " plays the starting sound followed by the running loop.  It stays on\n"
+      " while the simulator is at the sim> prompt (HALT, ^E, breakpoints, STEP,\n"
+      " EXPECT), like the fans of a real system, and is switched off by EXIT\n"
+      " (the simulator waits for the stopping sound) or SET SOUND POWER=OFF.\n"
+      "4Sound files\n"
+      " Sound files are WAV files.  A file is searched in this order:\n\n"
+      "++each directory of SET SOUND PATH, as dir/<sim>/file and dir/file\n"
+      "++each directory of the environment variable SIMH_SOUND_PATH\n"
+      "++sound/<sim>/file and ../sound/<sim>/file relative to the executable\n"
+      "++sound/<sim>/file relative to the current directory\n\n"
+      " where <sim> is the simulator's sound directory (e.g. vax750), so a user\n"
+      " file overrides a bundled file of the same name.  SHOW SOUND shows the\n"
+      " current settings and the files in use.\n"
 #define HLP_SET_ENVIRON "*Commands SET Environment"
       "3Environment\n"
       "4Explicitily Changing a Variable\n"
@@ -1600,6 +1640,7 @@ static const char simh_help2[] =
       "+sh{ow} video                show video capabilities\n"
       "+sh{ow} clocks               show calibrated timer information\n"
       "+sh{ow} throttle             show throttle info\n"
+      "+sh{ow} sound                show sound settings and state\n"
       "+sh{ow} on                   show on condition actions\n"
       "+sh{ow} do                   show do nesting state\n"
       "+sh{ow} runlimit             show execution limit states\n"
@@ -1621,6 +1662,7 @@ static const char simh_help2[] =
 #define HLP_SHOW_LOG            "*Commands SHOW"
 #define HLP_SHOW_DEBUG          "*Commands SHOW"
 #define HLP_SHOW_THROTTLE       "*Commands SHOW"
+#define HLP_SHOW_SOUND          "*Commands SHOW"
 #define HLP_SHOW_ASYNCH         "*Commands SHOW"
 #define HLP_SHOW_ETHERNET       "*Commands SHOW"
 #define HLP_SHOW_SERIAL         "*Commands SHOW"
@@ -2619,6 +2661,7 @@ static CTAB set_glob_tab[] = {
     { "NODEBUG",    &sim_set_deboff,            0, HLP_SET_DEBUG  },
     { "THROTTLE",   &sim_set_throt,             1, HLP_SET_THROTTLE },
     { "NOTHROTTLE", &sim_set_throt,             0, HLP_SET_THROTTLE },
+    { "SOUND",      &sim_sound_set,             1, HLP_SET_SOUND },
     { "CLOCKS",     &sim_set_timers,            1, HLP_SET_CLOCK },
     { "ASYNCH",     &sim_set_asynch,            1, HLP_SET_ASYNCH },
     { "NOASYNCH",   &sim_set_asynch,            0, HLP_SET_ASYNCH },
@@ -2682,6 +2725,7 @@ static SHTAB show_glob_tab[] = {
     { "TELNET",         &sim_show_telnet,           0 },    /* deprecated */
     { "DEBUG",          &sim_show_debug,            0, HLP_SHOW_DEBUG },
     { "THROTTLE",       &sim_show_throt,            0, HLP_SHOW_THROTTLE },
+    { "SOUND",          &sim_sound_show,            0, HLP_SHOW_SOUND },
     { "ASYNCH",         &sim_show_asynch,           0, HLP_SHOW_ASYNCH },
     { "ETHERNET",       &eth_show_devices,          0, HLP_SHOW_ETHERNET },
     { "SERIAL",         &sim_show_serial,           0, HLP_SHOW_SERIAL },
@@ -2988,6 +3032,7 @@ if (SCPE_BARE_STATUS(stat) != SCPE_EXIT)
 
 cleanup_and_exit:
 
+sim_sound_exit ();                                      /* power off sound, close audio */
 detach_all (0, TRUE);                                   /* close files */
 sim_set_deboff (0, NULL);                               /* close debug */
 sim_set_logoff (0, NULL);                               /* close log */
@@ -9317,6 +9362,12 @@ else
 
 if (sim_switches & SIM_SW_HIDE)                         /* Setup only for Remote Console Mode */
     return SCPE_OK;
+
+/* Sound: RUN and BOOT switch the system power on (starting sound, then the
+   running loop).  GO, CONTINUE, STEP and NEXT never change the power state,
+   and returning to the prompt does not switch it off either. */
+if ((flag == RU_RUN) || (flag == RU_BOOT))
+    sim_sound_power_on ();
 
 for (i = 1; (dptr = sim_devices[i]) != NULL; i++) {     /* reposition all */
     for (j = 0; j < dptr->numunits; j++) {              /* seq devices */
