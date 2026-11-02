@@ -100,6 +100,7 @@ static SND_SAMPLE *snd_sys_smp[SND_SYS_COUNT];  /* loaded system sounds (may be 
 static SND_HANDLE snd_sys_handle = 0;           /* voice of the starting/running chain */
 static char snd_throttle[CBUFSIZE] = "";        /* simulator default throttle (realism mode) */
 static t_bool snd_throttle_set = FALSE;         /* the throttle was set by sim_sound */
+static uint32 snd_throttle_delay = 0;           /* THROT_DELAY before sim_sound set it */
 
 /* A loaded sample.  Samples are kept in a list for the whole life of the
    simulator, so pointers handed out stay valid even while voices still
@@ -827,13 +828,18 @@ if (enable) {
     if ((snd_throttle[0] != '\0') && !sim_throt_is_set ()) {
         if (sim_set_throt (1, snd_throttle) == SCPE_OK) {
             snd_throttle_set = TRUE;
+            /* realistic from power-on: no unthrottled warm-up phase */
+            snd_throttle_delay = sim_throt_set_delay (0);
             sim_printf ("Sound: realistic CPU speed, THROTTLE %s\n", snd_throttle);
             }
         }
     }
 else {
-    if (snd_throttle_set && sim_throt_is_set ())
-        sim_set_throt (0, NULL);
+    if (snd_throttle_set) {
+        if (sim_throt_is_set ())
+            sim_set_throt (0, NULL);
+        sim_throt_set_delay (snd_throttle_delay);       /* restore the warm-up */
+        }
     snd_throttle_set = FALSE;
     }
 }

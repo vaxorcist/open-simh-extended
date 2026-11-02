@@ -659,6 +659,9 @@ static void hk_spin_down (UNIT *uptr);
 static void hk_seek_sound (UNIT *uptr, int32 dist, t_bool recal);
 static uint32 hk_seek_us (UNIT *uptr, int32 dist);
 static uint32 hk_latency_us (void);
+static void hk_activate_us (UNIT *uptr, double usecs);
+static double hk_inst_per_us (void);
+static double hk_inst_to_us (double inst);
 t_stat hk_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *hk_description (DEVICE *dptr);
 
@@ -1140,8 +1143,8 @@ switch (fnc) {                                          /* case on function */
             int32 nsect = ((0200000 - hkwc) + (HK_NUMWD - 1)) / HK_NUMWD;
 
             /* seek, wait for the sector, transfer the sectors */
-            sim_activate_after (uptr, hk_seek_us (uptr, t) + hk_latency_us () +
-                                      (uint32)(nsect * HK_SECT_US));
+            hk_activate_us (uptr, (double)hk_seek_us (uptr, t) + hk_latency_us () +
+                                  (double)nsect * HK_SECT_US);
             }
         else
             sim_activate (uptr, hk_rwait + (hk_swait * t)); /* schedule */
@@ -1238,7 +1241,7 @@ switch (fnc) {                                          /* case on function */
                 uint32 us = hk_seek_us (uptr, abs (hk_dif[drv]));
 
                 uptr->CYL = dc;                         /* save cyl */
-                sim_activate_after (uptr, (us < 100) ? 100 : us);
+                hk_activate_us (uptr, (us < 100) ? 100 : us);
                 }
             else {
                 t = abs (hk_dif[drv]) * hk_swait;       /* |cyl diff| */
@@ -1610,13 +1613,13 @@ hkof = hkspr = 0;
 hkci = hkdi = hkei = 0;                                 /* clear intr flops */
 CLR_INT (HK);                                           /* clear intr req */
 for (i = 0; i < HK_NUMDR; i++) {                        /* stop operations */
-    double spinup_us = 0.0;
+    double spinup_us = 0.0;                             /* (in instructions) */
 
     uptr = hk_dev.units + i;
     /* A controller reset does not stop a drive that is spinning up: keep
        its remaining spin-up time */
     if ((hk_spin[i] == HK_SPIN_UP) && sim_is_active (uptr))
-        spinup_us = sim_activate_time_usecs (uptr);
+        spinup_us = sim_activate_time (uptr);           /* instructions left */
     sim_cancel (uptr);
     if (uptr->flags & UNIT_ATT)
         hkds[i] = hkds[i] & (DS_VV | DS_DT);
@@ -1627,7 +1630,7 @@ for (i = 0; i < HK_NUMDR; i++) {                        /* stop operations */
     hker[i] = 0;
     if (hk_spin[i] == HK_SPIN_UP) {                     /* resume the spin-up */
         uptr->FNC = FNC_SPINUP;
-        sim_activate_after (uptr, (uint32)((spinup_us > 1.0) ? spinup_us : 1.0));
+        sim_activate (uptr, (int32)((spinup_us > 1.0) ? spinup_us : 1.0));
         }
     }                                                   /* clear errors */
 if (hkxb == NULL)
@@ -1731,7 +1734,7 @@ hk_spin[drv] = HK_SPIN_UP;
 sim_sound_unit_start (&hk_spindle[drv], SND_GRP_DISK, HK_SPIN_GAIN);
 uptr->FNC = FNC_SPINUP;                                 /* the unit times it */
 if (sim_sound_enabled ())
-    sim_activate_after (uptr, (uint32)((hk_spinup_ms > 0) ? hk_spinup_ms : 1) * 1000);
+    hk_activate_us (uptr, 1000.0 * ((hk_spinup_ms > 0) ? hk_spinup_ms : 1));
 else
     sim_activate (uptr, hk_cwait);
 }
@@ -1791,7 +1794,7 @@ if (!(uptr->flags & UNIT_ATT))
 else if (hk_spin[drv] == HK_SPIN_READY)
     fprintf (st, "online");
 else if (hk_spin[drv] == HK_SPIN_UP)
-    fprintf (st, "spinning up, %.1f s left", sim_activate_time_usecs (uptr) / 1000000.0);
+    fprintf (st, "spinning up, %.1f s left", hk_inst_to_us ((double)sim_activate_time (uptr)) / 1000000.0);
 else
     fprintf (st, "offline");
 return SCPE_OK;
@@ -1835,6 +1838,40 @@ if (dist <= 0)
 b = (hk_seek_tab[type].max_ms - hk_seek_tab[type].t2t_ms) / (pow (maxd, HK_SEEK_EXP) - 1.0);
 a = hk_seek_tab[type].t2t_ms - b;
 return (uint32)((a + b * pow ((double)dist, HK_SEEK_EXP)) * 1000.0);
+}
+
+/* Realistic durations are converted to instructions here, not with
+   sim_activate_after ().  sim_activate_after () goes through the timer
+   calibration, which during a throttled boot (before the operating system
+   runs its clock) can tie an event to a much later timer tick: transfers
+   then took seconds and VMS timed out (mount verification).  With a
+   throttle set as xK or xM (the realism mode sets one) the throttle's
+   target rate is exact, and simulated time is real time; otherwise the
+   current instruction rate estimate is used. */
+
+static double hk_inst_per_us (void)
+{
+double ips = sim_throt_target_ips ();
+
+if (ips <= 0.0)
+    ips = sim_timer_inst_per_sec ();
+return ips / 1000000.0;
+}
+
+static double hk_inst_to_us (double inst)
+{
+return inst / hk_inst_per_us ();
+}
+
+static void hk_activate_us (UNIT *uptr, double usecs)
+{
+double inst = usecs * hk_inst_per_us ();
+
+if (inst < 1.0)
+    inst = 1.0;
+if (inst > 2000000000.0)
+    inst = 2000000000.0;
+sim_activate (uptr, (int32)inst);
 }
 
 /* Rotational latency: waiting for the sector, 0 .. one revolution */
