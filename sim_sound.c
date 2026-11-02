@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   02-Nov-26    Ulli    Phase B: unit loops, optional samples, throttle default,
+                        power off silences every sound
    02-Nov-26    Ulli    First version (phase A: core, mixer, system sounds)
 
    See sim_sound.h for an overview of the sound classes, the realism mode
@@ -96,6 +98,8 @@ static char snd_sys_default[SND_SYS_COUNT][CBUFSIZE];/* simulator default system
 static char snd_sys_user[SND_SYS_COUNT][CBUFSIZE];   /* SET SOUND STARTING/RUNNING/STOPPING */
 static SND_SAMPLE *snd_sys_smp[SND_SYS_COUNT];  /* loaded system sounds (may be NULL) */
 static SND_HANDLE snd_sys_handle = 0;           /* voice of the starting/running chain */
+static char snd_throttle[CBUFSIZE] = "";        /* simulator default throttle (realism mode) */
+static t_bool snd_throttle_set = FALSE;         /* the throttle was set by sim_sound */
 
 /* A loaded sample.  Samples are kept in a list for the whole life of the
    simulator, so pointers handed out stay valid even while voices still
@@ -304,6 +308,7 @@ typedef struct {
     int32 group;                                /* mixer group */
     float gain;                                 /* voice gain */
     uint32 flags;                               /* SND_F_xxx */
+    uint32 chain_flags;                         /* SND_F_xxx of the chained loop */
     uint32 fade;                                /* fade-in (PLAY) or fade-out (STOP) in frames */
     } SND_CMD;
 
@@ -315,6 +320,7 @@ typedef struct {
     SND_HANDLE handle;                          /* handle (0 after a chain handed it on) */
     SND_SAMPLE *smp;                            /* sample */
     SND_SAMPLE *chain;                          /* loop to start near the end (or NULL) */
+    uint32 chain_flags;                         /* flags of that loop */
     uint32 pos;                                 /* next frame */
     t_bool loop;                                /* loop at the end */
     int32 group;                                /* mixer group */
@@ -381,7 +387,7 @@ return (snd_rand_state >> 8);
 /* Start a voice (audio thread) */
 
 static void snd_voice_start (SND_HANDLE handle, SND_SAMPLE *smp, SND_SAMPLE *chain,
-                             int32 group, float gain, uint32 flags, uint32 fade)
+                             uint32 chain_flags, int32 group, float gain, uint32 flags, uint32 fade)
 {
 int32 i;
 SND_VOICE *v;
@@ -400,6 +406,7 @@ v->active = TRUE;
 v->handle = handle;
 v->smp = smp;
 v->chain = ((chain != NULL) && (chain->data != NULL)) ? chain : NULL;
+v->chain_flags = chain_flags | SND_F_LOOP;
 v->loop = (flags & SND_F_LOOP) ? TRUE : FALSE;
 v->pos = ((flags & SND_F_RANDPHASE) && v->loop) ? (snd_random () % smp->frames) : 0;
 v->group = ((group >= 0) && (group < SND_GRP_COUNT)) ? group : SND_GRP_EVENT;
@@ -442,7 +449,7 @@ while (snd_qhead != snd_qtail) {
     snd_qhead = (snd_qhead + 1) % SND_QSIZE;
     switch (c->type) {
         case SND_CMD_PLAY:
-            snd_voice_start (c->handle, c->smp, c->chain, c->group, c->gain, c->flags, c->fade);
+            snd_voice_start (c->handle, c->smp, c->chain, c->chain_flags, c->group, c->gain, c->flags, c->fade);
             break;
         case SND_CMD_STOP:
             for (i = 0; i < SND_VOICES; i++) {
@@ -498,7 +505,7 @@ for (k = 0; k < SND_VOICES; k++) {
         if (xfade == 0)
             xfade = 1;
         if (v->pos + (uint32)n >= v->smp->frames - xfade) {
-            snd_voice_start (v->handle, v->chain, NULL, v->group, v->gain, SND_F_LOOP, xfade);
+            snd_voice_start (v->handle, v->chain, NULL, 0, v->group, v->gain, v->chain_flags, xfade);
             v->handle = 0;
             v->chain = NULL;
             v->fade_step = -1.0f / (float)xfade;
@@ -555,8 +562,8 @@ SDL_UnlockMutex (snd_qlock);
 return ok;
 }
 
-static SND_HANDLE snd_play_ex (SND_SAMPLE *smp, SND_SAMPLE *chain, int32 group,
-                               double gain, uint32 flags, uint32 fade_ms)
+static SND_HANDLE snd_play_ex (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
+                               int32 group, double gain, uint32 flags, uint32 fade_ms)
 {
 SND_CMD cmd;
 
@@ -567,6 +574,7 @@ cmd.type = SND_CMD_PLAY;
 cmd.handle = SDL_AtomicAdd (&snd_handle_seq, 1) + 1;
 cmd.smp = smp;
 cmd.chain = chain;
+cmd.chain_flags = chain_flags;
 cmd.group = group;
 cmd.gain = (float)gain;
 cmd.flags = flags;
@@ -759,8 +767,8 @@ static t_bool snd_load_wav (SND_SAMPLE *smp)
 return FALSE;
 }
 
-static SND_HANDLE snd_play_ex (SND_SAMPLE *smp, SND_SAMPLE *chain, int32 group,
-                               double gain, uint32 flags, uint32 fade_ms)
+static SND_HANDLE snd_play_ex (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
+                               int32 group, double gain, uint32 flags, uint32 fade_ms)
 {
 return 0;
 }
@@ -805,6 +813,31 @@ t_bool sim_sound_powered (void)
 return snd_power;
 }
 
+void sim_sound_set_throttle (const char *spec)
+{
+strlcpy (snd_throttle, spec ? spec : "", sizeof (snd_throttle));
+}
+
+/* Realism mode: apply or remove the simulator's default throttle.  A
+   throttle the user set himself is never touched. */
+
+static void snd_apply_throttle (t_bool enable)
+{
+if (enable) {
+    if ((snd_throttle[0] != '\0') && !sim_throt_is_set ()) {
+        if (sim_set_throt (1, snd_throttle) == SCPE_OK) {
+            snd_throttle_set = TRUE;
+            sim_printf ("Sound: realistic CPU speed, THROTTLE %s\n", snd_throttle);
+            }
+        }
+    }
+else {
+    if (snd_throttle_set && sim_throt_is_set ())
+        sim_set_throt (0, NULL);
+    snd_throttle_set = FALSE;
+    }
+}
+
 void sim_sound_set_system (const char *dir, const char *starting,
                            const char *running, const char *stopping)
 {
@@ -814,7 +847,7 @@ strlcpy (snd_sys_default[SND_SYS_RUNNING], running ? running : "", CBUFSIZE);
 strlcpy (snd_sys_default[SND_SYS_STOPPING], stopping ? stopping : "", CBUFSIZE);
 }
 
-SND_SAMPLE *sim_sound_load (const char *dir, const char *file)
+static SND_SAMPLE *snd_load (const char *dir, const char *file, t_bool quiet)
 {
 SND_SAMPLE *smp;
 char key[CBUFSIZE];
@@ -838,7 +871,8 @@ if (!snd_find_file (path, sizeof (path), dir, file)) {
         smp->next = snd_cache;
         snd_cache = smp;
         }
-    sim_printf ("Sound: file %s not found (sound directory \"%s\")\n", file, dir ? dir : "");
+    if (!quiet)
+        sim_printf ("Sound: file %s not found (sound directory \"%s\")\n", file, dir ? dir : "");
     return NULL;
     }
 for (smp = snd_cache; smp != NULL; smp = smp->next) {   /* loaded before? */
@@ -855,6 +889,19 @@ snd_cache = smp;
 if (!snd_load_wav (smp))
     return NULL;
 return smp;
+}
+
+SND_SAMPLE *sim_sound_load (const char *dir, const char *file)
+{
+return snd_load (dir, file, FALSE);
+}
+
+/* An optional sample: no message if it does not exist (a file that exists
+   but can not be read is still reported) */
+
+SND_SAMPLE *sim_sound_load_optional (const char *dir, const char *file)
+{
+return snd_load (dir, file, TRUE);
 }
 
 /* Forget cached entries of a file, so that SET SOUND PATH changes and newly
@@ -876,7 +923,35 @@ for (smp = snd_cache; smp != NULL; smp = smp->next) {
 
 SND_HANDLE sim_sound_play (SND_SAMPLE *smp, int32 group, double gain, uint32 flags)
 {
-return snd_play_ex (smp, NULL, group, gain, flags, 0);
+return snd_play_ex (smp, NULL, 0, group, gain, flags, 0);
+}
+
+/* Unit loops (see sim_sound.h) */
+
+void sim_sound_unit_load (SND_UNITLOOP *ul, const char *dir, const char *start,
+                          const char *run, const char *stop)
+{
+ul->start = sim_sound_load_optional (dir, start);
+ul->run = sim_sound_load_optional (dir, run);
+ul->stop = sim_sound_load_optional (dir, stop);
+ul->handle = 0;
+}
+
+void sim_sound_unit_start (SND_UNITLOOP *ul, int32 group, double gain)
+{
+sim_sound_stop (ul->handle, 0);                 /* a stopping unit restarted */
+if (ul->start != NULL)
+    ul->handle = snd_play_ex (ul->start, ul->run, SND_F_RANDPHASE, group, gain, 0, 0);
+else
+    ul->handle = snd_play_ex (ul->run, NULL, 0, group, gain, SND_F_LOOP | SND_F_RANDPHASE, 200);
+}
+
+void sim_sound_unit_stop (SND_UNITLOOP *ul, int32 group, double gain)
+{
+sim_sound_stop (ul->handle, 200);
+ul->handle = 0;
+if (ul->stop != NULL)
+    snd_play_ex (ul->stop, NULL, 0, group, gain, 0, 0);
 }
 
 void sim_sound_stop (SND_HANDLE handle, uint32 fade_ms)
@@ -917,9 +992,9 @@ SND_SAMPLE *running = snd_sys_smp[SND_SYS_RUNNING];
 if (!sim_sound_available ())
     return;
 if (!direct && (starting != NULL))
-    snd_sys_handle = snd_play_ex (starting, running, SND_GRP_SYSTEM, 1.0, 0, 0);
+    snd_sys_handle = snd_play_ex (starting, running, 0, SND_GRP_SYSTEM, 1.0, 0, 0);
 else if (running != NULL)
-    snd_sys_handle = snd_play_ex (running, NULL, SND_GRP_SYSTEM, 1.0, SND_F_LOOP, 300);
+    snd_sys_handle = snd_play_ex (running, NULL, 0, SND_GRP_SYSTEM, 1.0, SND_F_LOOP, 300);
 }
 
 void sim_sound_power_on (void)
@@ -939,10 +1014,12 @@ if (!snd_power)
 snd_power = FALSE;
 if (!sim_sound_available ())
     return;
-sim_sound_stop (snd_sys_handle, 150);           /* running loop (or starting) fades out */
+/* Power off silences everything: the running loop and every unit loop
+   (spindles stop with the power) fade out, the stopping sound plays. */
+snd_stop_ex (SND_CMD_STOPALL, 0, 150);
 snd_sys_handle = 0;
 if (stopping != NULL) {
-    snd_play_ex (stopping, NULL, SND_GRP_SYSTEM, 1.0, 0, 0);
+    snd_play_ex (stopping, NULL, 0, SND_GRP_SYSTEM, 1.0, 0, 0);
     if (wait)                                   /* let the run-down finish before exit */
         sim_os_ms_sleep ((unsigned int)(sim_sound_duration (stopping) * 1000.0) + 100);
     }
@@ -968,6 +1045,7 @@ if (uptr != NULL)
     return sim_messagef (SCPE_ALATT, "SET SOUND %s is only allowed while no disk or tape is attached (%s is attached)\n",
                          enable ? "ENABLED" : "DISABLED", sim_uname (uptr));
 snd_enabled = enable;
+snd_apply_throttle (enable);
 if (enable) {
     if (snd_audio_open ()) {
         snd_sys_load ();
@@ -1213,6 +1291,9 @@ for (i = 0; i < SND_GRP_COUNT; i++)
     fprintf (st, ", %s %d%%%s", snd_group_names[i], (int)snd_group_vol[i], snd_group_mute[i] ? " (muted)" : "");
 fprintf (st, "\n");
 fprintf (st, "Path:    %s\n", snd_path[0] ? snd_path : "(none)");
+if (snd_throttle[0] != '\0')
+    fprintf (st, "CPU:     realistic speed THROTTLE %s%s\n", snd_throttle,
+             snd_throttle_set ? " (set)" : (snd_enabled ? " (not used: THROTTLE set by the user)" : ""));
 fprintf (st, "System sounds (directory \"%s\"):\n", snd_sys_dir);
 for (i = 0; i < SND_SYS_COUNT; i++) {
     const char *file = snd_sys_file (i);

@@ -1762,6 +1762,15 @@ if (sim_throt_type == SIM_THROT_SPC) {  /* Set initial value while correct one i
 return SCPE_OK;
 }
 
+/* Is a throttle (any mode) set?  Used by sim_sound to apply a simulator's
+   default throttle in the sound realism mode only if the user did not set
+   one himself. */
+
+t_bool sim_throt_is_set (void)
+{
+return (sim_throt_type != SIM_THROT_NONE);
+}
+
 t_stat sim_show_throt (FILE *st, DEVICE *dnotused, UNIT *unotused, int32 flag, CONST char *cptr)
 {
 if (sim_idle_rate_ms == 0)

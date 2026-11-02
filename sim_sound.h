@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   02-Nov-26    Ulli    Phase B: unit loops, optional samples, throttle default
    02-Nov-26    Ulli    First version (phase A: core, mixer, system sounds)
 
    Overview
@@ -57,7 +58,10 @@
    independent of whether audio output is actually available.  Devices use
    it to select realistic timing and operator behavior (OFFLINE/ONLINE).
    Because this changes device behavior, SET SOUND ENABLED/DISABLED is
-   rejected while any disk or tape unit is attached.
+   rejected while any disk or tape unit is attached.  A simulator can also
+   register a realistic CPU speed (sim_sound_set_throttle ()); it is set
+   with SET THROTTLE when sound is enabled, unless the user has already set
+   a throttle himself, and removed again when sound is disabled.
 
    Mixing
    ------
@@ -113,6 +117,11 @@ t_stat sim_sound_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST cha
 void sim_sound_set_system (const char *dir, const char *starting,
                            const char *running, const char *stopping);
 
+/* Simulator default for the realistic CPU speed in the realism mode, as a
+   SET THROTTLE argument (e.g. "300K"); NULL or "" for none. */
+
+void sim_sound_set_throttle (const char *spec);
+
 /* State queries */
 
 t_bool sim_sound_enabled (void);                /* SET SOUND ENABLED: realism mode is on */
@@ -142,9 +151,37 @@ void sim_sound_exit (void);                     /* simulator exit: power off and
 */
 
 SND_SAMPLE *sim_sound_load (const char *dir, const char *file);
+SND_SAMPLE *sim_sound_load_optional (const char *dir, const char *file);
 SND_HANDLE sim_sound_play (SND_SAMPLE *smp, int32 group, double gain, uint32 flags);
 void sim_sound_stop (SND_HANDLE handle, uint32 fade_ms);
 double sim_sound_duration (const SND_SAMPLE *smp);
+
+/* Unit loops: the sound of a unit that runs continuously, e.g. a disk
+   spindle, made of three optional samples: a start one-shot (spin-up), a
+   loop (running) and a stop one-shot (spin-down).  Missing samples are
+   simply skipped, so a device can call these functions whether or not
+   such sounds exist.
+
+   sim_sound_unit_load ()   loads the three samples (quietly: none of them
+                            is required).  Call it on ATTACH or similar.
+   sim_sound_unit_start ()  plays the start sample followed seamlessly by
+                            the loop; the loop starts at a random position
+                            so that several identical units sound like
+                            independent machines (sqrt(N) growth).
+   sim_sound_unit_stop ()   fades the loop out and plays the stop sample.
+*/
+
+typedef struct {
+    SND_SAMPLE *start;                          /* start one-shot (or NULL) */
+    SND_SAMPLE *run;                            /* loop (or NULL) */
+    SND_SAMPLE *stop;                           /* stop one-shot (or NULL) */
+    SND_HANDLE handle;                          /* playing start/loop voice */
+    } SND_UNITLOOP;
+
+void sim_sound_unit_load (SND_UNITLOOP *ul, const char *dir, const char *start,
+                          const char *run, const char *stop);
+void sim_sound_unit_start (SND_UNITLOOP *ul, int32 group, double gain);
+void sim_sound_unit_stop (SND_UNITLOOP *ul, int32 group, double gain);
 
 #ifdef  __cplusplus
 }

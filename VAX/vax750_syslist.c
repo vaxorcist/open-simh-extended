@@ -41,6 +41,11 @@ sim_savename = "VAX750";
    with the blower running down */
 sim_sound_set_system ("vax750", "blower_starting.wav", "blower_running.wav",
                       "blower_stopping.wav");
+/* Realistic CPU speed in the sound realism mode: about 0.6 of a
+   VAX-11/780 (roughly 0.5 million VAX instructions per second), so about
+   300,000 instructions per second.  Provisional: to be calibrated against
+   a real VAX-11/750 (e.g. the time of a VMS boot). */
+sim_sound_set_throttle ("300K");
 }
 
 extern DEVICE cpu_dev;
