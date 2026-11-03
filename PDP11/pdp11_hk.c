@@ -25,6 +25,8 @@
 
    hk           RK611/RK06/RK07 disk
 
+   03-Nov-26    Ulli    Spindle handling moved to the common sim_spindle support
+                        (sim_sound); OFFLINE takes the spin-down time
    03-Nov-26    Ulli    Realism mode: SET HKn ONLINE/OFFLINE at the prompt wait
                         until the spin-up/spin-down is over (SET -N: no wait),
                         new register SPINDOWN
@@ -143,8 +145,6 @@ static struct drvtyp drv_tab[] = {
 #define  FNC_WRITEH     013                             /* write w/ headers */
 #define  FNC_READH      012                             /* read w/ headers */
 #define  FNC_WCHK       014                             /* write check */
-#define  FNC_SPINUP     016                             /* internal: spin-up complete (not a
-                                                           transfer: kept on controller clear) */
 #define FNC_2ND         020                             /* 2nd state flag */
 #define CS1_SPA         0000040                         /* spare */
 #define CS1_IE          CSR_IE                          /* int enable */
@@ -166,7 +166,7 @@ static struct drvtyp drv_tab[] = {
 
 static const char *hk_funcs[] = {
     "NOP", "PACK", "DCLR", "UNLOAD", "START", "RECAL", "OFFSET", "SEEK", 
-    "READ", "WRITE", "READH", "WRITEH", "WCHK", "15", "SPINUP", "17"};
+    "READ", "WRITE", "READH", "WRITEH", "WCHK", "15", "16", "17"};
 
 BITFIELD hk_cs1_bits[] = {
   BIT(GO),                                  /* go */
@@ -579,50 +579,30 @@ int16 hk_dif[HK_NUMDR] = { 0 };                         /* cylinder diff */
 
 /* Drive RUN/STOP button and sound realism mode
 
-   Each drive has a spindle state.  A drive is ready for positioning and
-   data transfers only when a pack is attached AND the spindle is up to
-   speed (HK_SPIN_READY).
+   Each drive has a spindle (SND_SPINDLE, common support in sim_sound).
+   A drive is ready for positioning and data transfers only when a pack is
+   attached AND the spindle is up to speed.
 
    - Normal mode (sound disabled): ATTACH spins the drive up at once, as
      before.  SET HKn OFFLINE stops the spindle (the pack stays attached),
      SET HKn ONLINE spins it up again at once.
    - Realism mode (SET SOUND ENABLED): ATTACH only loads the pack; the
      drive stays stopped until SET HKn ONLINE (the RUN button), which takes
-     the spin-up time (HK SPINUP register, default 30 s simulated time).
-     The UNLOAD function spins the drive down instead of detaching the pack.
-     Seeks and transfers take realistic times, and seeks play a short,
-     medium or long seek sound depending on the distance.
+     the spin-up time (HK SPINUP register, default 30 s); OFFLINE takes the
+     spin-down time (SPINDOWN, default 30 s).  At the sim> prompt both
+     commands wait until the drive is ready or at rest (SET -N: no wait).
+     While the CPU runs the times are simulated time (the guest sees the
+     full time); at the prompt they go on in wall time.  The UNLOAD
+     function spins the drive down instead of detaching the pack.  Seeks
+     and transfers take realistic times, and seeks play a short, medium or
+     long seek sound depending on the distance.
 
-   The spin-up is timed with the drive's own unit (internal function
-   FNC_SPINUP); the drive is not ready meanwhile, so no other function can
-   use the unit.
+   The spindle has its own timer, so controller clears, device resets and
+   the emptied event queue of RUN/BOOT do not affect a spin-up. */
 
-   While the CPU runs, the spin-up takes SPINUP milliseconds of simulated
-   time, so the guest always sees the full spin-up time (with the realism
-   throttle, simulated time is real time).  While the simulator is stopped
-   at the sim> prompt, simulated time stands still, but a real spindle
-   keeps turning: there the spin-up goes on in wall time.  At the prompt
-   the remaining spin-up time is kept in hk_spin_left_us with the wall
-   clock reference hk_spin_ref_ms (set when execution stops or when a
-   spin-up starts at the prompt), not only in the event queue: RUN and
-   BOOT empty the whole event queue before they reset the devices.  When
-   execution resumes, the run hook (hk_run_hook) deducts the wall time
-   spent at the prompt and schedules the rest.  A spin-up that completes
-   at the prompt is finished as soon as it is looked at (SHOW HKn SPINDLE,
-   SHOW HK) or when execution resumes.
-
-   Without the realism mode the spin-up is instant. */
-
-#define HK_SPIN_STOPPED 0                               /* spindle stopped (offline) */
-#define HK_SPIN_UP      1                               /* spinning up */
-#define HK_SPIN_READY   2                               /* up to speed (online) */
-
-int32 hk_spin[HK_NUMDR] = { 0 };                        /* spindle states */
-static uint32 hk_spin_ref_ms[HK_NUMDR];                 /* wall clock when the prompt time started */
-static double hk_spin_left_us[HK_NUMDR];                /* spin-up time left at that moment */
-static t_bool hk_spin_paused[HK_NUMDR];                 /* spin-up pending while stopped */
 int32 hk_spinup_ms = 30000;                             /* realism: spin-up time (ms) */
 int32 hk_spindown_ms = 30000;                           /* realism: spin-down time (ms) */
+static SND_SPINDLE hk_spindle[HK_NUMDR];                /* the drives' spindles */
 int32 hk_seek6s = 25;                                   /* RK06: short seek up to n cyl */
 int32 hk_seek6m = 150;                                  /* RK06: medium seek up to n cyl */
 int32 hk_seek7s = 50;                                   /* RK07: short seek up to n cyl */
@@ -652,10 +632,7 @@ static const struct {
 #define HK_SEEK_GAIN    0.3                             /* seeks are recorded hot */
 #define HK_SPIN_GAIN    1.0
 
-static const char *hk_seek_files[3] = {
-    "rk07-s.wav", "rk07-m.wav", "rk07-l.wav" };
 static SND_SAMPLE *hk_seek_smp[3];                      /* loaded seek samples */
-static SND_UNITLOOP hk_spindle[HK_NUMDR];               /* spindle sounds per drive */
 static uint32 hk_rand_state = 1;                        /* rotational latency */
 static const uint8 reg_in_drive[16] = {
  0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -682,15 +659,11 @@ t_stat hk_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 static t_bool hk_ready (UNIT *uptr);
 static void hk_spin_up (UNIT *uptr);
 static void hk_spin_down (UNIT *uptr);
+static void hk_on_ready (UNIT *uptr);
+static void hk_spindles_init (void);
 static void hk_seek_sound (UNIT *uptr, int32 dist, t_bool recal);
 static uint32 hk_seek_us (UNIT *uptr, int32 dist);
 static uint32 hk_latency_us (void);
-static void hk_activate_us (UNIT *uptr, double usecs);
-static double hk_inst_per_us (void);
-static double hk_inst_to_us (double inst);
-static void hk_spin_done (int32 drv);
-static void hk_spin_catch_up (int32 drv);
-static void hk_run_hook (t_bool running);
 t_stat hk_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *hk_description (DEVICE *dptr);
 
@@ -760,7 +733,6 @@ REG hk_reg[] = {
     { DRDATAD (SEEK6M,     hk_seek6m, 10,             "RK06 medium seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK7S,     hk_seek7s, 10,             "RK07 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK7M,     hk_seek7m, 10,             "RK07 medium seek sound up to n cylinders"), PV_LEFT },
-    { BRDATAD (SPIN,         hk_spin, 10, 2, HK_NUMDR, "spindle state (0 stopped, 1 spinning up, 2 ready)"), REG_HRO },
     { URDATA  (FNC,   hk_unit[0].FNC, DEV_RDX, 5, 0,
               HK_NUMDR, REG_HRO) },
     { URDATA  (CYL, hk_unit[0].CYL, DEV_RDX, 10, 0,
@@ -948,9 +920,8 @@ switch (j) {                                            /* decode PA<4:1> */
             hkspr = hkof = 0;
             hkci = hkdi = hkei = 0;                     /* clr int flops */
             for (i = 0; i < HK_NUMDR; i++) {            /* stop data xfr */
-                if (sim_is_active (&hk_unit[i]) &&      /* (a spinning-up */
-                    ((hk_unit[i].FNC & CS1_M_FNC) >= FNC_XFER) && /* drive goes on) */
-                    ((hk_unit[i].FNC & CS1_M_FNC) != FNC_SPINUP))
+                if (sim_is_active (&hk_unit[i]) &&
+                    ((hk_unit[i].FNC & CS1_M_FNC) >= FNC_XFER))
                     sim_cancel (&hk_unit[i]);
                 }
             drv = 0;
@@ -1174,8 +1145,8 @@ switch (fnc) {                                          /* case on function */
             int32 nsect = ((0200000 - hkwc) + (HK_NUMWD - 1)) / HK_NUMWD;
 
             /* seek, wait for the sector, transfer the sectors */
-            hk_activate_us (uptr, (double)hk_seek_us (uptr, t) + hk_latency_us () +
-                                  (double)nsect * HK_SECT_US);
+            sim_sound_activate_us (uptr, (double)hk_seek_us (uptr, t) + hk_latency_us () +
+                                         (double)nsect * HK_SECT_US);
             }
         else
             sim_activate (uptr, hk_rwait + (hk_swait * t)); /* schedule */
@@ -1223,13 +1194,6 @@ switch (fnc) {                                          /* case on function */
         update_hkcs (CS1_DONE, drv);                    /* done */
         break;
 
-/* Internal: the spindle is up to speed (SET HKn ONLINE in realism mode).
-   The drive becomes ready and raises attention, like a drive whose RUN
-   button was pressed. */
-
-    case FNC_SPINUP:
-        hk_spin_done (drv);
-        break;
 
 /* Positioning commands provide two interrupts, an immediate controller done
    and a delayed drive interrupt */
@@ -1263,7 +1227,7 @@ switch (fnc) {                                          /* case on function */
                 uint32 us = hk_seek_us (uptr, abs (hk_dif[drv]));
 
                 uptr->CYL = dc;                         /* save cyl */
-                hk_activate_us (uptr, (us < 100) ? 100 : us);
+                sim_sound_activate_us (uptr, (us < 100) ? 100 : us);
                 }
             else {
                 t = abs (hk_dif[drv]) * hk_swait;       /* |cyl diff| */
@@ -1547,7 +1511,8 @@ switch (msg) {
                 ((hk_off[drv])? A0_OF: 0) |
                 ((uptr->flags & UNIT_RK07)? A0_DT: 0) |
                 ((hkds[drv] & DS_VV)? A0_VV: 0) | A0_DRA;
-        if ((uptr->flags & UNIT_ATT) && (hk_spin[drv] != HK_SPIN_STOPPED))
+        if ((uptr->flags & UNIT_ATT) &&
+            (sim_spindle_state (&hk_spindle[drv]) != SND_SPIN_STOPPED))
             v = v | A0_SPO;                             /* spindle on */
         if (hk_ready (uptr) && !sim_is_active (uptr))
             v = v | A0_RDY;
@@ -1634,16 +1599,10 @@ hkba = hkwc = 0;
 hkof = hkspr = 0;
 hkci = hkdi = hkei = 0;                                 /* clear intr flops */
 CLR_INT (HK);                                           /* clear intr req */
+hk_spindles_init ();                                    /* (once) */
 for (i = 0; i < HK_NUMDR; i++) {                        /* stop operations */
-    double spinup_us = 0.0;                             /* (in instructions) */
-
     uptr = hk_dev.units + i;
-    /* A controller reset does not stop a drive that is spinning up: keep
-       its remaining spin-up time.  At the prompt (RESET, RUN, BOOT) the
-       time is kept in hk_spin_left_us and the run hook schedules it. */
-    if ((hk_spin[i] == HK_SPIN_UP) && sim_is_running && sim_is_active (uptr))
-        spinup_us = sim_activate_time (uptr);           /* instructions left */
-    sim_cancel (uptr);
+    sim_cancel (uptr);                                  /* (not the spindle) */
     if (uptr->flags & UNIT_ATT)
         hkds[i] = hkds[i] & (DS_VV | DS_DT);
     else hkds[i] = 0;
@@ -1651,10 +1610,6 @@ for (i = 0; i < HK_NUMDR; i++) {                        /* stop operations */
     hk_dif[i] = 0;
     hk_off[i] = 0;
     hker[i] = 0;
-    if ((hk_spin[i] == HK_SPIN_UP) && sim_is_running) { /* resume the spin-up */
-        uptr->FNC = FNC_SPINUP;
-        sim_activate (uptr, (int32)((spinup_us > 1.0) ? spinup_us : 1.0));
-        }
     }                                                   /* clear errors */
 if (hkxb == NULL)
     hkxb = (uint16 *) calloc (HK_MAXFR, sizeof (uint16));
@@ -1688,20 +1643,15 @@ if (sim_sound_enabled ()) {                             /* realism mode? */
     /* Load the sounds now (configuration time, not in the I/O path).
        The pack is loaded, but the drive waits for its RUN button:
        SET HKn ONLINE. */
-    int32 i;
-
-    for (i = 0; i < 3; i++)
-        hk_seek_smp[i] = sim_sound_load (HK_SND_DIR, hk_seek_files[i]);
-    sim_sound_unit_load (&hk_spindle[drv], HK_SND_DIR, "rk07_spinup.wav",
-                         "rk07_running.wav", "rk07_spindown.wav");
-    sim_sound_register_run_hook (&hk_run_hook);
-    hk_spin[drv] = HK_SPIN_STOPPED;
+    sim_sound_seek_load (hk_seek_smp, HK_SND_DIR, "rk07");
+    sim_spindle_load (&hk_spindle[drv], HK_SND_DIR, "rk07");
+    sim_spindle_off (&hk_spindle[drv]);
     hkds[drv] = ((uptr->flags & UNIT_WPRT)? DS_WRL: 0) |
         ((uptr->flags & UNIT_DTYPE)? DS_DT: 0);
     return SCPE_OK;
     }
 old_hkds = hkds[drv];                                   /* save hkds */
-hk_spin[drv] = HK_SPIN_READY;                           /* ATTACH spins up */
+sim_spindle_ready (&hk_spindle[drv]);                   /* ATTACH spins up */
 hkds[drv] = DS_ATA | DS_RDY |
     ((uptr->flags & UNIT_WPRT)? DS_WRL: 0) |
     ((uptr->flags & UNIT_DTYPE)? DS_DT: 0);
@@ -1730,9 +1680,7 @@ if (sim_is_active (uptr)) {                             /* unit active? */
     }
 if ((old_hkds & DS_ATA) == 0)                           /* ATN transition? */
     update_hkcs (CS1_DI, drv);                          /* upd ctlr status */
-if (hk_spin[drv] != HK_SPIN_STOPPED)                    /* spindle running? */
-    sim_sound_unit_stop (&hk_spindle[drv], SND_GRP_DISK, HK_SPIN_GAIN);
-hk_spin[drv] = HK_SPIN_STOPPED;
+sim_spindle_off (&hk_spindle[drv]);                     /* the pack is gone */
 return sim_disk_detach (uptr);
 }
 
@@ -1741,105 +1689,45 @@ return sim_disk_detach (uptr);
 static t_bool hk_ready (UNIT *uptr)
 {
 return ((uptr->flags & UNIT_ATT) != 0) &&
-       (hk_spin[uptr - hk_dev.units] == HK_SPIN_READY);
+       (sim_spindle_state (&hk_spindle[uptr - hk_dev.units]) == SND_SPIN_READY);
 }
 
-/* Spin a drive up (RUN button).  In the realism mode this takes the
-   spin-up time; otherwise the drive is ready at once. */
+/* Set up the drives' spindles (once) */
+
+static void hk_spindles_init (void)
+{
+int32 drv;
+
+for (drv = 0; drv < HK_NUMDR; drv++)
+    sim_spindle_init (&hk_spindle[drv], &hk_unit[drv], &hk_spinup_ms, &hk_spindown_ms,
+                      &hk_on_ready, NULL, SND_GRP_DISK, HK_SPIN_GAIN);
+}
+
+/* Spin a drive up (RUN button) */
 
 static void hk_spin_up (UNIT *uptr)
 {
 int32 drv = (int32)(uptr - hk_dev.units);
 
-if (hk_spin[drv] != HK_SPIN_STOPPED)                    /* already running */
-    return;
 sim_debug (HKDEB_OPS, &hk_dev, ">>HK%d spin up\n", drv);
-hk_spin[drv] = HK_SPIN_UP;
-sim_sound_unit_start (&hk_spindle[drv], SND_GRP_DISK, HK_SPIN_GAIN);
-uptr->FNC = FNC_SPINUP;                                 /* the unit times it */
-hk_spin_paused[drv] = FALSE;
-if (!sim_sound_enabled ()) {                            /* normal mode: instant */
-    hk_spin_done (drv);
-    return;
-    }
-hk_spin_left_us[drv] = 1000.0 * ((hk_spinup_ms > 0) ? hk_spinup_ms : 1);
-if (sim_is_running)                                     /* e.g. a remote console */
-    hk_activate_us (uptr, hk_spin_left_us[drv]);
-else {                                                  /* at the prompt: */
-    hk_spin_ref_ms[drv] = sim_os_msec ();               /* wall time there, */
-    hk_spin_paused[drv] = TRUE;                         /* scheduled on resume */
-    }
+sim_spindle_start (&hk_spindle[drv]);
 }
 
-/* The spindle is up to speed: the drive becomes ready and raises
+/* The spindle is up to speed (callback): the drive becomes ready and raises
    attention, like a drive whose RUN button was pressed */
 
-static void hk_spin_done (int32 drv)
+static void hk_on_ready (UNIT *uptr)
 {
-UNIT *uptr = hk_dev.units + drv;
+int32 drv = (int32)(uptr - hk_dev.units);
 int32 old_hkds = hkds[drv];
 
-uptr->FNC = 0;
-hk_spin_paused[drv] = FALSE;
-if (!(uptr->flags & UNIT_ATT) || (hk_spin[drv] != HK_SPIN_UP))
+if (!(uptr->flags & UNIT_ATT))
     return;
 sim_debug (HKDEB_OPS, &hk_dev, ">>HK%d up to speed\n", drv);
-hk_spin[drv] = HK_SPIN_READY;
 hkds[drv] = (hkds[drv] & ~DS_VV) | DS_ATA;
 update_hkds (drv);
 if ((old_hkds & DS_ATA) == 0)                           /* ATN transition? */
     update_hkcs (CS1_DI, drv);
-}
-
-/* Deduct the wall time spent at the prompt from a pending spin-up; finish
-   the spin-up if it is over.  Only while the simulator is stopped. */
-
-static void hk_spin_catch_up (int32 drv)
-{
-UNIT *uptr = hk_dev.units + drv;
-uint32 now = sim_os_msec ();
-
-if (!hk_spin_paused[drv] || (hk_spin[drv] != HK_SPIN_UP))
-    return;
-hk_spin_left_us[drv] -= 1000.0 * (double)(now - hk_spin_ref_ms[drv]);
-hk_spin_ref_ms[drv] = now;
-if (hk_spin_left_us[drv] < 1.0) {                       /* up to speed meanwhile */
-    sim_cancel (uptr);
-    hk_spin_done (drv);
-    }
-}
-
-/* Run hook (registered with sim_sound): execution starts or stops */
-
-static void hk_run_hook (t_bool running)
-{
-int32 drv;
-
-for (drv = 0; drv < HK_NUMDR; drv++) {
-    UNIT *uptr = hk_dev.units + drv;
-
-    if (hk_spin[drv] != HK_SPIN_UP)
-        continue;
-    if (running) {                                      /* resume: */
-        if (hk_spin_paused[drv]) {
-            hk_spin_catch_up (drv);                     /* deduct the prompt time */
-            hk_spin_paused[drv] = FALSE;
-            if (hk_spin[drv] == HK_SPIN_UP) {           /* schedule the rest */
-                sim_cancel (uptr);
-                uptr->FNC = FNC_SPINUP;
-                hk_activate_us (uptr, hk_spin_left_us[drv]);
-                }
-            }
-        else if (!sim_is_active (uptr))                 /* event lost: finish it */
-            hk_spin_done (drv);
-        }
-    else {                                              /* stop: from now on */
-        hk_spin_left_us[drv] = sim_is_active (uptr) ?   /* wall time */
-            hk_inst_to_us ((double)sim_activate_time (uptr)) : 0.0;
-        hk_spin_ref_ms[drv] = sim_os_msec ();
-        hk_spin_paused[drv] = TRUE;
-        }
-    }
 }
 
 /* Spin a drive down (STOP button, or the UNLOAD function in the realism
@@ -1851,22 +1739,19 @@ static void hk_spin_down (UNIT *uptr)
 {
 int32 drv = (int32)(uptr - hk_dev.units);
 int32 old_hkds = hkds[drv];
+int32 st = sim_spindle_state (&hk_spindle[drv]);
 
-if (hk_spin[drv] == HK_SPIN_STOPPED)
+if ((st == SND_SPIN_STOPPED) || (st == SND_SPIN_DOWN))
     return;
 sim_debug (HKDEB_OPS, &hk_dev, ">>HK%d spin down\n", drv);
-if (sim_is_active (uptr)) {                             /* spin-up or operation */
+if (sim_is_active (uptr)) {                             /* operation in progress */
     sim_cancel (uptr);
-    if ((hk_spin[drv] == HK_SPIN_READY) && (uptr->FNC != FNC_SPINUP)) {
-        hker[drv] = hker[drv] | ER_OPI;                 /* operation incomplete */
-        if ((uptr->FNC & FNC_2ND) == 0)                 /* expecting done? */
-            update_hkcs (CS1_ERR|CS1_DONE, drv);
-        }
+    hker[drv] = hker[drv] | ER_OPI;                     /* operation incomplete */
+    if ((uptr->FNC & FNC_2ND) == 0)                     /* expecting done? */
+        update_hkcs (CS1_ERR|CS1_DONE, drv);
     }
 uptr->FNC = 0;
-hk_spin[drv] = HK_SPIN_STOPPED;
-hk_spin_paused[drv] = FALSE;
-sim_sound_unit_stop (&hk_spindle[drv], SND_GRP_DISK, HK_SPIN_GAIN);
+sim_spindle_stop (&hk_spindle[drv]);
 hk_off[drv] = 0;
 hkds[drv] = (hkds[drv] & ~(DS_RDY | DS_VV | DS_OF | DS_PIP)) | DS_ATA;
 update_hkds (drv);
@@ -1874,70 +1759,37 @@ if ((old_hkds & DS_ATA) == 0)                           /* ATN transition? */
     update_hkcs (CS1_DI, drv);
 }
 
-/* SET HKn ONLINE / OFFLINE: the drive's RUN/STOP button */
-
 /* SET HKn ONLINE / OFFLINE: the drive's RUN/STOP button.
 
    In the realism mode, given at the sim> prompt (or in a command file),
-   the command waits until the spindle is up to speed or has come to rest,
-   so that the next command (e.g. BOOT, DETACH) follows a real operator's
-   pace and the end of the spin-up or spin-down is easy to recognize.
-   The waiting is reported at the start and at the end.  SET -N HKn ...
-   returns at once; the spin-up then goes on in the background. */
+   the command waits until the spindle is up to speed or at rest, so that
+   the next command (e.g. BOOT, DETACH) follows a real operator's pace.
+   SET -N HKn ... returns at once; the spin-up/-down goes on meanwhile. */
 
 t_stat hk_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 drv = (int32)(uptr - hk_dev.units);
-t_bool wait = sim_sound_enabled () && !sim_is_running && !(sim_switches & SWMASK ('N'));
-int32 old_spin = hk_spin[drv];
 
 if (cptr != NULL)
     return SCPE_ARG;
 if (!(uptr->flags & UNIT_ATT))
     return sim_messagef (SCPE_UNATT, "%s: no pack loaded (not attached)\n", sim_uname (uptr));
-if (val) {                                              /* RUN */
+if (val)
     hk_spin_up (uptr);
-    if (wait && (hk_spin[drv] == HK_SPIN_UP)) {
-        sim_printf ("%s: spinning up, ready in %.0f s ...\n", sim_uname (uptr),
-                    hk_spin_left_us[drv] / 1000000.0);
-        while (hk_spin[drv] == HK_SPIN_UP) {            /* wall time at the prompt */
-            sim_os_ms_sleep (50);
-            hk_spin_catch_up (drv);
-            }
-        sim_printf ("%s: up to speed, ready\n", sim_uname (uptr));
-        }
-    }
-else {                                                  /* STOP */
+else
     hk_spin_down (uptr);
-    if (wait && (old_spin != HK_SPIN_STOPPED) && (hk_spindown_ms > 0)) {
-        uint32 start = sim_os_msec ();
-
-        sim_printf ("%s: spinning down, at rest in %.0f s ...\n", sim_uname (uptr),
-                    hk_spindown_ms / 1000.0);
-        while ((sim_os_msec () - start) < (uint32)hk_spindown_ms)
-            sim_os_ms_sleep (50);
-        sim_printf ("%s: at rest\n", sim_uname (uptr));
-        }
-    }
+if (!(sim_switches & SWMASK ('N')))
+    sim_spindle_wait (&hk_spindle[drv]);                /* (realism mode, prompt) */
 return SCPE_OK;
 }
 
 t_stat hk_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
-int32 drv = (int32)(uptr - hk_dev.units);
-
-if (!sim_is_running)                                    /* prompt: wall time passed */
-    hk_spin_catch_up (drv);
-if (!(uptr->flags & UNIT_ATT))
+if (!(uptr->flags & UNIT_ATT)) {
     fprintf (st, "no pack");
-else if (hk_spin[drv] == HK_SPIN_READY)
-    fprintf (st, "online");
-else if (hk_spin[drv] == HK_SPIN_UP)
-    fprintf (st, "spinning up, %.1f s left", (hk_spin_paused[drv] ? hk_spin_left_us[drv] :
-             hk_inst_to_us ((double)sim_activate_time (uptr))) / 1000000.0);
-else
-    fprintf (st, "offline");
-return SCPE_OK;
+    return SCPE_OK;
+    }
+return sim_spindle_show (st, &hk_spindle[uptr - hk_dev.units]);
 }
 
 /* Seek sound: short, medium or long by the distance; a recalibrate is
@@ -1950,17 +1802,10 @@ int32 s_lim = (uptr->flags & UNIT_DTYPE) ? hk_seek7s : hk_seek6s;
 int32 m_lim = (uptr->flags & UNIT_DTYPE) ? hk_seek7m : hk_seek6m;
 int32 cls;
 
-if (!sim_sound_enabled () || ((dist == 0) && !recal))
-    return;
-if (recal || (dist > m_lim))
-    cls = 2;
-else if (dist > s_lim)
-    cls = 1;
-else
-    cls = 0;
-sim_debug (HKDEB_OPS, &hk_dev, ">>HK%d seek sound %s (%d cylinders)\n",
-           (int)(uptr - hk_dev.units), (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), dist);
-sim_sound_play (hk_seek_smp[cls], SND_GRP_DISK, HK_SEEK_GAIN, 0);
+cls = sim_sound_seek (hk_seek_smp, dist, s_lim, m_lim, recal, SND_GRP_DISK, HK_SEEK_GAIN);
+if (cls >= 0)
+    sim_debug (HKDEB_OPS, &hk_dev, ">>HK%d seek sound %s (%d cylinders)\n",
+               (int)(uptr - hk_dev.units), (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), dist);
 }
 
 /* Realistic seek time over dist cylinders in microseconds (see
@@ -1978,40 +1823,6 @@ if (dist <= 0)
 b = (hk_seek_tab[type].max_ms - hk_seek_tab[type].t2t_ms) / (pow (maxd, HK_SEEK_EXP) - 1.0);
 a = hk_seek_tab[type].t2t_ms - b;
 return (uint32)((a + b * pow ((double)dist, HK_SEEK_EXP)) * 1000.0);
-}
-
-/* Realistic durations are converted to instructions here, not with
-   sim_activate_after ().  sim_activate_after () goes through the timer
-   calibration, which during a throttled boot (before the operating system
-   runs its clock) can tie an event to a much later timer tick: transfers
-   then took seconds and VMS timed out (mount verification).  With a
-   throttle set as xK or xM (the realism mode sets one) the throttle's
-   target rate is exact, and simulated time is real time; otherwise the
-   current instruction rate estimate is used. */
-
-static double hk_inst_per_us (void)
-{
-double ips = sim_throt_target_ips ();
-
-if (ips <= 0.0)
-    ips = sim_timer_inst_per_sec ();
-return ips / 1000000.0;
-}
-
-static double hk_inst_to_us (double inst)
-{
-return inst / hk_inst_per_us ();
-}
-
-static void hk_activate_us (UNIT *uptr, double usecs)
-{
-double inst = usecs * hk_inst_per_us ();
-
-if (inst < 1.0)
-    inst = 1.0;
-if (inst > 2000000000.0)
-    inst = 2000000000.0;
-sim_activate (uptr, (int32)inst);
 }
 
 /* Rotational latency: waiting for the sector, 0 .. one revolution */

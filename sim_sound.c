@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   03-Nov-26    Ulli    Spindles (common RUN/STOP support for removable-media
+                        disks), seek sound helper, realistic durations
    03-Nov-26    Ulli    Run hooks for devices; power on restores the unit loops
                         that power off silenced
    02-Nov-26    Ulli    Phase B: unit loops, optional samples, throttle default,
@@ -1034,14 +1036,326 @@ for (i = 0; i < SND_MAX_RUNHOOKS; i++) {
     }
 }
 
+static void snd_spindles_run_state (t_bool running);
+
 void sim_sound_run_state (t_bool running)
 {
 int32 i;
 
+snd_spindles_run_state (running);
 for (i = 0; i < SND_MAX_RUNHOOKS; i++) {
     if (snd_runhooks[i] != NULL)
         snd_runhooks[i] (running);
     }
+}
+
+/* Realistic durations (see sim_sound.h) */
+
+double sim_sound_inst_per_us (void)
+{
+double ips = sim_throt_target_ips ();
+
+if (ips <= 0.0)
+    ips = sim_timer_inst_per_sec ();
+return ips / 1000000.0;
+}
+
+void sim_sound_activate_us (UNIT *uptr, double usecs)
+{
+double inst = usecs * sim_sound_inst_per_us ();
+
+if (inst < 1.0)
+    inst = 1.0;
+if (inst > 2000000000.0)
+    inst = 2000000000.0;
+sim_activate (uptr, (int32)inst);
+}
+
+/* Spindles (see sim_sound.h) */
+
+#define SND_MAX_SPINDLES 32
+
+static SND_SPINDLE *snd_spindles[SND_MAX_SPINDLES];    /* registered spindles */
+static UNIT snd_spindle_units[SND_MAX_SPINDLES];        /* their timers */
+static t_bool snd_spindle_dev_registered = FALSE;
+
+static const char *snd_spindle_description (DEVICE *dptr)
+{
+return "Disk spindle timers (sound realism mode)";
+}
+
+static DEVICE snd_spindle_dev = {
+    "INT-SPINDLE", snd_spindle_units, NULL, NULL,
+    SND_MAX_SPINDLES, 0, 0, 0, 0, 0,
+    NULL, NULL, NULL, NULL, NULL, NULL,
+    NULL, DEV_NOSAVE, 0,
+    NULL, NULL, NULL, NULL, NULL, NULL,
+    &snd_spindle_description};
+
+/* A phase (spin-up or spin-down) is over */
+
+static void snd_spindle_phase_done (SND_SPINDLE *sp)
+{
+sp->paused = FALSE;
+sp->left_us = 0.0;
+if (sp->state == SND_SPIN_UP) {
+    sp->state = SND_SPIN_READY;
+    if (sp->on_ready != NULL)
+        sp->on_ready (sp->uptr);
+    }
+else if (sp->state == SND_SPIN_DOWN) {
+    sp->state = SND_SPIN_STOPPED;
+    if (sp->on_stopped != NULL)
+        sp->on_stopped (sp->uptr);
+    }
+}
+
+static t_stat snd_spindle_svc (UNIT *uptr)
+{
+SND_SPINDLE *sp = snd_spindles[uptr - snd_spindle_units];
+
+if (sp != NULL)
+    snd_spindle_phase_done (sp);
+return SCPE_OK;
+}
+
+/* Start timing a phase of usecs: scheduled now while the CPU runs, kept
+   in the structure (wall time) at the prompt */
+
+static void snd_spindle_schedule (SND_SPINDLE *sp, double usecs)
+{
+sim_cancel (sp->timer);
+sp->left_us = usecs;
+if (sim_is_running) {
+    sp->paused = FALSE;
+    sim_sound_activate_us (sp->timer, usecs);
+    }
+else {
+    sp->paused = TRUE;
+    sp->ref_ms = sim_os_msec ();
+    }
+}
+
+/* At the prompt: deduct the wall time since the last look; finish the
+   phase if it is over */
+
+static void snd_spindle_catch_up (SND_SPINDLE *sp)
+{
+uint32 now;
+
+if (!sp->paused || ((sp->state != SND_SPIN_UP) && (sp->state != SND_SPIN_DOWN)))
+    return;
+now = sim_os_msec ();
+sp->left_us -= 1000.0 * (double)(now - sp->ref_ms);
+sp->ref_ms = now;
+if (sp->left_us < 1.0)
+    snd_spindle_phase_done (sp);
+}
+
+/* Execution starts: schedule what is left; execution stops: keep it */
+
+static void snd_spindles_run_state (t_bool running)
+{
+int32 i;
+
+for (i = 0; i < SND_MAX_SPINDLES; i++) {
+    SND_SPINDLE *sp = snd_spindles[i];
+
+    if ((sp == NULL) || ((sp->state != SND_SPIN_UP) && (sp->state != SND_SPIN_DOWN)))
+        continue;
+    if (running) {
+        if (sp->paused) {
+            snd_spindle_catch_up (sp);
+            if ((sp->state == SND_SPIN_UP) || (sp->state == SND_SPIN_DOWN)) {
+                sp->paused = FALSE;
+                sim_cancel (sp->timer);
+                sim_sound_activate_us (sp->timer, sp->left_us);
+                }
+            }
+        else if (!sim_is_active (sp->timer))    /* lost: finish it */
+            snd_spindle_phase_done (sp);
+        }
+    else if (!sp->paused) {
+        sp->left_us = sim_is_active (sp->timer) ?
+            (double)sim_activate_time (sp->timer) / sim_sound_inst_per_us () : 0.0;
+        sim_cancel (sp->timer);
+        sp->paused = TRUE;
+        sp->ref_ms = sim_os_msec ();
+        }
+    }
+}
+
+void sim_spindle_init (SND_SPINDLE *sp, UNIT *uptr, int32 *spinup_ms, int32 *spindown_ms,
+                       void (*on_ready) (UNIT *uptr), void (*on_stopped) (UNIT *uptr),
+                       int32 group, double gain)
+{
+int32 i;
+
+if (sp->uptr != NULL)                           /* already initialized */
+    return;
+for (i = 0; (i < SND_MAX_SPINDLES) && (snd_spindles[i] != NULL); i++)
+    ;
+if (i == SND_MAX_SPINDLES)
+    return;
+memset (sp, 0, sizeof (*sp));
+sp->uptr = uptr;
+sp->spinup_ms = spinup_ms;
+sp->spindown_ms = spindown_ms;
+sp->on_ready = on_ready;
+sp->on_stopped = on_stopped;
+sp->group = group;
+sp->gain = gain;
+sp->state = SND_SPIN_STOPPED;
+memset (&snd_spindle_units[i], 0, sizeof (snd_spindle_units[i]));
+snd_spindle_units[i].action = &snd_spindle_svc;
+sp->timer = &snd_spindle_units[i];
+snd_spindles[i] = sp;
+if (!snd_spindle_dev_registered) {
+    snd_spindle_dev_registered = TRUE;
+    sim_register_internal_device (&snd_spindle_dev);
+    }
+}
+
+void sim_spindle_load (SND_SPINDLE *sp, const char *dir, const char *prefix)
+{
+char up[CBUFSIZE], run[CBUFSIZE], down[CBUFSIZE];
+
+snprintf (up, sizeof (up), "%s_spinup.wav", prefix);
+snprintf (run, sizeof (run), "%s_running.wav", prefix);
+snprintf (down, sizeof (down), "%s_spindown.wav", prefix);
+sim_sound_unit_load (&sp->sound, dir, up, run, down);
+}
+
+void sim_spindle_start (SND_SPINDLE *sp)
+{
+if ((sp->uptr == NULL) || (sp->state == SND_SPIN_UP) || (sp->state == SND_SPIN_READY))
+    return;
+sim_sound_unit_start (&sp->sound, sp->group, sp->gain);
+if (!snd_enabled) {                             /* normal mode: at once */
+    sim_cancel (sp->timer);
+    sp->state = SND_SPIN_UP;
+    snd_spindle_phase_done (sp);
+    return;
+    }
+sp->state = SND_SPIN_UP;
+snd_spindle_schedule (sp, 1000.0 * ((*sp->spinup_ms > 0) ? *sp->spinup_ms : 1));
+}
+
+void sim_spindle_stop (SND_SPINDLE *sp)
+{
+if ((sp->uptr == NULL) || (sp->state == SND_SPIN_STOPPED) || (sp->state == SND_SPIN_DOWN))
+    return;
+sim_sound_unit_stop (&sp->sound, sp->group, sp->gain);
+sim_cancel (sp->timer);
+sp->state = SND_SPIN_DOWN;
+if (!snd_enabled || (*sp->spindown_ms <= 0))    /* normal mode: at once */
+    snd_spindle_phase_done (sp);
+else
+    snd_spindle_schedule (sp, 1000.0 * *sp->spindown_ms);
+}
+
+void sim_spindle_off (SND_SPINDLE *sp)
+{
+if (sp->uptr == NULL)
+    return;
+if ((sp->state == SND_SPIN_UP) || (sp->state == SND_SPIN_READY))
+    sim_sound_unit_stop (&sp->sound, sp->group, sp->gain);
+sim_cancel (sp->timer);
+sp->state = SND_SPIN_STOPPED;
+sp->paused = FALSE;
+}
+
+void sim_spindle_ready (SND_SPINDLE *sp)
+{
+if (sp->uptr == NULL)
+    return;
+sim_cancel (sp->timer);
+sp->state = SND_SPIN_READY;
+sp->paused = FALSE;
+}
+
+int32 sim_spindle_state (SND_SPINDLE *sp)
+{
+if (!sim_is_running)                            /* prompt: wall time passed */
+    snd_spindle_catch_up (sp);
+return sp->state;
+}
+
+static double snd_spindle_left_s (SND_SPINDLE *sp)
+{
+if (sp->paused)
+    return sp->left_us / 1000000.0;
+if (!sim_is_active (sp->timer))
+    return 0.0;
+return (double)sim_activate_time (sp->timer) / sim_sound_inst_per_us () / 1000000.0;
+}
+
+void sim_spindle_wait (SND_SPINDLE *sp)
+{
+int32 st = sim_spindle_state (sp);
+
+if (sim_is_running || ((st != SND_SPIN_UP) && (st != SND_SPIN_DOWN)))
+    return;
+if (st == SND_SPIN_UP)
+    sim_printf ("%s: spinning up, ready in %.0f s ...\n", sim_uname (sp->uptr), snd_spindle_left_s (sp));
+else
+    sim_printf ("%s: spinning down, at rest in %.0f s ...\n", sim_uname (sp->uptr), snd_spindle_left_s (sp));
+while (sim_spindle_state (sp) == st)
+    sim_os_ms_sleep (50);
+if (sp->state == SND_SPIN_READY)
+    sim_printf ("%s: up to speed, ready\n", sim_uname (sp->uptr));
+else if (sp->state == SND_SPIN_STOPPED)
+    sim_printf ("%s: at rest\n", sim_uname (sp->uptr));
+}
+
+t_stat sim_spindle_show (FILE *st, SND_SPINDLE *sp)
+{
+switch (sim_spindle_state (sp)) {
+    case SND_SPIN_UP:
+        fprintf (st, "spinning up, %.1f s left", snd_spindle_left_s (sp));
+        break;
+    case SND_SPIN_READY:
+        fprintf (st, "online");
+        break;
+    case SND_SPIN_DOWN:
+        fprintf (st, "spinning down, %.1f s left", snd_spindle_left_s (sp));
+        break;
+    default:
+        fprintf (st, "offline");
+        break;
+    }
+return SCPE_OK;
+}
+
+/* Seek sounds (see sim_sound.h) */
+
+void sim_sound_seek_load (SND_SAMPLE *smp[3], const char *dir, const char *prefix)
+{
+static const char *cls[3] = { "s", "m", "l" };
+char name[CBUFSIZE];
+int32 i;
+
+for (i = 0; i < 3; i++) {
+    snprintf (name, sizeof (name), "%s-%s.wav", prefix, cls[i]);
+    smp[i] = sim_sound_load (dir, name);
+    }
+}
+
+int32 sim_sound_seek (SND_SAMPLE *smp[3], int32 dist, int32 s_lim, int32 m_lim,
+                      t_bool force_long, int32 group, double gain)
+{
+int32 cls;
+
+if (!snd_enabled || ((dist == 0) && !force_long))
+    return -1;
+if (force_long || (dist > m_lim))
+    cls = 2;
+else if (dist > s_lim)
+    cls = 1;
+else
+    cls = 0;
+sim_sound_play (smp[cls], group, gain, 0);
+return cls;
 }
 
 void sim_sound_stop (SND_HANDLE handle, uint32 fade_ms)

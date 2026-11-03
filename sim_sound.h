@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   03-Nov-26    Ulli    Spindles: common spin-up/spin-down support for
+                        removable-media disk drives; realistic durations
    03-Nov-26    Ulli    Run hooks for devices; power on restores unit loops
    02-Nov-26    Ulli    Phase B: unit loops, optional samples, throttle default
    02-Nov-26    Ulli    First version (phase A: core, mixer, system sounds)
@@ -197,6 +199,94 @@ void sim_sound_unit_load (SND_UNITLOOP *ul, const char *dir, const char *start,
                           const char *run, const char *stop);
 void sim_sound_unit_start (SND_UNITLOOP *ul, int32 group, double gain);
 void sim_sound_unit_stop (SND_UNITLOOP *ul, int32 group, double gain);
+
+/* Realistic durations.  In the realism mode devices schedule realistic
+   times given in microseconds.  sim_activate_after () is not used for
+   that: it goes through the timer calibration, which during a throttled
+   boot can tie an event to a much later timer tick.  These functions
+   convert at the throttle's target rate when a throttle is set as xK or
+   xM (the realism mode sets one), else at the current rate estimate. */
+
+double sim_sound_inst_per_us (void);
+void sim_sound_activate_us (UNIT *uptr, double usecs);
+
+/* Spindles: the drive RUN/STOP button of removable-media disk drives.
+
+   A SND_SPINDLE per drive is stopped, spinning up, ready or spinning
+   down.  The device tells it about the RUN/STOP button and asks for its
+   state; it calls back the device when the drive is up to speed and when
+   it is at rest.
+
+   - Normal mode (sound disabled): start and stop take effect at once and
+     the callbacks are made at once.
+   - Realism mode: the spin-up takes *spinup_ms and the spin-down
+     *spindown_ms (the device's registers).  While the CPU runs this is
+     simulated time, so the guest always sees the full time; while the
+     simulator is stopped at the sim> prompt it goes on in wall time.
+     The spindle has a timer unit of its own (internal device
+     INT-SPINDLE), which device resets, controller clears and the emptied
+     event queue of RUN/BOOT do not affect: at the prompt the remaining
+     time is kept in the structure and scheduled again when execution
+     resumes.  The spindle sounds (prefix_spinup.wav, prefix_running.wav,
+     prefix_spindown.wav) play if they exist.
+
+   sim_spindle_init ()   once per drive (e.g. in the device reset); later
+                         calls do nothing.
+   sim_spindle_load ()   load the optional spindle sounds (on ATTACH).
+   sim_spindle_start ()  RUN: spin up (also from spinning down).
+   sim_spindle_stop ()   STOP: spin down (also from spinning up).
+   sim_spindle_off ()    the pack is gone (DETACH): stopped at once, no
+                         callback; the spin-down sound plays if it turned.
+   sim_spindle_ready ()  stopped -> ready at once without sound or callback
+                         (normal-mode ATTACH, which spins up at once).
+   sim_spindle_state ()  SND_SPIN_xxx; at the prompt it first takes the
+                         wall time into account (and may call back).
+   sim_spindle_wait ()   at the prompt: wait, with messages, until the
+                         drive is ready or at rest.
+   sim_spindle_show ()   "offline", "spinning up, n s left", "online", ... */
+
+#define SND_SPIN_STOPPED 0                      /* at rest (offline) */
+#define SND_SPIN_UP      1                      /* spinning up */
+#define SND_SPIN_READY   2                      /* up to speed (online) */
+#define SND_SPIN_DOWN    3                      /* spinning down */
+
+typedef struct SND_SPINDLE {
+    UNIT *uptr;                                 /* drive unit (NULL: not initialized) */
+    int32 *spinup_ms;                           /* device register: spin-up time */
+    int32 *spindown_ms;                         /* device register: spin-down time */
+    void (*on_ready) (UNIT *uptr);              /* up to speed (may be NULL) */
+    void (*on_stopped) (UNIT *uptr);            /* at rest (may be NULL) */
+    int32 group;                                /* sound group and gain */
+    double gain;
+    int32 state;                                /* SND_SPIN_xxx */
+    double left_us;                             /* at the prompt: time left */
+    uint32 ref_ms;                              /* ... at this wall clock time */
+    t_bool paused;                              /* the time is kept in left_us */
+    UNIT *timer;                                /* own timer unit */
+    SND_UNITLOOP sound;                         /* spindle sounds */
+    } SND_SPINDLE;
+
+void sim_spindle_init (SND_SPINDLE *sp, UNIT *uptr, int32 *spinup_ms, int32 *spindown_ms,
+                       void (*on_ready) (UNIT *uptr), void (*on_stopped) (UNIT *uptr),
+                       int32 group, double gain);
+void sim_spindle_load (SND_SPINDLE *sp, const char *dir, const char *prefix);
+void sim_spindle_start (SND_SPINDLE *sp);
+void sim_spindle_stop (SND_SPINDLE *sp);
+void sim_spindle_off (SND_SPINDLE *sp);
+void sim_spindle_ready (SND_SPINDLE *sp);
+int32 sim_spindle_state (SND_SPINDLE *sp);
+void sim_spindle_wait (SND_SPINDLE *sp);
+t_stat sim_spindle_show (FILE *st, SND_SPINDLE *sp);
+
+/* Seek sounds: three samples (prefix-s.wav, prefix-m.wav, prefix-l.wav)
+   for short, medium and long seeks.  sim_sound_seek () picks one by the
+   distance and the device's limits (cylinders): up to s_lim short, up to
+   m_lim medium, else long; distance 0 plays nothing unless forced long
+   (a recalibrate).  Only in the realism mode. */
+
+void sim_sound_seek_load (SND_SAMPLE *smp[3], const char *dir, const char *prefix);
+int32 sim_sound_seek (SND_SAMPLE *smp[3], int32 dist, int32 s_lim, int32 m_lim,
+                      t_bool force_long, int32 group, double gain);
 
 #ifdef  __cplusplus
 }
