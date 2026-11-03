@@ -1504,6 +1504,8 @@ static const char simh_help1[] =
       " while the simulator is at the sim> prompt (HALT, ^E, breakpoints, STEP,\n"
       " EXPECT), like the fans of a real system, and is switched off by EXIT\n"
       " (the simulator waits for the stopping sound) or SET SOUND POWER=OFF.\n"
+      " Power off silences every sound; units that keep running (e.g. disk\n"
+      " spindles) get their running sound back at the next power on.\n"
       "4Sound files\n"
       " Sound files are WAV files.  A file is searched in this order:\n\n"
       "++each directory of SET SOUND PATH, as dir/<sim>/file and dir/file\n"
@@ -9407,6 +9409,7 @@ if (sim_step)                                           /* set step timer */
     sim_sched_step ();
 sim_activate_after (&sim_flush_unit, sim_flush_interval * 1000000);/* Enable periodic buffer flushing */
 stop_cpu = FALSE;
+sim_sound_run_state (TRUE);                             /* device run hooks */
 sim_is_running = TRUE;                                  /* flag running */
 fflush(stdout);                                         /* flush stdout */
 if (sim_log)                                            /* flush log if enabled */
@@ -9473,6 +9476,7 @@ if ((SCPE_BARE_STATUS(r) == SCPE_STOP) &&               /* WRU exit from sim_ins
     (sim_on_actions[sim_do_depth][0] == NULL))
     sim_os_ms_sleep (sim_stop_sleep_ms);                /* wait a bit for SIGINT */
 sim_is_running = FALSE;                                 /* flag idle */
+sim_sound_run_state (FALSE);                            /* device run hooks */
 sim_stop_timer_services ();                             /* disable wall clock timing */
 sim_ttcmd ();                                           /* restore console */
 sim_brk_clrall (BRK_TYP_DYN_STEPOVER);                  /* cancel any step/over subroutine breakpoints */

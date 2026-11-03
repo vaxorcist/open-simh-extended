@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   03-Nov-26    Ulli    Run hooks for devices; power on restores the unit loops
+                        that power off silenced
    02-Nov-26    Ulli    Phase B: unit loops, optional samples, throttle default,
                         power off silences every sound
    02-Nov-26    Ulli    First version (phase A: core, mixer, system sounds)
@@ -98,6 +100,11 @@ static char snd_sys_default[SND_SYS_COUNT][CBUFSIZE];/* simulator default system
 static char snd_sys_user[SND_SYS_COUNT][CBUFSIZE];   /* SET SOUND STARTING/RUNNING/STOPPING */
 static SND_SAMPLE *snd_sys_smp[SND_SYS_COUNT];  /* loaded system sounds (may be NULL) */
 static SND_HANDLE snd_sys_handle = 0;           /* voice of the starting/running chain */
+#define SND_MAX_UNITLOOPS 64                     /* registered unit loops */
+#define SND_MAX_RUNHOOKS  8                      /* registered run hooks */
+
+static SND_UNITLOOP *snd_unitloops[SND_MAX_UNITLOOPS];/* every unit loop ever loaded */
+static void (*snd_runhooks[SND_MAX_RUNHOOKS])(t_bool running);
 static char snd_throttle[CBUFSIZE] = "";        /* simulator default throttle (realism mode) */
 static t_bool snd_throttle_set = FALSE;         /* the throttle was set by sim_sound */
 static uint32 snd_throttle_delay = 0;           /* THROT_DELAY before sim_sound set it */
@@ -937,15 +944,30 @@ return snd_play_ex (smp, NULL, 0, group, gain, flags, 0);
 void sim_sound_unit_load (SND_UNITLOOP *ul, const char *dir, const char *start,
                           const char *run, const char *stop)
 {
+int32 i, free_slot = -1;
+
 ul->start = sim_sound_load_optional (dir, start);
 ul->run = sim_sound_load_optional (dir, run);
 ul->stop = sim_sound_load_optional (dir, stop);
 ul->handle = 0;
+ul->active = ul->silenced = FALSE;
+for (i = 0; i < SND_MAX_UNITLOOPS; i++) {       /* register it (once) for */
+    if (snd_unitloops[i] == ul)                 /* power off/on */
+        return;
+    if ((snd_unitloops[i] == NULL) && (free_slot < 0))
+        free_slot = i;
+    }
+if (free_slot >= 0)
+    snd_unitloops[free_slot] = ul;
 }
 
 void sim_sound_unit_start (SND_UNITLOOP *ul, int32 group, double gain)
 {
 sim_sound_stop (ul->handle, 0);                 /* a stopping unit restarted */
+ul->active = TRUE;
+ul->silenced = FALSE;
+ul->group = group;
+ul->gain = gain;
 if (ul->start != NULL)
     ul->handle = snd_play_ex (ul->start, ul->run, SND_F_RANDPHASE, group, gain, 0, 0);
 else
@@ -956,8 +978,70 @@ void sim_sound_unit_stop (SND_UNITLOOP *ul, int32 group, double gain)
 {
 sim_sound_stop (ul->handle, 200);
 ul->handle = 0;
+ul->active = ul->silenced = FALSE;
 if (ul->stop != NULL)
     snd_play_ex (ul->stop, NULL, 0, group, gain, 0, 0);
+}
+
+/* Power on: a unit that kept running while the power was off (its state is
+   the device's business, power off only silences it) gets its running loop
+   back, fading in. */
+
+static void snd_unitloops_restore (void)
+{
+int32 i;
+
+for (i = 0; i < SND_MAX_UNITLOOPS; i++) {
+    SND_UNITLOOP *ul = snd_unitloops[i];
+
+    if ((ul != NULL) && ul->active && ul->silenced) {
+        ul->silenced = FALSE;
+        ul->handle = snd_play_ex (ul->run, NULL, 0, ul->group, ul->gain,
+                                  SND_F_LOOP | SND_F_RANDPHASE, 500);
+        }
+    }
+}
+
+/* Power off silences every voice; remember which unit loops were active */
+
+static void snd_unitloops_silence (void)
+{
+int32 i;
+
+for (i = 0; i < SND_MAX_UNITLOOPS; i++) {
+    SND_UNITLOOP *ul = snd_unitloops[i];
+
+    if ((ul != NULL) && ul->active) {
+        ul->silenced = TRUE;
+        ul->handle = 0;
+        }
+    }
+}
+
+/* Run hooks (see sim_sound.h) */
+
+void sim_sound_register_run_hook (void (*fn)(t_bool running))
+{
+int32 i;
+
+for (i = 0; i < SND_MAX_RUNHOOKS; i++) {
+    if (snd_runhooks[i] == fn)
+        return;
+    if (snd_runhooks[i] == NULL) {
+        snd_runhooks[i] = fn;
+        return;
+        }
+    }
+}
+
+void sim_sound_run_state (t_bool running)
+{
+int32 i;
+
+for (i = 0; i < SND_MAX_RUNHOOKS; i++) {
+    if (snd_runhooks[i] != NULL)
+        snd_runhooks[i] (running);
+    }
 }
 
 void sim_sound_stop (SND_HANDLE handle, uint32 fade_ms)
@@ -1009,6 +1093,7 @@ if (snd_power)                                  /* already on: e.g. RUN after HA
     return;
 snd_power = TRUE;
 snd_sys_start (FALSE);
+snd_unitloops_restore ();                       /* spindles that kept running */
 }
 
 void sim_sound_power_off (t_bool wait)
@@ -1021,9 +1106,11 @@ snd_power = FALSE;
 if (!sim_sound_available ())
     return;
 /* Power off silences everything: the running loop and every unit loop
-   (spindles stop with the power) fade out, the stopping sound plays. */
+   fade out, the stopping sound plays.  Units that stay active (their state
+   belongs to the device) get their loops back at the next power on. */
 snd_stop_ex (SND_CMD_STOPALL, 0, 150);
 snd_sys_handle = 0;
+snd_unitloops_silence ();
 if (stopping != NULL) {
     snd_play_ex (stopping, NULL, 0, SND_GRP_SYSTEM, 1.0, 0, 0);
     if (wait)                                   /* let the run-down finish before exit */

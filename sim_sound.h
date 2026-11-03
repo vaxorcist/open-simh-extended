@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   03-Nov-26    Ulli    Run hooks for devices; power on restores unit loops
    02-Nov-26    Ulli    Phase B: unit loops, optional samples, throttle default
    02-Nov-26    Ulli    First version (phase A: core, mixer, system sounds)
 
@@ -133,6 +134,16 @@ t_bool sim_sound_powered (void);                /* system power is on */
 void sim_sound_power_on (void);                 /* RUN or BOOT command */
 void sim_sound_power_off (t_bool wait);         /* power off, optionally wait for the stopping sound */
 void sim_sound_exit (void);                     /* simulator exit: power off and close audio */
+void sim_sound_run_state (t_bool running);      /* instruction execution starts/stops */
+
+/* Run hooks: a device can register a function that is called whenever
+   instruction execution starts (running = TRUE, just before the first
+   instruction, after any RUN/BOOT reset) or stops (running = FALSE, back
+   at the sim> prompt, including STEP and breakpoints).  Used for things
+   that go on in real time while the simulator is stopped, such as a disk
+   spindle spinning up.  Registering the same function twice is harmless. */
+
+void sim_sound_register_run_hook (void (*fn)(t_bool running));
 
 /* Sample and voice API for devices.
 
@@ -176,6 +187,10 @@ typedef struct {
     SND_SAMPLE *run;                            /* loop (or NULL) */
     SND_SAMPLE *stop;                           /* stop one-shot (or NULL) */
     SND_HANDLE handle;                          /* playing start/loop voice */
+    t_bool active;                              /* unit started (between start and stop) */
+    t_bool silenced;                            /* silenced by power off, restored by power on */
+    int32 group;                                /* group and gain of the last start */
+    double gain;
     } SND_UNITLOOP;
 
 void sim_sound_unit_load (SND_UNITLOOP *ul, const char *dir, const char *start,
