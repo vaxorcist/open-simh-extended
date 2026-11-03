@@ -25,6 +25,9 @@
 
    hk           RK611/RK06/RK07 disk
 
+   03-Nov-26    Ulli    Realism mode: SET HKn ONLINE/OFFLINE at the prompt wait
+                        until the spin-up/spin-down is over (SET -N: no wait),
+                        new register SPINDOWN
    03-Nov-26    Ulli    Realism mode: a spin-up goes on in real (wall) time while
                         the simulator is stopped at the sim> prompt
    02-Nov-26    Ulli    Added the drive RUN/STOP button (SET HKn ONLINE/OFFLINE)
@@ -619,6 +622,7 @@ static uint32 hk_spin_ref_ms[HK_NUMDR];                 /* wall clock when the p
 static double hk_spin_left_us[HK_NUMDR];                /* spin-up time left at that moment */
 static t_bool hk_spin_paused[HK_NUMDR];                 /* spin-up pending while stopped */
 int32 hk_spinup_ms = 30000;                             /* realism: spin-up time (ms) */
+int32 hk_spindown_ms = 30000;                           /* realism: spin-down time (ms) */
 int32 hk_seek6s = 25;                                   /* RK06: short seek up to n cyl */
 int32 hk_seek6m = 150;                                  /* RK06: medium seek up to n cyl */
 int32 hk_seek7s = 50;                                   /* RK07: short seek up to n cyl */
@@ -751,6 +755,7 @@ REG hk_reg[] = {
     { DRDATAD (RTIME,       hk_rwait, 24,             "rotational delay"), REG_NZ + PV_LEFT },
     { DRDATAD (MIN2TIME, hk_min2wait, 24,             "minimum time between DONE and ATA"), REG_NZ + PV_LEFT },
     { DRDATAD (SPINUP,  hk_spinup_ms, 24,             "spin-up time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, hk_spindown_ms, 24,          "spin-down time in ms (sound realism mode)"), PV_LEFT },
     { DRDATAD (SEEK6S,     hk_seek6s, 10,             "RK06 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK6M,     hk_seek6m, 10,             "RK06 medium seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK7S,     hk_seek7s, 10,             "RK07 short seek sound up to n cylinders"), PV_LEFT },
@@ -1871,16 +1876,49 @@ if ((old_hkds & DS_ATA) == 0)                           /* ATN transition? */
 
 /* SET HKn ONLINE / OFFLINE: the drive's RUN/STOP button */
 
+/* SET HKn ONLINE / OFFLINE: the drive's RUN/STOP button.
+
+   In the realism mode, given at the sim> prompt (or in a command file),
+   the command waits until the spindle is up to speed or has come to rest,
+   so that the next command (e.g. BOOT, DETACH) follows a real operator's
+   pace and the end of the spin-up or spin-down is easy to recognize.
+   The waiting is reported at the start and at the end.  SET -N HKn ...
+   returns at once; the spin-up then goes on in the background. */
+
 t_stat hk_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
+int32 drv = (int32)(uptr - hk_dev.units);
+t_bool wait = sim_sound_enabled () && !sim_is_running && !(sim_switches & SWMASK ('N'));
+int32 old_spin = hk_spin[drv];
+
 if (cptr != NULL)
     return SCPE_ARG;
 if (!(uptr->flags & UNIT_ATT))
     return sim_messagef (SCPE_UNATT, "%s: no pack loaded (not attached)\n", sim_uname (uptr));
-if (val)
+if (val) {                                              /* RUN */
     hk_spin_up (uptr);
-else
+    if (wait && (hk_spin[drv] == HK_SPIN_UP)) {
+        sim_printf ("%s: spinning up, ready in %.0f s ...\n", sim_uname (uptr),
+                    hk_spin_left_us[drv] / 1000000.0);
+        while (hk_spin[drv] == HK_SPIN_UP) {            /* wall time at the prompt */
+            sim_os_ms_sleep (50);
+            hk_spin_catch_up (drv);
+            }
+        sim_printf ("%s: up to speed, ready\n", sim_uname (uptr));
+        }
+    }
+else {                                                  /* STOP */
     hk_spin_down (uptr);
+    if (wait && (old_spin != HK_SPIN_STOPPED) && (hk_spindown_ms > 0)) {
+        uint32 start = sim_os_msec ();
+
+        sim_printf ("%s: spinning down, at rest in %.0f s ...\n", sim_uname (uptr),
+                    hk_spindown_ms / 1000.0);
+        while ((sim_os_msec () - start) < (uint32)hk_spindown_ms)
+            sim_os_ms_sleep (50);
+        sim_printf ("%s: at rest\n", sim_uname (uptr));
+        }
+    }
 return SCPE_OK;
 }
 
@@ -2089,6 +2127,10 @@ fprintf (st, "The bad block option can be used only when a unit is attached to a
 fprintf (st, "\nSET HKn OFFLINE and SET HKn ONLINE are the drive's STOP and RUN buttons:\n");
 fprintf (st, "OFFLINE spins the drive down (the pack stays attached), ONLINE spins it up.\n");
 fprintf (st, "SHOW HKn SPINDLE displays the spindle state.\n\n");
+fprintf (st, "In the realism mode SET HKn ONLINE and OFFLINE, given at the sim> prompt or\n");
+fprintf (st, "in a command file, wait until the drive is up to speed (SPINUP) or at rest\n");
+fprintf (st, "(register SPINDOWN, default 30000 ms) before the next command; SET -N HKn\n");
+fprintf (st, "ONLINE or OFFLINE returns at once.\n\n");
 fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
 fprintf (st, "  - ATTACH only loads the pack; the drive stays stopped until SET HKn ONLINE,\n");
 fprintf (st, "    which takes the spin-up time (register SPINUP, default 30000 ms).  While\n");
