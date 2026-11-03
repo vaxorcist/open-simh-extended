@@ -25,6 +25,13 @@
 
    rp           RH/RP/RM moving head disks
 
+   03-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): SET RPn ONLINE
+                        and OFFLINE are the RUN/STOP button of the removable-
+                        pack drives (RM02/03, RP04/05/06, RM05), the UNLOAD
+                        function spins down instead of detaching; realistic
+                        seek, latency and transfer times per drive type
+                        (rotation speed, seek curve); short/medium/long seek
+                        sounds in a sound directory per drive type
    13-Mar-17    RMS     Annotated intentional fall through in switch
    23-Oct-13    RMS     Revised for new boot setup routine
    06-Mar-11    MP      Converted to using sim_disk library and refactored 
@@ -72,6 +79,8 @@
 #endif
 
 #include "sim_disk.h"
+#include "sim_sound.h"
+#include <math.h>
 #include <math.h>
 
 #define RP_CTRL         0                               /* ctrl is RP */
@@ -581,6 +590,63 @@ int32 rp_stopioe = 1;                                   /* stop on error */
 int32 rp_swait = 26;                                    /* seek time */
 int32 rp_rwait = 10;                                    /* rotate time */
 
+/* Sound realism mode (SET SOUND ENABLED)
+
+   Removable-pack drives (RM02/RM03, RP04, RP05, RP06, RM05) have a
+   RUN/STOP button: SET RPn ONLINE spins the drive up, SET RPn OFFLINE
+   spins it down; the pack stays attached.  The spindle (SND_SPINDLE,
+   common support in sim_sound) times it (registers SPINUP, SPINDOWN; at
+   the sim> prompt the commands wait unless SET -N).  ATTACH only loads
+   the pack: medium online (MOL) and drive ready stay off until the drive
+   is up to speed, then the drive raises attention.  The UNLOAD function
+   (RP family) spins the drive down instead of detaching the pack.
+   Fixed disks (RM80, RP07) have no such button: they are ready once
+   attached.  Without the realism mode, ATTACH spins up at once as before,
+   and ONLINE/OFFLINE take effect at once.
+
+   Seeks, searches and transfers take realistic times per drive type:
+   seek time t(d) = a + b * d^e (d cylinders) through the published
+   track-to-track, average (at a third of the stroke) and maximum seek
+   times (the exponent e is fitted to the three; where the maximum is not
+   published, e = 0.69 and the curve goes through the other two),
+   rotational latency 0 .. one revolution, and one sector time per sector
+   transferred, from the rotation speed.  Seeks play a short, medium or
+   long sound from a sound directory per drive type (rm03, rp04, rp05,
+   rm80, rp06, rm05, rp07), selected by the registers SEEKxxxxS/SEEKxxxxM.
+
+   Published figures (Computer History Wiki; Columbia University for the
+   RP06 maximum seek; RM80 start/stop times): see rp_timing below.  The
+   start/stop times of the removable drives are not published; SPINUP and
+   SPINDOWN default to 30 s (provisional). */
+
+#define RP_SEEK_GAIN    0.3
+#define RP_SPIN_GAIN    1.0
+
+static const struct {
+    double rpm;                                         /* rotation speed */
+    double t2t_ms;                                      /* track-to-track seek */
+    double avg_ms;                                      /* average seek */
+    double max_ms;                                      /* maximum seek (0: not published) */
+    t_bool removable;                                   /* removable pack: RUN/STOP button */
+    const char *snd;                                    /* sound directory and prefix */
+    } rp_timing[] = {
+    { 3600.0, 6.0,  30.0, 55.0, TRUE,  "rm03" },        /* RM03 (RM02: same geometry) */
+    { 3600.0, 7.0,  28.0, 50.0, TRUE,  "rp04" },        /* RP04 */
+    { 3600.0, 7.0,  28.0, 50.0, TRUE,  "rp05" },        /* RP05 (an RP04 work-alike) */
+    { 3600.0, 6.0,  25.0, 50.0, FALSE, "rm80" },        /* RM80 (fixed) */
+    { 3600.0, 10.0, 30.0, 55.0, TRUE,  "rp06" },        /* RP06 */
+    { 3600.0, 6.0,  23.0, 0.0,  TRUE,  "rm05" },        /* RM05 */
+    { 3633.0, 5.0,  23.0, 0.0,  FALSE, "rp07" }         /* RP07 (fixed) */
+    };
+
+int32 rp_spinup_ms = 30000;                             /* realism: spin-up time (ms) */
+int32 rp_spindown_ms = 30000;                           /* realism: spin-down time (ms) */
+int32 rp_seek_s[7] = { 50, 25, 25, 35, 50, 50, 40 };    /* short seek up to n cyl, by type */
+int32 rp_seek_m[7] = { 300, 150, 150, 205, 300, 300, 230 };/* medium seek up to n cyl */
+static SND_SPINDLE rp_spindle[8];                       /* the drives' spindles */
+static SND_SAMPLE *rp_seek_smp[8][3];                   /* seek sounds per drive */
+static uint32 rp_rand_state = 1;                        /* rotational latency */
+
 t_stat rp_mbrd (int32 *data, int32 ofs, int32 drv);
 t_stat rp_mbwr (int32 data, int32 ofs, int32 drv);
 t_stat rp_svc (UNIT *uptr);
@@ -596,6 +662,15 @@ t_stat rp_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rp_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat rp_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 int32 rp_abort (void);
+t_stat rp_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat rp_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_bool rp_ready (UNIT *uptr);
+static void rp_spindles_init (void);
+static void rp_spin_down (UNIT *uptr);
+static double rp_seek_us (int32 dtype, int32 dist);
+static double rp_latency_us (int32 dtype);
+static double rp_sector_us (int32 dtype);
+static void rp_seek_sound (UNIT *uptr, int32 dist, t_bool recal);
 t_stat rp_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *rp_description (DEVICE *dptr);
 
@@ -647,6 +722,22 @@ REG rp_reg[] = {
     { BRDATAD  (MR2,              rmmr2, DEV_RDX, 16, RP_NUMDR, "maintenance register 2 (RM only)") },
     { DRDATAD  (STIME,         rp_swait, 24,                    "seek time, per cylinder"), REG_NZ + PV_LEFT },
     { DRDATAD  (RTIME,         rp_rwait, 24,                    "rotational delay"), REG_NZ + PV_LEFT },
+    { DRDATAD  (SPINUP,    rp_spinup_ms, 24,                    "spin-up time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD  (SPINDOWN, rp_spindown_ms, 24,                   "spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD  (SEEKRM03S,  rp_seek_s[0], 10,                   "RM02/RM03 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRM03M,  rp_seek_m[0], 10,                   "RM02/RM03 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRP04S,  rp_seek_s[1], 10,                   "RP04 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRP04M,  rp_seek_m[1], 10,                   "RP04 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRP05S,  rp_seek_s[2], 10,                   "RP05 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRP05M,  rp_seek_m[2], 10,                   "RP05 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRM80S,  rp_seek_s[3], 10,                   "RM80 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRM80M,  rp_seek_m[3], 10,                   "RM80 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRP06S,  rp_seek_s[4], 10,                   "RP06 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRP06M,  rp_seek_m[4], 10,                   "RP06 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRM05S,  rp_seek_s[5], 10,                   "RM05 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRM05M,  rp_seek_m[5], 10,                   "RM05 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRP07S,  rp_seek_s[6], 10,                   "RP07 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD  (SEEKRP07M,  rp_seek_m[6], 10,                   "RP07 medium seek sound up to n cylinders"), PV_LEFT },
     { URDATA   (CAPAC, rp_unit[0].capac, 10, T_ADDR_W, 0, 
               RP_NUMDR, PV_LEFT | REG_HRO) },
     { FLDATAD  (STOP_IOE,    rp_stopioe, 0,                     "stop on I/O error") },
@@ -679,6 +770,12 @@ MTAB rp_mod[] = {
       &rp_set_type, NULL, NULL, "Set RP07 Disk Type" },
     { MTAB_XTD|MTAB_VUN, 0, "TYPE", NULL,
       NULL, &rp_show_type, NULL, "Display device type" },
+    { MTAB_XTD|MTAB_VUN, 1, NULL, "ONLINE",
+      &rp_set_online, NULL, NULL, "Spin the drive up (RUN button, removable packs)" },
+    { MTAB_XTD|MTAB_VUN, 0, NULL, "OFFLINE",
+      &rp_set_online, NULL, NULL, "Spin the drive down (STOP button), pack stays attached" },
+    { MTAB_XTD|MTAB_VUN, 0, "SPINDLE", NULL,
+      NULL, &rp_show_spindle, NULL, "Display the spindle state" },
     { UNIT_AUTO, UNIT_AUTO, "autosize", "AUTOSIZE", 
       NULL, NULL, NULL, "Set type based on file size at attach" },
     { UNIT_AUTO,         0, "noautosize",   "NOAUTOSIZE",   
@@ -1025,7 +1122,7 @@ switch (fnc) {                                          /* case on function */
 
     case FNC_OFFSET:                                    /* offset mode */
     case FNC_RETURN:
-        if ((uptr->flags & UNIT_ATT) == 0) {            /* not attached? */
+        if (!rp_ready (uptr)) {                         /* not attached/spun up? */
             rp_set_er (ER1_UNS, drv);                   /* unsafe */
             break;
             }
@@ -1038,6 +1135,10 @@ switch (fnc) {                                          /* case on function */
             rp_set_er (ER1_ILF, drv);                   /* not supported */
             break;
             }
+        if (sim_sound_enabled ()) {                     /* realism: the spindle */
+            rp_spin_down (uptr);                        /* stops, pack stays */
+            return SCPE_OK;
+            }
         rp_detach (uptr);                               /* detach unit */
         return SCPE_OK;
 
@@ -1045,7 +1146,7 @@ switch (fnc) {                                          /* case on function */
         dc = 0;                                         /* seek to 0 */
     case FNC_SEEK:                                      /* seek */
     case FNC_SEARCH:                                    /* search */
-        if ((uptr->flags & UNIT_ATT) == 0) {            /* not attached? */
+        if (!rp_ready (uptr)) {                         /* not attached/spun up? */
             rp_set_er (ER1_UNS, drv);                   /* unsafe */
             break;
             }
@@ -1057,6 +1158,16 @@ switch (fnc) {                                          /* case on function */
             }
         rpds[drv] = (rpds[drv] & ~DS_RDY) | DS_PIP;     /* set positioning */
         t = abs (dc - uptr->CYL);                       /* cyl diff */
+        if (sim_sound_enabled ()) {                     /* realistic time, sound */
+            double us = rp_seek_us (dtype, t);
+
+            rp_seek_sound (uptr, t, (fnc == FNC_RECAL));
+            if (fnc == FNC_SEARCH)                      /* search: also the sector */
+                us += rp_latency_us (dtype);
+            sim_sound_activate_us (uptr, (us < 100.0) ? 100.0 : us);
+            uptr->CYL = dc;                             /* save cylinder */
+            return SCPE_OK;
+            }
         if (t == 0)                                     /* min time */
             t = 1;
         sim_activate (uptr, rp_swait * t);              /* schedule */
@@ -1068,7 +1179,7 @@ switch (fnc) {                                          /* case on function */
     case FNC_WCHK:                                      /* write check */
     case FNC_READ:                                      /* read */
     case FNC_READH:                                     /* read headers */
-        if ((uptr->flags & UNIT_ATT) == 0) {            /* not attached? */
+        if (!rp_ready (uptr)) {                         /* not attached/spun up? */
             rp_set_er (ER1_UNS, drv);                   /* unsafe */
             break;
             }
@@ -1079,7 +1190,16 @@ switch (fnc) {                                          /* case on function */
             break;
             }
         rpds[drv] = rpds[drv] & ~DS_RDY;                /* clear drive rdy */
-        sim_activate (uptr, rp_rwait + (rp_swait * abs (dc - uptr->CYL)));
+        if (sim_sound_enabled ()) {                     /* realistic time: implied */
+            int32 nbytes = mba_get_bc (rp_dib.ba);      /* seek, wait for the */
+            int32 nsect = (nbytes + (RP_NUMWD * 2) - 1) / (RP_NUMWD * 2);/* sector, */
+                                                        /* transfer the sectors */
+            rp_seek_sound (uptr, abs (dc - uptr->CYL), FALSE);
+            sim_sound_activate_us (uptr, rp_seek_us (dtype, abs (dc - uptr->CYL)) +
+                                         rp_latency_us (dtype) + nsect * rp_sector_us (dtype));
+            }
+        else
+            sim_activate (uptr, rp_rwait + (rp_swait * abs (dc - uptr->CYL)));
         uptr->CYL = dc;                                 /* save cylinder */
         return SCPE_OK;
 
@@ -1134,7 +1254,7 @@ fnc = GET_FNC (rpcs1[drv]);                             /* get function */
 
 sim_debug(DBG_TRC, dptr, "rp_svc(rp%d(%s), %s, da=0x%X, fnc=%s)\n", drv, drv_tab[dtype].name, uptr->io_complete ? "Bottom" : "Top", da, rp_fname[fnc]);
 
-if ((uptr->flags & UNIT_ATT) == 0) {                    /* not attached? */
+if (!rp_ready (uptr)) {                                 /* not attached/spun up? */
     rp_set_er (ER1_UNS, drv);                           /* set drive error */
     if (fnc >= FNC_XFER)                                /* xfr? set done */
         mba_set_don (dibp->ba);
@@ -1306,7 +1426,7 @@ uint16 o_ds = rpds[drv];
 if (rp_unit[drv].flags & UNIT_DIS)
     rpds[drv] = rper1[drv] = 0;
 else rpds[drv] = (rpds[drv] | DS_DPR) & ~DS_PGM;
-if (rp_unit[drv].flags & UNIT_ATT)
+if (rp_ready (&rp_unit[drv]))                           /* attached and spun up? */
     rpds[drv] = rpds[drv] | DS_MOL;
 else rpds[drv] = rpds[drv] & ~(DS_MOL | DS_VV | DS_RDY);
 if (rper1[drv] | rper2[drv] | rper3[drv])
@@ -1334,13 +1454,16 @@ UNIT *uptr;
 sim_debug(DBG_TRC, dptr, "rp_reset()\n");
 
 mba_set_enbdis (dptr);
+rp_spindles_init ();                                    /* (once) */
 for (i = 0; i < RP_NUMDR; i++) {
     uptr = dptr->units + i;
-    sim_cancel (uptr);
+    sim_cancel (uptr);                                  /* (not the spindle) */
     uptr->CYL = 0;
-    if (uptr->flags & UNIT_ATT)
+    if (rp_ready (uptr))                                /* attached, spun up? */
         rpds[i] = (rpds[i] & DS_VV) | DS_DPR | DS_RDY | DS_MOL |
                   ((uptr->flags & UNIT_WPRT)? DS_WRL: 0);
+    else if (uptr->flags & UNIT_ATT)                    /* pack loaded, stopped */
+        rpds[i] = DS_DPR | ((uptr->flags & UNIT_WPRT)? DS_WRL: 0);
     else if (uptr->flags & UNIT_DIS)
         rpds[i] = 0;
     else rpds[i] = DS_DPR;
@@ -1382,9 +1505,22 @@ r = sim_disk_attach_ex (uptr, cptr, RP_NUMWD * sizeof (uint16),
 if (r != SCPE_OK)                                       /* error? */
     return r;
 drv = (int32) (uptr - dptr->units);                     /* get drv number */
+rper1[drv] = 0;
+if (sim_sound_enabled ()) {                             /* realism: load the sounds */
+    int32 dtype = GET_DTYPE (uptr->flags);              /* now, not in the I/O path */
+
+    sim_sound_seek_load (rp_seek_smp[drv], rp_timing[dtype].snd, rp_timing[dtype].snd);
+    if (rp_timing[dtype].removable) {                   /* pack loaded, the drive */
+        sim_spindle_load (&rp_spindle[drv], rp_timing[dtype].snd, rp_timing[dtype].snd);
+        sim_spindle_off (&rp_spindle[drv]);             /* waits for SET RPn ONLINE */
+        rpds[drv] = DS_DPR | ((uptr->flags & UNIT_WPRT)? DS_WRL: 0);
+        rp_update_ds (0, drv);
+        return SCPE_OK;
+        }
+    }
+sim_spindle_ready (&rp_spindle[drv]);                   /* ATTACH spins up */
 rpds[drv] = DS_MOL | DS_RDY | DS_DPR |                  /* upd drv status */
     ((uptr->flags & UNIT_WPRT)? DS_WRL: 0);
-rper1[drv] = 0;
 rp_update_ds (DS_ATA, drv);                             /* upd ctlr status */
 return SCPE_OK;
 }
@@ -1400,9 +1536,180 @@ if (!(uptr->flags & UNIT_ATT))                          /* attached? */
     return SCPE_OK;
 drv = (int32) (uptr - dptr->units);                     /* get drv number */
 rpds[drv] = rpds[drv] & ~(DS_MOL | DS_RDY | DS_WRL | DS_VV | DS_OFM);
+sim_spindle_off (&rp_spindle[drv]);                     /* the pack is gone */
 if (!sim_is_running)                                    /* from console? */
     rp_update_ds (DS_ATA, drv);                         /* request intr */
 return sim_disk_detach (uptr);
+}
+
+/* Sound realism mode: spindles and timing */
+
+/* Is the drive ready: pack attached and (removable packs) spun up? */
+
+static t_bool rp_ready (UNIT *uptr)
+{
+int32 drv = (int32) (uptr - rp_dev.units);
+
+if (!(uptr->flags & UNIT_ATT))
+    return FALSE;
+if (!rp_timing[GET_DTYPE (uptr->flags)].removable)      /* fixed disk */
+    return TRUE;
+return (sim_spindle_state (&rp_spindle[drv]) == SND_SPIN_READY);
+}
+
+/* The spindle is up to speed: medium online, drive ready, attention */
+
+static void rp_on_ready (UNIT *uptr)
+{
+int32 drv = (int32) (uptr - rp_dev.units);
+
+if (!(uptr->flags & UNIT_ATT))
+    return;
+sim_debug (DBG_REQ, &rp_dev, ">>RP%d up to speed\n", drv);
+rpds[drv] = (rpds[drv] & ~DS_VV) | DS_MOL | DS_RDY | DS_DPR |
+    ((uptr->flags & UNIT_WPRT)? DS_WRL: 0);
+rp_update_ds (DS_ATA, drv);
+}
+
+static void rp_spindles_init (void)
+{
+int32 drv;
+
+for (drv = 0; drv < RP_NUMDR; drv++)
+    sim_spindle_init (&rp_spindle[drv], &rp_unit[drv], &rp_spinup_ms, &rp_spindown_ms,
+                      &rp_on_ready, NULL, SND_GRP_DISK, RP_SPIN_GAIN);
+}
+
+/* Spin a drive down (STOP button, or UNLOAD in the realism mode): medium
+   offline, not ready, volume valid lost, attention; an operation in
+   progress ends with drive unsafe.  The pack stays attached. */
+
+static void rp_spin_down (UNIT *uptr)
+{
+int32 drv = (int32) (uptr - rp_dev.units);
+int32 st = sim_spindle_state (&rp_spindle[drv]);
+
+if ((st == SND_SPIN_STOPPED) || (st == SND_SPIN_DOWN))
+    return;
+sim_debug (DBG_REQ, &rp_dev, ">>RP%d spin down\n", drv);
+if (sim_is_active (uptr)) {                             /* operation in progress */
+    sim_cancel (uptr);
+    rp_set_er (ER1_UNS, drv);
+    if (GET_FNC (rpcs1[drv]) >= FNC_XFER)               /* transfer: done */
+        mba_set_don (rp_dib.ba);
+    }
+sim_spindle_stop (&rp_spindle[drv]);
+rpds[drv] = rpds[drv] & ~(DS_MOL | DS_RDY | DS_VV | DS_OFM | DS_PIP);
+rp_update_ds (DS_ATA, drv);
+}
+
+/* SET RPn ONLINE / OFFLINE: RUN/STOP button of a removable-pack drive.
+   Realism mode at the sim> prompt: wait until ready or at rest unless
+   SET -N.  Fixed disks (RM80, RP07) have no such button. */
+
+t_stat rp_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+int32 drv = (int32) (uptr - rp_dev.units);
+int32 dtype = GET_DTYPE (uptr->flags);
+
+if (cptr != NULL)
+    return SCPE_ARG;
+if (!rp_timing[dtype].removable)
+    return sim_messagef (SCPE_NOFNC, "%s: the %s is a fixed disk (no RUN/STOP button)\n",
+                         sim_uname (uptr), drv_tab[dtype].name);
+if (!(uptr->flags & UNIT_ATT))
+    return sim_messagef (SCPE_UNATT, "%s: no pack loaded (not attached)\n", sim_uname (uptr));
+if (val) {
+    sim_debug (DBG_REQ, &rp_dev, ">>RP%d spin up\n", drv);
+    sim_spindle_start (&rp_spindle[drv]);
+    }
+else
+    rp_spin_down (uptr);
+if (!(sim_switches & SWMASK ('N')))
+    sim_spindle_wait (&rp_spindle[drv]);                /* (realism mode, prompt) */
+return SCPE_OK;
+}
+
+t_stat rp_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+if (!(uptr->flags & UNIT_ATT)) {
+    fprintf (st, "no pack");
+    return SCPE_OK;
+    }
+if (!rp_timing[GET_DTYPE (uptr->flags)].removable) {
+    fprintf (st, "fixed disk, online");
+    return SCPE_OK;
+    }
+return sim_spindle_show (st, &rp_spindle[uptr - rp_dev.units]);
+}
+
+/* Seek curve t(d) = a + b * d^e per drive type (see rp_timing): the
+   exponent is fitted (bisection) so that the curve goes through the
+   track-to-track, the average (at a third of the stroke) and the maximum
+   seek time; without a published maximum e = 0.69. */
+
+static double rp_seek_us (int32 dtype, int32 dist)
+{
+static double ea[7], ca[7], cb[7];
+static t_bool done[7];
+double d = (double)(drv_tab[dtype].cyl - 1);
+double t2t = rp_timing[dtype].t2t_ms, avg = rp_timing[dtype].avg_ms, mx = rp_timing[dtype].max_ms;
+
+if (!done[dtype]) {
+    double e = 0.69;
+
+    if (mx > 0.0) {                                     /* fit the exponent */
+        double want = (avg - t2t) / (mx - t2t), lo = 0.2, hi = 1.5;
+        int32 i;
+
+        for (i = 0; i < 60; i++) {                      /* ratio falls with e */
+            e = (lo + hi) / 2.0;
+            if (((pow (d / 3.0, e) - 1.0) / (pow (d, e) - 1.0)) > want)
+                lo = e;
+            else
+                hi = e;
+            }
+        cb[dtype] = (mx - t2t) / (pow (d, e) - 1.0);
+        }
+    else                                                /* through t2t and avg */
+        cb[dtype] = (avg - t2t) / (pow (d / 3.0, e) - 1.0);
+    ca[dtype] = t2t - cb[dtype];
+    ea[dtype] = e;
+    done[dtype] = TRUE;
+    }
+if (dist <= 0)
+    return 0.0;
+return (ca[dtype] + cb[dtype] * pow ((double)dist, ea[dtype])) * 1000.0;
+}
+
+static double rp_rev_us (int32 dtype)
+{
+return 60000000.0 / rp_timing[dtype].rpm;
+}
+
+static double rp_sector_us (int32 dtype)
+{
+return rp_rev_us (dtype) / drv_tab[dtype].sect;
+}
+
+/* Rotational latency: waiting for the sector, 0 .. one revolution */
+
+static double rp_latency_us (int32 dtype)
+{
+rp_rand_state = rp_rand_state * 1103515245u + 12345u;
+return fmod ((double)(rp_rand_state >> 8), rp_rev_us (dtype));
+}
+
+static void rp_seek_sound (UNIT *uptr, int32 dist, t_bool recal)
+{
+int32 drv = (int32) (uptr - rp_dev.units);
+int32 dtype = GET_DTYPE (uptr->flags);
+int32 cls = sim_sound_seek (rp_seek_smp[drv], dist, rp_seek_s[dtype], rp_seek_m[dtype],
+                            recal, SND_GRP_DISK, RP_SEEK_GAIN);
+
+if (cls >= 0)
+    sim_debug (DBG_REQ, &rp_dev, ">>RP%d seek sound %s (%d cylinders)\n", drv,
+               (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), dist);
 }
 
 /* Set type command validation routine */
@@ -1508,6 +1815,25 @@ fprint_show_help (st, dptr);
 fprintf (st, "\nThe type options can be used only when a unit is not attached to a file.\n");
 fprintf (st, "The bad block option can be used only when a unit is attached to a file.\n");
 fprintf (st, "The RP device supports the BOOT command.\n");
+fprintf (st, "\nSET RPn ONLINE and SET RPn OFFLINE are the RUN/STOP button of the\n");
+fprintf (st, "removable-pack drives (RM02/03, RP04/05/06, RM05): OFFLINE spins the drive\n");
+fprintf (st, "down (the pack stays attached), ONLINE spins it up.  SHOW RPn SPINDLE shows\n");
+fprintf (st, "the spindle state.  The RM80 and RP07 are fixed disks without this button.\n\n");
+fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
+fprintf (st, "  - ATTACH of a removable pack only loads it; the drive stays stopped until\n");
+fprintf (st, "    SET RPn ONLINE (spin-up time register SPINUP, spin-down SPINDOWN, both\n");
+fprintf (st, "    30000 ms by default); at the sim> prompt the commands wait until the\n");
+fprintf (st, "    drive is ready or at rest (SET -N RPn ... returns at once);\n");
+fprintf (st, "  - the UNLOAD function spins the drive down instead of detaching the pack;\n");
+fprintf (st, "  - seeks and transfers take realistic times per drive type (3600 rpm, RP07\n");
+fprintf (st, "    3633 rpm; RM03 6/30/55 ms, RP04/05 7/28/50 ms, RP06 10/30/55 ms, RM05\n");
+fprintf (st, "    6/23 ms, RM80 6/25/50 ms, RP07 5/23 ms track-to-track/average/maximum);\n");
+fprintf (st, "  - seeks play <type>-s.wav, -m.wav or -l.wav from the sound directory of the\n");
+fprintf (st, "    drive type (rm03, rp04, rp05, rm80, rp06, rm05, rp07) for short, medium\n");
+fprintf (st, "    and long seeks, with the limits in the registers SEEK<type>S and\n");
+fprintf (st, "    SEEK<type>M (e.g. SEEKRP06S/SEEKRP06M, default 50/300 cylinders); a\n");
+fprintf (st, "    recalibrate is always long.  Optional spindle sounds <type>_spinup.wav,\n");
+fprintf (st, "    <type>_running.wav and <type>_spindown.wav are used if found.\n");
 fprint_reg_help (st, dptr);
 fprintf (st, "\nError handling is as follows:\n\n");
 fprintf (st, "    error         STOP_IOE   processed as\n");
