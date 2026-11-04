@@ -40,6 +40,11 @@
 # headers and libraries are available.  To force a build without video
 # support, invoke GNU make with NOVIDEO=1 on the command line.
 #
+# By default, sound support (sim_sound.c, SDL2 audio) is enabled for all
+# simulators if the SDL2 development headers and libraries are available.
+# To force a build without sound output, invoke GNU make with NOSOUND=1
+# on the command line (SET SOUND still works, sounds are ignored).
+#
 # The default build will build compiler optimized binaries.
 # If debugging is desired, then GNU make can be invoked with
 # DEBUG=1 on the command line.
@@ -859,6 +864,21 @@ ifeq (${WIN32},)  #*nix Environments (&& cygwin)
       $(info *** Info ***)
     endif
   endif
+  # The common sound support (sim_sound.c) is useful for every simulator,
+  # not just for those with video, so SDL2 audio is looked for separately.
+  # A build without sound output: invoke GNU make with NOSOUND=1.
+  ifeq (,$(NOSOUND))
+    ifneq (,$(call find_include,SDL2/SDL))
+      ifneq (,$(call find_lib,SDL2))
+        ifneq (,$(shell which sdl2-config))
+          SOUND_CCDEFS = -DUSE_SIM_SOUND `sdl2-config --cflags`
+          SOUND_LDFLAGS = `sdl2-config --libs`
+          SOUND_FEATURES = - sound capabilities provided by libSDL2 audio
+          $(info using libSDL2 for sound: $(call find_include,SDL2/SDL))
+        endif
+      endif
+    endif
+  endif
   ifeq (cygwin,$(OSTYPE))
     LIBEXT = $(LIBEXTSAVE)
     LIBPATH += /usr/lib/w32api
@@ -1219,6 +1239,20 @@ else
       $(info .)
     endif
   endif
+  # The common sound support (sim_sound.c) is useful for every simulator.
+  # It uses the SDL2 library of the windows-build package, when present.
+  ifeq (,$(NOSOUND))
+    SDL_SOUND_INCLUDE = $(word 1,$(shell dir /b /s ..\windows-build\libSDL\SDL.h))
+    ifeq (SDL.h,$(findstring SDL.h,$(SDL_SOUND_INCLUDE)))
+      SOUND_CCDEFS = -DUSE_SIM_SOUND -I$(abspath $(dir $(SDL_SOUND_INCLUDE)))
+      ifneq ($(DEBUG),)
+        SOUND_LDFLAGS = $(abspath $(dir $(SDL_SOUND_INCLUDE))\..\..\..\lib\lib-VC2008\Debug)/SDL2.lib
+      else
+        SOUND_LDFLAGS = $(abspath $(dir $(SDL_SOUND_INCLUDE))\..\..\..\lib\lib-VC2008\Release)/SDL2.lib
+      endif
+      SOUND_FEATURES = - sound capabilities provided by libSDL2 audio
+    endif
+  endif
   OS_CCDEFS += -fms-extensions $(PTHREADS_CCDEFS)
   OS_LDFLAGS += -lm -lwsock32 -lwinmm $(PTHREADS_LDFLAGS)
   EXE = .exe
@@ -1425,6 +1459,9 @@ ifneq (clean,${MAKECMDGOALS})
   ifneq (,$(VIDEO_FEATURES))
     $(info *** $(VIDEO_FEATURES).)
   endif
+  ifneq (,$(SOUND_FEATURES))
+    $(info *** $(SOUND_FEATURES).)
+  endif
   ifneq (,$(TESTING_FEATURES))
     $(info *** $(TESTING_FEATURES).)
   endif
@@ -1445,11 +1482,11 @@ ifneq ($(DONT_USE_READER_THREAD),)
 endif
 
 CC_OUTSPEC = -o $@
-CC := ${GCC} ${CC_STD} -U__STRICT_ANSI__ ${CFLAGS_G} ${CFLAGS_O} ${CFLAGS_GIT} ${CFLAGS_I} -DSIM_COMPILER="${COMPILER_NAME}" -DSIM_BUILD_TOOL=simh-makefile -I . ${OS_CCDEFS} ${ROMS_OPT}
+CC := ${GCC} ${CC_STD} -U__STRICT_ANSI__ ${CFLAGS_G} ${CFLAGS_O} ${CFLAGS_GIT} ${CFLAGS_I} -DSIM_COMPILER="${COMPILER_NAME}" -DSIM_BUILD_TOOL=simh-makefile -I . ${OS_CCDEFS} ${SOUND_CCDEFS} ${ROMS_OPT}
 ifneq (,${SIM_VERSION_MODE})
   CC += -DSIM_VERSION_MODE="${SIM_VERSION_MODE}"
 endif
-LDFLAGS := ${OS_LDFLAGS} ${NETWORK_LDFLAGS} ${LDFLAGS_O}
+LDFLAGS := ${OS_LDFLAGS} ${NETWORK_LDFLAGS} ${SOUND_LDFLAGS} ${LDFLAGS_O}
 
 #
 # Common Libraries
@@ -1460,7 +1497,7 @@ SIM = ${SIMHD}/scp.c ${SIMHD}/sim_console.c ${SIMHD}/sim_fio.c \
 	${SIMHD}/sim_timer.c ${SIMHD}/sim_sock.c ${SIMHD}/sim_tmxr.c \
 	${SIMHD}/sim_ether.c ${SIMHD}/sim_tape.c ${SIMHD}/sim_disk.c \
 	${SIMHD}/sim_serial.c ${SIMHD}/sim_video.c ${SIMHD}/sim_imd.c \
-	${SIMHD}/sim_card.c
+	${SIMHD}/sim_card.c ${SIMHD}/sim_sound.c
 
 DISPLAYD = ${SIMHD}/display
 

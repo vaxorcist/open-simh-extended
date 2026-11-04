@@ -26,6 +26,12 @@
 
    rb           RB730 - RB02/RB80 disk controller
 
+   04-Nov-2026  Ulli    Sound realism mode (SET SOUND ENABLED): SET RBn
+                        ONLINE/LOAD and OFFLINE/UNLOAD are the LOAD button of
+                        the RB02 (an RL02), ATTACH waits for ONLINE, spin-up/
+                        down (SPINUP, SPINDOWN); realistic RB02 and RB80 seek,
+                        latency and transfer times, seek sounds (sound/rl02,
+                        sound/rm80); SHOW RBn SPINDLE
    04-Nov-2026  Ulli    A finishing seek only raises the drive's attention (it
                         decoded the controller's current command, which may
                         belong to another drive); RB80 with 31 sectors per
@@ -61,6 +67,8 @@
 
 #include "vax_defs.h"
 #include "sim_disk.h"
+#include "sim_sound.h"
+#include <math.h>
 
 /* Constants */
 
@@ -246,6 +254,60 @@ int32 rb_swait = 150;                                   /* seek wait */
 int32 rb_mwait = 300;                                   /* seek wait */
 int32 rb_cwait = 50;                                    /* seek wait */
 
+/* Sound realism mode (SET SOUND ENABLED)
+
+   The RB02 is an RL02 drive on the RB730 controller: its LOAD button is
+   SET RBn ONLINE (or LOAD) and SET RBn OFFLINE (or UNLOAD).  A spindle
+   (SND_SPINDLE, common support in sim_sound) times it with the registers
+   SPINUP and SPINDOWN (defaults as the RL02: 40 s and 30 s); at the sim>
+   prompt the commands wait unless SET -N.  While the drive is not up to
+   speed it is not ready, GET STATUS shows the drive state (load, spin-up
+   or spin-down), and seeks and transfers end with drive error and spin
+   error, as with no cartridge, so VMS sees the medium offline.  When it
+   is up to speed, the drive is locked on with volume check set, as after
+   an ATTACH.  The RB80 (an R80, the RM80's drive) is a fixed disk: it is
+   ready as soon as it is attached.
+
+   - Realism mode: ATTACH of an RB02 only loads the cartridge; the drive
+     waits for SET RBn ONLINE.  Seeks and transfers take realistic times:
+     seek t(d) = a + b * d^e (d cylinders; RB02 as the RL02: 15 ms
+     track-to-track, 100 ms maximum, e = 0.67, head switch 7 ms; RB80 as
+     the RM80: 6/25/50 ms track-to-track/average/maximum, e fitted),
+     rotational latency (0 .. one revolution: RB02 2400 rpm, RB80 3600
+     rpm) and one sector time per sector (RB80: 32 sector slots per
+     revolution, 31 used).  Seeks play the short, medium or long seek
+     sound of the drive (sound/rl02 for the RB02, sound/rm80 for the RB80;
+     registers SEEK02S/SEEK02M, SEEK80S/SEEK80M).  Optional spindle sounds
+     rl02_spinup.wav, rl02_running.wav, rl02_spindown.wav (the RB02 is an
+     RL02).
+   - Normal mode: ATTACH spins up at once and ONLINE/OFFLINE take effect at
+     once; the timing is unchanged. */
+
+#define RB02_SND        "rl02"                          /* the RB02 is an RL02 */
+#define RB80_SND        "rm80"                          /* the RB80 is an R80 */
+#define RB_SEEK_GAIN    0.3
+#define RB_SPIN_GAIN    1.0
+#define RB02_REV_US     25000.0                         /* 2400 rpm */
+#define RB02_T2T_MS     15.0
+#define RB02_MAX_MS     100.0
+#define RB02_EXP        0.67
+#define RB02_HDSW_MS    7.0                             /* head switch only */
+#define RB80_REV_US     (60000000.0 / 3600.0)           /* 3600 rpm */
+#define RB80_SLOTS      32                              /* sector slots per revolution */
+#define RB80_T2T_MS     6.0
+#define RB80_AVG_MS     25.0
+#define RB80_MAX_MS     50.0
+
+int32 rb_spinup_ms = 40000;                             /* realism: RB02 spin-up time (ms) */
+int32 rb_spindown_ms = 30000;                           /* realism: RB02 spin-down time (ms) */
+int32 rb_seek02s = 30;                                  /* RB02 short seek up to n cylinders */
+int32 rb_seek02m = 190;                                 /* RB02 medium seek up to n cylinders */
+int32 rb_seek80s = 35;                                  /* RB80 short seek up to n cylinders */
+int32 rb_seek80m = 205;                                 /* RB80 medium seek up to n cylinders */
+static SND_SPINDLE rb_spindle[4];                       /* the drives' spindles */
+static SND_SAMPLE *rb_seek_smp[4][3];                   /* seek sounds per drive */
+static uint32 rb_rand_state = 1;                        /* rotational latency */
+
 t_stat rb_rd16 (int32 *data, int32 PA, int32 access);
 t_stat rb_wr16 (int32 data, int32 PA, int32 access);
 t_stat rb_rd32 (int32 *data, int32 PA, int32 access);
@@ -261,6 +323,13 @@ t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rb_set_layout (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rb_show_layout (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat rb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+t_stat rb_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat rb_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_bool rb_ready (UNIT *uptr);
+static void rb_spindles_init (void);
+static double rb_seek_us (UNIT *uptr, int32 dist);
+static double rb_xfer_us (UNIT *uptr);
+static void rb_seek_sound (UNIT *uptr, int32 dist);
 
 /* RB730 data structures
 
@@ -288,6 +357,12 @@ UNIT rb_unit[] = {
     };
 
 REG rb_reg[] = {
+    { DRDATAD (SPINUP,   rb_spinup_ms,   24, "RB02 spin-up time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, rb_spindown_ms, 24, "RB02 spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SEEK02S,  rb_seek02s,     10, "RB02 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SEEK02M,  rb_seek02m,     10, "RB02 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SEEK80S,  rb_seek80s,     10, "RB80 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SEEK80M,  rb_seek80m,     10, "RB80 medium seek sound up to n cylinders"), PV_LEFT },
     { NULL }
     };
 
@@ -307,6 +382,16 @@ MTAB rb_mod[] = {
         &set_writelock, NULL,   NULL, "Write lock disk drive" },
     { UNIT_DUMMY,      0, NULL,            "BADBLOCK", 
         &rb_set_bad, NULL, NULL, "write bad block table on last track" },
+    { MTAB_XTD|MTAB_VUN, 1, NULL, "ONLINE",
+        &rb_set_online, NULL, NULL, "RB02 LOAD button in: spin the drive up" },
+    { MTAB_XTD|MTAB_VUN, 1, NULL, "LOAD",
+        &rb_set_online, NULL, NULL, "RB02 LOAD button in: spin the drive up" },
+    { MTAB_XTD|MTAB_VUN, 0, NULL, "OFFLINE",
+        &rb_set_online, NULL, NULL, "RB02 LOAD button out: spin the drive down" },
+    { MTAB_XTD|MTAB_VUN, 0, NULL, "UNLOAD",
+        &rb_set_online, NULL, NULL, "RB02 LOAD button out: spin the drive down" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SPINDLE", NULL,
+        NULL, &rb_show_spindle, NULL, "Display the spindle state" },
     { UNIT_NOAUTO,           0, "autosize", "AUTOSIZE",
         NULL, NULL, NULL, "Set type based on file size at attach" },
     { UNIT_NOAUTO, UNIT_NOAUTO, "noautosize", "NOAUTOSIZE",
@@ -367,7 +452,7 @@ switch ((PA >> 2) & 07) {
             rbcs = rbcs | RBCS_ERR;
         uptr = rb_dev.units + GET_DRIVE (rbcs);
         if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
-            !(uptr->flags & UNIT_ATT))                  /* not ready without a cartridge */
+            !rb_ready (uptr))                           /* no cartridge, not up to speed */
             rbcs = rbcs & ~RBCS_DRDY;
         else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
         if (uptr->flags & UNIT_RB80)
@@ -419,7 +504,7 @@ switch ((PA >> 2) & 07) {
             rbcs = rbcs | RBCS_ERR;
         uptr = rb_dev.units + GET_DRIVE (data);
         if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
-            !(uptr->flags & UNIT_ATT))                  /* not ready without a cartridge */
+            !rb_ready (uptr))                           /* no cartridge, not up to speed */
             rbcs = rbcs & ~RBCS_DRDY;
         else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
         if (uptr->flags & UNIT_RB80)
@@ -450,7 +535,11 @@ switch ((PA >> 2) & 07) {
             sim_activate (uptr, rb_swait);
             break;
         default:                                        /* data transfer */
-            sim_activate (uptr, rb_cwait);              /* activate unit */
+            if (sim_sound_enabled () && rb_ready (uptr) &&  /* realism: latency */
+                (GET_FUNC (rbcs) != RBCS_GSTA))         /* and sector times */
+                sim_sound_activate_us (uptr, rb_xfer_us (uptr));
+            else
+                sim_activate (uptr, rb_cwait);          /* activate unit */
             break;
             }                                           /* end switch func */
         break;
@@ -526,6 +615,16 @@ if (func == RBCS_GSTA) {                                /* get status */
         if (uptr->flags & UNIT_WPRT)
             rbmp = rbmp | RB80DS_WLK;
         }
+    else if ((uptr->flags & UNIT_ATT) && !rb_ready (uptr)) {  /* realism: not */
+        int32 st = sim_spindle_state (&rb_spindle[uptr - rb_dev.units]);  /* up to speed */
+
+        if (rbmp & RBMP_RST)
+            uptr->STAT = uptr->STAT & ~RB02DS_ERR;
+        rbmp = (uptr->STAT & RB02DS_ERR) |              /* load, spin-up (1), */
+            ((st == SND_SPIN_UP) ? 1 : ((st == SND_SPIN_DOWN) ? 7 : RB02DS_LOAD));/* spin-down (7) */
+        if (uptr->flags & UNIT_WPRT)
+            rbmp = rbmp | RB02DS_WLK;
+        }
     else {
         if (rbmp & RBMP_RST)
             uptr->STAT = uptr->STAT & ~RB02DS_ERR;
@@ -547,7 +646,7 @@ if (func == RBCS_RHDR) {                                /* read header? */
     return SCPE_OK;
     }
 
-if ((uptr->flags & UNIT_ATT) == 0) {                    /* attached? */
+if (!rb_ready (uptr)) {                                 /* attached, spun up? */
     rbcs = rbcs & ~RBCS_DRDY;                           /* clear drive ready */
     rbcs = rbcs | (1u << (RBCS_V_ATN + GET_DRIVE (rbcs)));
     if ((uptr->flags & UNIT_RB80) == 0)
@@ -578,8 +677,14 @@ if (func == RBCS_SEEK) {                                /* seek? */
                 (rbda & RBDA_TRACK);                        /* (head selected) */
             swait = rb_cwait * abs (newc - curr);
             if (swait < rb_mwait) swait = rb_mwait;
+            if (sim_sound_enabled ()) {                 /* realism: seek time, sound */
+                rb_seek_sound (uptr, abs (newc - curr));
+                sim_sound_activate_us (uptr, rb_seek_us (uptr, abs (newc - curr)));
+                swait = -1;
+                }
             }
-        sim_activate (uptr, swait);
+        if (swait >= 0)
+            sim_activate (uptr, swait);
         rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
         rbcs = rbcs | RBCS_IRQ;
         rb_set_done(0);
@@ -697,6 +802,7 @@ UNIT *uptr;
 rbcs = CSR_DONE;
 rbda = rbba = rbbc = rbmp = 0;
 CLR_INT (RB);
+rb_spindles_init ();                                    /* (once) */
 for (i = 0; i < RB_NUMDR; i++) {
     uptr = rb_dev.units + i;
     sim_cancel (uptr);
@@ -737,6 +843,20 @@ if (uptr->flags & UNIT_OLDL)
 uptr->TRK = 0;                                          /* cylinder 0 */
 if ((uptr->flags & UNIT_RB80) == 0)
     uptr->STAT = RB02DS_VCK;                            /* new volume */
+if (sim_sound_enabled ()) {                             /* realism: load the sounds */
+    int32 drv = (int32) (uptr - rb_dev.units);          /* now, not in the I/O path */
+    const char *snd = (uptr->flags & UNIT_RB80) ? RB80_SND : RB02_SND;
+
+    sim_sound_seek_load (rb_seek_smp[drv], snd, snd);
+    if ((uptr->flags & UNIT_RB80) == 0) {               /* cartridge loaded, the */
+        sim_spindle_load (&rb_spindle[drv], RB02_SND, RB02_SND);
+        sim_spindle_off (&rb_spindle[drv]);             /* drive waits for ONLINE */
+        }
+    else
+        sim_spindle_ready (&rb_spindle[drv]);
+    }
+else
+    sim_spindle_ready (&rb_spindle[uptr - rb_dev.units]);   /* ATTACH spins up */
 return SCPE_OK;
 }
 
@@ -745,6 +865,8 @@ return SCPE_OK;
 t_stat rb_detach (UNIT *uptr)
 {
 sim_cancel (uptr);
+if (uptr->flags & UNIT_ATT)
+    sim_spindle_off (&rb_spindle[uptr - rb_dev.units]); /* the cartridge is gone */
 return sim_disk_detach (uptr);
 }
 
@@ -813,5 +935,187 @@ fprintf (st, "images can still be used with SET RBn LAYOUT=OLD before the ATTACH
 fprintf (st, "temporary option); converting them once is better.\n");
 fprintf (st, "The RB80 has 31 sectors per track as DEC's drivers use it (242,606 blocks,\n");
 fprintf (st, "like the RM80, which has the same R80 drive); the old layout has 32.\n");
+fprintf (st, "\nSET RBn ONLINE (or LOAD) and SET RBn OFFLINE (or UNLOAD) are the LOAD button\n");
+fprintf (st, "of an RB02: OFFLINE spins the drive down (the cartridge stays attached),\n");
+fprintf (st, "ONLINE spins it up.  SHOW RBn SPINDLE shows the spindle state.  The RB80 is\n");
+fprintf (st, "a fixed disk without this button.\n\n");
+fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
+fprintf (st, "  - ATTACH of an RB02 only loads the cartridge; the drive stays stopped until\n");
+fprintf (st, "    SET RBn ONLINE (spin-up time register SPINUP, default 40000 ms, spin-down\n");
+fprintf (st, "    SPINDOWN, default 30000 ms); at the sim> prompt the commands wait until\n");
+fprintf (st, "    the drive is ready or at rest (SET -N RBn ... returns at once);\n");
+fprintf (st, "  - seeks and transfers take realistic times (RB02 as the RL02: 2400 rpm,\n");
+fprintf (st, "    seek 15 ms track-to-track, 100 ms maximum; RB80 as the RM80: 3600 rpm,\n");
+fprintf (st, "    6/25/50 ms track-to-track/average/maximum);\n");
+fprintf (st, "  - seeks play rl02-s/m/l.wav (RB02) or rm80-s/m/l.wav (RB80) from the sound\n");
+fprintf (st, "    directories rl02 and rm80 for short, medium and long seeks (limits in the\n");
+fprintf (st, "    registers SEEK02S/SEEK02M, default 30/190, and SEEK80S/SEEK80M, default\n");
+fprintf (st, "    35/205 cylinders); optional spindle sounds rl02_spinup.wav,\n");
+fprintf (st, "    rl02_running.wav and rl02_spindown.wav are used if found.\n");
+fprintf (st, "Without the realism mode an RB02 spins up at ATTACH, ONLINE and OFFLINE take\n");
+fprintf (st, "effect at once, and the timing is unchanged.\n");
+fprint_reg_help (st, dptr);
 return SCPE_OK;
+}
+
+/* Sound realism mode (see the description at rb_spinup_ms) */
+
+/* Is the drive ready: attached and (RB02) spun up? */
+
+static t_bool rb_ready (UNIT *uptr)
+{
+if (!(uptr->flags & UNIT_ATT))
+    return FALSE;
+if (uptr->flags & UNIT_RB80)                            /* fixed disk */
+    return TRUE;
+return (sim_spindle_state (&rb_spindle[uptr - rb_dev.units]) == SND_SPIN_READY);
+}
+
+/* The spindle is up to speed: heads loaded, locked on, new volume */
+
+static void rb_on_ready (UNIT *uptr)
+{
+if (!(uptr->flags & UNIT_ATT))
+    return;
+sim_debug (DBG_CMD, &rb_dev, "RB%d up to speed\n", (int32) (uptr - rb_dev.units));
+uptr->TRK = 0;                                          /* heads at cylinder 0 */
+uptr->STAT = RB02DS_VCK;                                /* volume check */
+}
+
+static void rb_spindles_init (void)
+{
+int32 i;
+
+for (i = 0; i < RB_NUMDR; i++)
+    sim_spindle_init (&rb_spindle[i], &rb_unit[i], &rb_spinup_ms, &rb_spindown_ms,
+                      &rb_on_ready, NULL, SND_GRP_DISK, RB_SPIN_GAIN);
+}
+
+/* SET RBn ONLINE/LOAD, OFFLINE/UNLOAD: the LOAD button of the RB02.
+   Realism mode at the sim> prompt: wait until ready or at rest unless
+   SET -N.  The RB80 is a fixed disk without such a button. */
+
+t_stat rb_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+int32 drv = (int32) (uptr - rb_dev.units);
+int32 st;
+
+if (cptr != NULL)
+    return SCPE_ARG;
+if (uptr->flags & UNIT_RB80)
+    return sim_messagef (SCPE_NOFNC, "%s: the RB80 is a fixed disk (no LOAD button)\n", sim_uname (uptr));
+if (!(uptr->flags & UNIT_ATT))
+    return sim_messagef (SCPE_UNATT, "%s: no cartridge loaded (not attached)\n", sim_uname (uptr));
+st = sim_spindle_state (&rb_spindle[drv]);
+if (val) {
+    if ((st != SND_SPIN_UP) && (st != SND_SPIN_READY)) {
+        sim_debug (DBG_CMD, &rb_dev, "RB%d spin up\n", drv);
+        sim_spindle_start (&rb_spindle[drv]);
+        }
+    }
+else if ((st != SND_SPIN_STOPPED) && (st != SND_SPIN_DOWN)) {
+    sim_debug (DBG_CMD, &rb_dev, "RB%d spin down\n", drv);
+    sim_spindle_stop (&rb_spindle[drv]);                /* (a transfer still */
+    }                                                   /* queued ends with spin error) */
+if (!(sim_switches & SWMASK ('N')))
+    sim_spindle_wait (&rb_spindle[drv]);                /* (realism mode, prompt) */
+return SCPE_OK;
+}
+
+/* SHOW RBn SPINDLE.  MTAB_NMO: SCP adds no line end, so this does. */
+
+t_stat rb_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+t_stat r = SCPE_OK;
+
+if (uptr->flags & UNIT_RB80)
+    fprintf (st, "fixed disk (no LOAD button)");
+else if (!(uptr->flags & UNIT_ATT))
+    fprintf (st, "no cartridge");
+else
+    r = sim_spindle_show (st, &rb_spindle[uptr - rb_dev.units]);
+fputc ('\n', st);
+return r;
+}
+
+/* Realistic seek time over dist cylinders (us): t(d) = a + b * d^e with
+   t(1) = track-to-track.  RB02 (the RL02): through the track-to-track and
+   the maximum seek, e = 0.67, a head switch only takes 7 ms.  RB80 (the
+   R80): e fitted so the curve also passes through the average seek at a
+   third of the stroke. */
+
+static double rb_seek_us (UNIT *uptr, int32 dist)
+{
+static double e80, a80, b80;
+static t_bool done80 = FALSE;
+
+if (uptr->flags & UNIT_RB80) {
+    if (!done80) {
+        double d = (double) (RB80_NUMCY - 1);
+        double want = (RB80_AVG_MS - RB80_T2T_MS) / (RB80_MAX_MS - RB80_T2T_MS);
+        double lo = 0.2, hi = 1.5, e = 0.69;
+        int32 i;
+
+        for (i = 0; i < 60; i++) {                      /* ratio falls with e */
+            e = (lo + hi) / 2.0;
+            if (((pow (d / 3.0, e) - 1.0) / (pow (d, e) - 1.0)) > want)
+                lo = e;
+            else
+                hi = e;
+            }
+        b80 = (RB80_MAX_MS - RB80_T2T_MS) / (pow (d, e) - 1.0);
+        a80 = RB80_T2T_MS - b80;
+        e80 = e;
+        done80 = TRUE;
+        }
+    if (dist <= 0)
+        return 100.0;
+    return (a80 + b80 * pow ((double) dist, e80)) * 1000.0;
+    }
+else {
+    double maxd = (double) (RB02_NUMCY - 1);
+    double b = (RB02_MAX_MS - RB02_T2T_MS) / (pow (maxd, RB02_EXP) - 1.0);
+    double a = RB02_T2T_MS - b;
+
+    if (dist <= 0)
+        return RB02_HDSW_MS * 1000.0;
+    return (a + b * pow ((double) dist, RB02_EXP)) * 1000.0;
+    }
+}
+
+/* Realistic time of a transfer (us): rotational latency and one sector
+   time per sector (the transfer stops at the end of the track; RB80: 32
+   sector slots per revolution, of which 31 are used); reading a header
+   waits for the next sector. */
+
+static double rb_xfer_us (UNIT *uptr)
+{
+double rev = (uptr->flags & UNIT_RB80) ? RB80_REV_US : RB02_REV_US;
+double sect = rev / ((uptr->flags & UNIT_RB80) ? RB80_SLOTS : RB_NUMSC (uptr));
+int32 wc = ((rbbc * -1) >> 1);
+int32 nsect = (wc + RB_NUMWD (uptr) - 1) / RB_NUMWD (uptr);
+int32 left = RB_NUMSC (uptr) - (int32) GET_SECT (rbda);
+
+if (GET_FUNC (rbcs) == RBCS_RHDR)
+    return sect;
+if (left < 1)
+    left = 1;
+if (nsect > left)
+    nsect = left;
+if (nsect < 1)
+    nsect = 1;
+rb_rand_state = rb_rand_state * 1103515245u + 12345u;
+return fmod ((double) (rb_rand_state >> 8), rev) + nsect * sect;
+}
+
+static void rb_seek_sound (UNIT *uptr, int32 dist)
+{
+int32 drv = (int32) (uptr - rb_dev.units);
+int32 rb80 = (uptr->flags & UNIT_RB80) != 0;
+int32 cls = sim_sound_seek (rb_seek_smp[drv], dist, rb80 ? rb_seek80s : rb_seek02s,
+                            rb80 ? rb_seek80m : rb_seek02m, FALSE, SND_GRP_DISK, RB_SEEK_GAIN);
+
+if (cls >= 0)
+    sim_debug (DBG_CMD, &rb_dev, "RB%d seek sound %s (%d cylinders)\n", drv,
+               (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), dist);
 }

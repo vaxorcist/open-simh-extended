@@ -26,6 +26,12 @@
 
    rq           MSCP disk controller
 
+   04-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED) for the RA60,
+                        the removable-pack drive: SET RQn ONLINE/OFFLINE (RUN/
+                        STOP button) spins the drive up/down (registers SPINUP,
+                        SPINDOWN), ATTACH waits for ONLINE, AVAILABLE with spin-
+                        down spins down; realistic seek/transfer times and seek
+                        sounds (sound/ra60, registers SEEKRA60S/SEEKRA60M)
    23-Oct-13    RMS     Revised for new boot setup routine
    09-Dec-12    MB      Added support for changing controller type.
    24-Oct-12    MB      Added mapped transfers for VAX
@@ -131,6 +137,8 @@ extern int32 MMR2;
 #include "pdp11_uqssp.h"
 #include "pdp11_mscp.h"
 #include "sim_disk.h"
+#include "sim_sound.h"
+#include <math.h>
 
 #define UF_MSK          (UF_CMR|UF_CMW)                 /* settable flags */
 
@@ -1060,6 +1068,64 @@ int32 rq_itime4 = 10;                                   /* stage 4 */
 int32 rq_qtime = RQ_QTIME;                              /* queue time */
 int32 rq_xtime = RQ_XTIME;                              /* transfer time */
 
+/* Sound realism mode (SET SOUND ENABLED) for the RA60
+
+   The RA60 is the only removable-pack drive of the RA series.  Its RUN/STOP
+   button is SET RQn ONLINE / SET RQn OFFLINE: OFFLINE spins the drive down
+   (the pack stays attached), ONLINE spins it up.  A spindle (SND_SPINDLE,
+   common support in sim_sound) times this with the registers SPINUP and
+   SPINDOWN; at the sim> prompt the commands wait unless SET -N.  While the
+   drive is not up to speed, the unit reports "offline, no volume" (the MSCP
+   status for a drive stopped by its RUN/STOP switch): GET UNIT STATUS and
+   ONLINE fail, transfers end with that status, and a unit that was online
+   loses its online state (the host must bring it online again, e.g. VMS
+   mount verification).  When the drive is up to speed, the controller
+   sends an "available" attention message, as after an ATTACH.
+
+   - Realism mode: ATTACH only loads the pack; the drive waits for SET RQn
+     ONLINE.  AVAILABLE with the spin-down modifier (VMS DISMOUNT/UNLOAD)
+     spins the drive down instead of detaching the pack.  Transfers take
+     realistic times: seek t(d) = a + b * d^e (d cylinders) through the
+     track-to-track, average (at a third of the stroke) and maximum seek
+     times, plus rotational latency (0 .. one revolution) and one sector
+     slot (43 per track: 42 + 1 spare) per block, plus a track-to-track seek
+     per cylinder crossed.  Seeks play ra60-s.wav, -m.wav or -l.wav from the
+     sound directory ra60 for short, medium and long seeks (registers
+     SEEKRA60S/SEEKRA60M, in cylinders).  Optional spindle sounds
+     ra60_spinup.wav, ra60_running.wav and ra60_spindown.wav play if found.
+   - Normal mode: ATTACH spins up at once and ONLINE/OFFLINE take effect at
+     once; the timing is unchanged (QTIME/XTIME).
+
+   Fixed RA/RD/RF drives are unchanged in both modes.
+
+   Published RA60 figures (DEC RA60/RA80/RA81 brochure, Aug 1982): 3600 rpm,
+   seek 7 ms track-to-track, 42 ms average, 70 ms maximum, start 35 s,
+   stop 35 s.
+
+   The per-unit realism state (spindle, current cylinder) is allocated when
+   first needed, since a controller can have up to RQ_MAXDR units. */
+
+#define RA60_SND        "ra60"                          /* sound directory and prefix */
+#define RA60_RPM        3600.0
+#define RA60_T2T_MS     7.0                             /* track-to-track seek */
+#define RA60_AVG_MS     42.0                            /* average seek */
+#define RA60_MAX_MS     70.0                            /* maximum seek */
+#define RQ_SEEK_GAIN    0.3
+#define RQ_SPIN_GAIN    1.0
+
+typedef struct {
+    SND_SPINDLE         sp;                             /* the drive's spindle */
+    int32               cyl;                            /* current cylinder */
+    } RQ_RLZ;
+
+int32 rq_spinup_ms = 35000;                             /* realism: RA60 spin-up time (ms) */
+int32 rq_spindown_ms = 35000;                           /* realism: RA60 spin-down time (ms) */
+int32 rq_seek60s = 100;                                 /* short seek up to n cylinders */
+int32 rq_seek60m = 600;                                 /* medium seek up to n cylinders */
+static RQ_RLZ *rq_rlz[RQ_NUMCT][RQ_MAXDR + 2];          /* per-unit realism state */
+static SND_SAMPLE *rq_seek_smp[3];                      /* RA60 seek sounds */
+static uint32 rq_rand_state = 1;                        /* rotational latency */
+
 typedef struct {
     uint32              cnum;                           /* ctrl number */
     uint32              sa;                             /* status, addr */
@@ -1156,6 +1222,13 @@ t_stat rq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat rq_show_unitq (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *rq_description (DEVICE *dptr);
+t_stat rq_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat rq_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_bool rq_is_ra60 (UNIT *uptr);
+static RQ_RLZ *rq_rlz_get (UNIT *uptr);
+static t_bool rq_ready (UNIT *uptr);
+static void rq_spin_down (UNIT *uptr);
+static double rq_rlz_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc);
 
 t_bool rq_step4 (MSC *cp);
 t_bool rq_mscp (MSC *cp, uint16 pkt, t_bool q);
@@ -1256,6 +1329,10 @@ REG rq_reg[] = {
     { DRDATAD (I4TIME,  rq_itime4,                  24, "init stage 4 delay"), PV_LEFT + REG_NZ },
     { DRDATAD (QTIME,   rq_qtime,                   24, "response time for 'immediate' packets"), PV_LEFT + REG_NZ },
     { DRDATAD (XTIME,   rq_xtime,                   24, "response time for data transfers"), PV_LEFT + REG_NZ },
+    { DRDATAD (SPINUP,  rq_spinup_ms,               24, "RA60 spin-up time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, rq_spindown_ms,            24, "RA60 spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SEEKRA60S, rq_seek60s,               24, "RA60 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SEEKRA60M, rq_seek60m,               24, "RA60 medium seek sound up to n cylinders"), PV_LEFT },
     { VBRDATAD (PKTS,   rq_ctx.pak,     DEV_RDX,    16, sizeof(rq_ctx.pak)/2, "packet buffers, 33W each, 32 entries") },
     { URDATAD (CPKT,    rq_unit[0].cpkt, 10, 5, 0, RQ_NUMDR, 0, "current packet, units 0 to 3") },
     { URDATAD (UCNUM,   rq_unit[0].cnum, 10, 5, 0, RQ_NUMDR, 0, "ctrl number, units 0 to 3") },
@@ -1274,6 +1351,12 @@ MTAB rq_mod[] = {
         &rq_set_wlk, &rq_show_wlk, NULL, "Write enable disk drive" },
     { MTAB_XTD|MTAB_VUN,        1,  NULL, "LOCKED", 
         &rq_set_wlk, NULL, NULL, "Write lock disk drive"  },
+    { MTAB_XTD|MTAB_VUN,        1,  NULL, "ONLINE",
+        &rq_set_online, NULL, NULL, "RA60 RUN/STOP button: spin the drive up" },
+    { MTAB_XTD|MTAB_VUN,        0,  NULL, "OFFLINE",
+        &rq_set_online, NULL, NULL, "RA60 RUN/STOP button: spin the drive down" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SPINDLE", NULL,
+        NULL, &rq_show_spindle, NULL, "Display the RA60 spindle state" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_RI, "RINGS", NULL,
       NULL, &rq_show_ctrl, NULL, "Display command and response rings" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_FR, "FREEQ", NULL,
@@ -2044,8 +2127,12 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
         return OK;
         }
     uptr->flags = uptr->flags & ~UNIT_ONL;              /* not online */
-    if ((mdf & MD_SPD) && RQ_RMV (uptr))                /* unload of removable device */
-        sim_disk_unload (uptr);
+    if ((mdf & MD_SPD) && RQ_RMV (uptr)) {              /* unload of removable device */
+        if (sim_sound_enabled () && rq_is_ra60 (uptr))  /* realism: the RA60 */
+            rq_spin_down (uptr);                        /* spins down, pack stays */
+        else
+            sim_disk_unload (uptr);
+        }
     uptr->uf = 0;                                       /* clr flags */
     sts = ST_SUC;                                       /* success */
     }
@@ -2099,7 +2186,7 @@ if (cp->pak[pkt].d[CMD_MOD] & MD_NXU) {                 /* next unit? */
         }
     }
 if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
-    if ((uptr->flags & UNIT_ATT) == 0)                  /* not attached? */
+    if (!rq_ready (uptr))                               /* not attached, spun down? */
         sts = ST_OFL | SB_OFL_NV;                       /* offl no vol */
     else if (uptr->flags & UNIT_ONL)                    /* online */
         sts = ST_SUC;
@@ -2140,7 +2227,7 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
         rq_enqt (cp, &uptr->pktq, pkt);                 /* do later */
         return OK;
         }
-    if ((uptr->flags & UNIT_ATT) == 0)                  /* not attached? */
+    if (!rq_ready (uptr))                               /* not attached, spun down? */
         sts = ST_OFL | SB_OFL_NV;                       /* offl no vol */
     else if (uptr->flags & UNIT_ONL)                    /* already online? */
         sts = ST_SUC | SB_SUC_ON;
@@ -2296,7 +2383,11 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
         cp->pak[pkt].d[RW_WMPL] = cp->pak[pkt].d[RW_MAPL];
         cp->pak[pkt].d[RW_WMPH] = cp->pak[pkt].d[RW_MAPH];
         uptr->iostarttime = sim_grtime();
-        sim_activate (uptr, 0);                         /* activate */
+        if (sim_sound_enabled () && rq_is_ra60 (uptr))  /* realism: seek, rotation, */
+            sim_sound_activate_us (uptr,                /* sector times, seek sound */
+                rq_rlz_xfer_us (uptr, GETP32 (pkt, RW_LBNL), GETP32 (pkt, RW_BCL)));
+        else
+            sim_activate (uptr, 0);                     /* activate */
         sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_rw - started\n");
         return OK;                                      /* done */
         }
@@ -2316,7 +2407,7 @@ uint32 lbn = GETP32 (pkt, RW_LBNL);                     /* get lbn */
 uint32 bc = GETP32 (pkt, RW_BCL);                       /* get byte cnt */
 uint32 maxlbn = (uint32)uptr->capac;                    /* get max lbn */
 
-if ((uptr->flags & UNIT_ATT) == 0)                      /* not attached? */
+if (!rq_ready (uptr))                                   /* not attached, spun down? */
     return (ST_OFL | SB_OFL_NV);                        /* offl no vol */
 if ((uptr->flags & UNIT_ONL) == 0)                      /* not online? */
     return ST_AVL;                                      /* only avail */
@@ -2479,7 +2570,8 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_svc(%s,unit=%d, pkt=%d, cmd=%s, lbn
 
 tbc = (bc > RQ_MAXFR)? RQ_MAXFR: bc;                    /* trim cnt to max */
 
-if ((uptr->flags & UNIT_ATT) == 0) {                    /* not attached? */
+if (!rq_ready (uptr)) {                                 /* not attached, spun down? */
+    uptr->io_complete = 0;                              /* (a finished part is lost) */
     rq_rw_end (cp, uptr, 0, ST_OFL | SB_OFL_NV);        /* offl no vol */
     return SCPE_OK;
     }
@@ -3241,6 +3333,20 @@ r = sim_disk_attach_ex (uptr, cptr, RQ_NUMBY, sizeof (uint16), dontchangecapac, 
 if (r != SCPE_OK)
     return r;
 
+if (rq_is_ra60 (uptr)) {                                /* the RA60 spindle */
+    RQ_RLZ *rz = rq_rlz_get (uptr);
+
+    if (rz == NULL)
+        return SCPE_MEM;
+    rz->cyl = 0;                                        /* heads at home */
+    if (sim_sound_enabled ()) {                         /* realism: pack loaded, */
+        sim_sound_seek_load (rq_seek_smp, RA60_SND, RA60_SND);
+        sim_spindle_load (&rz->sp, RA60_SND, RA60_SND);
+        sim_spindle_off (&rz->sp);                      /* waits for SET RQn ONLINE */
+        return SCPE_OK;
+        }
+    sim_spindle_ready (&rz->sp);                        /* ATTACH spins up */
+    }
 if ((cp->csta == CST_UP) && sim_disk_isavailable (uptr))
     uptr->flags = uptr->flags | UNIT_ATP;
 return SCPE_OK;
@@ -3257,6 +3363,8 @@ if (r != SCPE_OK)
     return r;
 uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP);     /* clr onl, atn pend */
 uptr->uf = 0;                                           /* clr unit flgs */
+if (rq_is_ra60 (uptr) && (rq_rlz_get (uptr) != NULL))
+    sim_spindle_off (&rq_rlz_get (uptr)->sp);           /* the pack is gone */
 return SCPE_OK;
 } 
 
@@ -3596,6 +3704,205 @@ if (val & RQ_SH_UN) {
 return SCPE_OK;
 }
 
+/* Sound realism mode: the RA60 (see the description at rq_spinup_ms) */
+
+static t_bool rq_is_ra60 (UNIT *uptr)
+{
+return (GET_DTYPE (uptr->flags) == RA60_DTYPE);
+}
+
+/* Unit index within its controller */
+
+static int32 rq_unit_index (UNIT *uptr)
+{
+return (int32) (uptr - rq_devmap[uptr->cnum]->units);
+}
+
+/* The spindle is up to speed: the unit is available again, so the
+   controller sends an "available" attention message (rq_tmrsvc). */
+
+static void rq_on_ready (UNIT *uptr)
+{
+MSC *cp = rq_ctxmap[uptr->cnum];
+
+if (!(uptr->flags & UNIT_ATT))
+    return;
+sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RA60 up to speed\n", sim_uname (uptr));
+if ((cp->csta == CST_UP) && sim_disk_isavailable (uptr))
+    uptr->flags = uptr->flags | UNIT_ATP;
+}
+
+/* The unit's realism state, allocated (and its spindle set up) on first
+   use; NULL only if out of memory. */
+
+static RQ_RLZ *rq_rlz_get (UNIT *uptr)
+{
+uint32 c = uptr->cnum;
+int32 u = rq_unit_index (uptr);
+RQ_RLZ *rz;
+
+if ((c >= RQ_NUMCT) || (u < 0) || (u >= (RQ_MAXDR + 2)))
+    return NULL;
+rz = rq_rlz[c][u];
+if (rz == NULL) {
+    rz = (RQ_RLZ *) calloc (1, sizeof (*rz));
+    if (rz == NULL)
+        return NULL;
+    sim_spindle_init (&rz->sp, uptr, &rq_spinup_ms, &rq_spindown_ms,
+                      &rq_on_ready, NULL, SND_GRP_DISK, RQ_SPIN_GAIN);
+    rq_rlz[c][u] = rz;
+    }
+return rz;
+}
+
+/* Is the unit ready: attached and (RA60) spun up?  An RA60 without a
+   realism state (never attached since start) counts as ready if attached. */
+
+static t_bool rq_ready (UNIT *uptr)
+{
+RQ_RLZ *rz;
+
+if (!(uptr->flags & UNIT_ATT))
+    return FALSE;
+if (!rq_is_ra60 (uptr))
+    return TRUE;
+if ((uptr->cnum >= RQ_NUMCT) || ((rz = rq_rlz[uptr->cnum][rq_unit_index (uptr)]) == NULL))
+    return TRUE;
+return (sim_spindle_state (&rz->sp) == SND_SPIN_READY);
+}
+
+/* Spin the RA60 down (STOP button, or AVAILABLE with spin-down in the
+   realism mode).  The unit leaves the online state; a transfer in progress
+   ends with "offline, no volume" when it is serviced next (rq_svc).  The
+   pack stays attached. */
+
+static void rq_spin_down (UNIT *uptr)
+{
+RQ_RLZ *rz = rq_rlz_get (uptr);
+int32 st;
+
+if (rz == NULL)
+    return;
+st = sim_spindle_state (&rz->sp);
+if ((st == SND_SPIN_STOPPED) || (st == SND_SPIN_DOWN))
+    return;
+sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RA60 spin down\n", sim_uname (uptr));
+uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP);     /* not online any more */
+uptr->uf = 0;
+sim_spindle_stop (&rz->sp);
+}
+
+/* SET RQn ONLINE / OFFLINE: the RUN/STOP button of the RA60.  Realism
+   mode at the sim> prompt: wait until ready or at rest unless SET -N. */
+
+t_stat rq_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+RQ_RLZ *rz;
+
+if (cptr != NULL)
+    return SCPE_ARG;
+if (!rq_is_ra60 (uptr))
+    return sim_messagef (SCPE_NOFNC, "%s: the %s has no RUN/STOP button (only the RA60)\n",
+                         sim_uname (uptr), drv_tab[GET_DTYPE (uptr->flags)].name);
+if (!(uptr->flags & UNIT_ATT))
+    return sim_messagef (SCPE_UNATT, "%s: no pack loaded (not attached)\n", sim_uname (uptr));
+if ((rz = rq_rlz_get (uptr)) == NULL)
+    return SCPE_MEM;
+if (val) {
+    sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RA60 spin up\n", sim_uname (uptr));
+    sim_spindle_start (&rz->sp);
+    }
+else
+    rq_spin_down (uptr);
+if (!(sim_switches & SWMASK ('N')))
+    sim_spindle_wait (&rz->sp);                         /* (realism mode, prompt) */
+return SCPE_OK;
+}
+
+/* SHOW RQn SPINDLE.  MTAB_NMO: SCP adds no line end, so this does. */
+
+t_stat rq_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+t_stat r = SCPE_OK;
+
+if (!rq_is_ra60 (uptr))
+    fprintf (st, "fixed disk (no RUN/STOP button)");
+else if (!(uptr->flags & UNIT_ATT))
+    fprintf (st, "no pack");
+else if (rq_rlz_get (uptr) == NULL)
+    r = SCPE_MEM;
+else
+    r = sim_spindle_show (st, &rq_rlz_get (uptr)->sp);
+fputc ('\n', st);
+return r;
+}
+
+/* RA60 seek curve t(d) = a + b * d^e (us): the exponent is fitted
+   (bisection) so that the curve goes through the track-to-track, the
+   average (at a third of the stroke) and the maximum seek time. */
+
+static double rq_seek_us (int32 dist)
+{
+static double ea, ca, cb;
+static t_bool done = FALSE;
+
+if (!done) {
+    double d = (double) (RA60_CYL - 1);
+    double want = (RA60_AVG_MS - RA60_T2T_MS) / (RA60_MAX_MS - RA60_T2T_MS);
+    double lo = 0.2, hi = 1.5, e = 0.69;
+    int32 i;
+
+    for (i = 0; i < 60; i++) {                          /* ratio falls with e */
+        e = (lo + hi) / 2.0;
+        if (((pow (d / 3.0, e) - 1.0) / (pow (d, e) - 1.0)) > want)
+            lo = e;
+        else
+            hi = e;
+        }
+    cb = (RA60_MAX_MS - RA60_T2T_MS) / (pow (d, e) - 1.0);
+    ca = RA60_T2T_MS - cb;
+    ea = e;
+    done = TRUE;
+    }
+if (dist <= 0)
+    return 0.0;
+return (ca + cb * pow ((double) dist, ea)) * 1000.0;
+}
+
+/* Realistic time of a transfer command (us): seek from the current
+   cylinder (with its sound), rotational latency, one sector slot per
+   block and a track-to-track seek per cylinder crossed.  Updates the
+   current cylinder. */
+
+static double rq_rlz_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc)
+{
+RQ_RLZ *rz = rq_rlz_get (uptr);
+uint32 lpc = RA60_SECT * RA60_SURF;                     /* blocks per cylinder */
+uint32 nblk = (bc + RQ_NUMBY - 1) / RQ_NUMBY;
+double rev_us = 60000000.0 / RA60_RPM;
+int32 c0, c1, dist, cls;
+double us;
+
+if (rz == NULL)
+    return 0.0;
+if (nblk == 0)
+    nblk = 1;
+c0 = (int32) (lbn / lpc);                               /* first and last cylinder */
+c1 = (int32) ((lbn + nblk - 1) / lpc);
+dist = abs (c0 - rz->cyl);
+us = rq_seek_us (dist);
+cls = sim_sound_seek (rq_seek_smp, dist, rq_seek60s, rq_seek60m, FALSE, SND_GRP_DISK, RQ_SEEK_GAIN);
+if (cls >= 0)
+    sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RA60 seek sound %s (%d cylinders)\n",
+               sim_uname (uptr), (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), dist);
+rq_rand_state = rq_rand_state * 1103515245u + 12345u;   /* latency 0 .. one rev */
+us += fmod ((double) (rq_rand_state >> 8), rev_us);
+us += (double) nblk * rev_us / (RA60_SECT + 1);         /* 42 + 1 spare slots */
+us += (double) (c1 - c0) * RA60_T2T_MS * 1000.0;        /* cylinders crossed */
+rz->cyl = c1;
+return (us < 100.0) ? 100.0 : us;
+}
+
 t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 fprintf (st, "UDA50A MSCP Disk Controller (%s)\n\n", dptr->name);
@@ -3618,6 +3925,28 @@ fprintf (st, "disk in either MB (1000000 bytes) or logical block numbers (LBN's,
 fprintf (st, "each), or binary MB (1024*1024 bytes).  The minimum size is 5MB; the maximum\n");
 fprintf (st, "size is 2GB without extended file support, 1TB with extended file support.\n\n");
 fprintf (st, "The %s controllers support the BOOT command.\n\n", dptr->name);
+fprintf (st, "SET RQn ONLINE and SET RQn OFFLINE are the RUN/STOP button of the RA60, the\n");
+fprintf (st, "removable-pack drive: OFFLINE spins the drive down (the pack stays\n");
+fprintf (st, "attached, the unit reports offline, no volume), ONLINE spins it up; the\n");
+fprintf (st, "controller then reports the unit available.  SHOW RQn SPINDLE shows the\n");
+fprintf (st, "spindle state.  The other drive types have no such button.\n\n");
+fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
+fprintf (st, "  - ATTACH of an RA60 only loads the pack; the drive stays stopped until\n");
+fprintf (st, "    SET RQn ONLINE (spin-up time register SPINUP, spin-down SPINDOWN, both\n");
+fprintf (st, "    35000 ms by default, set with DEPOSIT RQ SPINUP n); at the sim> prompt\n");
+fprintf (st, "    the commands wait until the drive is ready or at rest (SET -N RQn ...\n");
+fprintf (st, "    returns at once);\n");
+fprintf (st, "  - an AVAILABLE command with spin-down (e.g. VMS DISMOUNT/UNLOAD) spins the\n");
+fprintf (st, "    RA60 down instead of detaching the pack;\n");
+fprintf (st, "  - RA60 transfers take realistic times (3600 rpm; seek 7 ms track-to-track,\n");
+fprintf (st, "    42 ms average, 70 ms maximum) and seeks play ra60-s.wav, ra60-m.wav or\n");
+fprintf (st, "    ra60-l.wav from the sound directory ra60 for short, medium and long\n");
+fprintf (st, "    seeks (limits in the registers SEEKRA60S and SEEKRA60M, default 100 and\n");
+fprintf (st, "    600 cylinders); optional spindle sounds ra60_spinup.wav, ra60_running.wav\n");
+fprintf (st, "    and ra60_spindown.wav are used if found;\n");
+fprintf (st, "  - the other drive types keep the QTIME/XTIME timing.\n");
+fprintf (st, "Without the realism mode an RA60 spins up at ATTACH, ONLINE and OFFLINE\n");
+fprintf (st, "take effect at once, and the timing is unchanged.\n\n");
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
 fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");

@@ -16,3 +16,4 @@ sim_rev.h export-subst
 *.cmake text=auto
 .gitattributes text=auto
 .gitignore text=auto
+*.wav binary

@@ -1762,6 +1762,44 @@ if (sim_throt_type == SIM_THROT_SPC) {  /* Set initial value while correct one i
 return SCPE_OK;
 }
 
+/* Is a throttle (any mode) set?  Used by sim_sound to apply a simulator's
+   default throttle in the sound realism mode only if the user did not set
+   one himself. */
+
+t_bool sim_throt_is_set (void)
+{
+return (sim_throt_type != SIM_THROT_NONE);
+}
+
+/* The instruction rate a throttle set as SET THROTTLE xM or xK aims at,
+   or 0.0 for no throttle or another throttle mode.  Devices that need
+   realistic durations (sound realism mode) convert microseconds to
+   instructions with it: the result does not depend on the state of the
+   timer calibration, and with the throttle simulated time is real time. */
+
+/* Set the time (calibrated seconds) before throttling starts, i.e. the
+   INT-THROTTLE register THROT_DELAY; returns the previous value.  The sound
+   realism mode sets 0, so that a realistic CPU speed applies from power-on
+   (otherwise a fast host can finish a whole OS boot during the default 3
+   seconds of unthrottled execution). */
+
+uint32 sim_throt_set_delay (uint32 secs)
+{
+uint32 old = sim_throt_delay;
+
+sim_throt_delay = secs;
+return old;
+}
+
+double sim_throt_target_ips (void)
+{
+if (sim_throt_type == SIM_THROT_MCYC)
+    return 1000000.0 * (double)sim_throt_val;
+if (sim_throt_type == SIM_THROT_KCYC)
+    return 1000.0 * (double)sim_throt_val;
+return 0.0;
+}
+
 t_stat sim_show_throt (FILE *st, DEVICE *dnotused, UNIT *unotused, int32 flag, CONST char *cptr)
 {
 if (sim_idle_rate_ms == 0)
@@ -1856,6 +1894,19 @@ switch (sim_throt_state) {
                 sim_throt_inst_start = sim_gtime ();
                 sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) Deferring until stable (%d more seconds)\n", (int)(sim_throt_delay - rtc->calibrations));
                 return sim_activate (uptr, rtc->hz * rtc->currd);
+                }
+            if (sim_throt_delay == 0) {                 /* no warm-up wanted? */
+                /* There is no "last second" to compute from: the start values
+                   were never taken (or are stale, from when the throttle was
+                   set at the prompt), which gave a measured rate of almost 0
+                   and a "Host CPU could be too slow" warning.  Take a fresh
+                   start reading now and measure briefly; the TIME state
+                   repeats the measurement until it covers SIM_THROT_MSMIN ms. */
+                sim_throt_ms_start = sim_os_msec ();
+                sim_throt_inst_start = sim_gtime ();
+                sim_throt_state = SIM_THROT_STATE_TIME;
+                sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) No delay, measuring the execution rate now\n");
+                return sim_activate (uptr, SIM_THROT_WST);
                 }
             sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) Computing Throttling values based on the last second's execution rate\n");
             sim_throt_state = SIM_THROT_STATE_TIME;

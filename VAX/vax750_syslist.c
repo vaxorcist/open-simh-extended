@@ -24,16 +24,28 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author(s).
 
+   02-Nov-2026  Ulli    Added the default system sounds (sim_sound)
    21-Oct-2012  MB      First Version
 */
 
 #include "vax_defs.h"
+#include "sim_sound.h"
 
 char sim_name[] = "VAX 11/750";
 
 void vax_init(void)
 {
 sim_savename = "VAX750";
+/* Sound: the bundled VAX-11/750 recordings in sound/vax750/ - the power
+   relay and blower start-up, the running blower (loop) and the power-off
+   with the blower running down */
+sim_sound_set_system ("vax750", "blower_starting.wav", "blower_running.wav",
+                      "blower_stopping.wav");
+/* Realistic CPU speed in the sound realism mode: about 0.6 of a
+   VAX-11/780 (roughly 0.5 million VAX instructions per second), so about
+   300,000 instructions per second.  Provisional: to be calibrated against
+   a real VAX-11/750 (e.g. the time of a VMS boot). */
+sim_sound_set_throttle ("300K");
 }
 
 extern DEVICE cpu_dev;

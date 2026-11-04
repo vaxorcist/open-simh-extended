@@ -25,6 +25,13 @@
 
    rl           RL11(RLV12)/RL01/RL02 cartridge disk
 
+   03-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): SET RLn ONLINE
+                        and LOAD spin the drive up, OFFLINE and UNLOAD spin it
+                        down (40 s / 30 s, registers SPINUP and SPINDOWN, the
+                        command waits at the sim> prompt unless SET -N), ATTACH
+                        only loads the cartridge; realistic seek and transfer
+                        times; short/medium/long seek sounds (SEEK1S/SEEK1M,
+                        SEEK2S/SEEK2M); optional spindle sounds
    28-Nov-22    RMS     Fixed word count adjustment on NXM
    23-Oct-13    RMS     Revised for new boot setup routine
    24-Mar-11    JAD     Various changes to support diagnostics, including:
@@ -99,6 +106,8 @@
 #endif
 
 #include "sim_disk.h"
+#include "sim_sound.h"
+#include <math.h>
 
 /* Constants */
 
@@ -273,6 +282,51 @@ int32 rl_swait = 10;                                    /* seek wait */
 int32 rl_rwait = 10;                                    /* rotate wait */
 int32 rl_stopioe = 1;                                   /* stop on error */
 
+/* Sound realism mode (SET SOUND ENABLED)
+
+   The RL01/RL02 front panel LOAD button is the drive's RUN/STOP button.
+   In the realism mode SET RLn ONLINE and SET RLn LOAD press it in (spin
+   up: the drive goes through spin-up, head load and lock-on, then it is
+   ready), SET RLn OFFLINE and SET RLn UNLOAD release it (the heads retract
+   and the drive spins down; afterwards the cover may be opened).  The
+   spindle (SND_SPINDLE, common support in sim_sound) times this: SPINUP
+   (default 40000 ms) and SPINDOWN (default 30000 ms), in simulated time
+   while the CPU runs and in wall time at the sim> prompt, where the
+   commands wait until the drive is ready or at rest (SET -N: no wait).
+   ATTACH only loads the cartridge (state "Load Cartridge").  Seeks and
+   transfers take realistic times, and seeks play a short, medium or long
+   seek sound.
+
+   Without the realism mode everything is as before: ATTACH leaves the
+   drive locked on, ONLINE/OFFLINE only switch the drive select, and
+   LOAD/UNLOAD run the drive state sequence with short delays.
+
+   Published RL01/RL02 timing: 2400 rpm (25 ms per revolution, 40 sectors:
+   625 us per sector), track-to-track seek 15 ms, average 55 ms, maximum
+   100 ms; start time 40 s, stop time 30 s.  The seek time over d
+   cylinders follows t(d) = a + b * d^0.67 through the track-to-track and
+   maximum seek times (fits the average at a third of the stroke). */
+
+#define RL_SND_DIR      "rl02"                          /* sound directory (RL01 and RL02) */
+#define RL_SEEK_GAIN    0.3
+#define RL_SPIN_GAIN    1.0
+#define RL_SEEK_EXP     0.67
+#define RL_T2T_MS       15.0
+#define RL_MAXSEEK_MS   100.0
+#define RL_HDSW_MS      7.0                             /* head switch only */
+#define RL_REV_US       25000
+#define RL_SECT_US      (RL_REV_US / RL_NUMSC)
+
+int32 rl_spinup_ms = 40000;                             /* realism: spin-up time (ms) */
+int32 rl_spindown_ms = 30000;                           /* realism: spin-down time (ms) */
+int32 rl_seek1s = 15;                                   /* RL01: short seek up to n cyl */
+int32 rl_seek1m = 95;                                   /* RL01: medium seek up to n cyl */
+int32 rl_seek2s = 30;                                   /* RL02: short seek up to n cyl */
+int32 rl_seek2m = 190;                                  /* RL02: medium seek up to n cyl */
+static SND_SPINDLE rl_spindle[RL_NUMDR];                /* the drives' spindles */
+static SND_SAMPLE *rl_seek_smp[3];                      /* seek sounds */
+static uint32 rl_rand_state = 1;                        /* rotational latency */
+
 /* forward references */
 t_stat rl_rd (int32 *data, int32 PA, int32 access);
 t_stat rl_wr (int32 data, int32 PA, int32 access);
@@ -291,6 +345,13 @@ t_stat rl_show_cover (FILE *, UNIT *, int32, CONST void *);
 t_stat rl_set_load (UNIT *, int32, CONST char *, void *);
 t_stat rl_show_load (FILE *, UNIT *, int32, CONST void *);
 t_stat rl_show_dstate (FILE *, UNIT *, int32, CONST void *);
+t_stat rl_set_online (UNIT *, int32, CONST char *, void *);
+t_stat rl_show_spindle (FILE *, UNIT *, int32, CONST void *);
+static void rl_spindles_init (void);
+static void rl_spin_up (UNIT *uptr);
+static void rl_spin_down (UNIT *uptr);
+static double rl_seek_us (UNIT *uptr, int32 dist);
+static double rl_latency_us (void);
 #if defined (VM_PDP11)
 t_stat rl_set_ctrl (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 #endif
@@ -333,6 +394,12 @@ static const REG rl_reg[] = {
     { FLDATAD (IE,                rlcs, CSR_V_IE,       "interrupt enable flag (CSR<6>)") },
     { DRDATAD (STIME,         rl_swait, 24,             "seek time, per cylinder"), PV_LEFT },
     { DRDATAD (RTIME,         rl_rwait, 24,             "rotational delay"), PV_LEFT },
+    { DRDATAD (SPINUP,    rl_spinup_ms, 24,             "spin-up time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, rl_spindown_ms, 24,            "spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SEEK1S,       rl_seek1s, 10,             "RL01 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SEEK1M,       rl_seek1m, 10,             "RL01 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SEEK2S,       rl_seek2s, 10,             "RL02 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SEEK2M,       rl_seek2m, 10,             "RL02 medium seek sound up to n cylinders"), PV_LEFT },
     { URDATA  (CAPAC, rl_unit[0].capac, 10, T_ADDR_W, 0,
               RL_NUMDR, PV_LEFT + REG_HRO) },
     { FLDATAD (STOP_IOE,    rl_stopioe, 0,              "stop on I/O error flag") },
@@ -348,10 +415,16 @@ static const MTAB rl_mod[] = {
     { MTAB_XTD|MTAB_VDV,                   0, NULL, "RLV12", 
         &rl_set_ctrl, NULL,          NULL, "Set controller type RLV12" },
 #endif
-    { UNIT_OFFL,         0, "on line",  "ONLINE", 
-        NULL, NULL, NULL, "Set unit online" },
-    { UNIT_OFFL, UNIT_OFFL, "off line", "OFFLINE", 
-        NULL, NULL, NULL, "Set unit offline" },
+    { MTAB_XTD|MTAB_VUN, 1, NULL, "ONLINE",
+        &rl_set_online, NULL, NULL, "Set unit online (sound enabled: spin up)" },
+    { MTAB_XTD|MTAB_VUN, 0, NULL, "OFFLINE",
+        &rl_set_online, NULL, NULL, "Set unit offline (sound enabled: spin down)" },
+    { UNIT_OFFL,         0, "on line",  NULL,
+        NULL, NULL, NULL, "Unit online" },
+    { UNIT_OFFL, UNIT_OFFL, "off line", NULL,
+        NULL, NULL, NULL, "Unit offline" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SPINDLE", NULL,
+        NULL, &rl_show_spindle, NULL, "Display the spindle state" },
     { UNIT_BRUSH,          0, NULL,          "NOBRUSH",
         NULL, NULL, NULL, "Disable brushes" },
     { UNIT_BRUSH, UNIT_BRUSH, "has brushes", "BRUSH",
@@ -529,7 +602,9 @@ bit is cleared by software.  If set, check for interrupts and return.
             rl_set_done (0);
             break;
         case RLCS_SEEK:                                 /* seek */
-            if ((uptr->flags & (UNIT_DIS|UNIT_OFFL)) || (!(uptr->flags & UNIT_ATT))) {
+            if ((uptr->flags & (UNIT_DIS|UNIT_OFFL)) || (!(uptr->flags & UNIT_ATT)) ||
+                (sim_sound_enabled () &&                /* realism: spun up? */
+                 (sim_spindle_state (&rl_spindle[uptr - rl_dev.units]) != SND_SPIN_READY))) {
                 rl_set_done (RLCS_ERR | RLCS_INCMP);
                 uptr->STAT |= RLDS_STO;
                 break;
@@ -568,7 +643,20 @@ max 17ms for 1 track seek w/head switch
                     (int32) (uptr - rl_dev.units),
                     abs (newc - curr), (rlda & RLDA_SK_HD), tim);
             uptr->FNC = RLCS_SEEK;
-            sim_activate (uptr, tim);               /* must be > 0 */
+            if (sim_sound_enabled ()) {             /* realistic time, sound */
+                int32 cls = sim_sound_seek (rl_seek_smp, abs (newc - curr),
+                    (uptr->flags & UNIT_RL02) ? rl_seek2s : rl_seek1s,
+                    (uptr->flags & UNIT_RL02) ? rl_seek2m : rl_seek1m,
+                    FALSE, SND_GRP_DISK, RL_SEEK_GAIN);
+
+                if (cls >= 0)
+                    sim_debug (RLDEB_OPS, &rl_dev, ">>RL%d seek sound %s (%d cylinders)\n",
+                               (int32) (uptr - rl_dev.units),
+                               (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), abs (newc - curr));
+                sim_sound_activate_us (uptr, rl_seek_us (uptr, abs (newc - curr)));
+                }
+            else
+                sim_activate (uptr, tim);           /* must be > 0 */
             rl_set_done (0);                        /* ctrlr is ready */
             break;
         case RLCS_GSTA:
@@ -598,6 +686,11 @@ max 17ms for 1 track seek w/head switch
                 rl_set_done (RLCS_INCMP);
                 break;
                 }
+            if (sim_sound_enabled () &&             /* realism: not spun up */
+                (sim_spindle_state (&rl_spindle[uptr - rl_dev.units]) != SND_SPIN_READY)) {
+                rl_set_done (RLCS_ERR | RLCS_DRE | RLCS_INCMP);
+                break;
+                }
 /*
 EK-0RL11-TD-001, p2-3: "If the CPU software initiates another
 operation on a drive that is busy seeking, the controller will
@@ -613,7 +706,21 @@ operation now, and queue the next operation.
                 rl_svc (uptr);
                 }
             uptr->FNC = GET_FUNC (rlcs);
-            sim_activate (uptr, rl_swait);              /* activate unit */
+            if (sim_sound_enabled ()) {                 /* realistic time: wait */
+                double us = rl_latency_us ();           /* for the sector, then */
+
+                if (uptr->FNC != RLCS_RHDR) {           /* transfer the sectors */
+                    int32 wc = 0200000 - rlmp;
+                    int32 nsect = (wc + RL_NUMWD - 1) / RL_NUMWD;
+
+                    if (nsect > RL_NUMSC)
+                        nsect = RL_NUMSC;
+                    us += (double)nsect * RL_SECT_US;
+                    }
+                sim_sound_activate_us (uptr, us);
+                }
+            else
+                sim_activate (uptr, rl_swait);          /* activate unit */
             break;
             }                                           /* end switch func */
         break;                                          /* end case RLCS */
@@ -1006,6 +1113,7 @@ UNIT *uptr;
 rlcs = CSR_DONE;
 rlda = rlba = rlbae = rlmp = rlmp1 = rlmp2 = 0;
 CLR_INT (RL);
+rl_spindles_init ();                                    /* (once) */
 for (i = 0; i < RL_NUMDR; i++) {
     uptr = rl_dev.units + i;
     sim_cancel (uptr);
@@ -1032,12 +1140,23 @@ r = sim_disk_attach_ex (uptr, cptr, RL_NUMWD * sizeof (uint16),
                         (uptr->flags & UNIT_NOAUTO) ? NULL : drives);
 if (r != SCPE_OK)                                       /* error? */
     return r;
+uptr->TRK = 0;                                          /* cylinder 0 */
+if (sim_sound_enabled ()) {                             /* realism mode: */
+    /* the cartridge is in, the LOAD button is out: the drive waits for
+       SET RLn ONLINE (or LOAD).  Load the sounds now, not in the I/O path. */
+    sim_sound_seek_load (rl_seek_smp, RL_SND_DIR, "rl02");
+    sim_spindle_load (&rl_spindle[uptr - rl_dev.units], RL_SND_DIR, "rl02");
+    sim_spindle_off (&rl_spindle[uptr - rl_dev.units]);
+    uptr->flags &= ~UNIT_OFFL;
+    uptr->STAT = RLDS_BHO | RLDS_LOAD;
+    return SCPE_OK;
+    }
 /*
 For compatibility with existing SIMH behavior, set the drive state
 as if the load procedure had already executed.
 */
-uptr->TRK = 0;                                          /* cylinder 0 */
 uptr->STAT = RLDS_HDO | RLDS_BHO | RLDS_VCK | RLDS_LOCK; /* new volume */
+sim_spindle_ready (&rl_spindle[uptr - rl_dev.units]);
 return SCPE_OK;
 }
 
@@ -1045,6 +1164,7 @@ t_stat rl_detach (UNIT *uptr)
 {
 sim_cancel (uptr);
 uptr->STAT = RLDS_BHO | RLDS_LOAD;
+sim_spindle_off (&rl_spindle[uptr - rl_dev.units]);     /* the cartridge is gone */
 return sim_disk_detach (uptr);
 }
 
@@ -1096,6 +1216,8 @@ t_stat rl_show_cover (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 /* simulate the LOAD button on the drive */
 t_stat rl_set_load (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
+    if (sim_sound_enabled ())                           /* realism: the same as */
+        return rl_set_online (uptr, !val, cptr, desc);  /* ONLINE / OFFLINE */
     if (val == 0) {                                     /* LOAD */
         if (uptr->STAT & RLDS_CVO)                      /* cover open? */
             return (SCPE_NOFNC);
@@ -1121,6 +1243,138 @@ t_stat rl_show_load (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
     fprintf (st, "load %s",
         ((uptr->STAT & RLDS_M_STATE) != RLDS_LOAD) ? "set" : "reset");
     return (SCPE_OK);
+}
+
+/* Sound realism mode: spindles */
+
+/* The spindle is up to speed: heads loaded, seek home, lock on.  The
+   drive is ready; the new volume is flagged (volume check) as on ATTACH. */
+
+static void rl_on_ready (UNIT *uptr)
+{
+    if (!(uptr->flags & UNIT_ATT))
+        return;
+    sim_debug (RLDEB_OPS, &rl_dev, ">>RL%d up to speed, heads locked on\n", (int32) (uptr - rl_dev.units));
+    uptr->TRK = 0;
+    uptr->STAT = (uptr->STAT & ~RLDS_M_STATE) | RLDS_LOCK | RLDS_HDO | RLDS_BHO | RLDS_VCK;
+}
+
+/* The spindle is at rest: the LOAD lamp lights, the cover may be opened */
+
+static void rl_on_stopped (UNIT *uptr)
+{
+    sim_debug (RLDEB_OPS, &rl_dev, ">>RL%d at rest\n", (int32) (uptr - rl_dev.units));
+    uptr->STAT = (uptr->STAT & ~RLDS_M_STATE) | RLDS_LOAD | RLDS_BHO | RLDS_VCK;
+}
+
+static void rl_spindles_init (void)
+{
+    int32 i;
+
+    for (i = 0; i < RL_NUMDR; i++)
+        sim_spindle_init (&rl_spindle[i], &rl_unit[i], &rl_spinup_ms, &rl_spindown_ms,
+                          &rl_on_ready, &rl_on_stopped, SND_GRP_DISK, RL_SPIN_GAIN);
+}
+
+/* LOAD button in: spin up (the drive state shows "Spin Up" meanwhile) */
+
+static void rl_spin_up (UNIT *uptr)
+{
+    int32 st = sim_spindle_state (&rl_spindle[uptr - rl_dev.units]);
+
+    if ((st == SND_SPIN_UP) || (st == SND_SPIN_READY))
+        return;
+    sim_debug (RLDEB_OPS, &rl_dev, ">>RL%d spin up\n", (int32) (uptr - rl_dev.units));
+    uptr->STAT = (uptr->STAT & ~(RLDS_M_STATE | RLDS_HDO)) | RLDS_SPIN | RLDS_BHO;
+    sim_spindle_start (&rl_spindle[uptr - rl_dev.units]);
+}
+
+/* LOAD button out: the heads retract, the drive spins down ("Spin Down").
+   A transfer in progress ends with a drive error. */
+
+static void rl_spin_down (UNIT *uptr)
+{
+    int32 st = sim_spindle_state (&rl_spindle[uptr - rl_dev.units]);
+
+    if ((st == SND_SPIN_STOPPED) || (st == SND_SPIN_DOWN))
+        return;
+    sim_debug (RLDEB_OPS, &rl_dev, ">>RL%d spin down\n", (int32) (uptr - rl_dev.units));
+    if (sim_is_active (uptr)) {
+        sim_cancel (uptr);
+        if ((uptr->FNC != RLCS_SEEK) && (uptr->FNC != RLCS_SPECIAL))
+            rl_set_done (RLCS_ERR | RLCS_DRE | RLCS_INCMP);
+        }
+    uptr->STAT = (uptr->STAT & ~(RLDS_M_STATE | RLDS_HDO)) | RLDS_DOWN;
+    sim_spindle_stop (&rl_spindle[uptr - rl_dev.units]);
+}
+
+/* SET RLn ONLINE / OFFLINE.  Realism mode: the LOAD button (spin up or
+   down; at the sim> prompt wait until ready or at rest unless SET -N).
+   Otherwise: the drive select (on line / off line) as before. */
+
+t_stat rl_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+    if (cptr != NULL)
+        return SCPE_ARG;
+    if (!sim_sound_enabled ()) {
+        if (val)
+            uptr->flags &= ~UNIT_OFFL;
+        else
+            uptr->flags |= UNIT_OFFL;
+        return SCPE_OK;
+        }
+    if (!(uptr->flags & UNIT_ATT))
+        return sim_messagef (SCPE_UNATT, "%s: no cartridge loaded (not attached)\n", sim_uname (uptr));
+    if (val) {
+        if (uptr->STAT & RLDS_CVO)                      /* cover open? */
+            return sim_messagef (SCPE_NOFNC, "%s: cover open\n", sim_uname (uptr));
+        uptr->flags &= ~UNIT_OFFL;
+        rl_spin_up (uptr);
+        }
+    else
+        rl_spin_down (uptr);
+    if (!(sim_switches & SWMASK ('N')))
+        sim_spindle_wait (&rl_spindle[uptr - rl_dev.units]);
+    return SCPE_OK;
+}
+
+/* SHOW RLn SPINDLE.  The entry is MTAB_NMO (only shown when asked for by
+   name), and SCP adds no line end for those, so the routine ends the line
+   itself. */
+
+t_stat rl_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+    t_stat r = SCPE_OK;
+
+    if (!(uptr->flags & UNIT_ATT))
+        fprintf (st, "no cartridge");
+    else
+        r = sim_spindle_show (st, &rl_spindle[uptr - rl_dev.units]);
+    fputc ('\n', st);
+    return r;
+}
+
+/* Realistic seek time over dist cylinders (us): t(d) = a + b * d^0.67 with
+   t(1) = track-to-track and t(cylinders - 1) = maximum; a head switch only
+   takes RL_HDSW_MS */
+
+static double rl_seek_us (UNIT *uptr, int32 dist)
+{
+    double maxd = (double)(((uptr->flags & UNIT_RL02) ? RL_NUMCY * 2 : RL_NUMCY) - 1);
+    double b = (RL_MAXSEEK_MS - RL_T2T_MS) / (pow (maxd, RL_SEEK_EXP) - 1.0);
+    double a = RL_T2T_MS - b;
+
+    if (dist <= 0)
+        return RL_HDSW_MS * 1000.0;
+    return (a + b * pow ((double)dist, RL_SEEK_EXP)) * 1000.0;
+}
+
+/* Rotational latency: waiting for the sector, 0 .. one revolution */
+
+static double rl_latency_us (void)
+{
+    rl_rand_state = rl_rand_state * 1103515245u + 12345u;
+    return (double)((rl_rand_state >> 8) % RL_REV_US);
 }
 
 t_stat rl_show_dstate (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
@@ -1253,6 +1507,18 @@ return SCPE_NOFNC;
 t_stat rl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 fprintf (st, "RL11/RL01/RL02 Cartridge Disk (RL)\n\n");
+fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND) the\n");
+fprintf (st, "drive's LOAD button is SET RLn ONLINE or LOAD (spin up, 40 s, register\n");
+fprintf (st, "SPINUP) and SET RLn OFFLINE or UNLOAD (spin down, 30 s, register SPINDOWN).\n");
+fprintf (st, "ATTACH only loads the cartridge.  At the sim> prompt the commands wait until\n");
+fprintf (st, "the drive is ready or at rest; SET -N RLn ... returns at once.  SHOW RLn\n");
+fprintf (st, "SPINDLE shows the spindle state.  Seeks and transfers take realistic times\n");
+fprintf (st, "(15 ms track-to-track, 55 ms average, 100 ms maximum seek, 2400 rpm), and\n");
+fprintf (st, "seeks play rl02-s.wav, rl02-m.wav or rl02-l.wav (sound directory rl02)\n");
+fprintf (st, "for short, medium and long seeks; the limits are the registers SEEK1S/SEEK1M\n");
+fprintf (st, "(RL01, default 15/95 cylinders) and SEEK2S/SEEK2M (RL02, default 30/190).\n");
+fprintf (st, "Optional spindle sounds: rl02_spinup.wav, rl02_running.wav, rl02_spindown.wav.\n");
+fprintf (st, "Without the sound realism mode ONLINE/OFFLINE only switch the drive select.\n\n");
 fprintf (st, "RL11 options include the ability to set units write enabled or write locked,\n");
 fprintf (st, "to set the drive type to RL01, RL02, or autosize, and to write a DEC standard\n");
 fprintf (st, "144 compliant bad block table on the last track:\n\n");
