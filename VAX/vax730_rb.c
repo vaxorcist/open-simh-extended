@@ -26,6 +26,11 @@
 
    rb           RB730 - RB02/RB80 disk controller
 
+   04-Nov-2026  Ulli    A finishing seek only raises the drive's attention (it
+                        decoded the controller's current command, which may
+                        belong to another drive); RB80 with 31 sectors per
+                        track, as DEC's drivers use it (242,606 blocks, as
+                        the RM80); the old layout keeps 32
    04-Nov-2026  Ulli    Range checks: a seek stops at the last cylinder, a
                         transfer to a track beyond the last head fails
    04-Nov-2026  Ulli    Status: GET STATUS reports the RB02 status bits (was
@@ -66,17 +71,22 @@
 #define RB02_SIZE       (RB02_NUMCY * RB02_NUMSF * \
                          RB02_NUMSC * RB02_NUMWD)       /* words/drive */
 #define RB80_NUMWD      256                             /* words/sector */
-#define RB80_NUMSC      32                              /* sectors/track */
+#define RB80_NUMSC      31                              /* sectors/track used (DEC) */
+#define RB80_NUMSC_OLD  32                              /* ... in the old layout */
 #define RB80_NUMSF      14                              /* tracks/cylinder */
 #define RB80_NUMCY      559                             /* cylinders/drive */
 #define RB80_SIZE       (RB80_NUMCY * RB80_NUMSF * \
                          RB80_NUMSC * RB80_NUMWD)       /* words/drive */
+#define RB80_SIZE_OLD   (RB80_NUMCY * RB80_NUMSF * \
+                         RB80_NUMSC_OLD * RB80_NUMWD)   /* words/drive, old layout */
 
 #define RB_NUMWD(u)     ((u->flags & UNIT_RB80) ? RB80_NUMWD : RB02_NUMWD)
-#define RB_NUMSC(u)     ((u->flags & UNIT_RB80) ? RB80_NUMSC : RB02_NUMSC)
+#define RB_NUMSC(u)     ((u->flags & UNIT_RB80) ? \
+                         ((u->flags & UNIT_OLDL) ? RB80_NUMSC_OLD : RB80_NUMSC) : RB02_NUMSC)
 #define RB_NUMSF(u)     ((u->flags & UNIT_RB80) ? RB80_NUMSF : RB02_NUMSF)
 #define RB_NUMCY(u)     ((u->flags & UNIT_RB80) ? RB80_NUMCY : RB02_NUMCY)
-#define RB_SIZE(u)      ((u->flags & UNIT_RB80) ? RB80_SIZE : RB02_SIZE)
+#define RB_SIZE(u)      ((u->flags & UNIT_RB80) ? \
+                         ((u->flags & UNIT_OLDL) ? RB80_SIZE_OLD : RB80_SIZE) : RB02_SIZE)
 
 #define RB_NUMDR        4                               /* drives/controller */
 #define RB_MAXFR        (1 << 16)                       /* max transfer */
@@ -491,6 +501,21 @@ t_lba lba;
 uint32 ma;
 uint16 comp;
 
+if (uptr->SIP) {                                        /* seek finishing? */
+    int32 drv = (int32) (uptr - rb_dev.units);
+
+    sim_debug(DBG_CMD, &rb_dev, "Seek done, drive %d\n", drv);
+    uptr->SIP = 0;
+    rbcs = rbcs | (1u << (RBCS_V_ATN + drv));           /* drive attention */
+    if ((rbcs & CSR_DONE) || (GET_DRIVE (rbcs) != drv)) {
+        if (rbcs & CSR_DONE)                            /* controller idle: */
+            rb_set_done (0);                            /* interrupt now */
+        return SCPE_OK;                                 /* (else another drive's */
+        }                                               /* command ends it) */
+    /* A command for this drive was written while it was seeking: the
+       controller held it until the seek was done; do it now (below). */
+    }
+
 func = GET_FUNC (rbcs);                                 /* get function */
 if (func == RBCS_GSTA) {                                /* get status */
     sim_debug(DBG_CMD, &rb_dev, "Get Status\n");
@@ -558,13 +583,6 @@ if (func == RBCS_SEEK) {                                /* seek? */
         rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
         rbcs = rbcs | RBCS_IRQ;
         rb_set_done(0);
-        return SCPE_OK;
-        }
-    else {
-        sim_debug(DBG_CMD, &rb_dev, "Seek done\n");
-        rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
-        uptr->SIP = 0;
-        rb_set_done (0);                                /* done */
         return SCPE_OK;
         }
     }
@@ -705,7 +723,7 @@ t_stat rb_attach (UNIT *uptr, CONST char *cptr)
 t_stat r;
 static const char *drives[] = {"RB02", "RB80", NULL};
 
-uptr->capac = (uptr->flags & UNIT_RB80)? RB80_SIZE: RB02_SIZE;
+uptr->capac = RB_SIZE (uptr);
 r = sim_disk_attach_ex (uptr, cptr, RB_NUMWD(uptr) * sizeof (uint16), /* sector size */
                         sizeof (uint16), TRUE, DBG_DSK,
                         (uptr->flags & UNIT_RB80) ? "RB80" : "RB02",
@@ -736,7 +754,8 @@ t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (uptr->flags & UNIT_ATT)
     return SCPE_ALATT;
-uptr->capac = (val & UNIT_RB80)? RB80_SIZE: RB02_SIZE;
+uptr->capac = (val & UNIT_RB80) ?
+    ((uptr->flags & UNIT_OLDL) ? RB80_SIZE_OLD : RB80_SIZE) : RB02_SIZE;
 return SCPE_OK;
 }
 
@@ -765,6 +784,7 @@ else if (strcmp (gbuf, "OLD") == 0)
     uptr->flags |= UNIT_OLDL;
 else
     return sim_messagef (SCPE_ARG, "Unknown layout: %s (STANDARD or OLD)\n", gbuf);
+uptr->capac = RB_SIZE (uptr);                           /* (RB80: 31 or 32 sectors) */
 return SCPE_OK;
 }
 
@@ -791,5 +811,7 @@ fprintf (st, "and a binary copy of a real cartridge.  Earlier versions of this s
 fprintf (st, "stored the images head by head (all cylinders of surface 0 first).  Such\n");
 fprintf (st, "images can still be used with SET RBn LAYOUT=OLD before the ATTACH (a\n");
 fprintf (st, "temporary option); converting them once is better.\n");
+fprintf (st, "The RB80 has 31 sectors per track as DEC's drivers use it (242,606 blocks,\n");
+fprintf (st, "like the RM80, which has the same R80 drive); the old layout has 32.\n");
 return SCPE_OK;
 }
