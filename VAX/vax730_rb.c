@@ -26,6 +26,9 @@
 
    rb           RB730 - RB02/RB80 disk controller
 
+   04-Nov-2026  Ulli    Disk images in DEC logical block order (cylinder,
+                        head, sector), as the RL11 and DEC's drivers; the old
+                        head-major layout with SET RBn LAYOUT=OLD (temporary)
    29-Mar-2011  MB      First Version
 
    The RB730 is a four drive disk subsystem consisting of up to three RL02
@@ -72,7 +75,9 @@
 
 #define UNIT_V_RB80     (UNIT_V_UF + 0)                 /* RB02 vs RB80 */
 #define UNIT_V_DUMMY    (UNIT_V_UF + 1)                 /* dummy flag */
+#define UNIT_V_OLDL     (UNIT_V_UF + 2)                 /* old image layout */
 #define UNIT_DUMMY      (1 << UNIT_V_DUMMY)
+#define UNIT_OLDL       (1u << UNIT_V_OLDL)
 #define UNIT_RB80       (1u << UNIT_V_RB80)
 
 /* Parameters in the unit descriptor */
@@ -184,10 +189,25 @@
 #define GET_SECT(x)     (((x) >> RBDA_V_SECT) & RBDA_M_SECT)
 #define GET_CYL(x)      (((x) >> RBDA_V_CYL) & RBDA_M_CYL)
 #define GET_TRACK(x)    (((x) >> RBDA_V_TRACK) & RBDA_M_TRACK)
-//#define GET_DA(x)       ((GET_CYL(x) * RB02_NUMSF * GET_TRACK (x) * RB02_NUMSC) + GET_SECT (x))
-#define GET_DA(x,u)       ((GET_TRACK (x) * RB_NUMCY(u) * RB_NUMSC(u) * RB_NUMWD(u)) + \
-                        (GET_CYL(x) * RB_NUMSC(u) * RB_NUMWD(u)) + \
-                        (GET_SECT (x) * RB_NUMWD(u)))
+/* Disk address -> word offset in the image file.
+
+   Standard layout: DEC logical block order, cylinder by cylinder, within a
+   cylinder head by head, within a track sector by sector.  This is how
+   DEC's drivers number the logical blocks of an RL02/RB02 (VMS DLDRIVER on
+   the RL11 and DQDRIVER on the RB730 put a block on the same cylinder, head
+   and sector), so an RB02 image is the same as an RL02 image of the RL11
+   (pdp11_rl.c) and a binary copy of a real cartridge.
+
+   Old layout (SET RBn LAYOUT=OLD, temporary, for images made by earlier
+   versions of this simulator): head by head, all cylinders of a surface
+   before the next surface. */
+
+#define GET_DA_STD(x,u) ((((GET_CYL (x) * RB_NUMSF(u)) + GET_TRACK (x)) * RB_NUMSC(u) + \
+                          GET_SECT (x)) * RB_NUMWD(u))
+#define GET_DA_OLD(x,u) ((GET_TRACK (x) * RB_NUMCY(u) * RB_NUMSC(u) * RB_NUMWD(u)) + \
+                         (GET_CYL(x) * RB_NUMSC(u) * RB_NUMWD(u)) + \
+                         (GET_SECT (x) * RB_NUMWD(u)))
+#define GET_DA(x,u)     (((u)->flags & UNIT_OLDL) ? GET_DA_OLD (x,u) : GET_DA_STD (x,u))
 
 #define DBG_REG         0x0001                          /* registers */
 #define DBG_CMD         0x0002                          /* commands */
@@ -215,6 +235,9 @@ void rb_set_done (int32 error);
 t_stat rb_attach (UNIT *uptr, CONST char *cptr);
 t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat rb_set_layout (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat rb_show_layout (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat rb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 
 /* RB730 data structures
 
@@ -260,6 +283,8 @@ MTAB rb_mod[] = {
         &set_writelock, NULL,   NULL, "Write lock disk drive" },
     { UNIT_DUMMY,      0, NULL,            "BADBLOCK", 
         &rb_set_bad, NULL, NULL, "write bad block table on last track" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "LAYOUT", "LAYOUT={STANDARD|OLD}",
+        &rb_set_layout, &rb_show_layout, NULL, "Set/Display the image layout (OLD: images of earlier versions)" },
     { (UNIT_RB80+UNIT_ATT),             UNIT_ATT, "RB02", NULL, NULL },
     { (UNIT_RB80+UNIT_ATT), (UNIT_RB80+UNIT_ATT), "RB80", NULL, NULL },
     { (UNIT_RB80+UNIT_ATT),                    0, "RB02", NULL, NULL },
@@ -281,7 +306,7 @@ DEVICE rb_dev = {
     NULL, NULL, &rb_reset,
     NULL, &rb_attach, NULL,
     &rb_dib, DEV_DISABLE | DEV_UBUS | DEV_DEBUG, 0,
-    rb_debug, NULL, NULL, NULL, NULL, NULL, 
+    rb_debug, NULL, NULL, &rb_help, NULL, NULL, 
     &rb_description
     };
 
@@ -650,6 +675,9 @@ uptr->capac = (uptr->flags & UNIT_RB80)? RB80_SIZE: RB02_SIZE;
 r = attach_unit (uptr, cptr);                           /* attach unit */
 if (r != SCPE_OK)                                       /* error? */
     return r;
+if (uptr->flags & UNIT_OLDL)
+    sim_messagef (SCPE_OK, "%s: old RB730 image layout (SET %s LAYOUT=OLD, see HELP RB)\n",
+                  sim_uname (uptr), sim_uname (uptr));
 uptr->TRK = 0;                                          /* cylinder 0 */
 if ((uptr->flags & UNIT_RB80) == 0)
     uptr->STAT = RB02DS_VCK;                            /* new volume */
@@ -676,4 +704,51 @@ return SCPE_OK;
 t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 return pdp11_bad_block (uptr, RB_NUMSC(uptr), RB_NUMWD(uptr));
+}
+
+/* Set/show the image layout: STANDARD (DEC logical block order, default)
+   or OLD (the head-major layout of earlier versions; temporary) */
+
+t_stat rb_set_layout (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+char gbuf[CBUFSIZE];
+
+if ((cptr == NULL) || (*cptr == 0))
+    return SCPE_MISVAL;
+if (uptr->flags & UNIT_ATT)
+    return SCPE_ALATT;
+get_glyph (cptr, gbuf, 0);
+if ((strcmp (gbuf, "STANDARD") == 0) || (strcmp (gbuf, "STD") == 0))
+    uptr->flags &= ~UNIT_OLDL;
+else if (strcmp (gbuf, "OLD") == 0)
+    uptr->flags |= UNIT_OLDL;
+else
+    return sim_messagef (SCPE_ARG, "Unknown layout: %s (STANDARD or OLD)\n", gbuf);
+return SCPE_OK;
+}
+
+t_stat rb_show_layout (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fprintf (st, "layout=%s", (uptr->flags & UNIT_OLDL) ? "OLD" : "STANDARD");
+return SCPE_OK;
+}
+
+/* Help */
+
+t_stat rb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+{
+fprintf (st, "RB730 Disk Controller (RB)\n\n");
+fprintf (st, "The RB730 is the integrated disk controller of the VAX-11/730.  Unit 0 is\n");
+fprintf (st, "an RB80 (an R80 fixed disk, the RM80's drive) by default, units 1-3 are RB02\n");
+fprintf (st, "drives (RL02 cartridge drives); SET RBn RB02/RB80 changes the type.\n\n");
+fprint_set_help (st, dptr);
+fprint_show_help (st, dptr);
+fprintf (st, "\nImage layout: the disk images are in DEC logical block order (cylinder by\n");
+fprintf (st, "cylinder, head by head, sector by sector).  This is the order DEC's drivers\n");
+fprintf (st, "use, so an RB02 image is the same as an RL02 image of the RL11 (RL device)\n");
+fprintf (st, "and a binary copy of a real cartridge.  Earlier versions of this simulator\n");
+fprintf (st, "stored the images head by head (all cylinders of surface 0 first).  Such\n");
+fprintf (st, "images can still be used with SET RBn LAYOUT=OLD before the ATTACH (a\n");
+fprintf (st, "temporary option); converting them once is better.\n");
+return SCPE_OK;
 }
