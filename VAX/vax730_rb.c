@@ -26,6 +26,9 @@
 
    rb           RB730 - RB02/RB80 disk controller
 
+   04-Nov-2026  Ulli    Uses the SIMH disk library (sim_disk): SIMH, VHD and
+                        RAW formats (SET RBn FORMAT), autosize (RB02/RB80),
+                        metadata, DISK debug, bad block table on new images
    04-Nov-2026  Ulli    Disk images in DEC logical block order (cylinder,
                         head, sector), as the RL11 and DEC's drivers; the old
                         head-major layout with SET RBn LAYOUT=OLD (temporary)
@@ -46,6 +49,7 @@
 */
 
 #include "vax_defs.h"
+#include "sim_disk.h"
 
 /* Constants */
 
@@ -73,9 +77,10 @@
 
 /* Flags in the unit flags word */
 
-#define UNIT_V_RB80     (UNIT_V_UF + 0)                 /* RB02 vs RB80 */
-#define UNIT_V_DUMMY    (UNIT_V_UF + 1)                 /* dummy flag */
-#define UNIT_V_OLDL     (UNIT_V_UF + 2)                 /* old image layout */
+#define UNIT_V_RB80     (DKUF_V_UF + 0)                 /* RB02 vs RB80 */
+#define UNIT_V_DUMMY    (DKUF_V_UF + 1)                 /* dummy flag */
+#define UNIT_V_OLDL     (DKUF_V_UF + 2)                 /* old image layout */
+#define UNIT_NOAUTO     DKUF_NOAUTOSIZE                 /* autosize disable */
 #define UNIT_DUMMY      (1 << UNIT_V_DUMMY)
 #define UNIT_OLDL       (1u << UNIT_V_OLDL)
 #define UNIT_RB80       (1u << UNIT_V_RB80)
@@ -213,6 +218,7 @@
 #define DBG_CMD         0x0002                          /* commands */
 #define DBG_RD          0x0004                          /* disk reads */
 #define DBG_WR          0x0008                          /* disk writes */
+#define DBG_DSK         0x0010                          /* sim_disk activities */
 
 uint16 *rbxb = NULL;                                     /* xfer buffer */
 int32 rbcs = 0;                                         /* control/status */
@@ -233,6 +239,7 @@ t_stat rb_reset (DEVICE *dptr);
 const char *rb_description (DEVICE *dptr);
 void rb_set_done (int32 error);
 t_stat rb_attach (UNIT *uptr, CONST char *cptr);
+t_stat rb_detach (UNIT *uptr);
 t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rb_set_layout (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
@@ -273,6 +280,7 @@ DEBTAB rb_debug[] = {
     {"CMD", DBG_CMD},
     {"RD",  DBG_RD},
     {"WR",  DBG_WR},
+    {"DISK", DBG_DSK},
     {0}
 };
 
@@ -283,6 +291,12 @@ MTAB rb_mod[] = {
         &set_writelock, NULL,   NULL, "Write lock disk drive" },
     { UNIT_DUMMY,      0, NULL,            "BADBLOCK", 
         &rb_set_bad, NULL, NULL, "write bad block table on last track" },
+    { UNIT_NOAUTO,           0, "autosize", "AUTOSIZE",
+        NULL, NULL, NULL, "Set type based on file size at attach" },
+    { UNIT_NOAUTO, UNIT_NOAUTO, "noautosize", "NOAUTOSIZE",
+        NULL, NULL, NULL, "Disable disk autosize on attach" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT={AUTO|SIMH|VHD|RAW}",
+        &sim_disk_set_fmt, &sim_disk_show_fmt, NULL, "Set/Display disk format" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "LAYOUT", "LAYOUT={STANDARD|OLD}",
         &rb_set_layout, &rb_show_layout, NULL, "Set/Display the image layout (OLD: images of earlier versions)" },
     { (UNIT_RB80+UNIT_ATT),             UNIT_ATT, "RB02", NULL, NULL },
@@ -304,8 +318,8 @@ DEVICE rb_dev = {
     "RB", rb_unit, rb_reg, rb_mod,
     RB_NUMDR, DEV_RDX, T_ADDR_W, 1, DEV_RDX, 16,
     NULL, NULL, &rb_reset,
-    NULL, &rb_attach, NULL,
-    &rb_dib, DEV_DISABLE | DEV_UBUS | DEV_DEBUG, 0,
+    NULL, &rb_attach, &rb_detach,
+    &rb_dib, DEV_DISABLE | DEV_UBUS | DEV_DEBUG | DEV_DISK, 0,
     rb_debug, NULL, NULL, &rb_help, NULL, NULL, 
     &rb_description
     };
@@ -464,6 +478,8 @@ t_stat rb_svc (UNIT *uptr)
 int32 curr, newc, swait;
 int32 err, wc, maxwc, t;
 int32 i, func, da, awc;
+t_seccnt sectsread;
+t_lba lba;
 uint32 ma;
 uint16 comp;
 
@@ -556,13 +572,16 @@ wc = ((rbbc * -1) >> 1);                                /* get true wc */
 maxwc = (RB_NUMSC(uptr) - GET_SECT (rbda)) * RB_NUMWD(uptr);    /* max transfer */
 if (wc > maxwc)                                         /* track overrun? */
     wc = maxwc;
-err = sim_fseek (uptr->fileref, da * sizeof (int16), SEEK_SET);
+lba = (t_lba) (da / RB_NUMWD(uptr));                    /* sector address */
+err = 0;
 
 if ((func >= RBCS_READ) && (err == 0)) {                /* read (no hdr)? */
     sim_debug(DBG_CMD, &rb_dev, "Read, CYL=%d, TRK=%d, SECT=%d, WC=%d, DA=%d\n", GET_CYL(rbda), GET_TRACK(rbda), GET_SECT(rbda), wc, da);
-    i = sim_fread (rbxb, sizeof (uint16), wc, uptr->fileref);
-    err = ferror (uptr->fileref);
-    for ( ; i < wc; i++)                                /* fill buffer */
+    err = sim_disk_rdsect (uptr, lba, (uint8 *) rbxb, &sectsread,
+                           (wc + RB_NUMWD(uptr) - 1) / RB_NUMWD(uptr));
+    sim_disk_data_trace (uptr, (uint8 *) rbxb, lba, sectsread * RB_NUMWD(uptr) * sizeof (uint16),
+                         "sim_disk_rdsect", DBG_DSK & rb_dev.dctrl, DBG_RD);
+    for (i = sectsread * RB_NUMWD(uptr); i < wc; i++)   /* fill buffer */
         rbxb[i] = 0;
     if ((t = Map_WriteW (ma, wc << 1, rbxb))) {         /* store buffer */
         rbcs = rbcs | RBCS_ERR | RBCS_NXM;              /* nxm */
@@ -580,16 +599,17 @@ if ((func == RBCS_WRITE) && (err == 0)) {               /* write? */
         awc = (wc + (RB_NUMWD(uptr) - 1)) & ~(RB_NUMWD(uptr) - 1);  /* clr to */
         for (i = wc; i < awc; i++)                      /* end of blk */
             rbxb[i] = 0;
-        sim_fwrite (rbxb, sizeof (uint16), awc, uptr->fileref);
-        err = ferror (uptr->fileref);
+        sim_disk_data_trace (uptr, (uint8 *) rbxb, lba, awc * sizeof (uint16),
+                             "sim_disk_wrsect", DBG_DSK & rb_dev.dctrl, DBG_WR);
+        err = sim_disk_wrsect (uptr, lba, (uint8 *) rbxb, NULL, awc / RB_NUMWD(uptr));
         }
     }                                                   /* end write */
 
 if ((func == RBCS_WCHK) && (err == 0)) {                /* write check? */
     sim_debug(DBG_CMD, &rb_dev, "WCheck, CYL=%d, TRK=%d, SECT=%d, WC=%d, DA=%d\n", GET_CYL(rbda), GET_TRACK(rbda), GET_SECT(rbda), wc, da);
-    i = sim_fread (rbxb, sizeof (uint16), wc, uptr->fileref);
-    err = ferror (uptr->fileref);
-    for ( ; i < wc; i++)                                /* fill buffer */
+    err = sim_disk_rdsect (uptr, lba, (uint8 *) rbxb, &sectsread,
+                           (wc + RB_NUMWD(uptr) - 1) / RB_NUMWD(uptr));
+    for (i = sectsread * RB_NUMWD(uptr); i < wc; i++)   /* fill buffer */
         rbxb[i] = 0;
     awc = wc;                                           /* save wc */
     for (wc = 0; (err == 0) && (wc < awc); wc++)  {     /* loop thru buf */
@@ -612,8 +632,8 @@ rbda = rbda + ((wc + (RB_NUMWD(uptr) - 1)) / RB_NUMWD(uptr));
 rb_set_done (0);
 
 if (err != 0) {                                         /* error? */
-    sim_perror ("RB I/O error");
-    clearerr (uptr->fileref);
+    sim_disk_perror (uptr, "RB I/O error");
+    sim_disk_clearerr (uptr);
     return SCPE_IOERR;
     }
 return SCPE_OK;
@@ -649,6 +669,7 @@ CLR_INT (RB);
 for (i = 0; i < RB_NUMDR; i++) {
     uptr = rb_dev.units + i;
     sim_cancel (uptr);
+    sim_disk_reset (uptr);
     uptr->STAT = 0;
     uptr->SIP = 0;
     }
@@ -668,11 +689,15 @@ return "RB730 disk controller";
 
 t_stat rb_attach (UNIT *uptr, CONST char *cptr)
 {
-uint32 p;
 t_stat r;
+static const char *drives[] = {"RB02", "RB80", NULL};
 
 uptr->capac = (uptr->flags & UNIT_RB80)? RB80_SIZE: RB02_SIZE;
-r = attach_unit (uptr, cptr);                           /* attach unit */
+r = sim_disk_attach_ex (uptr, cptr, RB_NUMWD(uptr) * sizeof (uint16), /* sector size */
+                        sizeof (uint16), TRUE, DBG_DSK,
+                        (uptr->flags & UNIT_RB80) ? "RB80" : "RB02",
+                        RB_NUMSC(uptr), 0,              /* bad block table on new images */
+                        (uptr->flags & UNIT_NOAUTO) ? NULL : drives);
 if (r != SCPE_OK)                                       /* error? */
     return r;
 if (uptr->flags & UNIT_OLDL)
@@ -681,12 +706,15 @@ if (uptr->flags & UNIT_OLDL)
 uptr->TRK = 0;                                          /* cylinder 0 */
 if ((uptr->flags & UNIT_RB80) == 0)
     uptr->STAT = RB02DS_VCK;                            /* new volume */
-if ((p = sim_fsize (uptr->fileref)) == 0) {             /* new disk image? */
-    if (uptr->flags & UNIT_RO)                          /* if ro, done */
-        return SCPE_OK;
-    return pdp11_bad_block (uptr, RB_NUMSC(uptr), RB_NUMWD(uptr));
-    }
 return SCPE_OK;
+}
+
+/* Detach routine */
+
+t_stat rb_detach (UNIT *uptr)
+{
+sim_cancel (uptr);
+return sim_disk_detach (uptr);
 }
 
 /* Set size routine */
@@ -703,7 +731,7 @@ return SCPE_OK;
 
 t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
-return pdp11_bad_block (uptr, RB_NUMSC(uptr), RB_NUMWD(uptr));
+return sim_disk_pdp11_bad_block (uptr, RB_NUMSC(uptr), RB_NUMWD(uptr));
 }
 
 /* Set/show the image layout: STANDARD (DEC logical block order, default)
