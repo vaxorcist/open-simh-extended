@@ -26,6 +26,10 @@
 
    rb           RB730 - RB02/RB80 disk controller
 
+   04-Nov-2026  Ulli    Status: GET STATUS reports the RB02 status bits (was
+                        an operator precedence error), READ HEADER returns the
+                        current cylinder and head, a drive without a cartridge
+                        is not ready and ends commands with drive error
    04-Nov-2026  Ulli    Uses the SIMH disk library (sim_disk): SIMH, VHD and
                         RAW formats (SET RBn FORMAT), autosize (RB02/RB80),
                         metadata, DISK debug, bad block table on new images
@@ -350,7 +354,8 @@ switch ((PA >> 2) & 07) {
         if (rbcs & RBCS_ALLERR)
             rbcs = rbcs | RBCS_ERR;
         uptr = rb_dev.units + GET_DRIVE (rbcs);
-        if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS))
+        if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
+            !(uptr->flags & UNIT_ATT))                  /* not ready without a cartridge */
             rbcs = rbcs & ~RBCS_DRDY;
         else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
         if (uptr->flags & UNIT_RB80)
@@ -401,7 +406,8 @@ switch ((PA >> 2) & 07) {
         if (rbcs & RBCS_ALLERR)
             rbcs = rbcs | RBCS_ERR;
         uptr = rb_dev.units + GET_DRIVE (data);
-        if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS))
+        if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
+            !(uptr->flags & UNIT_ATT))                  /* not ready without a cartridge */
             rbcs = rbcs & ~RBCS_DRDY;
         else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
         if (uptr->flags & UNIT_RB80)
@@ -496,7 +502,7 @@ if (func == RBCS_GSTA) {                                /* get status */
     else {
         if (rbmp & RBMP_RST)
             uptr->STAT = uptr->STAT & ~RB02DS_ERR;
-        rbmp = uptr->STAT | (uptr->flags & UNIT_ATT)? RB02DS_ATT: RB02DS_UNATT;
+        rbmp = uptr->STAT | ((uptr->flags & UNIT_ATT)? RB02DS_ATT: RB02DS_UNATT);
         if (uptr->flags & UNIT_WPRT)
             rbmp = rbmp | RB02DS_WLK;
         }
@@ -507,7 +513,7 @@ if (func == RBCS_GSTA) {                                /* get status */
 
 if (func == RBCS_RHDR) {                                /* read header? */
     sim_debug(DBG_CMD, &rb_dev, "Read Header\n");
-    rbmp = (uptr->TRK & RBDA_TRACK) | GET_SECT (rbda);
+    rbmp = (uptr->TRK & (RBDA_CYL | RBDA_TRACK)) | GET_SECT (rbda);  /* cyl, head, sector */
     rbmp1 = rbmp2 = 0;
     rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
     rb_set_done (0);                                    /* done */
@@ -519,7 +525,7 @@ if ((uptr->flags & UNIT_ATT) == 0) {                    /* attached? */
     rbcs = rbcs | (1u << (RBCS_V_ATN + GET_DRIVE (rbcs)));
     if ((uptr->flags & UNIT_RB80) == 0)
         uptr->STAT = uptr->STAT | RB02DS_SPE;           /* spin error */
-    rb_set_done (RBCS_ERR | RBCS_INCMP);                /* flag error */
+    rb_set_done (RBCS_ERR | RBCS_DRE | RBCS_INCMP);     /* drive error */
     //return IORETURN (rl_stopioe, SCPE_UNATT);
     return SCPE_OK;
     }
@@ -539,7 +545,8 @@ if (func == RBCS_SEEK) {                                /* seek? */
         else {
             curr = GET_CYL (uptr->TRK);                     /* current cylinder */
             newc = GET_CYL (rbda);                          /* offset */
-            uptr->TRK = (newc << RBDA_V_CYL);               /* put on track */
+            uptr->TRK = (newc << RBDA_V_CYL) |              /* put on track */
+                (rbda & RBDA_TRACK);                        /* (head selected) */
             swait = rb_cwait * abs (newc - curr);
             if (swait < rb_mwait) swait = rb_mwait;
             }
@@ -628,6 +635,7 @@ if (rbbc != 0) {                                        /* completed? */
     }
 ma = ma + (wc << 1);                                    /* final byte addr */
 rbba = ma & RBBA_RW;
+uptr->TRK = (uptr->TRK & RBDA_CYL) | (rbda & RBDA_TRACK);  /* head used */
 rbda = rbda + ((wc + (RB_NUMWD(uptr) - 1)) / RB_NUMWD(uptr));
 rb_set_done (0);
 
