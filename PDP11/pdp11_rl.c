@@ -1338,13 +1338,20 @@ t_stat rl_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
     return SCPE_OK;
 }
 
+/* SHOW RLn SPINDLE.  The entry is MTAB_NMO (only shown when asked for by
+   name), and SCP adds no line end for those, so the routine ends the line
+   itself. */
+
 t_stat rl_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
-    if (!(uptr->flags & UNIT_ATT)) {
+    t_stat r = SCPE_OK;
+
+    if (!(uptr->flags & UNIT_ATT))
         fprintf (st, "no cartridge");
-        return SCPE_OK;
-        }
-    return sim_spindle_show (st, &rl_spindle[uptr - rl_dev.units]);
+    else
+        r = sim_spindle_show (st, &rl_spindle[uptr - rl_dev.units]);
+    fputc ('\n', st);
+    return r;
 }
 
 /* Realistic seek time over dist cylinders (us): t(d) = a + b * d^0.67 with
