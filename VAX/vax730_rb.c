@@ -26,6 +26,8 @@
 
    rb           RB730 - RB02/RB80 disk controller
 
+   04-Nov-2026  Ulli    Range checks: a seek stops at the last cylinder, a
+                        transfer to a track beyond the last head fails
    04-Nov-2026  Ulli    Status: GET STATUS reports the RB02 status bits (was
                         an operator precedence error), READ HEADER returns the
                         current cylinder and head, a drive without a cartridge
@@ -545,6 +547,8 @@ if (func == RBCS_SEEK) {                                /* seek? */
         else {
             curr = GET_CYL (uptr->TRK);                     /* current cylinder */
             newc = GET_CYL (rbda);                          /* offset */
+            if (newc >= RB_NUMCY (uptr))                    /* beyond the last */
+                newc = RB_NUMCY (uptr) - 1;                 /* cylinder: stop there */
             uptr->TRK = (newc << RBDA_V_CYL) |              /* put on track */
                 (rbda & RBDA_TRACK);                        /* (head selected) */
             swait = rb_cwait * abs (newc - curr);
@@ -566,8 +570,9 @@ if (func == RBCS_SEEK) {                                /* seek? */
     }
 
 if (((func != RBCS_RNOHDR) && ((uptr->TRK & RBDA_CYL) != (rbda & RBDA_CYL)))
-   || (GET_SECT (rbda) >= RB_NUMSC(uptr))) {                /* bad cyl or sector? */
-    sim_debug(DBG_CMD, &rb_dev, "Invalid cylinder or sector, CYL=%d, TRK=%d, SECT=%d\n", GET_CYL(rbda), GET_TRACK(rbda), GET_SECT(rbda));
+   || (GET_SECT (rbda) >= RB_NUMSC(uptr))                   /* bad cyl or sector? */
+   || (GET_TRACK (rbda) >= RB_NUMSF(uptr))) {               /* or track? */
+    sim_debug(DBG_CMD, &rb_dev, "Invalid cylinder, track or sector, CYL=%d, TRK=%d, SECT=%d\n", GET_CYL(rbda), GET_TRACK(rbda), GET_SECT(rbda));
     rb_set_done (RBCS_ERR | RBCS_HDE | RBCS_INCMP);     /* wrong cylinder? */
     return SCPE_OK;
     }
