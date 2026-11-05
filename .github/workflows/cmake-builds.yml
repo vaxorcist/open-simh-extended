@@ -116,6 +116,12 @@ jobs:
 
   cmake-vs2022xp:
     name: LEGACY XP executables
+    ## open-simh-extended: switched off.  Installing the v141_xp toolset with
+    ## the Visual Studio installer hangs on the windows-latest runner image
+    ## (run 42092098628, 5 Nov 2026), so the job fails before it compiles.
+    ## The 64-bit Visual Studio 2022 build (cmake-vs2022) is not affected.
+    ## Remove the "if:" line to build the Windows XP executables again.
+    if: false
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v5
