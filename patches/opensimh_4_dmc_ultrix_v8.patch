@@ -1,0 +1,144 @@
+From 49328011d2fd90d3bd79a5e7716bfe8ba968d765 Mon Sep 17 00:00:00 2001
+From: vaxorcist <vaxorcist@gmail.com>
+Date: Sat, 31 Oct 2026 13:00:00 +0100
+Subject: [PATCH] DMC: fixes for the ULTRIX V1.1 if_dmc driver (DMC11/DMR11
+ mode)
+
+Applies after the DMV11/DMP11 commit (the DMF32 and VAX 8200 commits do
+not touch this file).  Changes 1 and 2 and the CONTROL IN part of
+change 3 apply to DMC/DMR mode only.  The DTR part of change 3 is in
+dmc_set_modem_dtr(), which the DMP11/DMV11 START command (request keys
+003 and 004) also calls: reception is now switched on at START even when
+DTR is already on.
+
+Found by running two ULTRIX-32 V1.1 VAX-11/780 nodes with SET DMC0
+TYPE=DMC (if_dmc network interface, IP over DDCMP):
+
+1. Master clear did not clear BSEL0/BSEL2.  On the DMC11 it resets RQI,
+   IEI, RDI and the command type, and RDO, IEO and the output type; only
+   RUN comes back on.  VMS sets MCLR with a word write to SEL0, which
+   clears BSEL0 anyway.  ULTRIX writes it with a byte write to BSEL1, so a
+   stale RQI|IEI from its probe survived, an unrequested input transfer
+   was started and the BASE IN of dmcinit was never answered.
+   Pending interrupt requests are withdrawn too.
+
+2. Setting IEI while RDI is already set (or IEO while RDO is set) did not
+   interrupt.  The DMC11 interrupt requests are IEI AND RDI, IEO AND RDO.
+   if_dmc's dmcload() sets RQI first and IEI with a second write, by which
+   time RDI is set: the BASE IN / CNTL IN interrupts never came.
+
+3. The controller became Running (DTR up, messages taken off the line)
+   only with the first transmit buffer, and reception was enabled only
+   when DTR changed.  CONTROL IN now starts the line, as on the DMC11, and
+   raising DTR always enables reception.  A host that waits for its peer
+   (ULTRIX as a TCP server) never received anything before; VMS sends at
+   once and did not notice.
+
+Tested: two ULTRIX V1.1 nodes, ifconfig dmc0 -dest ... up; TCP connect to
+telnetd across the link; 288768-byte file via rshd, checksums identical.
+VMS regression (30 Oct 2026, two VAX-11/780 nodes, DECnet point-to-point,
+HELPLIB.HLB copied both ways at once, fetched back, DIFFERENCES; circuit
+off/on; circuit counters), each with this patch and with v6 for DMC/DMR:
+  VMS V4.7: DMC11, DMR11 (v6 and v7), DMP11, DMF32-DMF32, DMF32-DMC11
+  VMS V3.7: DMC11, DMR11 (v6 and v7), DMP11
+All pass: 0 differences, no data/buffer errors or timeouts, circuit
+back after off/on, same number of master clears with v6 and v7.  V3.7
+sometimes refuses the second simultaneous inbound copy with REMRSRC
+(insufficient resources at the remote node) - 2 of 4 runs with v6 and
+2 of 4 with v7, never on V4.7: a V3.7 resource limit, not the device.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ PDP11/pdp11_dmc.c | 52 +++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 48 insertions(+), 4 deletions(-)
+
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index 97c5243..35708db 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -2706,10 +2706,17 @@ return (*controller->modem);
+ 
+ void dmc_set_modem_dtr(CTLR *controller)
+ {
+-if (dmc_is_attached(controller->unit) && (!(DMC_SEL4_M_DTR & *controller->modem))) {
+-    sim_debug(DBG_MDM, controller->device, "%s%d: DTR State Change to UP(ON)\n", controller->device->name, controller->index);
+-    tmxr_set_get_modem_bits (controller->line, TMXR_MDM_DTR|TMXR_MDM_RTS, 0, NULL);
+-    dmc_get_modem(controller);
++if (dmc_is_attached(controller->unit)) {
++    if (!(DMC_SEL4_M_DTR & *controller->modem)) {
++        sim_debug(DBG_MDM, controller->device, "%s%d: DTR State Change to UP(ON)\n", controller->device->name, controller->index);
++        tmxr_set_get_modem_bits (controller->line, TMXR_MDM_DTR|TMXR_MDM_RTS, 0, NULL);
++        dmc_get_modem(controller);
++        }
++    /* Enable reception whenever the host raises DTR, not only when DTR
++       changes: on a line that accepted the peer's incoming connection the
++       modem image can already show DTR, and the receiver then stayed off
++       for ever (seen with two ULTRIX V1.1 nodes: one side's socket filled
++       up, the other side never left ISTRT). */
+     controller->line->rcve = 1;
+     }
+ }
+@@ -2769,6 +2776,21 @@ while ((control = controller->control_out)) {
+     free (control);
+     }
+ controller->control_out = NULL;
++if (dmc_is_dmc(controller)) {
++    /* DMC11/DMR11: master clear resets the host interface.  RQI, IEI, RDI
++       and the input command type (BSEL0) and RDO, IEO and the output type
++       (BSEL2) are cleared and pending interrupt requests are withdrawn;
++       only RUN comes back on (EK-DMC11-TM, master clear).  VMS sets MCLR
++       with a word write to SEL0, which clears BSEL0 anyway; the 4.2BSD
++       derived ULTRIX V1.1 if_dmc driver sets it with a byte write to
++       BSEL1, so a stale RQI|IEI from its probe survived, an unrequested
++       input transfer was started, and the BASE IN of dmcinit was never
++       answered (interface RUNNING, no DDCMP traffic). */
++    dmc_setreg(controller, 0, *controller->csrs->sel0 & 0xFF00, DBG_RGC);
++    dmc_setreg(controller, 2, *controller->csrs->sel2 & 0xFF00, DBG_RGC);
++    dmc_clrinint(controller);
++    dmc_clroutint(controller);
++    }
+ if (controller->dev_type == DMR) {
+     if (dmc_is_attached(controller->unit)) {
+         /* Indicates microdiagnostics complete */
+@@ -4420,9 +4442,17 @@ if (dmc_is_dmc(controller)) {
+                                                        (sel6&DMC_SEL6_M_MAINT) ? "MAINTENANCE" : "DDCMP", 
+                                                        (sel6&DMC_SEL6_M_HDX) ? ", Half Duples" : "", 
+                                                        (sel6&DMC_SEL6_M_LONGSTRT) ? ", Long Start Timer" : "");
++                /* CONTROL IN starts the line: the DMC11 runs DDCMP start-up
++                   and receives from now on.  Before, the controller only
++                   became Running with its first transmit buffer, so a host
++                   that waits for the peer (ULTRIX V1.1 if_dmc as the TCP
++                   server) never took a message off the line.  VMS sends at
++                   once and did not notice. */
++                controller->state = Running;
+                 dmc_set_modem_dtr (controller);
+                 controller->transfer_state = Idle;
+                 ddcmp_dispatch (controller, (sel6&DMC_SEL6_M_MAINT) ? DDCMP_EVENT_MAINTMODE : 0);
++                dmc_buffer_fill_receive_buffers (controller);
+                 return;
+             case DMC_C_TYPE_HALT:
+                 sim_debug(DBG_INF, controller->device, "%s%d: Halt Command Received\n", controller->device->name, controller->index);
+@@ -5301,6 +5331,20 @@ else {
+ 
+ if (dmc_getsel(reg) == 0)    /* writes to SEL0 may need immediate action */
+     dmc_process_immediate(controller);      /* Do any needed immediate actions */
++if (dmc_is_dmc(controller)) {
++    /* DMC11/DMR11: the interrupt requests are IEI AND RDI, and IEO AND RDO.
++       Setting an enable while its ready bit is already on interrupts at
++       once.  The ULTRIX V1.1 if_dmc driver relies on this: dmcload() sets
++       RQI first, then IEI with a second write, by which time RDI is
++       usually set already; without this rule the interrupt never came and
++       the BASE IN / CNTL IN of dmcinit hung. */
++    if ((dmc_getsel(reg) == 0) && !(oldValue & DMC_SEL0_M_IEI) &&
++        (*controller->csrs->sel0 & DMC_SEL0_M_IEI) && (*controller->csrs->sel0 & DMC_SEL0_M_RDI))
++        dmc_setinint(controller);
++    if ((dmc_getsel(reg) == 1) && !(oldValue & DMC_SEL2_M_IEO) &&
++        (*controller->csrs->sel2 & DMC_SEL2_M_IEO) && (*controller->csrs->sel2 & DMC_SEL2_M_RDO))
++        dmc_setoutint(controller);
++    }
+ if ((dmc_getsel(reg) == 0) || (dmc_getsel(reg) == 1)) {/* writes to SEL0 and SEL2 are actionable */
+     if (0 == controller->dmc_wr_delay) {    /* Not waiting? */
+         controller->dmc_wr_delay = 10;      /* Wait a bit before acting on the changed register */
+-- 
+2.43.0
+

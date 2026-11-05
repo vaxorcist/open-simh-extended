@@ -1,0 +1,3228 @@
+From 4a68449d0589f94c38a205252896d1d151c2979f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 1 Nov 2026 13:45:00 +0100
+Subject: [PATCH] VAX: Add DMF32 multi-function communications interface
+ (Unibus VAXen)
+
+Applies after the DMV11/DMP11 commit.
+All four functions: synchronous interface, 8-line asynchronous
+multiplexer, line printer controller and DR11-C compatible parallel
+interface.
+
+The units are named after their function: DMF-ASYNC (multiplexer),
+DMF-PRINT (line printer), DMF-SYNC (synchronous line) and DMF-PAR
+(parallel interface user device); DMF0-DMF4 are accepted as well, and the
+internal timer unit DMF2 is not shown.  The synchronous line's peer is set
+with SET DMF-SYNC PEER= or SET DMF PEER=.
+
+The synchronous line and the parallel interface are polled once per
+clock tick (like the asynchronous lines and the DMC11), so SET CPU IDLE
+works while DMF-SYNC or DMF-PAR is attached.
+
+SHOW DMF-SYNC and SHOW DMF-PAR report their own line
+(connected/disconnected), not the asynchronous lines.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ PDP11/pdp11_io_lib.c                  |    2 +-
+ VAX/CMakeLists.txt                    |    5 +
+ VAX/vax730_defs.h                     |   28 +-
+ VAX/vax730_syslist.c                  |    2 +
+ VAX/vax750_defs.h                     |   28 +-
+ VAX/vax750_syslist.c                  |    2 +
+ VAX/vax780_defs.h                     |   28 +-
+ VAX/vax780_syslist.c                  |    2 +
+ VAX/vax820_defs.h                     |   28 +-
+ VAX/vax820_syslist.c                  |    2 +
+ VAX/vax860_defs.h                     |   28 +-
+ VAX/vax860_syslist.c                  |    2 +
+ VAX/vax_dmf.c                         | 2690 +++++++++++++++++++++++++
+ Visual Studio Projects/VAX730.vcproj  |  Bin 14663 -> 14729 bytes
+ Visual Studio Projects/VAX750.vcproj  |  Bin 14802 -> 14868 bytes
+ Visual Studio Projects/VAX780.vcproj  |  Bin 14954 -> 15020 bytes
+ Visual Studio Projects/VAX8200.vcproj |  Bin 14797 -> 14863 bytes
+ Visual Studio Projects/VAX8600.vcproj |  Bin 14814 -> 14880 bytes
+ makefile                              |   10 +-
+ 19 files changed, 2846 insertions(+), 11 deletions(-)
+ create mode 100644 VAX/vax_dmf.c
+
+diff --git a/PDP11/pdp11_io_lib.c b/PDP11/pdp11_io_lib.c
+index f3b7d85..ebd995f 100644
+--- a/PDP11/pdp11_io_lib.c
++++ b/PDP11/pdp11_io_lib.c
+@@ -794,7 +794,7 @@ AUTO_CON auto_tab[] = {/*c  #v  am vm  fxa   fxv */
+     { { "RQ", "RQB", "RQC", "RQD" }, 
+                          1, -1,  4, 4,                  /* RQDX3 */
+         {012150}, {0154} },
+-    { { NULL },          1,  8, 32, 4 },                /* DMF32 */
++    { { "DMF" },         1,  8, 32, 4 },                /* DMF32 */
+     { { NULL },          1,  3, 16, 8 },                /* KMS11 */
+     { { NULL },          1,  2,  0, 8,
+         {004200, 004240, 004300, 004340} },             /* PLC11 */
+diff --git a/VAX/CMakeLists.txt b/VAX/CMakeLists.txt
+index 6cdc1c5..3264d38 100644
+--- a/VAX/CMakeLists.txt
++++ b/VAX/CMakeLists.txt
+@@ -422,6 +422,7 @@ add_simulator(vax730
+         vax730_rb.c
+         vax_uw.c
+         vax730_syslist.c
++        vax_dmf.c
+         ${PDP11D}/pdp11_rl.c
+         ${PDP11D}/pdp11_rq.c
+         ${PDP11D}/pdp11_ts.c
+@@ -471,6 +472,7 @@ add_simulator(vax750
+         vax7x0_mba.c
+         vax_uw.c
+         vax750_syslist.c
++        vax_dmf.c
+         ${PDP11D}/pdp11_rl.c
+         ${PDP11D}/pdp11_rq.c
+         ${PDP11D}/pdp11_ts.c
+@@ -523,6 +525,7 @@ add_simulator(vax780
+         vax780_fload.c
+         vax_uw.c
+         vax780_syslist.c
++        vax_dmf.c
+         ${PDP11D}/pdp11_rl.c
+         ${PDP11D}/pdp11_rq.c
+         ${PDP11D}/pdp11_ts.c
+@@ -575,6 +578,7 @@ add_simulator(vax8200
+         vax820_ka.c
+         vax_uw.c
+         vax820_syslist.c
++        vax_dmf.c
+         ${PDP11D}/pdp11_rl.c
+         ${PDP11D}/pdp11_rq.c
+         ${PDP11D}/pdp11_ts.c
+@@ -624,6 +628,7 @@ add_simulator(vax8600
+         vax7x0_mba.c
+         vax_uw.c
+         vax860_syslist.c
++        vax_dmf.c
+         ${PDP11D}/pdp11_rl.c
+         ${PDP11D}/pdp11_rq.c
+         ${PDP11D}/pdp11_ts.c
+diff --git a/VAX/vax730_defs.h b/VAX/vax730_defs.h
+index 4026bf5..094199c 100644
+--- a/VAX/vax730_defs.h
++++ b/VAX/vax730_defs.h
+@@ -234,7 +234,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
+         ba      =       Nexus number
+         lnt     =       number of consecutive nexi */
+ 
+-#define VEC_DEVMAX      4                               /* max device vec */
++#define VEC_DEVMAX      8                               /* max device vec (DMF32 has 8) */
+ 
+ typedef struct {
+     uint32              ba;                             /* base addr */
+@@ -325,6 +325,32 @@ typedef struct {
+ #define IPL_CR          (0x16 - IPL_HMIN)
+ #define IPL_DZRX        (0x15 - IPL_HMIN)
+ #define IPL_DZTX        (0x15 - IPL_HMIN)
++/* DMF32: eight vectors at BR5, bits 24-31 (sync rx/tx, parallel A/B,
++   async rx/tx, line printer, unused) */
++#define INT_V_DMFSRX    24
++#define INT_V_DMFSTX    25
++#define INT_V_DMFDRA    26
++#define INT_V_DMFDRB    27
++#define INT_V_DMFARX    28
++#define INT_V_DMFATX    29
++#define INT_V_DMFLP     30
++#define INT_V_DMFUN     31
++#define INT_DMFSRX      (1u << INT_V_DMFSRX)
++#define INT_DMFSTX      (1u << INT_V_DMFSTX)
++#define INT_DMFDRA      (1u << INT_V_DMFDRA)
++#define INT_DMFDRB      (1u << INT_V_DMFDRB)
++#define INT_DMFARX      (1u << INT_V_DMFARX)
++#define INT_DMFATX      (1u << INT_V_DMFATX)
++#define INT_DMFLP       (1u << INT_V_DMFLP)
++#define INT_DMFUN       (1u << INT_V_DMFUN)
++#define IPL_DMFSRX      (0x15 - IPL_HMIN)
++#define IPL_DMFSTX      (0x15 - IPL_HMIN)
++#define IPL_DMFDRA      (0x15 - IPL_HMIN)
++#define IPL_DMFDRB      (0x15 - IPL_HMIN)
++#define IPL_DMFARX      (0x15 - IPL_HMIN)
++#define IPL_DMFATX      (0x15 - IPL_HMIN)
++#define IPL_DMFLP       (0x15 - IPL_HMIN)
++#define IPL_DMFUN       (0x15 - IPL_HMIN)
+ #define IPL_HK          (0x15 - IPL_HMIN)
+ #define IPL_RL          (0x15 - IPL_HMIN)
+ #define IPL_RQ          (0x15 - IPL_HMIN)
+diff --git a/VAX/vax730_syslist.c b/VAX/vax730_syslist.c
+index bb03ae0..95f560e 100644
+--- a/VAX/vax730_syslist.c
++++ b/VAX/vax730_syslist.c
+@@ -58,6 +58,7 @@ extern DEVICE ry_dev;
+ extern DEVICE ts_dev;
+ extern DEVICE tq_dev;
+ extern DEVICE dz_dev;
++extern DEVICE dmf_dev;
+ extern DEVICE vh_dev;
+ extern DEVICE xu_dev, xub_dev;
+ extern DEVICE dmc_dev;
+@@ -80,6 +81,7 @@ DEVICE *sim_devices[] = {
+     &td_dev,
+     &tdc_dev,
+     &dz_dev,
++    &dmf_dev,                                   /* DMF32 (async + LP) */
+     &vh_dev,
+     &cr_dev,
+     &lpt_dev,
+diff --git a/VAX/vax750_defs.h b/VAX/vax750_defs.h
+index e6dd189..fb838fa 100644
+--- a/VAX/vax750_defs.h
++++ b/VAX/vax750_defs.h
+@@ -274,7 +274,7 @@ extern t_stat vax750_show_bootdev (FILE *st, UNIT *uptr, int32 val, CONST void *
+         ba      =       Nexus number
+         lnt     =       number of consecutive nexi */
+ 
+-#define VEC_DEVMAX      4                               /* max device vec */
++#define VEC_DEVMAX      8                               /* max device vec (DMF32 has 8) */
+ 
+ typedef struct {
+     uint32              ba;                             /* base addr */
+@@ -365,6 +365,32 @@ typedef struct {
+ #define IPL_CR          (0x16 - IPL_HMIN)
+ #define IPL_DZRX        (0x15 - IPL_HMIN)
+ #define IPL_DZTX        (0x15 - IPL_HMIN)
++/* DMF32: eight vectors at BR5, bits 24-31 (sync rx/tx, parallel A/B,
++   async rx/tx, line printer, unused) */
++#define INT_V_DMFSRX    24
++#define INT_V_DMFSTX    25
++#define INT_V_DMFDRA    26
++#define INT_V_DMFDRB    27
++#define INT_V_DMFARX    28
++#define INT_V_DMFATX    29
++#define INT_V_DMFLP     30
++#define INT_V_DMFUN     31
++#define INT_DMFSRX      (1u << INT_V_DMFSRX)
++#define INT_DMFSTX      (1u << INT_V_DMFSTX)
++#define INT_DMFDRA      (1u << INT_V_DMFDRA)
++#define INT_DMFDRB      (1u << INT_V_DMFDRB)
++#define INT_DMFARX      (1u << INT_V_DMFARX)
++#define INT_DMFATX      (1u << INT_V_DMFATX)
++#define INT_DMFLP       (1u << INT_V_DMFLP)
++#define INT_DMFUN       (1u << INT_V_DMFUN)
++#define IPL_DMFSRX      (0x15 - IPL_HMIN)
++#define IPL_DMFSTX      (0x15 - IPL_HMIN)
++#define IPL_DMFDRA      (0x15 - IPL_HMIN)
++#define IPL_DMFDRB      (0x15 - IPL_HMIN)
++#define IPL_DMFARX      (0x15 - IPL_HMIN)
++#define IPL_DMFATX      (0x15 - IPL_HMIN)
++#define IPL_DMFLP       (0x15 - IPL_HMIN)
++#define IPL_DMFUN       (0x15 - IPL_HMIN)
+ #define IPL_HK          (0x15 - IPL_HMIN)
+ #define IPL_RL          (0x15 - IPL_HMIN)
+ #define IPL_RQ          (0x15 - IPL_HMIN)
+diff --git a/VAX/vax750_syslist.c b/VAX/vax750_syslist.c
+index 7eb8c60..b09149c 100644
+--- a/VAX/vax750_syslist.c
++++ b/VAX/vax750_syslist.c
+@@ -60,6 +60,7 @@ extern DEVICE ts_dev;
+ extern DEVICE tq_dev;
+ extern DEVICE tu_dev;
+ extern DEVICE dz_dev;
++extern DEVICE dmf_dev;
+ extern DEVICE vh_dev;
+ extern DEVICE xu_dev, xub_dev;
+ extern DEVICE dmc_dev;
+@@ -84,6 +85,7 @@ DEVICE *sim_devices[] = {
+     &td_dev,
+     &tdc_dev,
+     &dz_dev,
++    &dmf_dev,                                   /* DMF32 (async + LP) */
+     &vh_dev,
+     &cr_dev,
+     &lpt_dev,
+diff --git a/VAX/vax780_defs.h b/VAX/vax780_defs.h
+index 34f3eab..86f66e0 100644
+--- a/VAX/vax780_defs.h
++++ b/VAX/vax780_defs.h
+@@ -291,7 +291,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
+         ba      =       Nexus number
+         lnt     =       number of consecutive nexi */
+ 
+-#define VEC_DEVMAX      4                               /* max device vec */
++#define VEC_DEVMAX      8                               /* max device vec (DMF32 has 8) */
+ 
+ typedef struct {
+     uint32              ba;                             /* base addr */
+@@ -383,6 +383,32 @@ typedef struct {
+ #define IPL_CR          (0x16 - IPL_HMIN)
+ #define IPL_DZRX        (0x15 - IPL_HMIN)
+ #define IPL_DZTX        (0x15 - IPL_HMIN)
++/* DMF32: eight vectors at BR5, bits 24-31 (sync rx/tx, parallel A/B,
++   async rx/tx, line printer, unused) */
++#define INT_V_DMFSRX    24
++#define INT_V_DMFSTX    25
++#define INT_V_DMFDRA    26
++#define INT_V_DMFDRB    27
++#define INT_V_DMFARX    28
++#define INT_V_DMFATX    29
++#define INT_V_DMFLP     30
++#define INT_V_DMFUN     31
++#define INT_DMFSRX      (1u << INT_V_DMFSRX)
++#define INT_DMFSTX      (1u << INT_V_DMFSTX)
++#define INT_DMFDRA      (1u << INT_V_DMFDRA)
++#define INT_DMFDRB      (1u << INT_V_DMFDRB)
++#define INT_DMFARX      (1u << INT_V_DMFARX)
++#define INT_DMFATX      (1u << INT_V_DMFATX)
++#define INT_DMFLP       (1u << INT_V_DMFLP)
++#define INT_DMFUN       (1u << INT_V_DMFUN)
++#define IPL_DMFSRX      (0x15 - IPL_HMIN)
++#define IPL_DMFSTX      (0x15 - IPL_HMIN)
++#define IPL_DMFDRA      (0x15 - IPL_HMIN)
++#define IPL_DMFDRB      (0x15 - IPL_HMIN)
++#define IPL_DMFARX      (0x15 - IPL_HMIN)
++#define IPL_DMFATX      (0x15 - IPL_HMIN)
++#define IPL_DMFLP       (0x15 - IPL_HMIN)
++#define IPL_DMFUN       (0x15 - IPL_HMIN)
+ #define IPL_HK          (0x15 - IPL_HMIN)
+ #define IPL_RL          (0x15 - IPL_HMIN)
+ #define IPL_RQ          (0x15 - IPL_HMIN)
+diff --git a/VAX/vax780_syslist.c b/VAX/vax780_syslist.c
+index 223c9d3..73d244e 100644
+--- a/VAX/vax780_syslist.c
++++ b/VAX/vax780_syslist.c
+@@ -60,6 +60,7 @@ extern DEVICE ts_dev;
+ extern DEVICE tq_dev;
+ extern DEVICE tu_dev;
+ extern DEVICE dz_dev;
++extern DEVICE dmf_dev;
+ extern DEVICE vh_dev;
+ extern DEVICE xu_dev, xub_dev;
+ extern DEVICE dmc_dev;
+@@ -85,6 +86,7 @@ DEVICE *sim_devices[] = {
+     &dt_dev,
+     &tdc_dev,
+     &dz_dev,
++    &dmf_dev,                                   /* DMF32 (async + LP) */
+     &vh_dev,
+     &cr_dev,
+     &lpt_dev,
+diff --git a/VAX/vax820_defs.h b/VAX/vax820_defs.h
+index feff213..f6d5769 100644
+--- a/VAX/vax820_defs.h
++++ b/VAX/vax820_defs.h
+@@ -282,7 +282,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
+         ba      =       Nexus number
+         lnt     =       number of consecutive nexi */
+ 
+-#define VEC_DEVMAX      4                               /* max device vec */
++#define VEC_DEVMAX      8                               /* max device vec (DMF32 has 8) */
+ 
+ typedef struct {
+     uint32              ba;                             /* base addr */
+@@ -372,6 +372,32 @@ typedef struct {
+ #define IPL_CR          (0x16 - IPL_HMIN)
+ #define IPL_DZRX        (0x15 - IPL_HMIN)
+ #define IPL_DZTX        (0x15 - IPL_HMIN)
++/* DMF32: eight vectors at BR5, bits 24-31 (sync rx/tx, parallel A/B,
++   async rx/tx, line printer, unused) */
++#define INT_V_DMFSRX    24
++#define INT_V_DMFSTX    25
++#define INT_V_DMFDRA    26
++#define INT_V_DMFDRB    27
++#define INT_V_DMFARX    28
++#define INT_V_DMFATX    29
++#define INT_V_DMFLP     30
++#define INT_V_DMFUN     31
++#define INT_DMFSRX      (1u << INT_V_DMFSRX)
++#define INT_DMFSTX      (1u << INT_V_DMFSTX)
++#define INT_DMFDRA      (1u << INT_V_DMFDRA)
++#define INT_DMFDRB      (1u << INT_V_DMFDRB)
++#define INT_DMFARX      (1u << INT_V_DMFARX)
++#define INT_DMFATX      (1u << INT_V_DMFATX)
++#define INT_DMFLP       (1u << INT_V_DMFLP)
++#define INT_DMFUN       (1u << INT_V_DMFUN)
++#define IPL_DMFSRX      (0x15 - IPL_HMIN)
++#define IPL_DMFSTX      (0x15 - IPL_HMIN)
++#define IPL_DMFDRA      (0x15 - IPL_HMIN)
++#define IPL_DMFDRB      (0x15 - IPL_HMIN)
++#define IPL_DMFARX      (0x15 - IPL_HMIN)
++#define IPL_DMFATX      (0x15 - IPL_HMIN)
++#define IPL_DMFLP       (0x15 - IPL_HMIN)
++#define IPL_DMFUN       (0x15 - IPL_HMIN)
+ #define IPL_HK          (0x15 - IPL_HMIN)
+ #define IPL_RL          (0x15 - IPL_HMIN)
+ #define IPL_RQ          (0x15 - IPL_HMIN)
+diff --git a/VAX/vax820_syslist.c b/VAX/vax820_syslist.c
+index b91cc46..457165e 100644
+--- a/VAX/vax820_syslist.c
++++ b/VAX/vax820_syslist.c
+@@ -57,6 +57,7 @@ extern DEVICE ry_dev;
+ extern DEVICE ts_dev;
+ extern DEVICE tq_dev;
+ extern DEVICE dz_dev;
++extern DEVICE dmf_dev;
+ extern DEVICE vh_dev;
+ extern DEVICE xu_dev, xub_dev;
+ extern DEVICE dmc_dev;
+@@ -87,6 +88,7 @@ DEVICE *sim_devices[] = {
+     &dt_dev,
+     &tdc_dev,
+     &dz_dev,
++    &dmf_dev,                                   /* DMF32 (async + LP) */
+     &vh_dev,
+     &cr_dev,
+     &lpt_dev,
+diff --git a/VAX/vax860_defs.h b/VAX/vax860_defs.h
+index 6c76e84..4680708 100644
+--- a/VAX/vax860_defs.h
++++ b/VAX/vax860_defs.h
+@@ -318,7 +318,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
+         ba      =       Nexus number
+         lnt     =       number of consecutive nexi */
+ 
+-#define VEC_DEVMAX      4                               /* max device vec */
++#define VEC_DEVMAX      8                               /* max device vec (DMF32 has 8) */
+ 
+ typedef struct {
+     uint32              ba;                             /* base addr */
+@@ -409,6 +409,32 @@ typedef struct {
+ #define IPL_CR          (0x16 - IPL_HMIN)
+ #define IPL_DZRX        (0x15 - IPL_HMIN)
+ #define IPL_DZTX        (0x15 - IPL_HMIN)
++/* DMF32: eight vectors at BR5, bits 24-31 (sync rx/tx, parallel A/B,
++   async rx/tx, line printer, unused) */
++#define INT_V_DMFSRX    24
++#define INT_V_DMFSTX    25
++#define INT_V_DMFDRA    26
++#define INT_V_DMFDRB    27
++#define INT_V_DMFARX    28
++#define INT_V_DMFATX    29
++#define INT_V_DMFLP     30
++#define INT_V_DMFUN     31
++#define INT_DMFSRX      (1u << INT_V_DMFSRX)
++#define INT_DMFSTX      (1u << INT_V_DMFSTX)
++#define INT_DMFDRA      (1u << INT_V_DMFDRA)
++#define INT_DMFDRB      (1u << INT_V_DMFDRB)
++#define INT_DMFARX      (1u << INT_V_DMFARX)
++#define INT_DMFATX      (1u << INT_V_DMFATX)
++#define INT_DMFLP       (1u << INT_V_DMFLP)
++#define INT_DMFUN       (1u << INT_V_DMFUN)
++#define IPL_DMFSRX      (0x15 - IPL_HMIN)
++#define IPL_DMFSTX      (0x15 - IPL_HMIN)
++#define IPL_DMFDRA      (0x15 - IPL_HMIN)
++#define IPL_DMFDRB      (0x15 - IPL_HMIN)
++#define IPL_DMFARX      (0x15 - IPL_HMIN)
++#define IPL_DMFATX      (0x15 - IPL_HMIN)
++#define IPL_DMFLP       (0x15 - IPL_HMIN)
++#define IPL_DMFUN       (0x15 - IPL_HMIN)
+ #define IPL_HK          (0x15 - IPL_HMIN)
+ #define IPL_RL          (0x15 - IPL_HMIN)
+ #define IPL_RQ          (0x15 - IPL_HMIN)
+diff --git a/VAX/vax860_syslist.c b/VAX/vax860_syslist.c
+index 088a3fc..8b6f6a8 100644
+--- a/VAX/vax860_syslist.c
++++ b/VAX/vax860_syslist.c
+@@ -60,6 +60,7 @@ extern DEVICE ts_dev;
+ extern DEVICE tq_dev;
+ extern DEVICE tu_dev;
+ extern DEVICE dz_dev;
++extern DEVICE dmf_dev;
+ extern DEVICE vh_dev;
+ extern DEVICE xu_dev, xub_dev;
+ extern DEVICE dmc_dev;
+@@ -84,6 +85,7 @@ DEVICE *sim_devices[] = {
+     &dt_dev,
+     &tdc_dev,
+     &dz_dev,
++    &dmf_dev,                                   /* DMF32 (async + LP) */
+     &vh_dev,
+     &cr_dev,
+     &lpt_dev,
+diff --git a/VAX/vax_dmf.c b/VAX/vax_dmf.c
+new file mode 100644
+index 0000000..3bf0d7c
+--- /dev/null
++++ b/VAX/vax_dmf.c
+@@ -0,0 +1,2690 @@
++/* vax_dmf.c: DMF32 multi-function communications interface
++
++   Permission is hereby granted, free of charge, to any person obtaining a
++   copy of this software and associated documentation files (the "Software"),
++   to deal in the Software without restriction, including without limitation
++   the rights to use, copy, modify, merge, publish, distribute, sublicense,
++   and/or sell copies of the Software, and to permit persons to whom the
++   Software is furnished to do so, subject to the following conditions:
++
++   The above copyright notice and this permission notice shall be included in
++   all copies or substantial portions of the Software.
++
++   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++   THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
++   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
++   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++
++   dmf          DMF32 (M8396) - synchronous line, asynchronous multiplexer,
++                line printer and parallel interface
++
++   References:
++     EK-DMF32-UG-003  DMF32 User's Guide (programming, chapter 4)
++     EK-DMF32-TD-001  DMF32 Multi-Function Communications Interface
++                      Technical Description (CSR map, CSR0/CSR1, vectors)
++
++   The DMF32 is a single Unibus module for VAX systems that combines four
++   independently programmed devices behind one block of 16 registers:
++
++     base+00  COMBO CSR0      device code (15:12), first vector/4 (7:0)
++     base+02  COMBO CSR1      diagnostic register; LP maintenance data (7:0)
++     base+04  SYNC  RCSR      synchronous receive CSR
++     base+06  SYNC  TCSR      synchronous transmit CSR
++     base+10  SYNC  MISC      indirect address, master reset; data set change flags
++     base+12  SYNC  IND       indirect registers selected by MISC (3:0)
++     base+14  ASYNC CSR       8-line asynchronous multiplexer
++     base+16  ASYNC LPR       line parameter register
++     base+20  ASYNC RBUF/RSP  receive silo (read) / silo alarm timeout (write)
++     base+22  ASYNC IND       indirect registers selected by CSR (4:0)
++     base+24  LP    CSR       LP32 line printer controller
++     base+26  LP    IND       indirect registers selected by LP CSR (10:8)
++     base+30  DR    CSR       parallel interface CSR
++     base+32  DR    OUTBUF    output buffer
++     base+34  DR    INBUF     input buffer (read) / miscellaneous (write)
++     base+36  DR    IND       indirect registers selected by CSR (4:3)
++
++   Eight interrupt vectors follow the base vector loaded into CSR0:
++     +0 sync receive, +4 sync transmit, +10 parallel A, +14 parallel B,
++     +20 async receive, +24 async transmit, +30 line printer, +34 unused.
++
++   All four functions are emulated.  As on the module, the line printer
++   and the parallel interface share one connector and one set of hardware,
++   so a DMF32 has one or the other: SET DMF CONFIG= sets distribution panel
++   switch pack 3 (PRINTER = async, sync and line printer, device code 1110,
++   the default; PARALLEL = async, sync and parallel interface, 1101; ASYNCLP
++   = 1010; ASYNC = 1000).  Functions not configured do not respond.
++
++   Units (their names, set in dmf_reset; DMFn also works):
++     DMF-ASYNC  (DMF0)  asynchronous multiplexer, lines 0-7
++     DMF-PRINT  (DMF1)  line printer output file
++                (DMF2)  silo alarm timer, internal and not shown
++     DMF-SYNC   (DMF3)  synchronous line
++     DMF-PAR    (DMF4)  parallel interface user device
++
++   Synchronous interface (User's Guide 4.2 - 4.6)
++     - One line (unit DMF-SYNC) over TCP to a peer: another DMF32, or any of the
++       DMC11/DMR11/DMP11/DMV11 emulations, since in DDCMP mode the line
++       carries standard DDCMP frames.
++     - Double-buffered DMA transmit and receive (primary/secondary buffer
++       address and count registers) with the done, error and
++       primary/secondary bits of the receive and transmit CSRs.
++     - DDCMP (CRC generation and checking, message length from the header,
++       tributary address check), HDLC/SDLC (FCS, secondary address check)
++       and GEN BYTE (raw characters, sync detection, strip sync, match
++       character) framing; internal loop; modem status follows the
++       connection, with data set change interrupts.
++
++   Asynchronous multiplexer (User's Guide 4.7 - 4.10)
++     - 8 lines on a terminal multiplexer (Telnet or serial ports); lines 0
++       and 1 have modem control (with ATTACH -M).
++     - Output from a 32 character silo per line, or by DMA from memory
++       (buffer address and count in indirect registers 16-31), with the
++       preempt character and auto XON/XOFF.
++     - Input into one 48 entry receive silo with line numbers, error flags
++       and data set change entries; interrupt after more than 16 entries or
++       when the silo alarm timeout (RSP) expires.
++     - Maintenance modes: auto echo, local loopback, remote loopback.
++
++   Parallel interface (User's Guide 4.14 - 4.16)
++     - DR11-C functional mode, 32-word silo modes and double-buffered DMA
++       modes; the user device is connected to unit DMF-PAR (TCP or a serial
++       port) and exchanges the interface signals as short text messages
++       (see the parallel interface section below).
++
++   Line printer controller (User's Guide 4.11 - 4.13)
++     - DMA output of one buffer per print cycle to the attached file, with
++       prefix and suffix characters and the optional formatting functions
++       (carriage return insertion, form feed to line feeds, tab expansion,
++       line wrap or truncation, lower to upper case, non printable filter).
++     - Status words bytes transmitted and line count; maintenance mode
++       loops data into CSR1 (7:0).
++*/
++
++#if !defined (VM_VAX)
++#error "DMF32 is only supported on Unibus VAX systems"
++#endif
++
++#include "vax_defs.h"
++#include "sim_tmxr.h"
++#include "pdp11_ddcmp.h"                       /* DDCMP framing and CRC */
++
++/* ---------------------------------------------------------------------------
++   Register layout
++   --------------------------------------------------------------------------- */
++
++#define IOLN_DMF        040                     /* 16 words */
++#define DMF_LINES       8                       /* asynchronous lines */
++#define DMF_MDM_LINES   2                       /* lines with modem control */
++#define DMF_TXSILO      32                      /* transmit silo per line */
++#define DMF_RXSILO      48                      /* shared receive silo */
++#define DMF_RXALARM     16                      /* interrupt above this many */
++
++/* register numbers (word offset from base) */
++#define REG_CSR0        0
++#define REG_CSR1        1
++#define REG_ACSR        6
++#define REG_ALPR        7
++#define REG_ARBUF       8                       /* read RBUF, write RSP */
++#define REG_AIND        9
++#define REG_LCSR        10
++#define REG_LIND        11
++
++/* CSR0 */
++#define C0_ASYNC        0100000                 /* device codes (Table 4-1) */
++#define C0_SYNC         0040000
++#define C0_LP           0020000
++#define C0_DR           0010000
++#define C0_CODE         0170000
++#define C0_VEC          0000377                 /* first vector / 4 */
++#define C0_VALID_CODES  { 0100000, 0120000, 0150000, 0160000 }
++#define C0_EMULATED     (C0_ASYNC|C0_SYNC|C0_LP|C0_DR)  /* parts this emulation has */
++
++/* CSR1 high byte commands and results (Table 4-4) */
++#define C1_PARITY       0x55                    /* force parity error */
++#define C1_SELFTEST     0xAA                    /* restart / self test passed */
++#define C1_REVLEVEL     0x2A                    /* request microcode revision */
++#define DMF_UCODE_REV   0x28                    /* BCD: version 28 (tab, truncation) */
++
++/* asynchronous CSR (Table 4-23) */
++#define AC_IAD          0000037                 /* indirect address */
++#define AC_MR           0000040                 /* master reset */
++#define AC_RIE          0000100                 /* receive interrupt enable */
++#define AC_RDA          0000200                 /* receive data available (ro) */
++#define AC_V_TLINE      8
++#define AC_TLINE        0003400                 /* transmit line number (ro) */
++#define AC_NXM          0010000                 /* transmit DMA error (ro) */
++#define AC_TIE          0040000                 /* transmit interrupt enable */
++#define AC_TRDY         0100000                 /* transmitter ready (ro) */
++#define AC_RW           (AC_IAD|AC_RIE|AC_TIE)
++
++/* line parameter register (Table 4-24) */
++#define LP_LINE         0000007
++#define LP_V_LEN        3                       /* character length - 5 */
++#define LP_PEN          0000040                 /* parity enable */
++#define LP_EVEN         0000100                 /* even parity */
++#define LP_2STOP        0000200                 /* two stop bits */
++#define LP_V_RSPD       8                       /* receive speed (lines 0,1) */
++#define LP_V_TSPD       12                      /* transmit speed */
++
++/* receive buffer (Table 4-26) */
++#define RB_V_LINE       8
++#define RB_DSC          0004000                 /* data set change */
++#define RB_PE           0010000                 /* parity error */
++#define RB_FE           0020000                 /* framing error */
++#define RB_OVR          0040000                 /* overrun */
++#define RB_VALID        0100000                 /* data valid */
++
++/* line control register, indirect 8-15 low byte (Table 4-29) */
++#define LC_TE           0000001                 /* transmit enable */
++#define LC_AUTOX        0000002                 /* auto XON/XOFF */
++#define LC_RE           0000004                 /* receive enable */
++#define LC_BRK          0000010                 /* break */
++#define LC_FLUSH        0000020                 /* flush transmit silo */
++#define LC_DSCE         0000040                 /* data set change enable */
++#define LC_V_MAINT      6
++#define LC_MAINT        0000300
++#define  MAINT_NORMAL    0
++#define  MAINT_ECHO      1                      /* automatic echo */
++#define  MAINT_LOCAL     2                      /* local loopback */
++#define  MAINT_REMOTE    3                      /* remote loopback */
++/* transmit modem register, indirect 8-15 high byte */
++#define TM_USRW         0000400                 /* user transmit (pin 18) */
++#define TM_DTR          0001000                 /* data terminal ready */
++#define TM_RATE         0002000                 /* data signal rate select */
++#define TM_SRTS         0004000                 /* secondary request to send */
++#define TM_RTS          0010000                 /* request to send */
++#define TM_PREEMPT      0100000                 /* preempt output */
++#define TM_RW           (TM_USRW|TM_DTR|TM_RATE|TM_SRTS|TM_RTS|TM_PREEMPT)
++
++/* receive modem register, indirect 0-7 high byte (Figure 4-22) */
++#define RM_USRR         0002000                 /* user receive (pin 25) */
++#define RM_SCD          0004000                 /* secondary carrier detect */
++#define RM_CTS          0010000                 /* clear to send */
++#define RM_CD           0020000                 /* carrier detect */
++#define RM_RI           0040000                 /* ring indicator */
++#define RM_DSR          0100000                 /* data set ready */
++
++/* DMA character count register, indirect 24-31 */
++#define TC_COUNT        0037777
++#define TC_V_XADDR      14                      /* buffer address bits 17:16 */
++
++/* line printer CSR (Table 4-33) */
++#define LC_PEN          0000001                 /* print enable */
++#define LC_MR           0000002                 /* master reset */
++#define LC_FMT          0000004                 /* format control */
++#define LC_MAINTM       0000040                 /* maintenance mode */
++#define LC_IE           0000100                 /* interrupt enable */
++#define LC_DONE         0000200                 /* print done (ro) */
++#define LC_V_IAD        8
++#define LC_IAD          0003400                 /* indirect address */
++#define LC_CONV         0010000                 /* connect verify: 1 = not connected */
++#define LC_DAVRDY       0020000                 /* DAVFU ready */
++#define LC_OFFLINE      0040000                 /* printer offline (error) */
++#define LC_DMAERR       0100000                 /* DMA error (ro) */
++#define LC_RW           (LC_PEN|LC_FMT|LC_MAINTM|LC_IE|LC_IAD)
++
++/* line printer indirect register 6 (Table 4-34) */
++#define LF_XADDR        0000003                 /* buffer address bits 17:16 */
++#define LF_NOAUTOCR     0000400                 /* set: no automatic CR insertion */
++#define LF_NOFFCONV     0001000                 /* set: pass FF, no LF conversion */
++#define LF_NONPRINT     0002000                 /* set: accept non printable */
++#define LF_DAVFU        0004000                 /* DAVFU printer */
++#define LF_WRAP         0010000                 /* line wrap */
++#define LF_NOTRUNC      0020000                 /* inhibit truncation */
++#define LF_NOTAB        0040000                 /* inhibit tab expansion */
++#define LF_NOUPPER      0100000                 /* set: no lower to upper case */
++
++/* interrupt vector numbers (Table 4-2) */
++#define VEC_SRX         0
++#define VEC_STX         1
++#define VEC_DRA         2
++#define VEC_DRB         3
++#define VEC_ARX         4
++#define VEC_ATX         5
++#define VEC_LP          6
++
++/* debug flags */
++#define DBG_REG         0x0001                  /* register accesses */
++#define DBG_INT         0x0002                  /* interrupts */
++#define DBG_DMA         0x0004                  /* DMA transfers */
++#define DBG_LPT         0x0008                  /* line printer cycles */
++#define DBG_SXMT        0x0010                  /* synchronous transmit */
++#define DBG_SRCV        0x0020                  /* synchronous receive */
++#define DBG_DR          0x0040                  /* parallel interface signals */
++#define DBG_XMT         TMXR_DBG_XMT
++#define DBG_RCV         TMXR_DBG_RCV
++#define DBG_MDM         TMXR_DBG_MDM
++#define DBG_CON         TMXR_DBG_CON
++#define DBG_TRC         TMXR_DBG_TRC
++
++/* ---------------------------------------------------------------------------
++   State
++   --------------------------------------------------------------------------- */
++
++typedef struct {
++    uint16  lpr;                                /* line parameters */
++    uint16  lcr;                                /* line control + transmit modem */
++    uint16  rms;                                /* receive modem status (15:8) */
++    uint8   silo[DMF_TXSILO];                   /* transmit silo */
++    int32   scnt;                               /* characters in the silo */
++    int32   preempt;                            /* preempt character, -1 = none */
++    uint32  dma_addr;                           /* DMA buffer address (18 bits) */
++    uint16  dma_count;                          /* DMA characters left */
++    t_bool  dma;                                /* DMA transfer active */
++    t_bool  busy;                               /* output in progress, report done */
++    t_bool  xoff;                               /* stopped by received XOFF */
++    t_bool  dsc_pending;                        /* data set change waiting for silo room */
++    t_bool  overrun;                            /* characters lost: flag the next one */
++    } DMF_LINE;
++
++static uint16 dmf_csr0;                         /* device code and vector */
++static uint16 dmf_csr1;                         /* diagnostic register */
++static uint16 dmf_acsr;                         /* asynchronous CSR */
++static uint16 dmf_rsp;                          /* silo alarm timeout */
++static int32 dmf_work_iad;                      /* working copy of the indirect address */
++static uint16 dmf_rxsilo[DMF_RXSILO];           /* receive silo */
++static int32 dmf_rxcnt;                         /* entries in the receive silo */
++static t_bool dmf_rx_alarm;                     /* silo alarm timeout expired */
++static t_bool dmf_rx_posted;                    /* receive interrupt already requested */
++static uint8 dmf_tx_done;                       /* lines waiting to report transmit ready */
++static int32 dmf_mctl;                          /* modem control enabled (ATTACH -M) */
++static DMF_LINE dmf_line[DMF_LINES];
++
++static uint16 dmf_lcsr;                         /* line printer CSR */
++static uint16 dmf_lind[8];                      /* line printer indirect registers */
++static int32 dmf_lp_col;                        /* printer column */
++static int32 dmf_lp_row;                        /* printer line on the page */
++static t_bool dmf_lp_crpend;                    /* data CR held (see dmf_lp_format) */
++static int32 dmf_lp_wait = 200;                 /* print cycle completion delay (instr) */
++
++extern int32 tmxr_poll;                         /* calibrated poll delay */
++/* synchronous interface state (defined with its code below) */
++static uint16 dmf_srcsr, dmf_stcsr, dmf_smisc;
++static uint16 dmf_sind[16];
++static int32 dmf_sync_wait;
++static uint16 dmf_dcsr, dmf_ddone, dmf_dout, dmf_din, dmf_dmisc;
++static uint16 dmf_dind[4];
++static int32 dmf_config;
++
++static TMLN dmf_ldsc[DMF_LINES];
++static TMXR dmf_desc = { DMF_LINES, 0, 0, dmf_ldsc };
++static TMXR dmf_sdesc;                          /* sync line, parallel device: */
++static TMXR dmf_ddesc;                          /* defined with their code below */
++
++t_stat dmf_rd (int32 *data, int32 PA, int32 access);
++t_stat dmf_wr (int32 data, int32 PA, int32 access);
++t_stat dmf_reset (DEVICE *dptr);
++t_stat dmf_svc (UNIT *uptr);
++t_stat dmf_timer_svc (UNIT *uptr);
++t_stat dmf_lp_svc (UNIT *uptr);
++t_stat dmf_attach (UNIT *uptr, CONST char *cptr);
++t_stat dmf_detach (UNIT *uptr);
++t_stat dmf_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
++const char *dmf_description (DEVICE *dptr);
++static int32 dmf_ack_arx (void);
++static int32 dmf_ack_atx (void);
++static int32 dmf_ack_lp (void);
++static int32 dmf_ack_unused (void);
++static int32 dmf_ack_srx (void);
++static int32 dmf_ack_stx (void);
++t_stat dmf_sync_svc (UNIT *uptr);
++static void dmf_sync_reset (t_bool init);
++static int32 dmf_sync_rd (int32 reg);
++static void dmf_sync_wr (int32 reg, int32 data, int32 PA, int32 access);
++static t_stat dmf_sync_attach (UNIT *uptr, CONST char *cptr);
++static t_stat dmf_sync_detach (UNIT *uptr);
++static t_stat dmf_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++static t_stat dmf_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static int32 dmf_ack_dra (void);
++static int32 dmf_ack_drb (void);
++t_stat dmf_dr_svc (UNIT *uptr);
++static void dmf_dr_reset (t_bool init);
++static int32 dmf_dr_rd (int32 reg);
++static void dmf_dr_wr (int32 reg, int32 data, int32 PA, int32 access);
++static t_stat dmf_dr_attach (UNIT *uptr, CONST char *cptr);
++static t_stat dmf_dr_detach (UNIT *uptr);
++static t_stat dmf_set_config (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++static t_stat dmf_show_config (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static void dmf_async_reset (t_bool init);
++static void dmf_lp_reset (void);
++
++/* ---------------------------------------------------------------------------
++   Data structures
++   --------------------------------------------------------------------------- */
++
++DIB dmf_dib = {
++    IOBA_AUTO, IOLN_DMF, &dmf_rd, &dmf_wr,
++    8, IVCL (DMFSRX), VEC_AUTO,
++    { &dmf_ack_srx, &dmf_ack_stx, &dmf_ack_dra, &dmf_ack_drb,
++      &dmf_ack_arx, &dmf_ack_atx, &dmf_ack_lp, &dmf_ack_unused },
++    IOLN_DMF                                    /* one register block: 8 vectors */
++    };
++
++/* UNIT_IDLE: the units that poll while attached (multiplexer, synchronous
++   line, parallel device) and the silo alarm timer allow the CPU to idle.
++   The polling units are coscheduled with the clock (DMF_POLL), so the next
++   event is never closer than one clock tick; an event due in less than the
++   host's minimum sleep time (about 1 ms) prevents idling altogether. */
++UNIT dmf_unit[5] = {
++    { UDATA (&dmf_svc, UNIT_IDLE|UNIT_ATTABLE|TT_MODE_8B, 0) },        /* mux poll */
++    { UDATA (&dmf_lp_svc, UNIT_SEQ|UNIT_ATTABLE|UNIT_TEXT, 0), 200 },   /* printer */
++    { UDATA (&dmf_timer_svc, UNIT_IDLE|UNIT_DIS, 0) },                  /* silo alarm */
++    { UDATA (&dmf_sync_svc, UNIT_IDLE|UNIT_ATTABLE, 0) },               /* sync line */
++    { UDATA (&dmf_dr_svc, UNIT_IDLE|UNIT_ATTABLE, 0) }                  /* parallel device */
++    };
++
++#define DMF_MUX_UNIT    (&dmf_unit[0])
++#define DMF_LP_UNIT     (&dmf_unit[1])
++#define DMF_TMR_UNIT    (&dmf_unit[2])
++
++REG dmf_reg[] = {
++    { ORDATAD (CSR0,  dmf_csr0, 16, "combo CSR 0 (device code, vector)") },
++    { ORDATAD (CSR1,  dmf_csr1, 16, "combo CSR 1 (diagnostic)") },
++    { ORDATAD (ACSR,  dmf_acsr, 16, "asynchronous CSR") },
++    { ORDATAD (RSP,   dmf_rsp,   8, "receive silo alarm timeout") },
++    { DRDATAD (RXCNT, dmf_rxcnt, 8, "receive silo entries") },
++    { BRDATAD (RXSILO, dmf_rxsilo, 8, 16, DMF_RXSILO, "receive silo") },
++    { ORDATAD (TXDONE, dmf_tx_done, 8, "lines waiting to report transmit ready") },
++    { ORDATAD (LCSR,  dmf_lcsr, 16, "line printer CSR") },
++    { BRDATAD (LIND,  dmf_lind,  8, 16, 8, "line printer indirect registers") },
++    { DRDATAD (LPCOL, dmf_lp_col, 16, "printer column") },
++    { DRDATAD (LPROW, dmf_lp_row, 16, "printer line on page") },
++    { DRDATAD (LPTIME, dmf_lp_wait, 24, "print cycle delay"), PV_LEFT },
++    { ORDATAD (SRCSR, dmf_srcsr, 16, "synchronous receive CSR") },
++    { ORDATAD (STCSR, dmf_stcsr, 16, "synchronous transmit CSR") },
++    { ORDATAD (SMISC, dmf_smisc, 16, "synchronous misc / data set change flags") },
++    { BRDATAD (SIND, dmf_sind, 8, 16, 16, "synchronous indirect registers") },
++    { DRDATAD (STIME, dmf_sync_wait, 24, "synchronous register to action delay"), PV_LEFT },
++    { ORDATAD (DCSR, dmf_dcsr, 16, "parallel CSR (read/write bits)") },
++    { ORDATAD (DSTAT, dmf_ddone, 16, "parallel done/error/primary-secondary bits") },
++    { ORDATAD (DOUT, dmf_dout, 16, "parallel output lines") },
++    { ORDATAD (DIN, dmf_din, 16, "parallel input lines") },
++    { ORDATAD (DMISC, dmf_dmisc, 16, "parallel miscellaneous register (mode)") },
++    { BRDATAD (DIND, dmf_dind, 8, 16, 4, "parallel indirect registers") },
++    { DRDATAD (CONFIG, dmf_config, 2, "switch pack 3 setting"), REG_HRO },
++    { FLDATAD (MDMCTL, dmf_mctl, 0, "modem control enabled") },
++    { GRDATA  (DEVADDR, dmf_dib.ba, 8, 32, 0), REG_HRO },
++    { GRDATA  (DEVVEC, dmf_dib.vec, 8, 16, 0), REG_HRO },
++    { NULL }
++    };
++
++/* Connection summary of an attached unit: the asynchronous multiplexer
++   (DMF-ASYNC) has eight lines ("n current connections"), the synchronous
++   line (DMF-SYNC) and the parallel interface (DMF-PAR) one each
++   ("connected" or "disconnected"). */
++static t_stat dmf_show_summ (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++TMXR *mp = &dmf_desc;
++
++if (uptr == &dmf_unit[3])                       /* DMF-SYNC */
++    mp = &dmf_sdesc;
++else if (uptr == &dmf_unit[4])                  /* DMF-PAR */
++    mp = &dmf_ddesc;
++return tmxr_show_summ (st, uptr, val, (void *) mp);
++}
++
++MTAB dmf_mod[] = {
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 1, NULL, "DISCONNECT",
++        &tmxr_dscln, NULL, &dmf_desc, "Disconnect a specific line" },
++    /* shown for every attached unit: dmf_show_summ picks the unit's own
++       line(s), so DMF-SYNC no longer reports the eight async lines */
++    { UNIT_ATT, UNIT_ATT, "summary", NULL,
++        NULL, &dmf_show_summ, NULL, "Display a summary of line states" },
++    { MTAB_XTD|MTAB_VDV|MTAB_NMO, 1, "CONNECTIONS", NULL,
++        NULL, &tmxr_show_cstat, (void *) &dmf_desc, "Display current connections" },
++    { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "STATISTICS", NULL,
++        NULL, &tmxr_show_cstat, (void *) &dmf_desc, "Display multiplexer statistics" },
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "CONFIG", "CONFIG={PRINTER|PARALLEL|ASYNCLP|ASYNC}",
++        &dmf_set_config, &dmf_show_config, NULL, "Functions present (distribution panel switch pack 3)" },
++    /* the synchronous line's peer: SET DMF PEER= or SET DMF-SYNC PEER=, shown
++       with the device (SHOW DMF, SHOW DMF PEER) */
++    { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_VALR, 0, NULL, "PEER=address:port",
++        &dmf_set_peer, NULL, NULL, "Synchronous line: the peer to connect to" },
++    { MTAB_XTD|MTAB_VDV, 0, "PEER", NULL,
++        NULL, &dmf_show_peer, NULL, "Synchronous line: the peer" },
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 020, "ADDRESS", "ADDRESS",
++        &set_addr, &show_addr, NULL, "Bus address" },
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "VECTOR", "VECTOR",
++        &set_vec, &show_vec, NULL, "Interrupt vector" },
++    { MTAB_XTD|MTAB_VDV, 0, NULL, "AUTOCONFIGURE",
++        &set_addr_flt, NULL, NULL, "Enable autoconfiguration of address & vector" },
++    { 0 }
++    };
++
++DEBTAB dmf_debug[] = {
++    { "REG",  DBG_REG, "register accesses" },
++    { "INT",  DBG_INT, "interrupts" },
++    { "DMA",  DBG_DMA, "DMA transfers" },
++    { "LPT",  DBG_LPT, "line printer cycles" },
++    { "SXMT", DBG_SXMT, "synchronous messages transmitted" },
++    { "SRCV", DBG_SRCV, "synchronous messages received" },
++    { "DR",   DBG_DR, "parallel interface signals" },
++    { "PXMT", DDCMP_DBG_PXMT, "synchronous DDCMP frames transmitted" },
++    { "PRCV", DDCMP_DBG_PRCV, "synchronous DDCMP frames received" },
++    { "XMT",  DBG_XMT, "transmitted data" },
++    { "RCV",  DBG_RCV, "received data" },
++    { "MDM",  DBG_MDM, "modem signals" },
++    { "CON",  DBG_CON, "connection activities" },
++    { "TRC",  DBG_TRC, "trace routine calls" },
++    { 0 }
++    };
++
++DEVICE dmf_dev = {
++    "DMF", dmf_unit, dmf_reg, dmf_mod,
++    5, 8, 8, 1, 8, 8,
++    NULL, NULL, &dmf_reset,
++    NULL, &dmf_attach, &dmf_detach,
++    &dmf_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_DEBUG | DEV_MUX,
++    0, dmf_debug, NULL, NULL,
++    &dmf_help, NULL, (void *)&dmf_desc,
++    &dmf_description
++    };
++
++/* ---------------------------------------------------------------------------
++   Interrupts.  The DMF32 takes its vectors from the base the operating
++   system loads into CSR0 (7:0); before that, the auto-configured vector is
++   used.  Each event requests its interrupt once (the request is cleared by
++   the acknowledge), as the microcode posts one interrupt per event.
++   --------------------------------------------------------------------------- */
++
++static int32 dmf_vector (int32 n)
++{
++int32 base = (dmf_csr0 & C0_VEC) << 2;
++
++if (base == 0)
++    base = dmf_dib.vec;
++return base + (n << 2);
++}
++
++static int32 dmf_ack_arx (void)    { return dmf_vector (VEC_ARX); }
++static int32 dmf_ack_atx (void)    { return dmf_vector (VEC_ATX); }
++static int32 dmf_ack_lp (void)     { return dmf_vector (VEC_LP); }
++static int32 dmf_ack_unused (void) { return 0; }   /* never requested */
++
++/* Receive interrupt: more than 16 entries, or data waiting longer than the
++   silo alarm timeout (RSP 1 = at once, 0 = never). */
++static void dmf_update_rx_int (void)
++{
++t_bool want = (dmf_acsr & AC_RIE) && dmf_rxcnt &&
++              ((dmf_rxcnt > DMF_RXALARM) || dmf_rx_alarm);
++
++if (want && !dmf_rx_posted) {
++    sim_debug (DBG_INT, &dmf_dev, "receive interrupt (%d in silo)\n", dmf_rxcnt);
++    SET_INT (DMFARX);
++    dmf_rx_posted = TRUE;
++    }
++if (!want) {
++    CLR_INT (DMFARX);
++    if (dmf_rxcnt == 0)
++        dmf_rx_posted = FALSE;
++    }
++}
++
++/* Start the silo alarm timer when data is waiting. */
++static void dmf_start_rx_timer (void)
++{
++if (dmf_rxcnt == 0 || dmf_rx_alarm || sim_is_active (DMF_TMR_UNIT))
++    return;
++if (dmf_rsp == 1)                               /* "no timeout" */
++    dmf_rx_alarm = TRUE;
++else if (dmf_rsp != 0)                          /* 0 = infinite */
++    sim_activate_after (DMF_TMR_UNIT, (uint32)dmf_rsp * 1176);  /* 255 ~ 300 ms */
++}
++
++t_stat dmf_timer_svc (UNIT *uptr)
++{
++if (dmf_rxcnt) {
++    dmf_rx_alarm = TRUE;
++    dmf_update_rx_int ();
++    }
++return SCPE_OK;
++}
++
++/* Transmit ready: report the next line whose output finished, once the
++   program has read the previous report (reading the CSR clears TRDY). */
++static void dmf_update_tx_int (void)
++{
++int32 ln;
++
++if ((dmf_acsr & AC_TRDY) || (dmf_tx_done == 0))
++    return;
++for (ln = 0; ln < DMF_LINES; ln++)
++    if (dmf_tx_done & (1u << ln))
++        break;
++dmf_tx_done &= ~(1u << ln);
++dmf_acsr = (dmf_acsr & ~(AC_TLINE|AC_NXM)) | AC_TRDY | (ln << AC_V_TLINE) |
++           ((dmf_line[ln].dma_count & 0x8000) ? AC_NXM : 0);
++dmf_line[ln].dma_count &= ~0x8000;              /* (NXM marker, see dmf_dma_fill) */
++if (dmf_acsr & AC_TIE) {
++    sim_debug (DBG_INT, &dmf_dev, "transmit interrupt line %d\n", ln);
++    SET_INT (DMFATX);
++    }
++}
++
++static void dmf_report_tx_done (int32 ln)
++{
++dmf_line[ln].busy = FALSE;
++dmf_tx_done |= (1u << ln);
++dmf_update_tx_int ();
++}
++
++/* ---------------------------------------------------------------------------
++   Receive silo
++   --------------------------------------------------------------------------- */
++
++static t_bool dmf_rx_put (uint16 entry)
++{
++if (dmf_rxcnt >= DMF_RXSILO)
++    return FALSE;
++dmf_rxsilo[dmf_rxcnt++] = entry | RB_VALID;
++dmf_acsr |= AC_RDA;
++dmf_start_rx_timer ();
++dmf_update_rx_int ();
++return TRUE;
++}
++
++static uint16 dmf_rx_get (void)
++{
++uint16 entry;
++int32 i;
++
++if (dmf_rxcnt == 0)
++    return 0;
++entry = dmf_rxsilo[0];
++for (i = 1; i < dmf_rxcnt; i++)
++    dmf_rxsilo[i - 1] = dmf_rxsilo[i];
++--dmf_rxcnt;
++if (dmf_rxcnt == 0)
++    dmf_acsr &= ~AC_RDA;
++/* every read restarts the alarm timer */
++dmf_rx_alarm = FALSE;
++sim_cancel (DMF_TMR_UNIT);
++dmf_start_rx_timer ();
++dmf_rx_posted = FALSE;                          /* a new condition may interrupt again */
++dmf_update_rx_int ();
++return entry;
++}
++
++/* Received character for line ln (or a break): apply parity stripping,
++   auto XON/XOFF and the maintenance modes, then store it. */
++static void dmf_receive (int32 ln, int32 c, t_bool brk)
++{
++DMF_LINE *l = &dmf_line[ln];
++int32 len = ((l->lpr >> LP_V_LEN) & 3) + 5;
++int32 maint = (l->lcr & LC_MAINT) >> LC_V_MAINT;
++uint16 entry;
++
++c &= (1 << len) - 1;
++if (l->lcr & LC_AUTOX) {
++    if (c == 023)                               /* XOFF stops this line's output */
++        l->xoff = TRUE;
++    else if (c == 021)                          /* XON restarts it */
++        l->xoff = FALSE;
++    }
++if ((maint == MAINT_ECHO) || (maint == MAINT_REMOTE))
++    tmxr_putc_ln (&dmf_ldsc[ln], c);
++if (maint == MAINT_REMOTE)                      /* not stored */
++    return;
++entry = (uint16)((ln << RB_V_LINE) | (brk ? RB_FE : c) | (l->overrun ? RB_OVR : 0));
++if (dmf_rx_put (entry))
++    l->overrun = FALSE;
++else
++    l->overrun = TRUE;
++}
++
++/* Modem status of lines 0 and 1 from the multiplexer connection. */
++static void dmf_update_modem (int32 ln)
++{
++DMF_LINE *l = &dmf_line[ln];
++TMLN *lp = &dmf_ldsc[ln];
++uint16 rms = 0;
++
++if (ln >= DMF_MDM_LINES)
++    return;
++if (dmf_mctl) {
++    int32 bits;
++
++    tmxr_set_get_modem_bits (lp, 0, 0, &bits);
++    rms = ((bits & TMXR_MDM_DSR) ? RM_DSR : 0) | ((bits & TMXR_MDM_DCD) ? RM_CD : 0) |
++          ((bits & TMXR_MDM_CTS) ? RM_CTS : 0) | ((bits & TMXR_MDM_RNG) ? RM_RI : 0);
++    }
++else if (lp->conn)                              /* no modem control: a connection */
++    rms = RM_DSR | RM_CD | RM_CTS;              /* looks like an answered call */
++if (rms != l->rms) {
++    sim_debug (DBG_MDM, &dmf_dev, "line %d modem status %06o -> %06o\n", ln, l->rms, rms);
++    l->rms = rms;
++    if (l->lcr & LC_DSCE)
++        l->dsc_pending = TRUE;
++    }
++if (l->dsc_pending &&
++    dmf_rx_put ((uint16)(RB_DSC | (ln << RB_V_LINE))))
++    l->dsc_pending = FALSE;
++}
++
++/* ---------------------------------------------------------------------------
++   Transmit
++   --------------------------------------------------------------------------- */
++
++/* Refill a line's silo from its DMA buffer.  A non-existent memory error
++   ends the transfer and is reported with the transmit ready event. */
++static void dmf_dma_fill (int32 ln)
++{
++DMF_LINE *l = &dmf_line[ln];
++uint8 buf[DMF_TXSILO];
++int32 n, rest;
++
++if (!l->dma || (l->scnt >= 2))                  /* refilled when fewer than 2 left */
++    return;
++n = DMF_TXSILO - l->scnt;
++if (n > (l->dma_count & TC_COUNT))
++    n = l->dma_count & TC_COUNT;
++if (n <= 0) {                                   /* count exhausted: the transfer */
++    l->dma = FALSE;                             /* ends when the silo has emptied */
++    return;
++    }
++rest = Map_ReadB (l->dma_addr, n, buf);
++n -= rest;
++memcpy (&l->silo[l->scnt], buf, n);
++l->scnt += n;
++l->dma_addr = (l->dma_addr + n) & 0777777;
++l->dma_count = (uint16)((l->dma_count & TC_COUNT) - n);
++sim_debug (DBG_DMA, &dmf_dev, "line %d DMA %d bytes, %d left\n", ln, n, l->dma_count);
++if (rest) {                                     /* non-existent memory */
++    sim_debug (DBG_DMA, &dmf_dev, "line %d DMA NXM at %06o\n", ln, l->dma_addr);
++    l->dma = FALSE;
++    l->dma_count = 0x8000;                      /* marker: report NXM */
++    }
++}
++
++/* Send what a line has to send: the preempt character first, then the silo
++   (refilled by DMA).  Output goes as fast as the multiplexer takes it; a
++   line that is not connected discards its output, as a real line without a
++   terminal would.  The transmit ready event is reported when the silo has
++   emptied (and, in DMA mode, the count has reached zero). */
++static void dmf_transmit (int32 ln)
++{
++DMF_LINE *l = &dmf_line[ln];
++TMLN *lp = &dmf_ldsc[ln];
++int32 maint = (l->lcr & LC_MAINT) >> LC_V_MAINT;
++t_bool sent = FALSE;
++
++for (;;) {
++    int32 c;
++    t_stat r;
++
++    if (l->preempt >= 0)
++        c = l->preempt;
++    else {
++        dmf_dma_fill (ln);
++        if (!(l->lcr & LC_TE) || l->xoff || (maint == MAINT_REMOTE) || (l->scnt == 0))
++            break;
++        c = l->silo[0];
++        }
++    if (maint == MAINT_LOCAL)                   /* looped back to the receiver */
++        dmf_receive (ln, c, FALSE);
++    else if (lp->conn) {
++        r = tmxr_putc_ln (lp, c);
++        if (r == SCPE_STALL)                    /* output buffer full: later */
++            break;
++        }
++    if (l->preempt >= 0)
++        l->preempt = -1;
++    else {
++        memmove (&l->silo[0], &l->silo[1], --l->scnt);
++        sent = TRUE;
++        }
++    }
++if ((sent || l->busy) && (l->scnt == 0) && !l->dma) {
++    if (l->busy || sent)
++        dmf_report_tx_done (ln);
++    }
++}
++
++/* ---------------------------------------------------------------------------
++   Asynchronous registers
++   --------------------------------------------------------------------------- */
++
++/* Apply line parameters to a serial port (Telnet lines ignore them). */
++static void dmf_set_line_config (int32 ln)
++{
++static const char *speeds[16] = { "50", "75", "110", "134", "150", "300", "600", "1200",
++                                  "1800", "2000", "2400", "3600", "4800", "7200", "9600", "19200" };
++DMF_LINE *l = &dmf_line[ln];
++char config[40];
++
++if (!dmf_ldsc[ln].serport)
++    return;
++snprintf (config, sizeof (config), "%s-%d%c%d", speeds[(l->lpr >> LP_V_TSPD) & 017],
++          ((l->lpr >> LP_V_LEN) & 3) + 5,
++          (l->lpr & LP_PEN) ? ((l->lpr & LP_EVEN) ? 'E' : 'O') : 'N',
++          (l->lpr & LP_2STOP) ? 2 : 1);
++tmxr_set_config_line (&dmf_ldsc[ln], config);
++}
++
++/* Line control / transmit modem register write. */
++static void dmf_write_lcr (int32 ln, uint16 data)
++{
++DMF_LINE *l = &dmf_line[ln];
++uint16 old = l->lcr;
++
++l->lcr = data & (TM_RW | 0377) & ~LC_FLUSH;
++if ((data & LC_TE) && !(old & LC_TE) && l->scnt)
++    l->busy = TRUE;
++if (data & LC_FLUSH) {                          /* flush silo, abort DMA, report */
++    sim_debug (DBG_XMT, &dmf_dev, "line %d flush\n", ln);
++    l->scnt = 0;
++    l->dma = FALSE;
++    l->dma_count = 0;
++    dmf_report_tx_done (ln);
++    }
++if ((ln < DMF_MDM_LINES) && dmf_mctl && ((old ^ l->lcr) & (TM_DTR|TM_RTS))) {
++    int32 set = 0, clr = 0;
++
++    if (l->lcr & TM_DTR) set |= TMXR_MDM_DTR; else clr |= TMXR_MDM_DTR;
++    if (l->lcr & TM_RTS) set |= TMXR_MDM_RTS; else clr |= TMXR_MDM_RTS;
++    tmxr_set_get_modem_bits (&dmf_ldsc[ln], set, clr, NULL);
++    sim_debug (DBG_MDM, &dmf_dev, "line %d DTR %s RTS %s\n", ln,
++               (l->lcr & TM_DTR) ? "on" : "off", (l->lcr & TM_RTS) ? "on" : "off");
++    }
++dmf_ldsc[ln].rcve = (l->lcr & LC_RE) ? 1 : 0;    /* receiver enable */
++dmf_transmit (ln);
++}
++
++/* Write a character into a line's transmit silo (indirect 0-7). */
++static void dmf_write_tbuf (int32 ln, int32 c)
++{
++DMF_LINE *l = &dmf_line[ln];
++
++if (l->lcr & TM_PREEMPT) {                      /* preempt: send it next */
++    l->preempt = c & 0377;
++    l->lcr &= ~TM_PREEMPT;
++    }
++else if (l->scnt < DMF_TXSILO)
++    l->silo[l->scnt++] = (uint8)c;
++l->busy = TRUE;
++}
++
++/* Indirect register access for the asynchronous multiplexer.  The working
++   copy of the indirect address moves from the buffer address register to
++   the count register of the same line after an access (4.9.3). */
++static int32 dmf_aind_rd (void)
++{
++int32 iad = dmf_work_iad;
++int32 ln = iad & 7;
++DMF_LINE *l = &dmf_line[ln];
++
++switch (iad >> 3) {
++    case 0:                                     /* silo count, receive modem */
++        return (l->scnt & 0377) | ((ln < DMF_MDM_LINES) ? (l->rms & 0177400) : 0);
++    case 1:                                     /* line control, transmit modem */
++        return l->lcr;
++    case 2:                                     /* DMA buffer address 15:0 */
++        dmf_work_iad = iad + 8;
++        return l->dma_addr & 0177777;
++    default:                                    /* DMA count, address 17:16 */
++        return (l->dma_count & TC_COUNT) | (((l->dma_addr >> 16) & 3) << TC_V_XADDR);
++    }
++}
++
++static void dmf_aind_wr (int32 data, int32 access)
++{
++int32 iad = dmf_work_iad;
++int32 ln = iad & 7;
++DMF_LINE *l = &dmf_line[ln];
++
++switch (iad >> 3) {
++    case 0:                                     /* transmit character(s) */
++        dmf_write_tbuf (ln, data & 0377);
++        if (access == WRITE)
++            dmf_write_tbuf (ln, (data >> 8) & 0377);
++        dmf_transmit (ln);
++        break;
++    case 1:
++        dmf_write_lcr (ln, (uint16)data);
++        break;
++    case 2:                                     /* DMA buffer address 15:0 */
++        l->dma_addr = (l->dma_addr & 0600000) | (data & 0177777);
++        dmf_work_iad = iad + 8;
++        break;
++    default:                                    /* count: starts the transfer */
++        l->dma_addr = (l->dma_addr & 0177777) | (((data >> TC_V_XADDR) & 3) << 16);
++        l->dma_count = (uint16)(data & TC_COUNT);
++        l->dma = (l->dma_count != 0);
++        l->busy = TRUE;
++        sim_debug (DBG_DMA, &dmf_dev, "line %d DMA start %06o count %d\n",
++                   ln, l->dma_addr, l->dma_count);
++        dmf_transmit (ln);
++        if (!l->dma && l->scnt == 0)            /* zero count: done at once */
++            dmf_report_tx_done (ln);
++        break;
++    }
++}
++
++/* Master reset of the multiplexer (CSR bit 5) or bus INIT. */
++static void dmf_async_reset (t_bool init)
++{
++int32 ln;
++
++dmf_acsr = 0;
++dmf_rsp = 1;
++dmf_work_iad = 0;
++dmf_rxcnt = 0;
++dmf_rx_alarm = dmf_rx_posted = FALSE;
++dmf_tx_done = 0;
++sim_cancel (DMF_TMR_UNIT);
++CLR_INT (DMFARX);
++CLR_INT (DMFATX);
++for (ln = 0; ln < DMF_LINES; ln++) {
++    DMF_LINE *l = &dmf_line[ln];
++    uint16 keep = init ? 0 : (l->lcr & TM_RATE);    /* rate select survives a master reset */
++
++    l->lpr = 0;
++    l->lcr = keep;
++    l->scnt = 0;
++    l->preempt = -1;
++    l->dma = l->busy = l->xoff = l->dsc_pending = l->overrun = FALSE;
++    l->rms = 0;
++    dmf_ldsc[ln].rcve = 0;
++    if (init && dmf_mctl && (ln < DMF_MDM_LINES))
++        tmxr_set_get_modem_bits (&dmf_ldsc[ln], 0, TMXR_MDM_DTR|TMXR_MDM_RTS, NULL);
++    }
++}
++
++/* ---------------------------------------------------------------------------
++   Line printer
++   --------------------------------------------------------------------------- */
++
++static void dmf_lp_interrupt (void)
++{
++if (dmf_lcsr & LC_IE) {
++    sim_debug (DBG_INT, &dmf_dev, "line printer interrupt (CSR %06o)\n", dmf_lcsr);
++    SET_INT (DMFLP);
++    }
++}
++
++/* Printer status: without an output file the printer is offline.  Going
++   offline is an error (Table 4-33): it ends a print cycle in progress by
++   clearing print enable, and the 0 -> 1 transition of the offline bit
++   interrupts if enabled.  Nothing has been printed then, so the program
++   restarts the cycle by setting print enable again once the printer is
++   back online (VMS does this when it polls the CSR). */
++static void dmf_lp_update_status (void)
++{
++if (DMF_LP_UNIT->flags & UNIT_ATT)
++    dmf_lcsr &= ~(LC_OFFLINE|LC_CONV);
++else if (!(dmf_lcsr & LC_OFFLINE)) {
++    dmf_lcsr = (dmf_lcsr | LC_OFFLINE) & ~LC_PEN;
++    sim_cancel (DMF_LP_UNIT);
++    sim_debug (DBG_LPT, &dmf_dev, "printer offline\n");
++    dmf_lp_interrupt ();
++    }
++}
++
++static void dmf_lp_reset (void)
++{
++dmf_lcsr = LC_DONE;                             /* print done after reset */
++dmf_lind[7] &= 0177400;                         /* lines per page cleared */
++dmf_lp_col = 0;
++dmf_lp_crpend = FALSE;
++sim_cancel (DMF_LP_UNIT);
++CLR_INT (DMFLP);
++dmf_lp_update_status ();
++}
++
++/* Put one character to the printer, counting columns and lines. */
++static void dmf_lp_out (int32 c)
++{
++dmf_lind[0]++;                                  /* bytes transmitted */
++if (dmf_lcsr & LC_MAINTM) {                     /* maintenance: loop into CSR1 */
++    dmf_csr1 = (dmf_csr1 & 0177400) | (c & 0377);
++    return;
++    }
++if (DMF_LP_UNIT->fileref)
++    fputc (c, DMF_LP_UNIT->fileref);
++if (c == 012) {                                 /* line feed: paper moves */
++    dmf_lind[1]++;
++    dmf_lp_row++;
++    }
++else if (c == 014)
++    dmf_lp_row = 0;
++if ((c == 015) || (c == 012) || (c == 014))
++    dmf_lp_col = (c == 015) ? 0 : dmf_lp_col;
++}
++
++/* "New line" (prefix/suffix character 0, line wrap): carriage return and
++   line feed.  Table 4-34 sends the CR explicitly when the automatic CR
++   insertion bit is set ("not active"); when it is clear the insertion
++   puts the CR before the LF.  Either way the printer gets CR LF. */
++static void dmf_lp_newline (void)
++{
++dmf_lp_crpend = FALSE;
++dmf_lp_out (015);
++dmf_lp_col = 0;
++dmf_lp_out (012);
++}
++
++/* One data character through the formatting functions (format control set). */
++static void dmf_lp_format (int32 c)
++{
++int32 width = (dmf_lind[7] >> 8) & 0377;
++int32 lpp = dmf_lind[7] & 0377;
++
++if (c & 0200) {                                 /* MSB set: non printable */
++    t_bool vfu_code = (dmf_lind[6] & LF_DAVFU) && (c <= 0237);
++
++    if (!(dmf_lind[6] & LF_NONPRINT) && !vfu_code)
++        return;
++    dmf_lp_out (c);
++    return;
++    }
++if (!(dmf_lind[6] & LF_NOUPPER) && (c >= 'a') && (c <= 'z'))
++    c = c - 'a' + 'A';                          /* lower to upper case */
++/* Automatic carriage return insertion, indirect register 6 bit 8
++   (Table 4-34).  The bit is active when clear: a CR is inserted before
++   every LF and FF, and a CR in the data that precedes an LF or FF is
++   stripped, so the printer sees exactly one.  When the bit is set the
++   data passes unchanged.  A data CR is therefore held until the next
++   character shows whether it precedes an LF or FF. */
++if (dmf_lp_crpend) {
++    dmf_lp_crpend = FALSE;
++    if (((c != 012) && (c != 014)) || (dmf_lind[6] & LF_NOAUTOCR))
++        dmf_lp_out (015);
++    }
++switch (c) {
++    case 011:                                   /* tab */
++        if (!(dmf_lind[6] & LF_NOTAB)) {
++            do
++                dmf_lp_format (' ');
++            while (dmf_lp_col & 7);
++            return;
++            }
++        break;
++    case 012:                                   /* line feed */
++        if (!(dmf_lind[6] & LF_NOAUTOCR))       /* automatic CR before LF */
++            dmf_lp_out (015);
++        dmf_lp_col = 0;
++        dmf_lp_out (012);
++        return;
++    case 014:                                   /* form feed */
++        if (!(dmf_lind[6] & LF_NOAUTOCR))       /* automatic CR before FF */
++            dmf_lp_out (015);
++        dmf_lp_col = 0;
++        if (!(dmf_lind[6] & LF_NOFFCONV) && lpp && !(dmf_lind[6] & LF_DAVFU)) {
++            do                                  /* line feeds to the next page */
++                dmf_lp_out (012);
++            while (dmf_lp_row % lpp);
++            dmf_lp_row = 0;
++            }
++        else
++            dmf_lp_out (014);
++        return;
++    case 015:                                   /* carriage return: held until */
++        dmf_lp_crpend = TRUE;                   /* the next character shows */
++        dmf_lp_col = 0;                         /* whether it precedes LF/FF */
++        return;
++    default:
++        break;
++    }
++if ((c >= 040) && width && (dmf_lp_col >= width)) {
++    if (dmf_lind[6] & LF_WRAP)                  /* wrap to the next line */
++        dmf_lp_newline ();
++    else if (!(dmf_lind[6] & LF_NOTRUNC))       /* truncate */
++        return;
++    }
++dmf_lp_out (c);
++if (c >= 040)
++    dmf_lp_col++;
++}
++
++/* Prefix or suffix characters: a count and a character, 0 = new line. */
++static void dmf_lp_fix (uint16 reg)
++{
++int32 n = reg & 0377, c = (reg >> 8) & 0377;
++
++while (n-- > 0) {
++    if (c == 0)
++        dmf_lp_newline ();
++    else
++        dmf_lp_format (c);
++    }
++}
++
++/* Print cycle: runs when print enable has been set (the delay gives the
++   program time to return from setting it, as on the real controller). */
++t_stat dmf_lp_svc (UNIT *uptr)
++{
++uint32 addr = dmf_lind[4] | ((dmf_lind[6] & LF_XADDR) << 16);
++int32 count = (int32)((0200000 - dmf_lind[5]) & 0177777);
++uint8 buf[512];
++
++if (!(dmf_lcsr & LC_PEN))
++    return SCPE_OK;
++dmf_lp_update_status ();
++if (dmf_lcsr & LC_OFFLINE) {                    /* started while offline: error */
++    dmf_lcsr &= ~LC_PEN;
++    dmf_lp_interrupt ();
++    return SCPE_OK;
++    }
++sim_debug (DBG_LPT, &dmf_dev, "print cycle: %d bytes at %06o, format %s, options %06o\n",
++           count, addr, (dmf_lcsr & LC_FMT) ? "on" : "off", dmf_lind[6]);
++if (dmf_lcsr & LC_FMT)
++    dmf_lp_fix (dmf_lind[2]);                   /* prefix */
++while (count > 0) {
++    int32 n = (count > (int32)sizeof (buf)) ? (int32)sizeof (buf) : count;
++    int32 rest = Map_ReadB (addr, n, buf);
++    int32 i;
++
++    for (i = 0; i < n - rest; i++) {
++        if (dmf_lcsr & LC_FMT)
++            dmf_lp_format (buf[i]);
++        else
++            dmf_lp_out (buf[i]);
++        }
++    addr += n - rest;
++    count -= n - rest;
++    if (rest) {                                 /* non-existent memory */
++        dmf_lcsr |= LC_DMAERR;
++        break;
++        }
++    }
++if ((dmf_lcsr & LC_FMT) && !(dmf_lcsr & LC_DMAERR))
++    dmf_lp_fix (dmf_lind[3]);                   /* suffix */
++if (uptr->fileref) {
++    fflush (uptr->fileref);
++    uptr->pos = (t_addr)sim_ftell (uptr->fileref);
++    }
++dmf_lind[4] = addr & 0177777;
++dmf_lcsr = (dmf_lcsr & ~(LC_PEN|LC_IAD)) | LC_DONE;
++dmf_lp_interrupt ();
++return SCPE_OK;
++}
++
++/* Line printer CSR write. */
++static void dmf_lcsr_wr (int32 data)
++{
++if (data & LC_MR) {                             /* master reset */
++    dmf_lp_reset ();
++    return;
++    }
++if ((data & LC_PEN) && (dmf_lcsr & (LC_DONE|LC_DMAERR))) {
++    dmf_lcsr &= ~(LC_DONE|LC_DMAERR);           /* new cycle clears the status */
++    dmf_lind[0] = dmf_lind[1] = 0;
++    }
++dmf_lcsr = (dmf_lcsr & ~LC_RW) | (data & LC_RW);
++if ((dmf_lcsr & LC_PEN) && !sim_is_active (DMF_LP_UNIT))
++    sim_activate (DMF_LP_UNIT, dmf_lp_wait);
++if (!(dmf_lcsr & LC_PEN))
++    sim_cancel (DMF_LP_UNIT);                   /* print enable clear suspends */
++if ((dmf_lcsr & LC_IE) && (dmf_lcsr & LC_DONE) && !(data & LC_PEN))
++    dmf_lp_interrupt ();                        /* enabling with done pending */
++}
++
++/* Line printer indirect register: the address field advances on access. */
++static void dmf_lind_next (void)
++{
++dmf_lcsr = (dmf_lcsr & ~LC_IAD) | ((((dmf_lcsr & LC_IAD) >> LC_V_IAD) + 1) & 7) << LC_V_IAD;
++}
++
++/* ---------------------------------------------------------------------------
++   Synchronous interface (User's Guide 4.2 - 4.6)
++
++   The synchronous line is a one-line TCP connection (or loop) that carries
++   whole messages.  In DDCMP mode the bytes on the connection are standard
++   DDCMP frames (header, header CRC, data, data CRC), the same framing the
++   DMC11/DMR11/DMP11/DMV11 emulations use, so a DMF32 can talk to any of
++   them.  HDLC/SDLC frames are sent as a flag byte (0176), a 16-bit length
++   and the frame (with its FCS when the sender generates one).  GEN BYTE
++   sends the raw characters, preceded by the programmed sync characters.
++
++   Each direction has a primary and a secondary buffer (address and
++   count in indirect registers 6-13); the primary/secondary bit of the CSR
++   selects the active one and toggles when a message ends.  A buffer is
++   free when its done bit is clear; loading its count register clears the
++   done bit.  A Master Reset sets all four done bits.
++   --------------------------------------------------------------------------- */
++
++/* receive CSR (base+04, Table 4-5) */
++#define SR_RE           0000001                 /* receiver enable */
++#define SR_PS           0000004                 /* secondary buffer active */
++#define SR_MATCH        0000010                 /* GEN BYTE match character */
++#define SR_RIE          0000040                 /* receive interrupt enable */
++#define SR_ACT          0000100                 /* receiver active (ro) */
++#define SR_RDS          0000200                 /* receive done secondary (ro) */
++#define SR_LOOP         0000400                 /* internal loop */
++#define SR_RESS         0004000                 /* residual secondary (ro) */
++#define SR_RESP         0010000                 /* residual primary (ro) */
++#define SR_TRIB         0020000                 /* secondary / tributary station */
++#define SR_ERR          0040000                 /* receive error (ro) */
++#define SR_RDP          0100000                 /* receive done primary (ro) */
++#define SR_RW           (SR_RE|SR_PS|SR_MATCH|SR_RIE|SR_LOOP|SR_TRIB)
++
++/* transmit CSR (base+06, Table 4-7) */
++#define ST_TE           0000001                 /* transmit enable */
++#define ST_PS           0000004                 /* secondary buffer active */
++#define ST_IDLE         0000010                 /* idle marks / flags */
++#define ST_DSIE         0000020                 /* data set interrupt enable */
++#define ST_TIE          0000040                 /* transmit interrupt enable */
++#define ST_DSC          0000100                 /* data set change (ro) */
++#define ST_TDS          0000200                 /* transmit done secondary (ro) */
++#define ST_CLK          0000400                 /* internal transmit clock */
++#define ST_INV          0001000                 /* invert receive clock */
++#define ST_ERR          0040000                 /* transmit error (ro) */
++#define ST_TDP          0100000                 /* transmit done primary (ro) */
++#define ST_RW           (ST_TE|ST_PS|ST_IDLE|ST_DSIE|ST_TIE|ST_CLK|ST_INV)
++
++/* miscellaneous register (base+10 low byte, Table 4-9) */
++#define SM_IAD          0000017                 /* indirect register address */
++#define SM_MR           0000200                 /* master reset */
++
++/* indirect register 0: protocol parameters (Tables 4-12 - 4-17) */
++#define SP_ERRCTL       0000007                 /* error control */
++#define  ERRCTL_NONE     7
++#define SP_V_PROTO      3
++#define SP_PROTO        0000070
++#define  PROTO_DDCMP     0
++#define  PROTO_SDLC      1
++#define  PROTO_HDLC      2
++#define  PROTO_GENBYTE   7
++#define SP_STRIP        0000100                 /* strip sync (GEN BYTE) */
++
++/* indirect register 1 low byte: receive errors (Table 4-18) */
++#define SRE_OVR         0000002                 /* overrun */
++#define SRE_DMA         0000004                 /* DMA (non-existent memory) */
++#define SRE_BCC         0000010                 /* block check */
++#define SRE_VRC         0000020                 /* character parity */
++#define SRE_ABORT       0000040                 /* abort sequence */
++#define SRE_OVFL        0000100                 /* buffer overflow */
++
++/* indirect register 2 low byte: transmit errors (Table 4-19) */
++#define STE_LEN         0000001                 /* message length violation */
++#define STE_DMA         0000002                 /* DMA (non-existent memory) */
++#define STE_UND         0000004                 /* underrun */
++
++/* indirect register 4: modem (Table 4-22) */
++#define SMR_USR         0000004                 /* user receive */
++#define SMR_CTS         0000020                 /* clear to send */
++#define SMR_CD          0000040                 /* carrier detect */
++#define SMR_RI          0000100                 /* ring indicator */
++#define SMR_DSR         0000200                 /* data set ready */
++#define SMT_DTR         0001000                 /* data terminal ready */
++#define SMT_RTS         0010000                 /* request to send */
++
++#define DMF_SFRAME      (16384 + 16)            /* largest message + header/CRCs */
++/* The synchronous line and the parallel device are polled once per clock
++   tick, like the asynchronous lines and the DMC11.  A register write that
++   gives the line something to do runs the service at once (dmf_sync_kick),
++   so only incoming data waits for the next tick.  A shorter fixed interval
++   (formerly 1 ms) kept the host CPU at 100 % even with SET CPU IDLE. */
++#define DMF_POLL(u)     sim_clock_coschedule ((u), tmxr_poll)
++
++static uint16 dmf_srcsr;                        /* receive CSR */
++static uint16 dmf_stcsr;                        /* transmit CSR */
++static uint16 dmf_smisc;                        /* misc (7:0), data set change flags (15:8) */
++static uint16 dmf_sind[16];                     /* indirect registers */
++static uint8 dmf_sframe[DMF_SFRAME];            /* received message waiting for a buffer */
++static int32 dmf_sframe_len;                    /* its length, 0 = none */
++static uint8 dmf_srxp[DMF_SFRAME + 4];          /* HDLC frame being assembled */
++static int32 dmf_srxp_len;
++static t_bool dmf_sgen_sync;                    /* GEN BYTE receiver synchronized */
++static int32 dmf_sgen_syncs;                    /* consecutive sync characters seen */
++static t_bool dmf_sgen_strip;                   /* stripping syncs after synchronization */
++static int32 dmf_sgen_off[2];                   /* GEN BYTE: bytes stored in each buffer */
++static uint8 dmf_sxbuf[DMF_SFRAME + 4];         /* transmit message being built */
++static int32 dmf_sync_wait = 50;                /* register write to action (instr) */
++static char dmf_speer[CBUFSIZE];                /* peer for the synchronous line */
++
++static TMLN dmf_sldsc[1];
++static TMXR dmf_sdesc = { 1, 0, 0, dmf_sldsc };
++
++#define DMF_SYNC_UNIT   (&dmf_unit[3])
++
++static int32 dmf_sync_proto (void)
++{
++return (dmf_sind[0] & SP_PROTO) >> SP_V_PROTO;
++}
++
++static t_bool dmf_sync_crc (void)
++{
++return (dmf_sind[0] & SP_ERRCTL) != ERRCTL_NONE;
++}
++
++/* Buffer address (18 bits) and count of buffer w (0 primary, 1 secondary)
++   for the receiver (base register 6) or the transmitter (base 10). */
++static uint32 dmf_sbuf_addr (int32 base, int32 w)
++{
++return dmf_sind[base + 2*w] | ((uint32)(dmf_sind[base + 2*w + 1] >> 14) << 16);
++}
++
++static int32 dmf_sbuf_count (int32 base, int32 w)
++{
++return dmf_sind[base + 2*w + 1] & 037777;
++}
++
++static void dmf_sbuf_set_count (int32 base, int32 w, int32 n)
++{
++dmf_sind[base + 2*w + 1] = (uint16)((dmf_sind[base + 2*w + 1] & 0140000) | (n & 037777));
++}
++
++/* Something for the line to do: run the service soon. */
++static void dmf_sync_kick (void)
++{
++sim_cancel (DMF_SYNC_UNIT);
++sim_activate (DMF_SYNC_UNIT, dmf_sync_wait);
++}
++
++static void dmf_sync_rx_interrupt (void)
++{
++if (dmf_srcsr & SR_RIE) {
++    sim_debug (DBG_INT, &dmf_dev, "sync receive interrupt (RCSR %06o)\n", dmf_srcsr);
++    SET_INT (DMFSRX);
++    }
++}
++
++static void dmf_sync_tx_interrupt (void)
++{
++if (dmf_stcsr & ST_TIE) {
++    sim_debug (DBG_INT, &dmf_dev, "sync transmit interrupt (TCSR %06o)\n", dmf_stcsr);
++    SET_INT (DMFSTX);
++    }
++}
++
++/* HDLC/SDLC frame check sequence: CRC-CCITT preset to ones, sent
++   complemented, low byte first (a good frame checks to 0xF0B8). */
++static uint16 dmf_fcs (uint16 crc, const uint8 *p, int32 n)
++{
++int32 i;
++
++while (n-- > 0) {
++    crc ^= *p++;
++    for (i = 0; i < 8; i++)
++        crc = (crc & 1) ? ((crc >> 1) ^ 0x8408) : (crc >> 1);
++    }
++return crc;
++}
++
++/* Modem status: a connected line (or the internal loop) looks like a modem
++   with carrier, data set ready and clear to send.  A change sets the data
++   set change bit and flags, and interrupts to the transmit vector. */
++static void dmf_sync_modem (void)
++{
++uint16 old = dmf_sind[4] & 0377;
++uint16 now = 0;
++
++if (dmf_sldsc[0].conn || (dmf_srcsr & SR_LOOP))
++    now = SMR_DSR | SMR_CD | SMR_CTS;
++if (now != old) {
++    sim_debug (DBG_MDM, &dmf_dev, "sync modem status %03o -> %03o\n", old, now);
++    dmf_sind[4] = (dmf_sind[4] & 0177400) | now;
++    dmf_smisc |= (uint16)((old ^ now) << 8);    /* data set change flags */
++    dmf_stcsr |= ST_DSC;
++    if (dmf_stcsr & ST_DSIE)
++        SET_INT (DMFSTX);
++    }
++}
++
++/* Receive a complete message into the active buffer.  Returns FALSE if
++   no buffer is free (the message waits). */
++static t_bool dmf_sync_deliver (const uint8 *msg, int32 len)
++{
++int32 w = (dmf_srcsr & SR_PS) ? 1 : 0;
++uint16 done = w ? SR_RDS : SR_RDP;
++uint32 addr = dmf_sbuf_addr (6, w);
++int32 count = dmf_sbuf_count (6, w);
++uint16 err = 0;
++uint8 buf[DMF_SFRAME];
++int32 n = 0, store, rest;
++
++if (dmf_srcsr & done)                           /* no free buffer: wait */
++    return FALSE;
++if ((len <= 0) || (len > DMF_SFRAME))           /* (cannot happen) */
++    return TRUE;
++switch (dmf_sync_proto ()) {
++    case PROTO_DDCMP:                           /* header and data without CRCs */
++        if (ddcmp_crc16 (0, msg, DDCMP_HEADER_SIZE) != 0) {
++            sim_debug (DBG_SRCV, &dmf_dev, "sync DDCMP header CRC error - ignored\n");
++            return TRUE;                        /* receiver resynchronizes */
++            }
++        if ((dmf_srcsr & SR_TRIB) && (msg[5] != (dmf_sind[5] & 0377))) {
++            sim_debug (DBG_SRCV, &dmf_dev, "sync DDCMP message for station %d ignored\n", msg[5]);
++            return TRUE;                        /* not for this tributary */
++            }
++        memcpy (buf, msg, 6);
++        n = 6;
++        if (msg[0] != DDCMP_ENQ) {
++            int32 dlen = ((msg[2] & 077) << 8) | msg[1];
++
++            if ((dlen + DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE) > len)
++                return TRUE;                    /* (short frame) */
++            memcpy (buf + 6, msg + DDCMP_HEADER_SIZE, dlen);
++            n += dlen;
++            if (ddcmp_crc16 (0, msg + DDCMP_HEADER_SIZE, dlen + DDCMP_CRC_SIZE) != 0)
++                err |= SRE_BCC;
++            }
++        break;
++    case PROTO_SDLC:
++    case PROTO_HDLC:
++        if (len >= 1 && (dmf_srcsr & SR_TRIB) && (msg[0] != 0377) &&
++            (msg[0] != (dmf_sind[5] & 0377)))
++            return TRUE;                        /* secondary: not our address */
++        memcpy (buf, msg, len);
++        n = len;
++        if (dmf_sync_crc ()) {                  /* check and strip the FCS */
++            if ((len < 2) || (dmf_fcs (0xFFFF, msg, len) != 0xF0B8))
++                err |= SRE_BCC;
++            n = (len >= 2) ? len - 2 : 0;
++            }
++        break;
++    default:
++        memcpy (buf, msg, len);
++        n = len;
++        break;
++    }
++store = n;
++if (store > count) {                            /* buffer too small */
++    store = count;
++    err |= SRE_OVFL;
++    }
++rest = Map_WriteB (addr, store, buf);
++if (rest) {
++    err |= SRE_DMA;
++    store -= rest;
++    }
++dmf_sbuf_set_count (6, w, count - store);
++sim_debug (DBG_SRCV, &dmf_dev, "sync receive %d bytes into %s buffer %06o%s%s\n", store,
++           w ? "secondary" : "primary", addr, err ? ", error " : "", err ? "" : "");
++if (err) {                                      /* aborted message */
++    dmf_sind[1] |= err;
++    dmf_srcsr = (dmf_srcsr | SR_ERR) & ~(SR_RE|SR_ACT);
++    }
++else
++    dmf_srcsr |= done;
++dmf_srcsr ^= SR_PS;                             /* the other buffer is next */
++dmf_sync_rx_interrupt ();
++return TRUE;
++}
++
++/* GEN BYTE receive: characters go into the active buffer once the receiver
++   has seen two sync characters; a full buffer ends the "message". */
++static void dmf_sync_gen_char (uint8 c)
++{
++uint8 sync = (dmf_sind[3] >> 8) & 0377;
++int32 w, count;
++uint16 done;
++uint32 addr;
++
++if (!(dmf_srcsr & SR_RE))
++    return;
++if (!dmf_sgen_sync) {                           /* hunt for two syncs */
++    dmf_sgen_syncs = (c == sync) ? dmf_sgen_syncs + 1 : 0;
++    if (dmf_sgen_syncs >= 2) {
++        dmf_sgen_sync = TRUE;
++        dmf_sgen_strip = (dmf_sind[0] & SP_STRIP) != 0;
++        }
++    return;
++    }
++if (dmf_sgen_strip && (c == sync))              /* contiguous syncs stripped */
++    return;
++dmf_sgen_strip = FALSE;
++w = (dmf_srcsr & SR_PS) ? 1 : 0;
++done = w ? SR_RDS : SR_RDP;
++if (dmf_srcsr & done) {                         /* no buffer: character lost */
++    dmf_sind[1] |= SRE_OVR;
++    dmf_srcsr = (dmf_srcsr | SR_ERR) & ~(SR_RE|SR_ACT);
++    dmf_sync_rx_interrupt ();
++    return;
++    }
++addr = dmf_sbuf_addr (6, w);
++count = dmf_sbuf_count (6, w);
++if (count == 0)
++    return;
++dmf_srcsr |= SR_ACT;
++if (Map_WriteB (addr + dmf_sgen_off[w], 1, &c)) {  /* the buffer registers stay; */
++    dmf_sind[1] |= SRE_DMA;                     /* the position is kept here */
++    dmf_srcsr = (dmf_srcsr | SR_ERR) & ~(SR_RE|SR_ACT);
++    dmf_srcsr ^= SR_PS;
++    dmf_sync_rx_interrupt ();
++    return;
++    }
++dmf_sgen_off[w]++;
++dmf_sbuf_set_count (6, w, count - 1);
++if ((dmf_srcsr & SR_MATCH) && (c == (dmf_sind[14] & 0377)))
++    dmf_sync_rx_interrupt ();                   /* match character */
++if (count - 1 == 0) {                           /* buffer full: done */
++    dmf_srcsr = (dmf_srcsr | done) & ~SR_ACT;
++    dmf_srcsr ^= SR_PS;
++    dmf_sync_rx_interrupt ();
++    }
++}
++
++/* Take what the line has received.  DDCMP and HDLC messages are held in
++   dmf_sframe until the receiver has a free buffer; a message that arrives
++   while the receiver is disabled is lost, as on a real line. */
++static void dmf_sync_hold (const uint8 *msg, int32 len)
++{
++if (len > DMF_SFRAME)
++    len = DMF_SFRAME;
++if (len <= 0)
++    return;
++memcpy (dmf_sframe, msg, len);
++dmf_sframe_len = len;
++}
++
++static void dmf_sync_receive (void)
++{
++TMLN *lp = &dmf_sldsc[0];
++int32 proto = dmf_sync_proto ();
++
++for (;;) {
++    if (dmf_sframe_len) {                       /* a message is waiting */
++        if (!(dmf_srcsr & SR_RE)) {
++            sim_debug (DBG_SRCV, &dmf_dev, "sync message dropped, receiver disabled\n");
++            dmf_sframe_len = 0;
++            continue;
++            }
++        if (!dmf_sync_deliver (dmf_sframe, dmf_sframe_len))
++            return;                             /* wait for a buffer */
++        dmf_sframe_len = 0;
++        continue;
++        }
++    if (!lp->conn || (dmf_srcsr & SR_LOOP))
++        return;
++    if (proto == PROTO_DDCMP) {
++        const uint8 *pkt = NULL;
++        uint16 size = 0;
++
++        ddcmp_tmxr_get_packet_ln (lp, &pkt, &size, 0);
++        if (pkt == NULL)
++            return;
++        dmf_sync_hold (pkt, size);
++        }
++    else if (proto == PROTO_GENBYTE) {
++        int32 c;
++
++        while ((c = tmxr_getc_ln (lp)) & TMXR_VALID)
++            dmf_sync_gen_char ((uint8)c);
++        return;
++        }
++    else {                                      /* HDLC/SDLC: flag, length, frame */
++        int32 c, flen;
++
++        while ((c = tmxr_getc_ln (lp)) & TMXR_VALID) {
++            c &= 0377;
++            if ((dmf_srxp_len == 0) && (c != 0176))
++                continue;                       /* hunt for the flag */
++            dmf_srxp[dmf_srxp_len++] = (uint8)c;
++            if (dmf_srxp_len >= 3) {
++                flen = dmf_srxp[1] | (dmf_srxp[2] << 8);
++                if (flen > DMF_SFRAME)
++                    dmf_srxp_len = 0;           /* bad length: resynchronize */
++                else if (dmf_srxp_len == flen + 3)
++                    break;
++                }
++            }
++        if ((dmf_srxp_len < 3) || (dmf_srxp_len != (dmf_srxp[1] | (dmf_srxp[2] << 8)) + 3))
++            return;
++        dmf_sync_hold (dmf_srxp + 3, dmf_srxp_len - 3);
++        dmf_srxp_len = 0;
++        }
++    }
++}
++
++/* Transmit the messages in the active buffers.  The line takes one message
++   at a time; a message is done (done bit set, interrupt) once the line has
++   accepted it.  Without a connection the message is sent into the void. */
++static void dmf_sync_transmit (void)
++{
++TMLN *lp = &dmf_sldsc[0];
++
++while (dmf_stcsr & ST_TE) {
++    int32 w = (dmf_stcsr & ST_PS) ? 1 : 0;
++    uint16 done = w ? ST_TDS : ST_TDP;
++    uint32 addr = dmf_sbuf_addr (10, w);
++    int32 count = dmf_sbuf_count (10, w);
++    int32 proto = dmf_sync_proto ();
++    uint16 err = 0;
++    uint8 *msg = dmf_sxbuf + 3;                 /* room for the HDLC prefix */
++    int32 len = 0, rest;
++
++    if (dmf_stcsr & done)                       /* nothing to send */
++        return;
++    if (lp->conn && !(dmf_srcsr & SR_LOOP) && tmxr_tpbusyln (lp))
++        return;                                 /* previous message still going */
++    rest = Map_ReadB (addr, count, msg);
++    if (rest)
++        err |= STE_DMA;
++    else switch (proto) {
++        case PROTO_DDCMP: {                     /* insert the two CRCs */
++            int32 dlen;
++            uint16 crc;
++
++            if ((count < 6) || ((msg[0] != DDCMP_SOH) && (msg[0] != DDCMP_ENQ) && (msg[0] != DDCMP_DLE))) {
++                err |= STE_LEN;
++                break;
++                }
++            dlen = (msg[0] == DDCMP_ENQ) ? 0 : (((msg[2] & 077) << 8) | msg[1]);
++            if (count < 6 + dlen) {
++                err |= STE_LEN;
++                break;
++                }
++            if (dlen)                           /* data moves up past the header CRC */
++                memmove (msg + DDCMP_HEADER_SIZE, msg + 6, dlen);
++            crc = ddcmp_crc16 (0, msg, 6);
++            msg[6] = crc & 0377;
++            msg[7] = (crc >> 8) & 0377;
++            len = DDCMP_HEADER_SIZE;
++            if (dlen) {
++                crc = ddcmp_crc16 (0, msg + DDCMP_HEADER_SIZE, dlen);
++                msg[len + dlen] = crc & 0377;
++                msg[len + dlen + 1] = (crc >> 8) & 0377;
++                len += dlen + DDCMP_CRC_SIZE;
++                }
++            break;
++            }
++        case PROTO_SDLC:
++        case PROTO_HDLC:
++            len = count;
++            if (dmf_sync_crc ()) {
++                uint16 fcs;
++
++                if ((proto == PROTO_SDLC) && (count < 2)) {
++                    err |= STE_LEN;             /* too short a frame */
++                    break;
++                    }
++                fcs = ~dmf_fcs (0xFFFF, msg, count);
++                msg[len++] = fcs & 0377;
++                msg[len++] = (fcs >> 8) & 0377;
++                }
++            break;
++        default:                                /* GEN BYTE: syncs, then the data */
++            len = count;
++            break;
++        }
++    if (err) {                                  /* aborted message */
++        sim_debug (DBG_SXMT, &dmf_dev, "sync transmit error %03o (%s buffer)\n", err,
++                   w ? "secondary" : "primary");
++        dmf_sind[2] |= err;
++        dmf_stcsr = (dmf_stcsr | ST_ERR | done) & ~ST_TE;
++        dmf_stcsr ^= ST_PS;
++        dmf_sync_tx_interrupt ();
++        return;
++        }
++    sim_debug (DBG_SXMT, &dmf_dev, "sync transmit %d bytes from %s buffer %06o\n", count,
++               w ? "secondary" : "primary", addr);
++    if (dmf_srcsr & SR_LOOP) {                  /* internal loop: to our receiver */
++        if (proto == PROTO_GENBYTE) {
++            int32 i, ns = dmf_sind[3] & 037;
++
++            for (i = 0; i < ns; i++)
++                dmf_sync_gen_char ((dmf_sind[3] >> 8) & 0377);
++            for (i = 0; i < len; i++)
++                dmf_sync_gen_char (msg[i]);
++            }
++        else if (dmf_sframe_len == 0)           /* (one message in flight) */
++            dmf_sync_hold (msg, len);
++        }
++    else if (lp->conn) {
++        uint8 *out = msg;
++        int32 olen = len;
++
++        if ((proto == PROTO_SDLC) || (proto == PROTO_HDLC)) {
++            out = dmf_sxbuf;                    /* flag and length prefix */
++            out[0] = 0176;
++            out[1] = len & 0377;
++            out[2] = (len >> 8) & 0377;
++            olen = len + 3;
++            }
++        else if (proto == PROTO_GENBYTE) {
++            int32 i, ns = dmf_sind[3] & 037;
++            uint8 sbuf[32];
++
++            for (i = 0; i < ns; i++)
++                sbuf[i] = (dmf_sind[3] >> 8) & 0377;
++            for (i = 0; i < ns; i++)
++                tmxr_putc_ln (lp, sbuf[i]);
++            }
++        ddcmp_tmxr_put_packet_ln (lp, out, olen, 0);
++        }
++    dmf_sbuf_set_count (10, w, 0);              /* all characters transferred */
++    dmf_stcsr = (dmf_stcsr | done) ^ ST_PS;
++    dmf_sync_tx_interrupt ();
++    }
++}
++
++/* Line service: connections, modem signals, receive and transmit. */
++t_stat dmf_sync_svc (UNIT *uptr)
++{
++if (uptr->flags & UNIT_ATT) {
++    if (tmxr_poll_conn (&dmf_sdesc) >= 0) {
++        sim_debug (DBG_CON, &dmf_dev, "sync line connected\n");
++        dmf_sldsc[0].rcve = 1;
++        dmf_srxp_len = 0;
++        }
++    tmxr_poll_rx (&dmf_sdesc);
++    }
++dmf_sync_modem ();
++dmf_sync_receive ();
++dmf_sync_transmit ();
++if (uptr->flags & UNIT_ATT) {
++    tmxr_poll_tx (&dmf_sdesc);
++    DMF_POLL (uptr);
++    }
++return SCPE_OK;
++}
++
++/* Master Reset (misc register bit 7) or bus INIT. */
++static void dmf_sync_reset (t_bool init)
++{
++dmf_srcsr = SR_RDP | SR_RDS;                    /* both buffers "done" */
++dmf_stcsr = ST_TDP | ST_TDS;
++dmf_smisc &= SM_IAD;                            /* (address not affected) */
++dmf_sind[1] &= 0177400;                         /* receive errors */
++dmf_sind[2] = 0;                                /* transmit errors, baud rate */
++if (init) {
++    dmf_sind[4] = 0;                            /* modem registers */
++    dmf_smisc = 0;
++    }
++dmf_sframe_len = 0;
++dmf_srxp_len = 0;
++dmf_sgen_sync = FALSE;
++dmf_sgen_syncs = 0;
++CLR_INT (DMFSRX);
++CLR_INT (DMFSTX);
++}
++
++/* Register access (word offsets 2 - 5). */
++static int32 dmf_sync_rd (int32 reg)
++{
++int32 iad = dmf_smisc & SM_IAD;
++int32 data;
++
++switch (reg) {
++    case 2:                                     /* receive CSR */
++        return dmf_srcsr;
++    case 3:                                     /* transmit CSR */
++        return dmf_stcsr;
++    case 4:                                     /* misc + data set change flags */
++        return dmf_smisc;
++    default:                                    /* indirect register */
++        data = dmf_sind[iad];
++        if (iad == 1) {                         /* reading clears the errors */
++            dmf_sind[1] &= 0177400;
++            dmf_srcsr &= ~SR_ERR;
++            }
++        else if (iad == 2) {
++            dmf_sind[2] &= 0177400;
++            dmf_stcsr &= ~ST_ERR;
++            }
++        else if (iad == 4) {                    /* clears the change flags */
++            dmf_smisc &= 0377;
++            dmf_stcsr &= ~ST_DSC;
++            }
++        return data;
++    }
++}
++
++static void dmf_sync_wr (int32 reg, int32 data, int32 PA, int32 access)
++{
++int32 iad = dmf_smisc & SM_IAD;
++uint16 old;
++
++switch (reg) {
++    case 2:                                     /* receive CSR */
++        old = dmf_srcsr;
++        dmf_srcsr = (dmf_srcsr & ~SR_RW) | (data & SR_RW);
++        if ((dmf_srcsr & SR_RE) && !(old & SR_RE)) {
++            dmf_sind[1] &= 0177400;             /* enabling clears the errors */
++            dmf_srcsr &= ~SR_ERR;
++            dmf_sgen_sync = FALSE;
++            dmf_sgen_syncs = 0;
++            }
++        if (!(dmf_srcsr & SR_RE))
++            dmf_srcsr &= ~SR_ACT;
++        if (!(dmf_srcsr & SR_RIE))
++            CLR_INT (DMFSRX);
++        dmf_sync_kick ();
++        break;
++    case 3:                                     /* transmit CSR */
++        old = dmf_stcsr;
++        dmf_stcsr = (dmf_stcsr & ~ST_RW) | (data & ST_RW);
++        if ((dmf_stcsr & ST_TE) && !(old & ST_TE)) {
++            dmf_sind[2] &= 0177400;             /* enabling clears the errors */
++            dmf_stcsr &= ~ST_ERR;
++            }
++        if (!(dmf_stcsr & (ST_TIE|ST_DSIE)))
++            CLR_INT (DMFSTX);
++        dmf_sync_kick ();
++        break;
++    case 4:                                     /* misc register (low byte) */
++        if ((access == WRITEB) && (PA & 1))
++            break;                              /* flags byte is read only */
++        if (data & SM_MR) {
++            sim_debug (DBG_REG, &dmf_dev, "sync master reset\n");
++            dmf_sync_reset (FALSE);
++            }
++        dmf_smisc = (dmf_smisc & 0177400) | (data & SM_IAD);
++        break;
++    default:                                    /* indirect register */
++        switch (iad) {
++            case 1:                             /* errors are read only */
++                dmf_sind[1] = (uint16)((dmf_sind[1] & 0377) | (data & 0177400));
++                break;
++            case 2:
++                dmf_sind[2] = (uint16)((dmf_sind[2] & 0377) | (data & 0007400));
++                break;
++            case 4:                             /* receive modem is read only */
++                dmf_sind[4] = (uint16)((dmf_sind[4] & 0377) | (data & 0177400));
++                break;
++            default:
++                dmf_sind[iad] = (uint16)data;
++                break;
++            }
++        switch (iad) {                          /* count registers free a buffer */
++            case 7:  dmf_srcsr &= ~(SR_RDP|SR_RESP); dmf_sgen_off[0] = 0; break;
++            case 9:  dmf_srcsr &= ~(SR_RDS|SR_RESS); dmf_sgen_off[1] = 0; break;
++            case 11: dmf_stcsr &= ~ST_TDP; break;
++            case 13: dmf_stcsr &= ~ST_TDS; break;
++            default: break;
++            }
++        if ((iad == 7) || (iad == 9) || (iad == 11) || (iad == 13))
++            dmf_sync_kick ();
++        dmf_smisc = (dmf_smisc & ~SM_IAD) | ((iad + 1) & SM_IAD);   /* next register */
++        break;
++    }
++}
++
++static int32 dmf_ack_srx (void)    { return dmf_vector (VEC_SRX); }
++static int32 dmf_ack_stx (void)    { return dmf_vector (VEC_STX); }
++
++/* SET/SHOW PEER for the synchronous line */
++static t_stat dmf_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++char host[CBUFSIZE], port[CBUFSIZE];
++
++if ((cptr == NULL) || (*cptr == 0))
++    return SCPE_ARG;
++if (DMF_SYNC_UNIT->flags & UNIT_ATT)
++    return SCPE_ALATT;
++if (sim_parse_addr (cptr, host, sizeof (host), NULL, port, sizeof (port), NULL, NULL))
++    return SCPE_ARG;
++strlcpy (dmf_speer, cptr, sizeof (dmf_speer));
++return SCPE_OK;
++}
++
++static t_stat dmf_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++fprintf (st, "peer=%s", dmf_speer[0] ? dmf_speer : "unspecified");
++return SCPE_OK;
++}
++
++static t_stat dmf_sync_attach (UNIT *uptr, CONST char *cptr)
++{
++char attach[CBUFSIZE * 2 + 32];
++t_stat r;
++
++if (dmf_speer[0])
++    snprintf (attach, sizeof (attach), "Line=0,Connect=%s,%s", dmf_speer, cptr);
++else
++    snprintf (attach, sizeof (attach), "Line=0,%s", cptr);
++r = tmxr_open_master (&dmf_sdesc, attach);
++if (r != SCPE_OK)
++    return r;
++uptr->filename = (char *)malloc (strlen (cptr) + 1);
++strcpy (uptr->filename, cptr);
++uptr->flags |= UNIT_ATT;
++dmf_sync_kick ();
++return SCPE_OK;
++}
++
++static t_stat dmf_sync_detach (UNIT *uptr)
++{
++t_stat r;
++
++if (!(uptr->flags & UNIT_ATT))
++    return SCPE_OK;
++r = tmxr_close_master (&dmf_sdesc);
++uptr->flags &= ~UNIT_ATT;
++free (uptr->filename);
++uptr->filename = NULL;
++dmf_sync_modem ();
++return r;
++}
++
++/* ---------------------------------------------------------------------------
++   Parallel interface (User's Guide 4.14 - 4.16)
++
++   The DR11-C compatible parallel port shares connector J3 (and its
++   hardware) with the line printer controller, so a DMF32 has either one or
++   the other, chosen by switch pack 3 on the distribution panel: CONFIG=
++   PARALLEL selects "async, sync and parallel" (device code 1101), the
++   default CONFIG=PRINTER "async, sync and line printer" (1110).
++
++   The user device is reached through unit DMF-PAR, a one-line connection
++   (TCP, or a serial port such as a USB microcontroller board that drives
++   real TTL lines).  The connection carries the interface signals as short
++   text lines, so a device can be a few lines of script:
++
++     DMF32 to device                     device to DMF32
++     D hhhh    output lines (16 bits)    D hhhh   input lines
++     N hhhh x  New Data Ready pulse      A 0|1    User Request A
++               with the output word;     B 0|1    User Request B
++               x = HL (word), H or L     # ...    comment
++               (byte written)
++     T         Data Transmitted pulse
++     C n       control lines (bit 0 = CONTROL ZERO, bit 1 = CONTROL ONE)
++     I         INIT pulse (bus init or master reset)
++
++   All values are hexadecimal; lines end with LF (a CR is ignored).
++
++   Modes (miscellaneous register, Table 4-37):
++     0000      DR11-C: the output buffer drives the lines (NDR pulse on each
++               write), reading the input buffer samples them (DT pulse);
++               0 -> 1 on a request line interrupts if enabled.
++     01xx      32-word silo; the selected request line transfers a word on
++               every transition, without program intervention.
++     10xx      double-buffered DMA (word count, 18-bit word address); the
++               selected request line transfers a word on every transition.
++   A transfer that cannot be done (silo full or empty, no DMA buffer) is
++   held - no handshake pulse - until the program makes room.
++   --------------------------------------------------------------------------- */
++
++/* parallel interface CSR (base+30, Table 4-35) */
++#define DC_CTL0         0000001                 /* control zero line */
++#define DC_CTL1         0000002                 /* control one line */
++#define DC_PS           0000004                 /* secondary buffer active (ro) */
++#define DC_V_IAD        3
++#define DC_IAD          0000030                 /* indirect register address */
++#define DC_IEB          0000040                 /* interrupt enable B */
++#define DC_IEA          0000100                 /* interrupt enable A */
++#define DC_REQA         0000200                 /* user request A (ro) */
++#define DC_DONEP        0000400                 /* done primary (ro) */
++#define DC_DONES        0001000                 /* done secondary (ro) */
++#define DC_FLUSH        0004000                 /* flush silo */
++#define DC_DMAERR       0020000                 /* DMA error (ro) */
++#define DC_MR           0040000                 /* master reset */
++#define DC_REQB         0100000                 /* user request B (ro) */
++#define DC_RW           (DC_CTL0|DC_CTL1|DC_IAD|DC_IEB|DC_IEA)
++
++/* miscellaneous register (base+34 write, Table 4-36) */
++#define DM_MODE         0000017
++#define DM_SMSB         0040000                 /* secondary address bit 17 */
++#define DM_PMSB         0100000                 /* primary address bit 17 */
++
++#define DMF_DSILO       32                      /* parallel silo (words) */
++
++static uint16 dmf_dcsr;                         /* CSR (read/write bits) */
++static uint16 dmf_ddone;                        /* DONEP/DONES/DMAERR/PS bits */
++static uint16 dmf_dout;                         /* output buffer = output lines */
++static uint16 dmf_din;                          /* input lines */
++static uint16 dmf_dinbuf;                       /* last word moved by receive DMA */
++static uint16 dmf_dmisc;                        /* mode, address MSBs */
++static uint16 dmf_dind[4];                      /* indirect registers */
++static uint16 dmf_dsilo[DMF_DSILO];             /* silo */
++static int32 dmf_dsilo_n;                       /* words in the silo */
++static int32 dmf_dreq;                          /* request lines (1 = A, 2 = B) */
++static t_bool dmf_dpend;                        /* transfer requested, not done */
++static t_bool dmf_dins;                         /* program word waiting (DMA transmit) */
++static uint16 dmf_dins_word;
++static int32 dmf_doff[2];                       /* DMA words moved per buffer */
++static char dmf_drx[80];                        /* message being received */
++static int32 dmf_drx_len;
++static int32 dmf_config = 3;                    /* switch pack 3: see dmf_cfg_code */
++
++static TMLN dmf_dldsc[1];
++static TMXR dmf_ddesc = { 1, 0, 0, dmf_dldsc };
++
++#define DMF_DR_UNIT     (&dmf_unit[4])
++
++/* CSR0 device codes for the four switch settings (Table 1-3, UG 4-1) */
++static const uint16 dmf_cfg_code[4] = {
++    C0_ASYNC,                                   /* 0: async */
++    C0_ASYNC | C0_LP,                           /* 1: async, line printer */
++    C0_ASYNC | C0_SYNC | C0_DR,                 /* 2: async, sync, parallel */
++    C0_ASYNC | C0_SYNC | C0_LP                  /* 3: async, sync, line printer */
++    };
++
++static t_bool dmf_dr_present (void)
++{
++return (dmf_csr0 & C0_DR) != 0;
++}
++
++/* Send one signal message to the user device. */
++static void dmf_dr_send (const char *fmt, ...)
++{
++TMLN *lp = &dmf_dldsc[0];
++char msg[40];
++va_list arglist;
++
++va_start (arglist, fmt);
++vsnprintf (msg, sizeof (msg), fmt, arglist);
++va_end (arglist);
++sim_debug (DBG_DR, &dmf_dev, "parallel -> %s", msg);
++if (lp->conn)
++    tmxr_linemsg (lp, msg);
++}
++
++static void dmf_dr_interrupt (int32 b)
++{
++if (b ? (dmf_dcsr & DC_IEB) : (dmf_dcsr & DC_IEA)) {
++    sim_debug (DBG_INT, &dmf_dev, "parallel interrupt %c\n", b ? 'B' : 'A');
++    if (b)
++        SET_INT (DMFDRB);
++    else
++        SET_INT (DMFDRA);
++    }
++}
++
++/* Mode decoding (Table 4-37) */
++static int32 dmf_dr_mode (void)    { return dmf_dmisc & DM_MODE; }
++static t_bool dmf_dr_silo (void)   { return (dmf_dr_mode () & 014) == 004; }
++static t_bool dmf_dr_dma (void)    { return (dmf_dr_mode () & 014) == 010; }
++static t_bool dmf_dr_rx (void)     { return (dmf_dr_mode () & 002) != 0; }
++static int32 dmf_dr_xline (void)                /* 1 = A, 2 = B, 0 = none */
++{
++if (!dmf_dr_silo () && !dmf_dr_dma ())
++    return 0;
++return (dmf_dr_mode () & 001) ? 1 : 2;
++}
++
++static uint32 dmf_dr_addr (int32 w)
++{
++uint32 msb = (dmf_dmisc & (w ? DM_SMSB : DM_PMSB)) ? 1 : 0;
++
++return ((uint32)dmf_dind[2*w] << 1) | (msb << 17);
++}
++
++/* Do the transfer a request line asked for, if it can be done now. */
++static void dmf_dr_service (void)
++{
++int32 xb = (dmf_dr_xline () == 2) ? 1 : 0;      /* interrupt vector A or B */
++
++if (!dmf_dpend)
++    return;
++if (dmf_dr_silo ()) {
++    if (dmf_dr_rx ()) {                         /* silo receive */
++        if (dmf_dsilo_n >= DMF_DSILO)
++            return;                             /* full: no handshake yet */
++        dmf_dsilo[dmf_dsilo_n++] = dmf_din;
++        dmf_dr_send ("T\n");
++        }
++    else {                                      /* silo transmit */
++        if (dmf_dsilo_n == 0)
++            return;                             /* empty: wait for data */
++        dmf_dout = dmf_dsilo[0];
++        memmove (&dmf_dsilo[0], &dmf_dsilo[1], --dmf_dsilo_n * sizeof (uint16));
++        dmf_dr_send ("N %04X HL\n", dmf_dout);
++        }
++    dmf_dpend = FALSE;
++    dmf_dr_interrupt (xb);
++    return;
++    }
++if (dmf_dr_dma ()) {
++    int32 w, count;
++    uint32 addr;
++
++    if (!dmf_dr_rx () && dmf_dins) {            /* program word goes first */
++        dmf_dout = dmf_dins_word;
++        dmf_dins = FALSE;
++        dmf_dr_send ("N %04X HL\n", dmf_dout);
++        dmf_dpend = FALSE;
++        return;
++        }
++    if (dmf_ddone & DC_DMAERR)                  /* stopped until master reset */
++        return;
++    w = (dmf_ddone & DC_PS) ? 1 : 0;
++    if (dmf_ddone & (w ? DC_DONES : DC_DONEP))
++        return;                                 /* no buffer: wait */
++    count = dmf_dind[2*w + 1];
++    addr = dmf_dr_addr (w) + 2 * dmf_doff[w];
++    if (count) {
++        uint16 word;
++        int32 nxm;
++
++        if (dmf_dr_rx ()) {
++            word = dmf_din;
++            nxm = Map_WriteW (addr, 2, &word);
++            }
++        else
++            nxm = Map_ReadW (addr, 2, &word);
++        if (nxm) {                              /* aborts the transfer */
++            sim_debug (DBG_DR, &dmf_dev, "parallel DMA NXM at %06o\n", addr);
++            dmf_ddone = (dmf_ddone | DC_DMAERR) ^ DC_PS;
++            dmf_dr_interrupt (xb);
++            return;
++            }
++        if (dmf_dr_rx ()) {
++            dmf_dinbuf = word;
++            dmf_dr_send ("T\n");
++            }
++        else {
++            dmf_dout = word;
++            dmf_dr_send ("N %04X HL\n", dmf_dout);
++            }
++        dmf_doff[w]++;
++        dmf_dind[2*w + 1] = (uint16)--count;
++        dmf_dpend = FALSE;
++        }
++    if (count == 0) {                           /* buffer complete */
++        dmf_ddone = (dmf_ddone | (w ? DC_DONES : DC_DONEP)) ^ DC_PS;
++        sim_debug (DBG_DR, &dmf_dev, "parallel DMA %s buffer done\n", w ? "secondary" : "primary");
++        dmf_dr_interrupt (xb);
++        if (dmf_dpend)                          /* (empty buffer: try the other) */
++            dmf_dr_service ();
++        }
++    }
++}
++
++/* A request line from the user device changed. */
++static void dmf_dr_request (int32 line, int32 state)
++{
++int32 bit = (line == 2) ? 2 : 1;
++int32 old = (dmf_dreq & bit) ? 1 : 0;
++
++if (state == old)
++    return;
++dmf_dreq = state ? (dmf_dreq | bit) : (dmf_dreq & ~bit);
++if (!dmf_dr_present ())
++    return;
++if (dmf_dr_xline () == line) {                  /* transfer request: any edge */
++    dmf_dpend = TRUE;
++    dmf_dr_service ();
++    }
++else if (state)                                 /* DR11-C: 0 -> 1 interrupts */
++    dmf_dr_interrupt (line == 2);
++}
++
++/* One message from the user device. */
++static void dmf_dr_message (char *msg)
++{
++char *p = msg;
++unsigned long v;
++
++while (isspace ((unsigned char)*p))
++    p++;
++if ((*p == 0) || (*p == '#'))
++    return;
++sim_debug (DBG_DR, &dmf_dev, "parallel <- %s\n", p);
++v = strtoul (p + 1, NULL, 16);
++switch (toupper ((unsigned char)*p)) {
++    case 'D':                                   /* input lines */
++        dmf_din = (uint16)v;
++        break;
++    case 'A':
++        dmf_dr_request (1, v != 0);
++        break;
++    case 'B':
++        dmf_dr_request (2, v != 0);
++        break;
++    default:
++        sim_debug (DBG_DR, &dmf_dev, "parallel: unknown message ignored\n");
++        break;
++    }
++}
++
++/* Master reset (CSR bit 14) or bus INIT (which is also passed on to the
++   user device as the INIT pulse). */
++static void dmf_dr_reset (t_bool init)
++{
++dmf_dcsr = 0;
++dmf_ddone = DC_DONEP | DC_DONES;
++dmf_dout = 0;
++dmf_dinbuf = 0;
++dmf_dmisc = 0;
++memset (dmf_dind, 0, sizeof (dmf_dind));
++dmf_dsilo_n = 0;
++dmf_dpend = FALSE;
++dmf_dins = FALSE;
++dmf_doff[0] = dmf_doff[1] = 0;
++CLR_INT (DMFDRA);
++CLR_INT (DMFDRB);
++if (dmf_dr_present ()) {
++    if (init)
++        dmf_dr_send ("I\n");
++    dmf_dr_send ("D %04X\n", dmf_dout);
++    dmf_dr_send ("C 0\n");
++    }
++}
++
++/* Register access (word offsets 12 - 15). */
++static int32 dmf_dr_rd (int32 reg)
++{
++int32 data;
++
++switch (reg) {
++    case 12:                                    /* CSR */
++        return dmf_dcsr | dmf_ddone | ((dmf_dreq & 1) ? DC_REQA : 0) |
++               ((dmf_dreq & 2) ? DC_REQB : 0);
++    case 13:                                    /* output buffer */
++        return dmf_dout;
++    case 14:                                    /* input buffer */
++        if (dmf_dr_silo () && dmf_dr_rx ()) {   /* the silo */
++            if (dmf_dsilo_n == 0)
++                return 0;
++            data = dmf_dsilo[0];
++            memmove (&dmf_dsilo[0], &dmf_dsilo[1], --dmf_dsilo_n * sizeof (uint16));
++            dmf_dr_service ();                  /* room for a held word */
++            return data;
++            }
++        if (dmf_dr_dma () && dmf_dr_rx ())      /* last word moved by DMA */
++            return dmf_dinbuf;
++        dmf_dr_send ("T\n");                    /* sample the lines */
++        return dmf_din;
++    default: {                                  /* indirect registers */
++        int32 iad = (dmf_dcsr & DC_IAD) >> DC_V_IAD;
++
++        if ((iad == 1) && dmf_dr_silo ())       /* silo: words in the silo */
++            return dmf_dsilo_n;
++        return dmf_dind[iad];
++        }
++    }
++}
++
++static void dmf_dr_wr (int32 reg, int32 data, int32 PA, int32 access)
++{
++switch (reg) {
++    case 12:                                    /* CSR */
++        if (data & DC_MR) {
++            sim_debug (DBG_REG, &dmf_dev, "parallel master reset\n");
++            dmf_dr_reset (FALSE);
++            break;
++            }
++        if ((data ^ dmf_dcsr) & (DC_CTL0|DC_CTL1))
++            dmf_dr_send ("C %X\n", data & (DC_CTL0|DC_CTL1));
++        dmf_dcsr = (uint16)(data & DC_RW);
++        if (data & DC_FLUSH)                    /* flush the silo */
++            dmf_dsilo_n = 0;
++        if (!(dmf_dcsr & DC_IEA))
++            CLR_INT (DMFDRA);
++        if (!(dmf_dcsr & DC_IEB))
++            CLR_INT (DMFDRB);
++        dmf_dr_service ();
++        break;
++    case 13:                                    /* output buffer */
++        if (dmf_dr_silo () && !dmf_dr_rx ()) {  /* silo transmit: into the silo */
++            if (dmf_dsilo_n < DMF_DSILO)
++                dmf_dsilo[dmf_dsilo_n++] = (uint16)data;
++            dmf_dr_service ();
++            break;
++            }
++        if (dmf_dr_dma () && !dmf_dr_rx ()) {   /* DMA transmit: next word out */
++            dmf_dins_word = (uint16)data;
++            dmf_dins = TRUE;
++            dmf_dr_service ();
++            break;
++            }
++        if ((access == WRITEB) && (dmf_dr_mode () == 0)) {  /* byte: one half */
++            if (PA & 1)
++                dmf_dout = (uint16)((dmf_dout & 0377) | ((data & 0377) << 8));
++            else
++                dmf_dout = (uint16)((dmf_dout & 0177400) | (data & 0377));
++            dmf_dr_send ("N %04X %s\n", dmf_dout, (PA & 1) ? "H" : "L");
++            }
++        else {
++            dmf_dout = (uint16)data;
++            dmf_dr_send ("N %04X HL\n", dmf_dout);
++            }
++        break;
++    case 14:                                    /* miscellaneous register */
++        if ((data ^ dmf_dmisc) & DM_MODE) {     /* new mode: fresh silo */
++            dmf_dsilo_n = 0;
++            dmf_dpend = FALSE;
++            dmf_dins = FALSE;
++            }
++        dmf_dmisc = (uint16)(data & (DM_MODE|DM_SMSB|DM_PMSB));
++        break;
++    default: {                                  /* indirect registers */
++        int32 iad = (dmf_dcsr & DC_IAD) >> DC_V_IAD;
++
++        dmf_dind[iad] = (uint16)data;
++        if (iad == 1) {                         /* word counts free a buffer */
++            dmf_ddone &= ~DC_DONEP;
++            dmf_doff[0] = 0;
++            }
++        else if (iad == 3) {
++            dmf_ddone &= ~DC_DONES;
++            dmf_doff[1] = 0;
++            }
++        dmf_dr_service ();
++        break;
++        }
++    }
++}
++
++static int32 dmf_ack_dra (void)    { return dmf_vector (VEC_DRA); }
++static int32 dmf_ack_drb (void)    { return dmf_vector (VEC_DRB); }
++
++/* Connection poll and incoming messages. */
++t_stat dmf_dr_svc (UNIT *uptr)
++{
++TMLN *lp = &dmf_dldsc[0];
++int32 c;
++
++if (!(uptr->flags & UNIT_ATT))
++    return SCPE_OK;
++if (tmxr_poll_conn (&dmf_ddesc) >= 0) {         /* tell a new device the state */
++    lp->rcve = 1;
++    dmf_drx_len = 0;
++    sim_debug (DBG_CON, &dmf_dev, "parallel device connected\n");
++    dmf_dr_send ("D %04X\n", dmf_dout);
++    dmf_dr_send ("C %X\n", dmf_dcsr & (DC_CTL0|DC_CTL1));
++    }
++tmxr_poll_rx (&dmf_ddesc);
++while ((c = tmxr_getc_ln (lp)) & TMXR_VALID) {
++    c &= 0377;
++    if ((c == '\n') || (c == ';')) {
++        dmf_drx[dmf_drx_len] = 0;
++        dmf_dr_message (dmf_drx);
++        dmf_drx_len = 0;
++        }
++    else if ((c != '\r') && (dmf_drx_len < (int32)sizeof (dmf_drx) - 1))
++        dmf_drx[dmf_drx_len++] = (char)c;
++    }
++tmxr_poll_tx (&dmf_ddesc);
++DMF_POLL (uptr);
++return SCPE_OK;
++}
++
++static t_stat dmf_dr_attach (UNIT *uptr, CONST char *cptr)
++{
++t_stat r = tmxr_attach (&dmf_ddesc, uptr, cptr);
++
++if (r == SCPE_OK)
++    DMF_POLL (uptr);
++return r;
++}
++
++static t_stat dmf_dr_detach (UNIT *uptr)
++{
++t_stat r = tmxr_detach (&dmf_ddesc, uptr);
++
++sim_cancel (uptr);
++return r;
++}
++
++/* SET/SHOW CONFIG: switch pack 3 (which functions the module offers) */
++static const char *dmf_cfg_name[4] = { "ASYNC", "ASYNCLP", "PARALLEL", "PRINTER" };
++static const char *dmf_cfg_text[4] = { "async", "async+LP", "async+sync+parallel",
++                                        "async+sync+LP" };
++
++static t_stat dmf_set_config (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++int32 i;
++
++if ((cptr == NULL) || (*cptr == 0))
++    return SCPE_ARG;
++for (i = 0; i < 4; i++)
++    if (MATCH_CMD (cptr, dmf_cfg_name[i]) == 0) {
++        dmf_config = i;
++        dmf_csr0 = (dmf_csr0 & ~C0_CODE) | dmf_cfg_code[i];
++        return SCPE_OK;
++        }
++return sim_messagef (SCPE_ARG, "CONFIG must be PRINTER, PARALLEL, ASYNCLP or ASYNC\n");
++}
++
++static t_stat dmf_show_config (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++int32 i;
++
++fprintf (st, "config=%s", dmf_cfg_text[dmf_config]);
++for (i = 0; i < 4; i++)                         /* changed by the program? */
++    if (((dmf_csr0 & C0_CODE) == dmf_cfg_code[i]) && (i != dmf_config))
++        fprintf (st, " (now %s)", dmf_cfg_text[i]);
++return SCPE_OK;
++}
++
++/* ---------------------------------------------------------------------------
++   Register access
++   --------------------------------------------------------------------------- */
++
++t_stat dmf_rd (int32 *data, int32 PA, int32 access)
++{
++int32 reg = ((PA - dmf_dib.ba) >> 1) & 017;
++
++switch (reg) {
++    case REG_CSR0:
++        *data = dmf_csr0;
++        break;
++    case REG_CSR1:                              /* reading clears the low byte */
++        *data = dmf_csr1;
++        dmf_csr1 &= 0177400;
++        break;
++    case REG_ACSR:                              /* reading clears transmit ready */
++        *data = dmf_acsr;
++        if (dmf_acsr & AC_TRDY) {
++            dmf_acsr &= ~(AC_TRDY|AC_NXM|AC_TLINE);
++            CLR_INT (DMFATX);
++            dmf_update_tx_int ();               /* next line, if any */
++            }
++        break;
++    case REG_ALPR:                              /* parameters of the selected line */
++        *data = (dmf_line[dmf_acsr & 7].lpr & ~LP_LINE) | (dmf_acsr & 7);
++        break;
++    case REG_ARBUF:
++        *data = dmf_rx_get ();
++        break;
++    case REG_AIND:
++        *data = dmf_aind_rd ();
++        break;
++    case REG_LCSR:                              /* (only with the printer) */
++        if (!(dmf_csr0 & C0_LP)) {
++            *data = 0;
++            break;
++            }
++        dmf_lp_update_status ();
++        *data = dmf_lcsr;
++        break;
++    case REG_LIND:
++        if (!(dmf_csr0 & C0_LP)) {
++            *data = 0;
++            break;
++            }
++        *data = dmf_lind[(dmf_lcsr & LC_IAD) >> LC_V_IAD];
++        dmf_lind_next ();
++        break;
++    case 2: case 3: case 4: case 5:             /* synchronous interface */
++        *data = (dmf_csr0 & C0_SYNC) ? dmf_sync_rd (reg) : 0;
++        break;
++    case 12: case 13: case 14: case 15:         /* parallel interface */
++        *data = dmf_dr_present () ? dmf_dr_rd (reg) : 0;
++        break;
++    default:
++        *data = 0;
++        break;
++    }
++sim_debug (DBG_REG, &dmf_dev, "read  reg %02o = %06o\n", reg * 2, *data);
++return SCPE_OK;
++}
++
++t_stat dmf_wr (int32 data, int32 PA, int32 access)
++{
++int32 reg = ((PA - dmf_dib.ba) >> 1) & 017;
++
++sim_debug (DBG_REG, &dmf_dev, "write reg %02o = %06o%s\n", reg * 2, data,
++           (access == WRITEB) ? " (byte)" : "");
++switch (reg) {
++    case REG_CSR0:
++        if (access == WRITEB)                   /* a byte write loads the vector */
++            dmf_csr0 = (dmf_csr0 & C0_CODE) | (data & C0_VEC);
++        else {
++            static const uint16 valid[] = C0_VALID_CODES;
++            int32 i;
++
++            for (i = 0; i < 4; i++)             /* valid and emulated (no DR) */
++                if (((data & C0_CODE) == valid[i]) && !(valid[i] & ~C0_EMULATED))
++                    dmf_csr0 = (dmf_csr0 & ~C0_CODE) | (data & C0_CODE);
++            dmf_csr0 = (dmf_csr0 & C0_CODE) | (data & C0_VEC);
++            }
++        break;
++    case REG_CSR1:
++        if (access == WRITEB && !(PA & 1))
++            break;
++        switch ((data >> 8) & 0377) {
++            case C1_SELFTEST:                   /* restart: self test passes */
++                dmf_csr1 = C1_SELFTEST << 8;
++                break;
++            case C1_REVLEVEL:
++                dmf_csr1 = DMF_UCODE_REV << 8;
++                break;
++            default:                            /* parity error test: not emulated */
++                break;
++            }
++        break;
++    case REG_ACSR:
++        if (data & AC_MR) {                     /* master reset completes at once */
++            dmf_async_reset (FALSE);
++            break;
++            }
++        dmf_acsr = (dmf_acsr & ~AC_RW) | (data & AC_RW);
++        dmf_work_iad = dmf_acsr & AC_IAD;
++        if (!(dmf_acsr & AC_TIE))
++            CLR_INT (DMFATX);
++        else if (dmf_acsr & AC_TRDY)
++            SET_INT (DMFATX);
++        dmf_rx_posted = FALSE;                  /* re-evaluate with the new enable */
++        dmf_update_rx_int ();
++        break;
++    case REG_ALPR: {
++        int32 ln = data & LP_LINE;
++
++        dmf_line[ln].lpr = (uint16)data;
++        dmf_set_line_config (ln);
++        break;
++        }
++    case REG_ARBUF:                             /* write: silo alarm timeout */
++        dmf_rsp = data & 0377;
++        sim_cancel (DMF_TMR_UNIT);
++        dmf_rx_alarm = FALSE;
++        dmf_start_rx_timer ();
++        dmf_update_rx_int ();
++        break;
++    case REG_AIND:
++        dmf_aind_wr (data, access);
++        break;
++    case REG_LCSR:                              /* (only with the printer) */
++        if (dmf_csr0 & C0_LP)
++            dmf_lcsr_wr (data);
++        break;
++    case REG_LIND:
++        if (dmf_csr0 & C0_LP) {
++            dmf_lind[(dmf_lcsr & LC_IAD) >> LC_V_IAD] = (uint16)data;
++            dmf_lind_next ();
++            }
++        break;
++    case 2: case 3: case 4: case 5:             /* synchronous interface */
++        if (dmf_csr0 & C0_SYNC)
++            dmf_sync_wr (reg, data, PA, access);
++        break;
++    case 12: case 13: case 14: case 15:         /* parallel interface */
++        if (dmf_dr_present ())
++            dmf_dr_wr (reg, data, PA, access);
++        break;
++    default:
++        break;
++    }
++return SCPE_OK;
++}
++
++/* ---------------------------------------------------------------------------
++   Multiplexer poll
++   --------------------------------------------------------------------------- */
++
++t_stat dmf_svc (UNIT *uptr)
++{
++int32 ln;
++
++ln = tmxr_poll_conn (&dmf_desc);                /* new connection */
++if (ln >= 0) {
++    if (!dmf_mctl)
++        dmf_ldsc[ln].rcve = (dmf_line[ln].lcr & LC_RE) ? 1 : 0;
++    sim_debug (DBG_CON, &dmf_dev, "line %d connected\n", ln);
++    }
++tmxr_poll_rx (&dmf_desc);
++for (ln = 0; ln < DMF_LINES; ln++) {
++    DMF_LINE *l = &dmf_line[ln];
++    TMLN *lp = &dmf_ldsc[ln];
++    int32 c;
++
++    dmf_update_modem (ln);
++    /* receivers of lines 0 and 1 need carrier (normal, echo, remote) */
++    if ((ln < DMF_MDM_LINES) && !(l->rms & RM_CD) &&
++        (((l->lcr & LC_MAINT) >> LC_V_MAINT) != MAINT_LOCAL))
++        continue;
++    while ((l->lcr & LC_RE) && lp->conn && (dmf_rxcnt < DMF_RXSILO) &&
++           ((c = tmxr_getc_ln (lp)) & TMXR_VALID)) {
++        dmf_receive (ln, c & 0377, (c & SCPE_BREAK) != 0);
++        }
++    }
++tmxr_poll_tx (&dmf_desc);
++for (ln = 0; ln < DMF_LINES; ln++)
++    dmf_transmit (ln);
++sim_clock_coschedule (uptr, tmxr_poll);
++return SCPE_OK;
++}
++
++/* ---------------------------------------------------------------------------
++   Reset, attach, detach
++   --------------------------------------------------------------------------- */
++
++t_stat dmf_reset (DEVICE *dptr)
++{
++/* Unit names for the user: the function each unit stands for.  The
++   numbered names (DMF0 - DMF4) are still accepted.  DMF2, the internal silo
++   alarm timer, keeps its number and is never shown (UNIT_DIS). */
++sim_set_uname (&dmf_unit[0], "DMF-ASYNC");
++sim_set_uname (&dmf_unit[1], "DMF-PRINT");
++sim_set_uname (&dmf_unit[3], "DMF-SYNC");
++sim_set_uname (&dmf_unit[4], "DMF-PAR");
++dmf_desc.dptr = dptr;
++dmf_csr0 = dmf_cfg_code[dmf_config];            /* functions per switch pack 3 */
++dmf_csr1 = C1_SELFTEST << 8;                    /* self test passed */
++dmf_async_reset (TRUE);
++dmf_lp_reset ();
++dmf_sync_reset (TRUE);
++dmf_ddesc.notelnet = TRUE;                      /* raw byte stream to the device */
++dmf_ddesc.dptr = dptr;
++dmf_ddesc.uptr = DMF_DR_UNIT;
++dmf_dr_reset (TRUE);
++if (DMF_DR_UNIT->flags & UNIT_ATT)
++    DMF_POLL (DMF_DR_UNIT);
++dmf_sdesc.packet = TRUE;                        /* message oriented, raw TCP */
++dmf_sdesc.notelnet = TRUE;
++dmf_sdesc.buffered = 16384;
++dmf_sdesc.dptr = dptr;
++dmf_sdesc.uptr = DMF_SYNC_UNIT;
++if (DMF_SYNC_UNIT->flags & UNIT_ATT)
++    dmf_sync_kick ();
++else
++    sim_cancel (DMF_SYNC_UNIT);
++if (DMF_MUX_UNIT->flags & UNIT_ATT)
++    sim_clock_coschedule (DMF_MUX_UNIT, tmxr_poll);
++else
++    sim_cancel (DMF_MUX_UNIT);
++return auto_config (dptr->name, (dptr->flags & DEV_DIS) ? 0 : 1);
++}
++
++t_stat dmf_attach (UNIT *uptr, CONST char *cptr)
++{
++t_stat r;
++
++if (uptr == DMF_LP_UNIT) {                      /* printer output file */
++    r = attach_unit (uptr, cptr);
++    dmf_lp_update_status ();                    /* back online */
++    return r;
++    }
++if (uptr == DMF_SYNC_UNIT)                      /* synchronous line */
++    return dmf_sync_attach (uptr, cptr);
++if (uptr == DMF_DR_UNIT)                        /* parallel user device */
++    return dmf_dr_attach (uptr, cptr);
++if (uptr != DMF_MUX_UNIT)
++    return SCPE_NOATT;
++if (sim_switches & SWMASK ('M'))                /* modem control on lines 0, 1 */
++    tmxr_set_modem_control_passthru (&dmf_desc);
++r = tmxr_attach (&dmf_desc, uptr, cptr);
++if (r != SCPE_OK) {
++    tmxr_clear_modem_control_passthru (&dmf_desc);
++    return r;
++    }
++dmf_mctl = (sim_switches & SWMASK ('M')) ? 1 : 0;
++if (dmf_mctl) {                                 /* only lines 0 and 1 have modem */
++    int32 ln;                                   /* control; lines 2-7 accept a */
++                                                /* connection without DTR */
++    for (ln = DMF_MDM_LINES; ln < DMF_LINES; ln++)
++        tmxr_set_line_modem_control (&dmf_ldsc[ln], FALSE);
++    }
++sim_clock_coschedule (uptr, tmxr_poll);
++return SCPE_OK;
++}
++
++t_stat dmf_detach (UNIT *uptr)
++{
++t_stat r;
++
++if (uptr == DMF_LP_UNIT) {
++    r = detach_unit (uptr);
++    dmf_lp_update_status ();
++    return r;
++    }
++if (uptr == DMF_SYNC_UNIT)
++    return dmf_sync_detach (uptr);
++if (uptr == DMF_DR_UNIT)
++    return dmf_dr_detach (uptr);
++if (uptr != DMF_MUX_UNIT)
++    return SCPE_NOATT;
++r = tmxr_detach (&dmf_desc, uptr);
++sim_cancel (uptr);
++dmf_mctl = 0;
++tmxr_clear_modem_control_passthru (&dmf_desc);
++return r;
++}
++
++/* ---------------------------------------------------------------------------
++   Help
++   --------------------------------------------------------------------------- */
++
++const char *dmf_description (DEVICE *dptr)
++{
++return "DMF32 multi-function communications interface";
++}
++
++t_stat dmf_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
++{
++fprintf (st, "DMF32 Multi-Function Communications Interface (DMF)\n\n");
++fprintf (st, "The DMF32 is a Unibus module for VAX systems with a synchronous interface,\n");
++fprintf (st, "an eight-line asynchronous multiplexer, and a line printer controller or a\n");
++fprintf (st, "DR11-C compatible parallel interface (they share one connector).  The\n");
++fprintf (st, "functions present are set with the distribution panel switches:\n\n");
++fprintf (st, "   sim> SET DMF CONFIG=PRINTER     async, sync, line printer (default)\n");
++fprintf (st, "   sim> SET DMF CONFIG=PARALLEL    async, sync, parallel interface\n");
++fprintf (st, "   sim> SET DMF CONFIG=ASYNCLP     async, line printer\n");
++fprintf (st, "   sim> SET DMF CONFIG=ASYNC       async only\n\n");
++fprintf (st, "VMS configures the functions as TXA0-TXA7, XGA0 and LCA0 (VMS V4 has no\n");
++fprintf (st, "driver for the parallel interface).\n\n");
++fprintf (st, "The device is disabled by default:\n\n");
++fprintf (st, "   sim> SET DMF ENABLE\n\n");
++fprintf (st, "The functions have their own units:\n\n");
++fprintf (st, "   DMF-ASYNC   asynchronous multiplexer, lines 0-7\n");
++fprintf (st, "   DMF-PRINT   line printer\n");
++fprintf (st, "   DMF-SYNC    synchronous line\n");
++fprintf (st, "   DMF-PAR     parallel interface user device\n\n");
++fprintf (st, "Terminal lines: attach the multiplexer (DMF-ASYNC, or just DMF) to a Telnet\n");
++fprintf (st, "port, or lines to serial ports, as for the other terminal multiplexers:\n\n");
++fprintf (st, "   sim> ATTACH DMF-ASYNC 2323\n");
++fprintf (st, "   sim> ATTACH -M DMF-ASYNC 2323  (modem control on lines 0 and 1)\n\n");
++fprintf (st, "Lines 0 and 1 have modem control.  Without -M, a Telnet connection on these\n");
++fprintf (st, "lines appears as data set ready and carrier on; with -M the modem signals\n");
++fprintf (st, "follow the connection and DTR, and clearing DTR hangs up.\n\n");
++fprintf (st, "Line printer: attach DMF-PRINT to an output file:\n\n");
++fprintf (st, "   sim> ATTACH DMF-PRINT printer.txt\n\n");
++fprintf (st, "Without a file the printer is offline.\n\n");
++fprintf (st, "Synchronous line: DMF-SYNC is a TCP connection to the peer system.  Give the\n");
++fprintf (st, "peer's address and port, then attach the local port the peer connects to:\n\n");
++fprintf (st, "   sim> SET DMF-SYNC PEER=host:port\n");
++fprintf (st, "   sim> ATTACH DMF-SYNC port\n\n");
++fprintf (st, "Without a PEER the line only listens.  In DDCMP mode (as used by DECnet,\n");
++fprintf (st, "VMS line DMF-0) the connection carries standard DDCMP frames, so the peer\n");
++fprintf (st, "can be another DMF32 or a DMC11, DMR11, DMP11 or DMV11 emulation.  HDLC/SDLC\n");
++fprintf (st, "and GEN BYTE modes work between two DMF32s.  A connected line looks like\n");
++fprintf (st, "a modem with carrier, data set ready and clear to send.\n\n");
++fprintf (st, "Parallel interface (CONFIG=PARALLEL): DMF-PAR connects the user device,\n");
++fprintf (st, "a program or a microcontroller board that drives real lines:\n\n");
++fprintf (st, "   sim> ATTACH DMF-PAR 5555                 (the device connects to port 5555)\n");
++fprintf (st, "   sim> ATTACH DMF-PAR Connect=host:port    (connect to the device)\n");
++fprintf (st, "   sim> ATTACH DMF-PAR Connect=/dev/ttyACM0 (a device on a serial port)\n\n");
++fprintf (st, "The interface signals travel as text lines (hexadecimal values, LF):\n\n");
++fprintf (st, "   to the device:   D hhhh     output lines\n");
++fprintf (st, "                    N hhhh x   New Data Ready pulse, x = HL, H or L\n");
++fprintf (st, "                    T          Data Transmitted pulse\n");
++fprintf (st, "                    C n        CONTROL ZERO (bit 0) and CONTROL ONE (bit 1)\n");
++fprintf (st, "                    I          INIT pulse\n");
++fprintf (st, "   from the device: D hhhh     input lines\n");
++fprintf (st, "                    A 0|1      User Request A\n");
++fprintf (st, "                    B 0|1      User Request B\n\n");
++fprintf (st, "DR11-C, silo and DMA modes work as in the User's Guide; a transfer the\n");
++fprintf (st, "interface cannot do yet (silo full or empty, no DMA buffer) gets no\n");
++fprintf (st, "handshake pulse until the program makes room.\n\n");
++fprint_set_help (st, dptr);
++fprint_show_help (st, dptr);
++fprint_reg_help (st, dptr);
++return SCPE_OK;
++}
+diff --git a/Visual Studio Projects/VAX730.vcproj b/Visual Studio Projects/VAX730.vcproj
+index f51cbe1c3c8148da9514c7a5090c748ce7838452..b0ff9b8cfa39be05c58bceb0c2a3d3f9b0bf670c 100644
+GIT binary patch
+delta 25
+hcmX?J)LFdYqcTf;N^aWZhf?N~FDP+u{;C`#3ILm{3mX6c
+
+delta 12
+TcmeAyK3=rpqw;2Bl`v5NDUt<m
+
+diff --git a/Visual Studio Projects/VAX750.vcproj b/Visual Studio Projects/VAX750.vcproj
+index 9c801cf935001d3ee8e0a307af5665b3e20f5b83..86a89fb1c81d56281eee393524736c33fd603802 100644
+GIT binary patch
+delta 21
+dcmcaqJf&oVxe7~sN^aWZhf?O74OAA10sv)52zCGf
+
+delta 12
+TcmbPIa;bQOxyt5BmD!>ICn^P5
+
+diff --git a/Visual Studio Projects/VAX780.vcproj b/Visual Studio Projects/VAX780.vcproj
+index f73000dff58930c4cf0fd1bafbc1b89b149daccc..0508fae06d4deeecdd936aeddea18731c4765e3c 100644
+GIT binary patch
+delta 21
+dcmaD=vZi#yVHKA6l-#t*fvR?!534K}1psh62~Ge2
+
+delta 12
+TcmZ2e`l@8ZVU^9Ss>?+ID{Td^
+
+diff --git a/Visual Studio Projects/VAX8200.vcproj b/Visual Studio Projects/VAX8200.vcproj
+index 5ae69b44db6e182ff8134c87eb7246d0396b6ebe..f891386c6f1fa01e3b5704b905752237d2794806 100644
+GIT binary patch
+delta 21
+dcmX?G++VWclQK(uN^aWZgDQ5LKPlf91psph3K0MR
+
+delta 12
+TcmeA#Ia|Eplk#R0mD{2KD?bJV
+
+diff --git a/Visual Studio Projects/VAX8600.vcproj b/Visual Studio Projects/VAX8600.vcproj
+index aa29f3a927db2f3a4b572d484baf142fd10d098a..e05b9369116619a6ed764d6591a82433e229bc59 100644
+GIT binary patch
+delta 24
+gcmcatyr5(Qw<>c=ZrWr=N%P48Y8;!nRWFMG0CtNAe*gdg
+
+delta 12
+TcmZ2ba<6y;x9VnJ)ypCPCdLI)
+
+diff --git a/makefile b/makefile
+index efe8957..008983b 100644
+--- a/makefile
++++ b/makefile
+@@ -1657,7 +1657,7 @@ VAX730 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
+ 	${VAXD}/vax_mmu.c ${VAXD}/vax_sys.c  ${VAXD}/vax_syscm.c \
+ 	${VAXD}/vax730_stddev.c ${VAXD}/vax730_sys.c \
+ 	${VAXD}/vax730_mem.c ${VAXD}/vax730_uba.c ${VAXD}/vax730_rb.c \
+-	${VAXD}/vax_uw.c ${VAXD}/vax730_syslist.c \
++	${VAXD}/vax_uw.c ${VAXD}/vax730_syslist.c ${VAXD}/vax_dmf.c \
+ 	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \
+ 	${PDP11D}/pdp11_dz.c ${PDP11D}/pdp11_lp.c ${PDP11D}/pdp11_tq.c \
+ 	${PDP11D}/pdp11_xu.c ${PDP11D}/pdp11_ry.c ${PDP11D}/pdp11_cr.c \
+@@ -1672,7 +1672,7 @@ VAX750 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
+ 	${VAXD}/vax_mmu.c ${VAXD}/vax_sys.c  ${VAXD}/vax_syscm.c \
+ 	${VAXD}/vax750_stddev.c ${VAXD}/vax750_cmi.c \
+ 	${VAXD}/vax750_mem.c ${VAXD}/vax750_uba.c ${VAXD}/vax7x0_mba.c \
+-	${VAXD}/vax_uw.c ${VAXD}/vax750_syslist.c \
++	${VAXD}/vax_uw.c ${VAXD}/vax750_syslist.c ${VAXD}/vax_dmf.c \
+ 	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \
+ 	${PDP11D}/pdp11_dz.c ${PDP11D}/pdp11_lp.c ${PDP11D}/pdp11_tq.c \
+ 	${PDP11D}/pdp11_xu.c ${PDP11D}/pdp11_ry.c ${PDP11D}/pdp11_cr.c \
+@@ -1688,7 +1688,7 @@ VAX780 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
+ 	${VAXD}/vax_mmu.c ${VAXD}/vax_sys.c  ${VAXD}/vax_syscm.c \
+ 	${VAXD}/vax780_stddev.c ${VAXD}/vax780_sbi.c \
+ 	${VAXD}/vax780_mem.c ${VAXD}/vax780_uba.c ${VAXD}/vax7x0_mba.c \
+-	${VAXD}/vax780_fload.c 	${VAXD}/vax_uw.c ${VAXD}/vax780_syslist.c \
++	${VAXD}/vax780_fload.c 	${VAXD}/vax_uw.c ${VAXD}/vax780_syslist.c ${VAXD}/vax_dmf.c \
+ 	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \
+ 	${PDP11D}/pdp11_dz.c ${PDP11D}/pdp11_lp.c ${PDP11D}/pdp11_tq.c \
+ 	${PDP11D}/pdp11_xu.c ${PDP11D}/pdp11_ry.c ${PDP11D}/pdp11_cr.c \
+@@ -1704,7 +1704,7 @@ VAX8200 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
+ 	${VAXD}/vax_mmu.c ${VAXD}/vax_sys.c  ${VAXD}/vax_syscm.c \
+ 	${VAXD}/vax_watch.c ${VAXD}/vax820_stddev.c ${VAXD}/vax820_bi.c \
+ 	${VAXD}/vax820_mem.c ${VAXD}/vax820_uba.c ${VAXD}/vax820_ka.c \
+-	${VAXD}/vax_uw.c ${VAXD}/vax820_syslist.c \
++	${VAXD}/vax_uw.c ${VAXD}/vax820_syslist.c ${VAXD}/vax_dmf.c \
+ 	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \
+ 	${PDP11D}/pdp11_dz.c ${PDP11D}/pdp11_lp.c ${PDP11D}/pdp11_tq.c \
+ 	${PDP11D}/pdp11_xu.c ${PDP11D}/pdp11_ry.c ${PDP11D}/pdp11_cr.c \
+@@ -1719,7 +1719,7 @@ VAX8600 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
+ 	${VAXD}/vax_mmu.c ${VAXD}/vax_sys.c  ${VAXD}/vax_syscm.c \
+ 	${VAXD}/vax860_stddev.c ${VAXD}/vax860_sbia.c \
+ 	${VAXD}/vax860_abus.c ${VAXD}/vax780_uba.c ${VAXD}/vax7x0_mba.c \
+-	${VAXD}/vax_uw.c ${VAXD}/vax860_syslist.c \
++	${VAXD}/vax_uw.c ${VAXD}/vax860_syslist.c ${VAXD}/vax_dmf.c \
+ 	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \
+ 	${PDP11D}/pdp11_dz.c ${PDP11D}/pdp11_lp.c ${PDP11D}/pdp11_tq.c \
+ 	${PDP11D}/pdp11_xu.c ${PDP11D}/pdp11_ry.c ${PDP11D}/pdp11_cr.c \
+-- 
+2.43.0
+

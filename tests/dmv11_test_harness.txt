@@ -1,0 +1,570 @@
+# open-simh-extended/tests/dmv11_test_harness.txt  DMV11 test harness v3 (all files from /home/claude/dmvtest; MicroVAX II DMV and VAX-11/780 DMC TYPE=DMP tests). Each file starts with a ===== FILE: path ===== line; recreate them verbatim.
+
+===== FILE: /home/claude/dmvtest/con.py =====
+# /home/claude/dmvtest/con.py - type a line on a node's console (tmux) and wait
+# for a regex to appear in the console log after the send.
+# usage: con.py NODE 'text or -' 'regex' [timeout]
+import subprocess, sys, re, time, os
+node, text, pat = sys.argv[1], sys.argv[2], sys.argv[3]
+tmo = float(sys.argv[4]) if len(sys.argv) > 4 else 120
+log = '/home/claude/dmvtest/n%s/node%s.log' % (node, node)
+start = os.path.getsize(log) if os.path.exists(log) else 0
+if text != '-':
+    subprocess.run(['tmux', 'send-keys', '-t', 'node' + node, '-l', text])
+    subprocess.run(['tmux', 'send-keys', '-t', 'node' + node, 'C-m'])
+end = time.time() + tmo
+out = ''
+while time.time() < end:
+    time.sleep(1)
+    if os.path.exists(log):
+        with open(log, 'rb') as f:
+            f.seek(start); out = f.read().decode('latin-1')
+    if re.search(pat, out): break
+alive = subprocess.run(['tmux', 'has-session', '-t', 'node' + node]).returncode == 0
+print(out[-3000:].replace('\r', ''))
+print('[node%s %s]' % (node, 'running' if alive else 'GONE'))
+
+===== FILE: /home/claude/dmvtest/sethost.py =====
+# /home/claude/dmvtest/sethost.py - v5 (v4: simpler prompt pattern;
+# v5: answer the Username: prompt immediately)
+# From node FROM, SET HOST to TARGET, answer the remote Username: prompt the
+# moment it appears (these VMS systems time the login prompt out within a
+# second or two), run a few commands there, log out, and print the
+# transcript with the time each step took.
+# v3: reads the console log file (n<FROM>/node<FROM>.log) instead of the tmux
+#     screen, which stops updating after the simulator has been paused.
+# Usage: python3 sethost.py FROM TARGET
+import os, re, subprocess, sys, time
+
+node, target = sys.argv[1], sys.argv[2]
+sess = 'node' + node
+log = '/home/claude/dmvtest/n%s/node%s.log' % (node, node)
+start = os.path.getsize(log)
+
+def keys(s):
+    subprocess.run(['tmux', 'send-keys', '-t', sess, '-l', s])
+    subprocess.run(['tmux', 'send-keys', '-t', sess, 'C-m'])
+
+def text():
+    with open(log, 'rb') as f:
+        f.seek(start)
+        return f.read().decode('latin-1').replace('\r', '')
+
+def wait_for(pattern, limit, since):
+    """Wait for regex in console output written after offset 'since'."""
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        if re.search(pattern, text()[since:]):
+            return round(time.time() - t0, 1)
+        time.sleep(0.05)
+    return None
+
+t0 = time.time()
+keys('SET HOST ' + target)
+# v5: answer as soon as "Username:" shows up at all - the remote LOGINOUT
+# timer can expire within a fraction of a second on this overloaded host.
+r = None
+while time.time() - t0 < 120:
+    t = text()
+    if 'Username:' in t:
+        keys('SYSTEM'); r = round(time.time() - t0, 1); break
+    if re.search(r'%[A-Z]+-[EF]-', t):
+        break
+    time.sleep(0.005)
+time.sleep(1)
+ok = (r is not None) and ('Timeout period expired' not in text())
+print('connect: %s %s' % (r, 'ok' if ok else 'FAILED'))
+if ok:
+    mark = len(text())
+    print('login: %s' % wait_for(r'\$ *$', 120, mark))
+    for c in ['SHOW LOGICAL SYS$NODE', 'SHOW USERS', 'DIRECTORY/SIZE SYS$SYSTEM:*.EXE', 'LOGOUT']:
+        mark = len(text())
+        keys(c)
+        pat = r'control returned' if c == 'LOGOUT' else r'\$ *$'
+        print('%s: %s' % (c, wait_for(pat, 300, mark)))
+out = [l for l in text().splitlines() if l.strip()]
+print('\n'.join(l for l in out if re.search(r'SET HOST|Welcome|SYS\$NODE" =|RTA|Total of|REM-S|%SYSTEM|logged out', l)))
+
+===== FILE: /home/claude/dmvtest/boot.sh =====
+#!/bin/bash
+# /home/claude/dmvtest/boot.sh - v4: start both nodes in tmux, set the date,
+# log in as SYSTEM (no password) and start DECnet on each.
+# v2: stop any previous run and wait until the DMV TCP ports (1111/2222) are
+#     free, otherwise ATTACH DMV0 fails and VMS reports a fatal hardware error.
+# v3: SIM=<simulator binary> selects the build under test (default: the
+#     DMV11-Test build in microvax2.dbg); disks are fresh copies each boot.
+cd /home/claude/dmvtest
+SIM=${SIM:-/home/claude/dmvtest/microvax2.dbg}
+tmux kill-server 2>/dev/null
+# v4: a simulator can outlive its tmux session; stop it by process name
+pkill -9 -x microvax2.osimh; pkill -9 -x microvax2.dbg; sleep 1   # SIMH treats SIGTERM as "stop", not "exit"
+port_busy() {
+  python3 - "$@" <<'EOF'
+import socket, sys
+busy = False
+for p in (1111, 2222):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try: s.bind(('0.0.0.0', p))
+    except OSError: busy = True
+    s.close()
+sys.exit(0 if busy else 1)
+EOF
+}
+while port_busy; do sleep 2; done
+rm -f n1/core n2/core n1/dmv*.dbg n2/dmv*.dbg n1/node*.log n2/node*.log
+cp /mnt/user-data/uploads/VMS047-1.R81 n1/; cp /mnt/user-data/uploads/VMS047-2.R81 n2/; chmod u+w n1/*.R81 n2/*.R81
+echo "simulator: $SIM"
+for n in 1 2; do
+  tmux new-session -d -s node$n -x 132 -y 50 "cd /home/claude/dmvtest/n$n; ulimit -c unlimited; $SIM node$n.ini 2>&1 | tee sim.out; echo EXIT=\${PIPESTATUS[0]} >> sim.out; sleep 100000"
+done
+for n in 1 2; do python3 con.py $n - 'HH:MM' 300 >/dev/null; done
+grep -a -A1 "ATTACH DMV0" n1/sim.out n2/sim.out | grep -a "SIM-"
+for n in 1 2; do python3 con.py $n '26-OCT-1996 10:00' 'job terminated' 400 >/dev/null; done
+for n in 1 2; do
+  tmux send-keys -t node$n C-m; sleep 3; tmux send-keys -t node$n -l SYSTEM; sleep 1; tmux send-keys -t node$n C-m; sleep 6
+  python3 con.py $n '@SYS$MANAGER:STARTNET' '\$ $' 300 | tail -6
+done
+
+===== FILE: /home/claude/dmvtest/boot_mp.sh =====
+#!/bin/bash
+# /home/claude/dmvtest/boot_mp.sh - v2 (SIM=binary, kill -9 stale simulators): multipoint test.  Start MV1 (control
+# station hub), MV2 and MV3 (tributaries) from fresh disk copies, set the
+# date, log in as SYSTEM, apply n<N>/mpcfg.txt (permanent DECnet database
+# changes) on each node, then start DECnet on each.
+cd /home/claude/dmvtest
+SIM=${SIM:-/home/claude/dmvtest/microvax2.osimh}
+tmux kill-server 2>/dev/null
+pkill -9 -x microvax2.osimh; pkill -9 -x microvax2.dbg; sleep 1
+port_busy() {
+  python3 - <<'PYEOF'
+import socket, sys
+busy = False
+for p in (1111, 2222, 3333):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try: s.bind(('0.0.0.0', p))
+    except OSError: busy = True
+    s.close()
+sys.exit(0 if busy else 1)
+PYEOF
+}
+while port_busy; do sleep 2; done
+rm -f n*/core n*/dmv*.dbg n*/node*.log
+cp /mnt/user-data/uploads/VMS047-1.R81 n1/; cp /mnt/user-data/uploads/VMS047-2.R81 n2/
+cp /mnt/user-data/uploads/VMS047-2.R81 n3/VMS047-3.R81; chmod u+w n*/*.R81
+for n in 1 2 3; do
+  tmux new-session -d -s node$n -x 132 -y 50 "cd /home/claude/dmvtest/n$n; ulimit -c unlimited; $SIM mp$n.ini 2>&1 | tee sim.out; echo EXIT=\${PIPESTATUS[0]} >> sim.out; sleep 100000"
+done
+for n in 1 2 3; do python3 con.py $n - 'HH:MM' 300 >/dev/null; done
+grep -a -A1 "ATTACH DMV0" n1/sim.out n2/sim.out n3/sim.out | grep -a "SIM-"
+for n in 1 2 3; do python3 con.py $n '26-OCT-1996 10:00' 'job terminated' 400 >/dev/null; done
+for n in 1 2 3; do
+  tmux send-keys -t node$n C-m; sleep 3; tmux send-keys -t node$n -l SYSTEM; sleep 1; tmux send-keys -t node$n C-m; sleep 6
+  while read -r cmd; do python3 con.py $n "$cmd" '\$ $' 120 >/dev/null; done < n$n/mpcfg.txt
+done
+for n in 1 2 3; do python3 con.py $n '@SYS$MANAGER:STARTNET' '\$ $' 300 | tail -4; done
+
+===== FILE: /home/claude/dmvtest/mp_test.sh =====
+#!/bin/bash
+# /home/claude/dmvtest/mp_test.sh - v1
+# Full DMV multipoint test on three VMS V4.7 nodes:
+#   MV1 = control station (SET DMV0 DROPS=2), MV2 = tributary 2, MV3 = tributary 3.
+# Steps: boot + configure (boot_mp.sh), wait for routing, SET HOST MV1->MV2,
+# remote NCP MV2->MV3 (routed through MV1), file copy MV3->MV1 and compare,
+# tributary-halt test (MV3 circuit off/on), and disconnect test (MV3 DMV
+# detached/reattached), checking that MV1's DMV is never master-cleared and
+# MV2 stays reachable throughout.  Writes a report to stdout.
+cd /home/claude/dmvtest
+
+flush1() {   # make MV1's DMV trace file current (pause/continue the simulator)
+  tmux send-keys -t node1 C-e; sleep 1; tmux send-keys -t node1 -l 'CONT'; tmux send-keys -t node1 C-m; sleep 2
+}
+mclears() { flush1; grep -ac 'DMV8: Master clear' n1/dmv1.dbg; }
+nodes1()  { python3 con.py 1 'MC NCP SHOW KNOWN NODES' '\$ $' 90 | grep -aE "1\.[23] "; }
+wait_reach() {  # wait until node $1 (1.2/1.3) is reachable from MV1
+  for i in $(seq 1 40); do nodes1 | grep -q "$1 .* reachable" && return 0; sleep 10; done; return 1
+}
+
+echo "### boot"; ./boot_mp.sh | grep -a "SIM-"
+wait_reach 1.2 && wait_reach 1.3 && echo "both tributaries reachable"; nodes1
+MC=$(mclears); echo "MV1 master clears after boot: $MC"
+
+echo "### SET HOST MV1 -> MV2"
+timeout 600 python3 sethost.py 1 MV2 | grep -aE "connect|Welcome|SYS.NODE\" =|RTA|Total of|REM-S"
+
+echo "### NCP TELL MV3 from MV2 (routed via MV1)"
+python3 con.py 2 'MC NCP TELL MV3 SHOW EXECUTOR' '\$ $' 300 | grep -aE "Executor|%NCP"
+
+echo "### copy MV3::HELPLIB.HLB to MV1 and compare"
+python3 con.py 1 'COPY MV3::SYS$HELP:HELPLIB.HLB SYS$LOGIN:FROM_MV3.HLB' '\$ $' 900 | grep -a "%"
+python3 con.py 1 'DIFFERENCES SYS$LOGIN:FROM_MV3.HLB MV3::SYS$HELP:HELPLIB.HLB' '\$ $' 900 | grep -aE "Number of difference|%"
+
+echo "### tributary halt: MV3 circuit off for 3 minutes"
+python3 con.py 3 'MC NCP SET CIRCUIT DMP-0 STATE OFF' '\$ $' 120 >/dev/null
+t0=$(date +%s); while [ $(date +%s) -lt $((t0+180)) ]; do nodes1; sleep 20; done | sort | uniq -c
+echo "MV1 master clears: before $MC, now $(mclears)"
+python3 con.py 3 'MC NCP SET CIRCUIT DMP-0 STATE ON' '\$ $' 120 >/dev/null
+wait_reach 1.3 && echo "MV3 reachable again"
+
+echo "### disconnect: MV3 DMV detached for 3 minutes"
+MC=$(mclears)
+tmux send-keys -t node3 C-e; sleep 1; tmux send-keys -t node3 -l 'DETACH DMV0'; tmux send-keys -t node3 C-m
+sleep 1; tmux send-keys -t node3 -l 'CONT'; tmux send-keys -t node3 C-m
+t0=$(date +%s); while [ $(date +%s) -lt $((t0+180)) ]; do nodes1; sleep 20; done | sort | uniq -c
+echo "MV1 master clears: before $MC, now $(mclears)"
+tmux send-keys -t node3 C-e; sleep 1; tmux send-keys -t node3 -l 'ATTACH DMV0 3333'; tmux send-keys -t node3 C-m
+sleep 1; tmux send-keys -t node3 -l 'CONT'; tmux send-keys -t node3 C-m
+wait_reach 1.3 && echo "MV3 reachable again after reattach"
+nodes1
+echo "### final SET HOST MV1 -> MV2"
+timeout 600 python3 sethost.py 1 MV2 | grep -aE "connect|Welcome|SYS.NODE\" =|Total of|REM-S"
+echo "### done"
+
+===== FILE: /home/claude/dmvtest/boot780.sh =====
+#!/bin/bash
+# /home/claude/dmvtest/boot780.sh - v1 (from boot.sh v4, VAX-11/780 nodes, DMC TYPE=DMP): start both nodes in tmux (no date prompt on the 780),
+# log in as SYSTEM (no password) and start DECnet on each.
+# v2: stop any previous run and wait until the DMV TCP ports (1111/2222) are
+#     free, otherwise ATTACH DMV0 fails and VMS reports a fatal hardware error.
+# v3: SIM=<simulator binary> selects the build under test (default: the
+#     DMV11-Test build in microvax2.dbg); disks are fresh copies each boot.
+cd /home/claude/dmvtest
+SIM=${SIM:-/home/claude/dmvtest/vax780.osimh}
+tmux kill-server 2>/dev/null
+# v4: a simulator can outlive its tmux session; stop it by process name
+pkill -9 -x microvax2.osimh; pkill -9 -x microvax2.dbg; pkill -9 -x vax780.osimh; sleep 1   # SIMH treats SIGTERM as "stop", not "exit"
+port_busy() {
+  python3 - "$@" <<'EOF'
+import socket, sys
+busy = False
+for p in (1111, 2222):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try: s.bind(('0.0.0.0', p))
+    except OSError: busy = True
+    s.close()
+sys.exit(0 if busy else 1)
+EOF
+}
+while port_busy; do sleep 2; done
+rm -f n1/core n2/core n1/dmv*.dbg n2/dmv*.dbg n1/node*.log n2/node*.log
+cp /mnt/user-data/uploads/VMS047-1.R81 n1/; cp /mnt/user-data/uploads/VMS047-2.R81 n2/; chmod u+w n1/*.R81 n2/*.R81
+echo "simulator: $SIM"
+for n in 1 2; do
+  tmux new-session -d -s node$n -x 132 -y 50 "cd /home/claude/dmvtest/n$n; ulimit -c unlimited; $SIM node${n}_780.ini 2>&1 | tee sim.out; echo EXIT=\${PIPESTATUS[0]} >> sim.out; sleep 100000"
+done
+grep -a -A1 "ATTACH DMV0" n1/sim.out n2/sim.out | grep -a "SIM-"
+for n in 1 2; do python3 con.py $n - 'job terminated' 600 >/dev/null; done
+for n in 1 2; do
+  tmux send-keys -t node$n C-m; sleep 3; tmux send-keys -t node$n -l SYSTEM; sleep 1; tmux send-keys -t node$n C-m; sleep 6
+  python3 con.py $n '@SYS$MANAGER:STARTNET' '\$ $' 300 | tail -6
+done
+
+===== FILE: /home/claude/dmvtest/boot_mp780.sh =====
+#!/bin/bash
+# /home/claude/dmvtest/boot_mp780.sh - v1 (from boot_mp.sh v2: VAX-11/780 nodes with DMC TYPE=DMP, no date prompt): multipoint test.  Start MV1 (control
+# station hub), MV2 and MV3 (tributaries) from fresh disk copies, set the
+# date, log in as SYSTEM, apply n<N>/mpcfg.txt (permanent DECnet database
+# changes) on each node, then start DECnet on each.
+cd /home/claude/dmvtest
+SIM=${SIM:-/home/claude/dmvtest/vax780.osimh}
+tmux kill-server 2>/dev/null
+pkill -9 -x microvax2.osimh; pkill -9 -x microvax2.dbg; pkill -9 -x vax780.osimh; sleep 1
+port_busy() {
+  python3 - <<'PYEOF'
+import socket, sys
+busy = False
+for p in (1111, 2222, 3333):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try: s.bind(('0.0.0.0', p))
+    except OSError: busy = True
+    s.close()
+sys.exit(0 if busy else 1)
+PYEOF
+}
+while port_busy; do sleep 2; done
+rm -f n*/core n*/dmv*.dbg n*/node*.log
+cp /mnt/user-data/uploads/VMS047-1.R81 n1/; cp /mnt/user-data/uploads/VMS047-2.R81 n2/
+cp /mnt/user-data/uploads/VMS047-2.R81 n3/VMS047-3.R81; chmod u+w n*/*.R81
+for n in 1 2 3; do
+  tmux new-session -d -s node$n -x 132 -y 50 "cd /home/claude/dmvtest/n$n; ulimit -c unlimited; $SIM mp${n}_780.ini 2>&1 | tee sim.out; echo EXIT=\${PIPESTATUS[0]} >> sim.out; sleep 100000"
+done
+grep -a -A1 "ATTACH DMV0" n1/sim.out n2/sim.out n3/sim.out | grep -a "SIM-"
+for n in 1 2 3; do python3 con.py $n - 'job terminated' 600 >/dev/null; done
+for n in 1 2 3; do
+  tmux send-keys -t node$n C-m; sleep 3; tmux send-keys -t node$n -l SYSTEM; sleep 1; tmux send-keys -t node$n C-m; sleep 6
+  while read -r cmd; do python3 con.py $n "$cmd" '\$ $' 120 >/dev/null; done < n$n/mpcfg.txt
+done
+for n in 1 2 3; do python3 con.py $n '@SYS$MANAGER:STARTNET' '\$ $' 300 | tail -4; done
+
+===== FILE: /home/claude/dmvtest/mp_test780.sh =====
+#!/bin/bash
+# /home/claude/dmvtest/mp_test780.sh - v1 (from mp_test.sh v1: VAX-11/780 nodes, DMC TYPE=DMP)
+# Full DMV multipoint test on three VMS V4.7 nodes:
+#   MV1 = control station (SET DMC0 DROPS=2), MV2 = tributary 2, MV3 = tributary 3.
+# Steps: boot + configure (boot_mp.sh), wait for routing, SET HOST MV1->MV2,
+# remote NCP MV2->MV3 (routed through MV1), file copy MV3->MV1 and compare,
+# tributary-halt test (MV3 circuit off/on), and disconnect test (MV3 DMV
+# detached/reattached), checking that MV1's DMV is never master-cleared and
+# MV2 stays reachable throughout.  Writes a report to stdout.
+cd /home/claude/dmvtest
+
+flush1() {   # make MV1's DMV trace file current (pause/continue the simulator)
+  tmux send-keys -t node1 C-e; sleep 1; tmux send-keys -t node1 -l 'CONT'; tmux send-keys -t node1 C-m; sleep 2
+}
+mclears() { flush1; grep -ac 'DMC0: Master clear' n1/dmv1.dbg; }
+nodes1()  { python3 con.py 1 'MC NCP SHOW KNOWN NODES' '\$ $' 90 | grep -aE "1\.[23] "; }
+wait_reach() {  # wait until node $1 (1.2/1.3) is reachable from MV1
+  for i in $(seq 1 40); do nodes1 | grep -q "$1 .* reachable" && return 0; sleep 10; done; return 1
+}
+
+echo "### boot"; ./boot_mp780.sh | grep -a "SIM-"
+wait_reach 1.2 && wait_reach 1.3 && echo "both tributaries reachable"; nodes1
+MC=$(mclears); echo "MV1 master clears after boot: $MC"
+
+echo "### SET HOST MV1 -> MV2"
+timeout 600 python3 sethost.py 1 MV2 | grep -aE "connect|Welcome|SYS.NODE\" =|RTA|Total of|REM-S"
+
+echo "### NCP TELL MV3 from MV2 (routed via MV1)"
+python3 con.py 2 'MC NCP TELL MV3 SHOW EXECUTOR' '\$ $' 300 | grep -aE "Executor|%NCP"
+
+echo "### copy MV3::HELPLIB.HLB to MV1 and compare"
+python3 con.py 1 'COPY MV3::SYS$HELP:HELPLIB.HLB SYS$LOGIN:FROM_MV3.HLB' '\$ $' 900 | grep -a "%"
+python3 con.py 1 'DIFFERENCES SYS$LOGIN:FROM_MV3.HLB MV3::SYS$HELP:HELPLIB.HLB' '\$ $' 900 | grep -aE "Number of difference|%"
+
+echo "### tributary halt: MV3 circuit off for 3 minutes"
+python3 con.py 3 'MC NCP SET CIRCUIT DMP-0 STATE OFF' '\$ $' 120 >/dev/null
+t0=$(date +%s); while [ $(date +%s) -lt $((t0+180)) ]; do nodes1; sleep 20; done | sort | uniq -c
+echo "MV1 master clears: before $MC, now $(mclears)"
+python3 con.py 3 'MC NCP SET CIRCUIT DMP-0 STATE ON' '\$ $' 120 >/dev/null
+wait_reach 1.3 && echo "MV3 reachable again"
+
+echo "### disconnect: MV3 DMV detached for 3 minutes"
+MC=$(mclears)
+tmux send-keys -t node3 C-e; sleep 1; tmux send-keys -t node3 -l 'DETACH DMC0'; tmux send-keys -t node3 C-m
+sleep 1; tmux send-keys -t node3 -l 'CONT'; tmux send-keys -t node3 C-m
+t0=$(date +%s); while [ $(date +%s) -lt $((t0+180)) ]; do nodes1; sleep 20; done | sort | uniq -c
+echo "MV1 master clears: before $MC, now $(mclears)"
+tmux send-keys -t node3 C-e; sleep 1; tmux send-keys -t node3 -l 'ATTACH DMC0 3333'; tmux send-keys -t node3 C-m
+sleep 1; tmux send-keys -t node3 -l 'CONT'; tmux send-keys -t node3 C-m
+wait_reach 1.3 && echo "MV3 reachable again after reattach"
+nodes1
+echo "### final SET HOST MV1 -> MV2"
+timeout 600 python3 sethost.py 1 MV2 | grep -aE "connect|Welcome|SYS.NODE\" =|Total of|REM-S"
+echo "### done"
+
+===== FILE: /home/claude/dmvtest/n1/node1.ini =====
+; /home/claude/dmvtest/n1/node1.ini - test copy of the user's microvax2-1.ini
+; Console runs in tmux session nodeN.
+; (microvax2dis.ini and the RX50 kit are not available here)
+SET CONSOLE LOG=node1.log
+SET CPU AUTOBOOT
+SET RQ ENA
+SET RQ0 ENA
+SET RQ0 RA81
+SET RQ0 AUTOZAP
+ATT RQ0 VMS047-1.R81
+SET DMV ENABLE
+SET DMV0 PEER=LOCALHOST:2222
+ATTACH DMV0 1111
+SET DMV DEBUG=INFO;WARN
+SET DEBUG -N dmv1.dbg
+SHOW DMV
+BOOT
+
+===== FILE: /home/claude/dmvtest/n2/node2.ini =====
+; /home/claude/dmvtest/n2/node2.ini - test copy of the user's microvax2-2.ini
+; Console runs in tmux session nodeN.
+; (microvax2dis.ini and the RX50 kit are not available here)
+SET CONSOLE LOG=node2.log
+SET CPU AUTOBOOT
+SET RQ ENA
+SET RQ0 ENA
+SET RQ0 RA81
+SET RQ0 AUTOZAP
+ATT RQ0 VMS047-2.R81
+SET DMV ENABLE
+SET DMV0 PEER=LOCALHOST:1111
+ATTACH DMV0 2222
+SET DMV DEBUG=INFO;WARN
+SET DEBUG -N dmv2.dbg
+SHOW DMV
+BOOT
+
+===== FILE: /home/claude/dmvtest/n1/node1_780.ini =====
+; /home/claude/dmvtest/n1/node1_780.ini - v1: VAX-11/780 node 1 with the DMC device as a DMP11
+; (SET DMC TYPE=DMP), point-to-point to node 2.  Same VMS V4.7 disk as the MicroVAX tests.
+SET CONSOLE LOG=node1.log
+SET CPU IDLE=VMS
+SET RQ ENABLE
+SET RQ0 RA81
+ATT RQ0 VMS047-1.R81
+SET DMC ENABLE
+SET DMC0 TYPE=DMP
+SET DMC0 PEER=LOCALHOST:2222
+ATTACH DMC0 1111
+SET DMC DEBUG=INFO;WARN
+SET DEBUG -N dmv1.dbg
+SHOW DMC
+SHOW DMC ADDRESS
+BOOT RQ0
+
+===== FILE: /home/claude/dmvtest/n2/node2_780.ini =====
+; /home/claude/dmvtest/n2/node2_780.ini - v1: VAX-11/780 node 2 with the DMC device as a DMP11
+; (SET DMC TYPE=DMP), point-to-point to node 1.  Same VMS V4.7 disk as the MicroVAX tests.
+SET CONSOLE LOG=node2.log
+SET CPU IDLE=VMS
+SET RQ ENABLE
+SET RQ0 RA81
+ATT RQ0 VMS047-2.R81
+SET DMC ENABLE
+SET DMC0 TYPE=DMP
+SET DMC0 PEER=LOCALHOST:1111
+ATTACH DMC0 2222
+SET DMC DEBUG=INFO;WARN
+SET DEBUG -N dmv2.dbg
+SHOW DMC
+SHOW DMC ADDRESS
+BOOT RQ0
+
+===== FILE: /home/claude/dmvtest/n1/mp1.ini =====
+; /home/claude/dmvtest/n1/mp1.ini - v2: multipoint test node 1
+; MV1 = DMV multipoint control station (hub with 2 drops on port 1111),
+; MV2/MV3 = tributaries 2 and 3 that connect to the hub.
+SET CONSOLE LOG=node1.log
+SET CPU AUTOBOOT
+SET CPU IDLE=VMS
+SET RQ ENA
+SET RQ0 ENA
+SET RQ0 RA81
+SET RQ0 AUTOZAP
+ATT RQ0 VMS047-1.R81
+SET DMV ENABLE
+SET DMV0 DROPS=2
+ATTACH DMV0 1111
+SET DMV DEBUG=INFO;WARN
+SET DEBUG -N dmv1.dbg
+SHOW DMV
+BOOT
+
+===== FILE: /home/claude/dmvtest/n2/mp2.ini =====
+; /home/claude/dmvtest/n2/mp2.ini - v2: multipoint test node 2
+; MV1 = DMV multipoint control station (hub with 2 drops on port 1111),
+; MV2/MV3 = tributaries 2 and 3 that connect to the hub.
+SET CONSOLE LOG=node2.log
+SET CPU AUTOBOOT
+SET CPU IDLE=VMS
+SET RQ ENA
+SET RQ0 ENA
+SET RQ0 RA81
+SET RQ0 AUTOZAP
+ATT RQ0 VMS047-2.R81
+SET DMV ENABLE
+SET DMV0 PEER=LOCALHOST:1111
+ATTACH DMV0 2222
+SET DMV DEBUG=INFO;WARN
+SET DEBUG -N dmv2.dbg
+SHOW DMV
+BOOT
+
+===== FILE: /home/claude/dmvtest/n3/mp3.ini =====
+; /home/claude/dmvtest/n3/mp3.ini - v2: multipoint test node 3
+; MV1 = DMV multipoint control station (hub with 2 drops on port 1111),
+; MV2/MV3 = tributaries 2 and 3 that connect to the hub.
+SET CONSOLE LOG=node3.log
+SET CPU AUTOBOOT
+SET CPU IDLE=VMS
+SET RQ ENA
+SET RQ0 ENA
+SET RQ0 RA81
+SET RQ0 AUTOZAP
+ATT RQ0 VMS047-3.R81
+SET DMV ENABLE
+SET DMV0 PEER=LOCALHOST:1111
+ATTACH DMV0 3333
+SET DMV DEBUG=INFO;WARN
+SET DEBUG -N dmv3.dbg
+SHOW DMV
+BOOT
+
+===== FILE: /home/claude/dmvtest/n1/mp1_780.ini =====
+; /home/claude/dmvtest/n1/mp1_780.ini - v1: VAX-11/780 version of mp1.ini (DMC device as DMP11)
+; MV1 = DMP11 (DMC TYPE=DMP) multipoint control station (hub with 2 drops on port 1111),
+; MV2/MV3 = tributaries 2 and 3 that connect to the hub.
+SET CONSOLE LOG=node1.log
+SET CPU IDLE=VMS
+SET RQ ENA
+SET RQ0 ENA
+SET RQ0 RA81
+ATT RQ0 VMS047-1.R81
+SET DMC ENABLE
+SET DMC0 TYPE=DMP
+SET DMC0 DROPS=2
+ATTACH DMC0 1111
+SET DMC DEBUG=INFO;WARN
+SET DEBUG -N dmv1.dbg
+SHOW DMC
+BOOT RQ0
+
+===== FILE: /home/claude/dmvtest/n2/mp2_780.ini =====
+; /home/claude/dmvtest/n2/mp2_780.ini - v1: VAX-11/780 version of mp2.ini (DMC device as DMP11)
+; MV1 = DMP11 (DMC TYPE=DMP) multipoint control station (hub with 2 drops on port 1111),
+; MV2/MV3 = tributaries 2 and 3 that connect to the hub.
+SET CONSOLE LOG=node2.log
+SET CPU IDLE=VMS
+SET RQ ENA
+SET RQ0 ENA
+SET RQ0 RA81
+ATT RQ0 VMS047-2.R81
+SET DMC ENABLE
+SET DMC0 TYPE=DMP
+SET DMC0 PEER=LOCALHOST:1111
+ATTACH DMC0 2222
+SET DMC DEBUG=INFO;WARN
+SET DEBUG -N dmv2.dbg
+SHOW DMC
+BOOT RQ0
+
+===== FILE: /home/claude/dmvtest/n3/mp3_780.ini =====
+; /home/claude/dmvtest/n3/mp3_780.ini - v1: VAX-11/780 version of mp3.ini (DMC device as DMP11)
+; MV1 = DMP11 (DMC TYPE=DMP) multipoint control station (hub with 2 drops on port 1111),
+; MV2/MV3 = tributaries 2 and 3 that connect to the hub.
+SET CONSOLE LOG=node3.log
+SET CPU IDLE=VMS
+SET RQ ENA
+SET RQ0 ENA
+SET RQ0 RA81
+ATT RQ0 VMS047-3.R81
+SET DMC ENABLE
+SET DMC0 TYPE=DMP
+SET DMC0 PEER=LOCALHOST:1111
+ATTACH DMC0 3333
+SET DMC DEBUG=INFO;WARN
+SET DEBUG -N dmv3.dbg
+SHOW DMC
+BOOT RQ0
+
+===== FILE: /home/claude/dmvtest/n1/mpcfg.txt =====
+MC NCP PURGE CIRCUIT DMP-0 ALL
+MC NCP DEFINE LINE DMP-0 PROTOCOL DDCMP CONTROL
+MC NCP DEFINE CIRCUIT DMP-0.2 TRIBUTARY 2 STATE ON
+MC NCP DEFINE CIRCUIT DMP-0.3 TRIBUTARY 3 STATE ON
+MC NCP DEFINE NODE 1.3 NAME MV3
+MC NCP LIST KNOWN CIRCUITS CHARACTERISTICS
+MC NCP LIST LINE DMP-0 CHARACTERISTICS
+
+===== FILE: /home/claude/dmvtest/n2/mpcfg.txt =====
+MC NCP DEFINE LINE DMP-0 PROTOCOL DDCMP TRIBUTARY
+MC NCP DEFINE CIRCUIT DMP-0 TRIBUTARY 2
+MC NCP DEFINE NODE 1.3 NAME MV3
+MC NCP LIST CIRCUIT DMP-0 CHARACTERISTICS
+MC NCP LIST LINE DMP-0 CHARACTERISTICS
+
+===== FILE: /home/claude/dmvtest/n3/mpcfg.txt =====
+MC NCP DEFINE EXECUTOR ADDRESS 1.3
+MC NCP DEFINE NODE 1.3 NAME MV3
+MC NCP DEFINE NODE 1.2 NAME MV2
+MC NCP DEFINE LINE DMP-0 PROTOCOL DDCMP TRIBUTARY
+MC NCP DEFINE CIRCUIT DMP-0 TRIBUTARY 3

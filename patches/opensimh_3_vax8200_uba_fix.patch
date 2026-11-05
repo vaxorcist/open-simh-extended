@@ -1,0 +1,139 @@
+From 6a937e736f1bee4585baa2e8be869bc81639aa72 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 17:45:06 +0100
+Subject: [PATCH 1/2] VAX8200: Deliver DWBUA error and Unibus device interrupts
+ at all BI levels
+
+uba_eval_int() looped over IPL_HMAX - IPL_HMIN (3) levels and so never
+raised IPL 17, the level VMS selects in the DWBUA's BIIC error interrupt
+control register (EICR 000801D0).  An adapter (error) interrupt was then
+left pending for ever, and because the Unibus device requests were only
+passed on while no adapter interrupt was pending, no Unibus interrupt
+reached the CPU any more.
+
+VMS V4.7 triggers an adapter error during start-up (the UDA50, still
+polling the rings set up by VMB, hits an invalid map register after VMS
+reloads the map) and then hung after the banner: every UDA50
+initialization timed out after its first step, as the step interrupt was
+never delivered.
+
+Now both the adapter interrupt (at the EICR levels) and the Unibus
+device interrupts are evaluated over all IPL_HLVL levels, independently.
+VMS V4.7 boots and runs on the VAX 8200 simulator; the diagnostic
+supervisor test passes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ VAX/vax820_uba.c | 35 ++++++++++++++++++++---------------
+ 1 file changed, 20 insertions(+), 15 deletions(-)
+
+diff --git a/VAX/vax820_uba.c b/VAX/vax820_uba.c
+index 9ee3516..fe67859 100644
+--- a/VAX/vax820_uba.c
++++ b/VAX/vax820_uba.c
+@@ -537,31 +537,36 @@ SET_IRQL;                                               /* update ints */
+ return;
+ }
+ 
+-/* Update UBA nexus interrupts */
++/* Update UBA nexus interrupts
++
++   The adapter's own (error) interrupt is requested at the BI levels
++   selected in the error interrupt control register, the Unibus device
++   interrupts at their own levels; both are presented at the same time.
++
++   Earlier versions ran the level loops only
++   to IPL_HMAX - IPL_HMIN (3 levels) and missed IPL 17, which VMS selects
++   for the DWBUA error interrupt; the adapter interrupt was then never
++   delivered, and while it was pending no Unibus device interrupt was
++   passed on either (VMS V4.7 hung after the banner, its UDA50
++   initialization timing out every 15 seconds). */
+ 
+ void uba_eval_int (void)
+ {
+ int32 i, lvl;
+ 
+-// TODO: Check BIIC register?
+-if (uba_int) {
++for (i = 0; i < IPL_HLVL; i++)                          /* clear all UBA req */
++    nexus_req[i] &= ~(1 << TR_UBA);
++if (uba_int) {                                          /* adapter int? */
+     lvl = (uba_biic.eicr >> BIECR_V_LVL) & BIECR_M_LVL;
+-    for (i = 0; i < (IPL_HMAX - IPL_HMIN); i++) {
+-        if (lvl & (1u << i)) {
++    for (i = 0; i < IPL_HLVL; i++) {
++        if (lvl & (1u << i))
+             nexus_req[i] |= (1 << TR_UBA);
+-            }
+         }
+     }
+-else {
+-    for (i = 0; i < (IPL_HMAX - IPL_HMIN); i++)             /* clear all UBA req */
+-        nexus_req[i] &= ~(1 << TR_UBA);
+-    for (i = 0; i < (IPL_HMAX - IPL_HMIN); i++) {
+-        if (int_req[i])
+-            nexus_req[i] |= (1 << TR_UBA);
+-        }
++for (i = 0; i < IPL_HLVL; i++) {                        /* Unibus device ints */
++    if (int_req[i])
++        nexus_req[i] |= (1 << TR_UBA);
+     }
+-//if (uba_int)                                            /* adapter int? */
+-//    SET_NEXUS_INT (UBA);
+ return;
+ }
+ 
+-- 
+2.43.0
+
+
+From 644df090effed06a28ed5175305603686a778e4f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 20:45:01 +0100
+Subject: [PATCH 2/2] VAX8200: BICSR Start Self-Test also initializes the
+ UNIBUS
+
+BICSR bit 10 (BICSR_RST) is the BIIC's Start Self-Test bit.  On the DWBUA
+it runs the self-test, which re-initializes the adapter, and the DWBUA
+asserts UNIBUS AC LO, which initializes the UNIBUS as well
+(EK-DWBUA-TM-001, sections 2.3.1 and 3.3.2 item 4).  The simulator only
+reset the adapter, so Unibus devices kept their state: under VMS V4.7 the
+UDA50 kept polling the rings set up by VMB, hit an invalid map register
+after VMS had reloaded the map, and raised the DWBUA error interrupt that
+exposed the interrupt level bug fixed in the previous commit.
+
+Now the Unibus devices are reset too (uba_ubpdn), with UBPUP cleared
+for the Unibus initialization time.  VMS V4.7 boots without the map
+error.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ VAX/vax820_uba.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/VAX/vax820_uba.c b/VAX/vax820_uba.c
+index fe67859..762c2b6 100644
+--- a/VAX/vax820_uba.c
++++ b/VAX/vax820_uba.c
+@@ -387,8 +387,17 @@ if (ofs >= UBAMAP_OF) {                                 /* map? */
+ switch (ofs) {                                          /* case on offset */
+ 
+     case BI_CSR:
+-        if (val & BICSR_RST)                            /* unibus power init */
++        /* BICSR bit 10 (BICSR_RST here) is the BIIC's Start Self-Test
++           bit.  On the DWBUA it runs the self-test, which re-initializes
++           the adapter, and the DWBUA asserts UNIBUS AC LO, which also
++           initializes the UNIBUS (EK-DWBUA-TM-001, 2.3.1 and 3.3.2 item 4).
++           Earlier versions reset only the adapter, so Unibus devices
++           kept running with stale state (a UDA50 still polling the rings
++           set up by VMB hit an invalid map register under VMS). */
++        if (val & BICSR_RST) {                          /* start self-test */
+             uba_reset (&uba_dev);                       /* reset adapter */
++            uba_ubpdn (uba_uitime);                     /* and init the UNIBUS */
++            }
+         uba_biic.csr = (uba_biic.csr & ~BICSR_RW) | (val & BICSR_RW);
+         break;
+ 
+-- 
+2.43.0
+

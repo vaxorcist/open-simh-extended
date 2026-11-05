@@ -1,0 +1,491 @@
+From c124cc7b94dee306376aa0dd734d42c2355cd497 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 4 Nov 2026 17:30:09 +0100
+Subject: [PATCH] RB730: DEC disk layout, sim_disk, status, seek and range
+ fixes
+
+Fixes for the RB730 disk controller of the VAX-11/730 (RB02 = RL02,
+RB80 = R80), each tested with VMS V3.5 on the 730 and, for the RB02,
+with the same cartridge on the RL11 of a VAX-11/750:
+
+- Disk images in DEC logical block order (cylinder, head, sector).  The
+  images were stored head by head, so RB02 images were neither binary
+  copies of a cartridge nor interchangeable with RL02 images of the RL11
+  although DEC's drivers put a block on the same cylinder, head and
+  sector on both controllers.  SET RBn LAYOUT=OLD (before ATTACH) keeps
+  images of earlier versions usable for the time being.
+- The RB80 has 31 sectors per track, as DEC's drivers use it (242,606
+  blocks, the RM80's capacity; sector 31 was never used), so RB80
+  images are in logical block order too; LAYOUT=OLD keeps 32.
+- Uses the SIMH disk library (sim_disk): SIMH, VHD and RAW formats,
+  SET RBn FORMAT, autosize between RB02 and RB80, metadata, DISK debug,
+  bad block table on new images, file system detection; DEV_DISK.
+- GET STATUS of an RB02 reports the drive status bits (an operator
+  precedence error dropped them); READ HEADER returns the current
+  cylinder and head.
+- A drive without a cartridge is not ready and ends commands with drive
+  error, so VMS reports the medium offline instead of a controller or
+  parity error.
+- A finishing seek raises its own drive's attention and only executes
+  the controller's current command if that is for the same drive (it
+  could run another drive's command on the seeking drive).
+- Range checks: a seek stops at the last cylinder, a transfer to a
+  track beyond the last head fails with header error.
+- HELP RB.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Suavtg1mhGhDqgLJQVDvFR
+---
+ VAX/vax730_rb.c | 236 ++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 187 insertions(+), 49 deletions(-)
+
+diff --git a/VAX/vax730_rb.c b/VAX/vax730_rb.c
+index f5cb14e..c58181c 100644
+--- a/VAX/vax730_rb.c
++++ b/VAX/vax730_rb.c
+@@ -26,6 +26,23 @@
+ 
+    rb           RB730 - RB02/RB80 disk controller
+ 
++   04-Nov-2026  Ulli    A finishing seek only raises the drive's attention (it
++                        decoded the controller's current command, which may
++                        belong to another drive); RB80 with 31 sectors per
++                        track, as DEC's drivers use it (242,606 blocks, as
++                        the RM80); the old layout keeps 32
++   04-Nov-2026  Ulli    Range checks: a seek stops at the last cylinder, a
++                        transfer to a track beyond the last head fails
++   04-Nov-2026  Ulli    Status: GET STATUS reports the RB02 status bits (was
++                        an operator precedence error), READ HEADER returns the
++                        current cylinder and head, a drive without a cartridge
++                        is not ready and ends commands with drive error
++   04-Nov-2026  Ulli    Uses the SIMH disk library (sim_disk): SIMH, VHD and
++                        RAW formats (SET RBn FORMAT), autosize (RB02/RB80),
++                        metadata, DISK debug, bad block table on new images
++   04-Nov-2026  Ulli    Disk images in DEC logical block order (cylinder,
++                        head, sector), as the RL11 and DEC's drivers; the old
++                        head-major layout with SET RBn LAYOUT=OLD (temporary)
+    29-Mar-2011  MB      First Version
+ 
+    The RB730 is a four drive disk subsystem consisting of up to three RL02
+@@ -43,6 +60,7 @@
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_disk.h"
+ 
+ /* Constants */
+ 
+@@ -53,26 +71,34 @@
+ #define RB02_SIZE       (RB02_NUMCY * RB02_NUMSF * \
+                          RB02_NUMSC * RB02_NUMWD)       /* words/drive */
+ #define RB80_NUMWD      256                             /* words/sector */
+-#define RB80_NUMSC      32                              /* sectors/track */
++#define RB80_NUMSC      31                              /* sectors/track used (DEC) */
++#define RB80_NUMSC_OLD  32                              /* ... in the old layout */
+ #define RB80_NUMSF      14                              /* tracks/cylinder */
+ #define RB80_NUMCY      559                             /* cylinders/drive */
+ #define RB80_SIZE       (RB80_NUMCY * RB80_NUMSF * \
+                          RB80_NUMSC * RB80_NUMWD)       /* words/drive */
++#define RB80_SIZE_OLD   (RB80_NUMCY * RB80_NUMSF * \
++                         RB80_NUMSC_OLD * RB80_NUMWD)   /* words/drive, old layout */
+ 
+ #define RB_NUMWD(u)     ((u->flags & UNIT_RB80) ? RB80_NUMWD : RB02_NUMWD)
+-#define RB_NUMSC(u)     ((u->flags & UNIT_RB80) ? RB80_NUMSC : RB02_NUMSC)
++#define RB_NUMSC(u)     ((u->flags & UNIT_RB80) ? \
++                         ((u->flags & UNIT_OLDL) ? RB80_NUMSC_OLD : RB80_NUMSC) : RB02_NUMSC)
+ #define RB_NUMSF(u)     ((u->flags & UNIT_RB80) ? RB80_NUMSF : RB02_NUMSF)
+ #define RB_NUMCY(u)     ((u->flags & UNIT_RB80) ? RB80_NUMCY : RB02_NUMCY)
+-#define RB_SIZE(u)      ((u->flags & UNIT_RB80) ? RB80_SIZE : RB02_SIZE)
++#define RB_SIZE(u)      ((u->flags & UNIT_RB80) ? \
++                         ((u->flags & UNIT_OLDL) ? RB80_SIZE_OLD : RB80_SIZE) : RB02_SIZE)
+ 
+ #define RB_NUMDR        4                               /* drives/controller */
+ #define RB_MAXFR        (1 << 16)                       /* max transfer */
+ 
+ /* Flags in the unit flags word */
+ 
+-#define UNIT_V_RB80     (UNIT_V_UF + 0)                 /* RB02 vs RB80 */
+-#define UNIT_V_DUMMY    (UNIT_V_UF + 1)                 /* dummy flag */
++#define UNIT_V_RB80     (DKUF_V_UF + 0)                 /* RB02 vs RB80 */
++#define UNIT_V_DUMMY    (DKUF_V_UF + 1)                 /* dummy flag */
++#define UNIT_V_OLDL     (DKUF_V_UF + 2)                 /* old image layout */
++#define UNIT_NOAUTO     DKUF_NOAUTOSIZE                 /* autosize disable */
+ #define UNIT_DUMMY      (1 << UNIT_V_DUMMY)
++#define UNIT_OLDL       (1u << UNIT_V_OLDL)
+ #define UNIT_RB80       (1u << UNIT_V_RB80)
+ 
+ /* Parameters in the unit descriptor */
+@@ -184,15 +210,31 @@
+ #define GET_SECT(x)     (((x) >> RBDA_V_SECT) & RBDA_M_SECT)
+ #define GET_CYL(x)      (((x) >> RBDA_V_CYL) & RBDA_M_CYL)
+ #define GET_TRACK(x)    (((x) >> RBDA_V_TRACK) & RBDA_M_TRACK)
+-//#define GET_DA(x)       ((GET_CYL(x) * RB02_NUMSF * GET_TRACK (x) * RB02_NUMSC) + GET_SECT (x))
+-#define GET_DA(x,u)       ((GET_TRACK (x) * RB_NUMCY(u) * RB_NUMSC(u) * RB_NUMWD(u)) + \
+-                        (GET_CYL(x) * RB_NUMSC(u) * RB_NUMWD(u)) + \
+-                        (GET_SECT (x) * RB_NUMWD(u)))
++/* Disk address -> word offset in the image file.
++
++   Standard layout: DEC logical block order, cylinder by cylinder, within a
++   cylinder head by head, within a track sector by sector.  This is how
++   DEC's drivers number the logical blocks of an RL02/RB02 (VMS DLDRIVER on
++   the RL11 and DQDRIVER on the RB730 put a block on the same cylinder, head
++   and sector), so an RB02 image is the same as an RL02 image of the RL11
++   (pdp11_rl.c) and a binary copy of a real cartridge.
++
++   Old layout (SET RBn LAYOUT=OLD, temporary, for images made by earlier
++   versions of this simulator): head by head, all cylinders of a surface
++   before the next surface. */
++
++#define GET_DA_STD(x,u) ((((GET_CYL (x) * RB_NUMSF(u)) + GET_TRACK (x)) * RB_NUMSC(u) + \
++                          GET_SECT (x)) * RB_NUMWD(u))
++#define GET_DA_OLD(x,u) ((GET_TRACK (x) * RB_NUMCY(u) * RB_NUMSC(u) * RB_NUMWD(u)) + \
++                         (GET_CYL(x) * RB_NUMSC(u) * RB_NUMWD(u)) + \
++                         (GET_SECT (x) * RB_NUMWD(u)))
++#define GET_DA(x,u)     (((u)->flags & UNIT_OLDL) ? GET_DA_OLD (x,u) : GET_DA_STD (x,u))
+ 
+ #define DBG_REG         0x0001                          /* registers */
+ #define DBG_CMD         0x0002                          /* commands */
+ #define DBG_RD          0x0004                          /* disk reads */
+ #define DBG_WR          0x0008                          /* disk writes */
++#define DBG_DSK         0x0010                          /* sim_disk activities */
+ 
+ uint16 *rbxb = NULL;                                     /* xfer buffer */
+ int32 rbcs = 0;                                         /* control/status */
+@@ -213,8 +255,12 @@ t_stat rb_reset (DEVICE *dptr);
+ const char *rb_description (DEVICE *dptr);
+ void rb_set_done (int32 error);
+ t_stat rb_attach (UNIT *uptr, CONST char *cptr);
++t_stat rb_detach (UNIT *uptr);
+ t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+ t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++t_stat rb_set_layout (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++t_stat rb_show_layout (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++t_stat rb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+ 
+ /* RB730 data structures
+ 
+@@ -250,6 +296,7 @@ DEBTAB rb_debug[] = {
+     {"CMD", DBG_CMD},
+     {"RD",  DBG_RD},
+     {"WR",  DBG_WR},
++    {"DISK", DBG_DSK},
+     {0}
+ };
+ 
+@@ -260,6 +307,14 @@ MTAB rb_mod[] = {
+         &set_writelock, NULL,   NULL, "Write lock disk drive" },
+     { UNIT_DUMMY,      0, NULL,            "BADBLOCK", 
+         &rb_set_bad, NULL, NULL, "write bad block table on last track" },
++    { UNIT_NOAUTO,           0, "autosize", "AUTOSIZE",
++        NULL, NULL, NULL, "Set type based on file size at attach" },
++    { UNIT_NOAUTO, UNIT_NOAUTO, "noautosize", "NOAUTOSIZE",
++        NULL, NULL, NULL, "Disable disk autosize on attach" },
++    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT={AUTO|SIMH|VHD|RAW}",
++        &sim_disk_set_fmt, &sim_disk_show_fmt, NULL, "Set/Display disk format" },
++    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "LAYOUT", "LAYOUT={STANDARD|OLD}",
++        &rb_set_layout, &rb_show_layout, NULL, "Set/Display the image layout (OLD: images of earlier versions)" },
+     { (UNIT_RB80+UNIT_ATT),             UNIT_ATT, "RB02", NULL, NULL },
+     { (UNIT_RB80+UNIT_ATT), (UNIT_RB80+UNIT_ATT), "RB80", NULL, NULL },
+     { (UNIT_RB80+UNIT_ATT),                    0, "RB02", NULL, NULL },
+@@ -279,9 +334,9 @@ DEVICE rb_dev = {
+     "RB", rb_unit, rb_reg, rb_mod,
+     RB_NUMDR, DEV_RDX, T_ADDR_W, 1, DEV_RDX, 16,
+     NULL, NULL, &rb_reset,
+-    NULL, &rb_attach, NULL,
+-    &rb_dib, DEV_DISABLE | DEV_UBUS | DEV_DEBUG, 0,
+-    rb_debug, NULL, NULL, NULL, NULL, NULL, 
++    NULL, &rb_attach, &rb_detach,
++    &rb_dib, DEV_DISABLE | DEV_UBUS | DEV_DEBUG | DEV_DISK, 0,
++    rb_debug, NULL, NULL, &rb_help, NULL, NULL, 
+     &rb_description
+     };
+ 
+@@ -311,7 +366,8 @@ switch ((PA >> 2) & 07) {
+         if (rbcs & RBCS_ALLERR)
+             rbcs = rbcs | RBCS_ERR;
+         uptr = rb_dev.units + GET_DRIVE (rbcs);
+-        if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS))
++        if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
++            !(uptr->flags & UNIT_ATT))                  /* not ready without a cartridge */
+             rbcs = rbcs & ~RBCS_DRDY;
+         else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
+         if (uptr->flags & UNIT_RB80)
+@@ -362,7 +418,8 @@ switch ((PA >> 2) & 07) {
+         if (rbcs & RBCS_ALLERR)
+             rbcs = rbcs | RBCS_ERR;
+         uptr = rb_dev.units + GET_DRIVE (data);
+-        if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS))
++        if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
++            !(uptr->flags & UNIT_ATT))                  /* not ready without a cartridge */
+             rbcs = rbcs & ~RBCS_DRDY;
+         else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
+         if (uptr->flags & UNIT_RB80)
+@@ -439,9 +496,26 @@ t_stat rb_svc (UNIT *uptr)
+ int32 curr, newc, swait;
+ int32 err, wc, maxwc, t;
+ int32 i, func, da, awc;
++t_seccnt sectsread;
++t_lba lba;
+ uint32 ma;
+ uint16 comp;
+ 
++if (uptr->SIP) {                                        /* seek finishing? */
++    int32 drv = (int32) (uptr - rb_dev.units);
++
++    sim_debug(DBG_CMD, &rb_dev, "Seek done, drive %d\n", drv);
++    uptr->SIP = 0;
++    rbcs = rbcs | (1u << (RBCS_V_ATN + drv));           /* drive attention */
++    if ((rbcs & CSR_DONE) || (GET_DRIVE (rbcs) != drv)) {
++        if (rbcs & CSR_DONE)                            /* controller idle: */
++            rb_set_done (0);                            /* interrupt now */
++        return SCPE_OK;                                 /* (else another drive's */
++        }                                               /* command ends it) */
++    /* A command for this drive was written while it was seeking: the
++       controller held it until the seek was done; do it now (below). */
++    }
++
+ func = GET_FUNC (rbcs);                                 /* get function */
+ if (func == RBCS_GSTA) {                                /* get status */
+     sim_debug(DBG_CMD, &rb_dev, "Get Status\n");
+@@ -455,7 +529,7 @@ if (func == RBCS_GSTA) {                                /* get status */
+     else {
+         if (rbmp & RBMP_RST)
+             uptr->STAT = uptr->STAT & ~RB02DS_ERR;
+-        rbmp = uptr->STAT | (uptr->flags & UNIT_ATT)? RB02DS_ATT: RB02DS_UNATT;
++        rbmp = uptr->STAT | ((uptr->flags & UNIT_ATT)? RB02DS_ATT: RB02DS_UNATT);
+         if (uptr->flags & UNIT_WPRT)
+             rbmp = rbmp | RB02DS_WLK;
+         }
+@@ -466,7 +540,7 @@ if (func == RBCS_GSTA) {                                /* get status */
+ 
+ if (func == RBCS_RHDR) {                                /* read header? */
+     sim_debug(DBG_CMD, &rb_dev, "Read Header\n");
+-    rbmp = (uptr->TRK & RBDA_TRACK) | GET_SECT (rbda);
++    rbmp = (uptr->TRK & (RBDA_CYL | RBDA_TRACK)) | GET_SECT (rbda);  /* cyl, head, sector */
+     rbmp1 = rbmp2 = 0;
+     rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
+     rb_set_done (0);                                    /* done */
+@@ -478,7 +552,7 @@ if ((uptr->flags & UNIT_ATT) == 0) {                    /* attached? */
+     rbcs = rbcs | (1u << (RBCS_V_ATN + GET_DRIVE (rbcs)));
+     if ((uptr->flags & UNIT_RB80) == 0)
+         uptr->STAT = uptr->STAT | RB02DS_SPE;           /* spin error */
+-    rb_set_done (RBCS_ERR | RBCS_INCMP);                /* flag error */
++    rb_set_done (RBCS_ERR | RBCS_DRE | RBCS_INCMP);     /* drive error */
+     //return IORETURN (rl_stopioe, SCPE_UNATT);
+     return SCPE_OK;
+     }
+@@ -498,7 +572,10 @@ if (func == RBCS_SEEK) {                                /* seek? */
+         else {
+             curr = GET_CYL (uptr->TRK);                     /* current cylinder */
+             newc = GET_CYL (rbda);                          /* offset */
+-            uptr->TRK = (newc << RBDA_V_CYL);               /* put on track */
++            if (newc >= RB_NUMCY (uptr))                    /* beyond the last */
++                newc = RB_NUMCY (uptr) - 1;                 /* cylinder: stop there */
++            uptr->TRK = (newc << RBDA_V_CYL) |              /* put on track */
++                (rbda & RBDA_TRACK);                        /* (head selected) */
+             swait = rb_cwait * abs (newc - curr);
+             if (swait < rb_mwait) swait = rb_mwait;
+             }
+@@ -508,18 +585,12 @@ if (func == RBCS_SEEK) {                                /* seek? */
+         rb_set_done(0);
+         return SCPE_OK;
+         }
+-    else {
+-        sim_debug(DBG_CMD, &rb_dev, "Seek done\n");
+-        rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
+-        uptr->SIP = 0;
+-        rb_set_done (0);                                /* done */
+-        return SCPE_OK;
+-        }
+     }
+ 
+ if (((func != RBCS_RNOHDR) && ((uptr->TRK & RBDA_CYL) != (rbda & RBDA_CYL)))
+-   || (GET_SECT (rbda) >= RB_NUMSC(uptr))) {                /* bad cyl or sector? */
+-    sim_debug(DBG_CMD, &rb_dev, "Invalid cylinder or sector, CYL=%d, TRK=%d, SECT=%d\n", GET_CYL(rbda), GET_TRACK(rbda), GET_SECT(rbda));
++   || (GET_SECT (rbda) >= RB_NUMSC(uptr))                   /* bad cyl or sector? */
++   || (GET_TRACK (rbda) >= RB_NUMSF(uptr))) {               /* or track? */
++    sim_debug(DBG_CMD, &rb_dev, "Invalid cylinder, track or sector, CYL=%d, TRK=%d, SECT=%d\n", GET_CYL(rbda), GET_TRACK(rbda), GET_SECT(rbda));
+     rb_set_done (RBCS_ERR | RBCS_HDE | RBCS_INCMP);     /* wrong cylinder? */
+     return SCPE_OK;
+     }
+@@ -531,13 +602,16 @@ wc = ((rbbc * -1) >> 1);                                /* get true wc */
+ maxwc = (RB_NUMSC(uptr) - GET_SECT (rbda)) * RB_NUMWD(uptr);    /* max transfer */
+ if (wc > maxwc)                                         /* track overrun? */
+     wc = maxwc;
+-err = sim_fseek (uptr->fileref, da * sizeof (int16), SEEK_SET);
++lba = (t_lba) (da / RB_NUMWD(uptr));                    /* sector address */
++err = 0;
+ 
+ if ((func >= RBCS_READ) && (err == 0)) {                /* read (no hdr)? */
+     sim_debug(DBG_CMD, &rb_dev, "Read, CYL=%d, TRK=%d, SECT=%d, WC=%d, DA=%d\n", GET_CYL(rbda), GET_TRACK(rbda), GET_SECT(rbda), wc, da);
+-    i = sim_fread (rbxb, sizeof (uint16), wc, uptr->fileref);
+-    err = ferror (uptr->fileref);
+-    for ( ; i < wc; i++)                                /* fill buffer */
++    err = sim_disk_rdsect (uptr, lba, (uint8 *) rbxb, &sectsread,
++                           (wc + RB_NUMWD(uptr) - 1) / RB_NUMWD(uptr));
++    sim_disk_data_trace (uptr, (uint8 *) rbxb, lba, sectsread * RB_NUMWD(uptr) * sizeof (uint16),
++                         "sim_disk_rdsect", DBG_DSK & rb_dev.dctrl, DBG_RD);
++    for (i = sectsread * RB_NUMWD(uptr); i < wc; i++)   /* fill buffer */
+         rbxb[i] = 0;
+     if ((t = Map_WriteW (ma, wc << 1, rbxb))) {         /* store buffer */
+         rbcs = rbcs | RBCS_ERR | RBCS_NXM;              /* nxm */
+@@ -555,16 +629,17 @@ if ((func == RBCS_WRITE) && (err == 0)) {               /* write? */
+         awc = (wc + (RB_NUMWD(uptr) - 1)) & ~(RB_NUMWD(uptr) - 1);  /* clr to */
+         for (i = wc; i < awc; i++)                      /* end of blk */
+             rbxb[i] = 0;
+-        sim_fwrite (rbxb, sizeof (uint16), awc, uptr->fileref);
+-        err = ferror (uptr->fileref);
++        sim_disk_data_trace (uptr, (uint8 *) rbxb, lba, awc * sizeof (uint16),
++                             "sim_disk_wrsect", DBG_DSK & rb_dev.dctrl, DBG_WR);
++        err = sim_disk_wrsect (uptr, lba, (uint8 *) rbxb, NULL, awc / RB_NUMWD(uptr));
+         }
+     }                                                   /* end write */
+ 
+ if ((func == RBCS_WCHK) && (err == 0)) {                /* write check? */
+     sim_debug(DBG_CMD, &rb_dev, "WCheck, CYL=%d, TRK=%d, SECT=%d, WC=%d, DA=%d\n", GET_CYL(rbda), GET_TRACK(rbda), GET_SECT(rbda), wc, da);
+-    i = sim_fread (rbxb, sizeof (uint16), wc, uptr->fileref);
+-    err = ferror (uptr->fileref);
+-    for ( ; i < wc; i++)                                /* fill buffer */
++    err = sim_disk_rdsect (uptr, lba, (uint8 *) rbxb, &sectsread,
++                           (wc + RB_NUMWD(uptr) - 1) / RB_NUMWD(uptr));
++    for (i = sectsread * RB_NUMWD(uptr); i < wc; i++)   /* fill buffer */
+         rbxb[i] = 0;
+     awc = wc;                                           /* save wc */
+     for (wc = 0; (err == 0) && (wc < awc); wc++)  {     /* loop thru buf */
+@@ -583,12 +658,13 @@ if (rbbc != 0) {                                        /* completed? */
+     }
+ ma = ma + (wc << 1);                                    /* final byte addr */
+ rbba = ma & RBBA_RW;
++uptr->TRK = (uptr->TRK & RBDA_CYL) | (rbda & RBDA_TRACK);  /* head used */
+ rbda = rbda + ((wc + (RB_NUMWD(uptr) - 1)) / RB_NUMWD(uptr));
+ rb_set_done (0);
+ 
+ if (err != 0) {                                         /* error? */
+-    sim_perror ("RB I/O error");
+-    clearerr (uptr->fileref);
++    sim_disk_perror (uptr, "RB I/O error");
++    sim_disk_clearerr (uptr);
+     return SCPE_IOERR;
+     }
+ return SCPE_OK;
+@@ -624,6 +700,7 @@ CLR_INT (RB);
+ for (i = 0; i < RB_NUMDR; i++) {
+     uptr = rb_dev.units + i;
+     sim_cancel (uptr);
++    sim_disk_reset (uptr);
+     uptr->STAT = 0;
+     uptr->SIP = 0;
+     }
+@@ -643,31 +720,42 @@ return "RB730 disk controller";
+ 
+ t_stat rb_attach (UNIT *uptr, CONST char *cptr)
+ {
+-uint32 p;
+ t_stat r;
+-
+-uptr->capac = (uptr->flags & UNIT_RB80)? RB80_SIZE: RB02_SIZE;
+-r = attach_unit (uptr, cptr);                           /* attach unit */
++static const char *drives[] = {"RB02", "RB80", NULL};
++
++uptr->capac = RB_SIZE (uptr);
++r = sim_disk_attach_ex (uptr, cptr, RB_NUMWD(uptr) * sizeof (uint16), /* sector size */
++                        sizeof (uint16), TRUE, DBG_DSK,
++                        (uptr->flags & UNIT_RB80) ? "RB80" : "RB02",
++                        RB_NUMSC(uptr), 0,              /* bad block table on new images */
++                        (uptr->flags & UNIT_NOAUTO) ? NULL : drives);
+ if (r != SCPE_OK)                                       /* error? */
+     return r;
++if (uptr->flags & UNIT_OLDL)
++    sim_messagef (SCPE_OK, "%s: old RB730 image layout (SET %s LAYOUT=OLD, see HELP RB)\n",
++                  sim_uname (uptr), sim_uname (uptr));
+ uptr->TRK = 0;                                          /* cylinder 0 */
+ if ((uptr->flags & UNIT_RB80) == 0)
+     uptr->STAT = RB02DS_VCK;                            /* new volume */
+-if ((p = sim_fsize (uptr->fileref)) == 0) {             /* new disk image? */
+-    if (uptr->flags & UNIT_RO)                          /* if ro, done */
+-        return SCPE_OK;
+-    return pdp11_bad_block (uptr, RB_NUMSC(uptr), RB_NUMWD(uptr));
+-    }
+ return SCPE_OK;
+ }
+ 
++/* Detach routine */
++
++t_stat rb_detach (UNIT *uptr)
++{
++sim_cancel (uptr);
++return sim_disk_detach (uptr);
++}
++
+ /* Set size routine */
+ 
+ t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ {
+ if (uptr->flags & UNIT_ATT)
+     return SCPE_ALATT;
+-uptr->capac = (val & UNIT_RB80)? RB80_SIZE: RB02_SIZE;
++uptr->capac = (val & UNIT_RB80) ?
++    ((uptr->flags & UNIT_OLDL) ? RB80_SIZE_OLD : RB80_SIZE) : RB02_SIZE;
+ return SCPE_OK;
+ }
+ 
+@@ -675,5 +763,55 @@ return SCPE_OK;
+ 
+ t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ {
+-return pdp11_bad_block (uptr, RB_NUMSC(uptr), RB_NUMWD(uptr));
++return sim_disk_pdp11_bad_block (uptr, RB_NUMSC(uptr), RB_NUMWD(uptr));
++}
++
++/* Set/show the image layout: STANDARD (DEC logical block order, default)
++   or OLD (the head-major layout of earlier versions; temporary) */
++
++t_stat rb_set_layout (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++char gbuf[CBUFSIZE];
++
++if ((cptr == NULL) || (*cptr == 0))
++    return SCPE_MISVAL;
++if (uptr->flags & UNIT_ATT)
++    return SCPE_ALATT;
++get_glyph (cptr, gbuf, 0);
++if ((strcmp (gbuf, "STANDARD") == 0) || (strcmp (gbuf, "STD") == 0))
++    uptr->flags &= ~UNIT_OLDL;
++else if (strcmp (gbuf, "OLD") == 0)
++    uptr->flags |= UNIT_OLDL;
++else
++    return sim_messagef (SCPE_ARG, "Unknown layout: %s (STANDARD or OLD)\n", gbuf);
++uptr->capac = RB_SIZE (uptr);                           /* (RB80: 31 or 32 sectors) */
++return SCPE_OK;
++}
++
++t_stat rb_show_layout (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++fprintf (st, "layout=%s", (uptr->flags & UNIT_OLDL) ? "OLD" : "STANDARD");
++return SCPE_OK;
++}
++
++/* Help */
++
++t_stat rb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
++{
++fprintf (st, "RB730 Disk Controller (RB)\n\n");
++fprintf (st, "The RB730 is the integrated disk controller of the VAX-11/730.  Unit 0 is\n");
++fprintf (st, "an RB80 (an R80 fixed disk, the RM80's drive) by default, units 1-3 are RB02\n");
++fprintf (st, "drives (RL02 cartridge drives); SET RBn RB02/RB80 changes the type.\n\n");
++fprint_set_help (st, dptr);
++fprint_show_help (st, dptr);
++fprintf (st, "\nImage layout: the disk images are in DEC logical block order (cylinder by\n");
++fprintf (st, "cylinder, head by head, sector by sector).  This is the order DEC's drivers\n");
++fprintf (st, "use, so an RB02 image is the same as an RL02 image of the RL11 (RL device)\n");
++fprintf (st, "and a binary copy of a real cartridge.  Earlier versions of this simulator\n");
++fprintf (st, "stored the images head by head (all cylinders of surface 0 first).  Such\n");
++fprintf (st, "images can still be used with SET RBn LAYOUT=OLD before the ATTACH (a\n");
++fprintf (st, "temporary option); converting them once is better.\n");
++fprintf (st, "The RB80 has 31 sectors per track as DEC's drivers use it (242,606 blocks,\n");
++fprintf (st, "like the RM80, which has the same R80 drive); the old layout has 32.\n");
++return SCPE_OK;
+ }
+-- 
+2.43.0
+

@@ -1,0 +1,760 @@
+# open-simh-extended/tests/dmctest_kit.txt  v2 (31 Oct 2026) - all files of the dmctest kit in one text file
+
+===== FILE: dmctest/README.md =====
+<!-- /home/claude/dmctest/README.md  v2 (31 Oct 2026) -->
+# dmctest: DECnet two-node tests for the SIMH DMC/DMR/DMP11 and DMF32
+
+This kit boots two VAX-11/780 simulators with VMS. It connects them with one synchronous line and checks that DECnet works over it:
+- the circuit comes up;
+- files copied both ways at the same time arrive unchanged;
+- the circuit comes back after it is switched off and on.
+
+It was used for the regression test of the DMC v7 fixes (30 Oct 2026, VMS V4.7 and V3.7).
+
+## Files
+
+| File | What it is |
+|---|---|
+| `dmctest.conf` | All settings. **This is the only file you need to edit.** |
+| `run_pair.sh` | One test: two nodes, one device type, one simulator binary |
+| `run_all.sh` | Runs the tests listed in `tests.txt` and prints a summary table |
+| `tests.txt` | The list of tests for `run_all.sh` |
+| `vcon.py` | Helper used by the scripts: types on a simulator console in tmux and waits for its answers |
+
+## Requirements
+
+- Linux or macOS (on Windows: WSL), with `bash`, `python3`, `tmux` and `pgrep`. On Debian/Ubuntu: `sudo apt install tmux python3 procps`.
+- A `vax780` simulator built with the patches of 31 Oct 2026 or later: the DMC device (TYPE=DMC/DMR), the DMP device and, for DMF tests, the DMF32 device. (Older builds had the DMP11 as `TYPE=DMP` of the DMC device; use kit v1 with them.)
+- Two VMS system disks per VMS version, with different DECnet node addresses:
+  - DECnet must be installed (`SYS$SYSTEM:NETNODE.DAT` exists);
+  - each disk must know the other node's name in its node database.
+
+  The kit changes **only copies** of the disks. The originals are never written.
+
+## Setting up
+
+1. Copy the kit to a directory of your own, for example `~/dmctest`.
+2. Edit `dmctest.conf`:
+   - `WORKDIR`: where the disk copies, consoles and results go.
+   - `SIMDIR`: where your simulator binaries are.
+   - The disk paths, controller, drive type and node names for each VMS version (`V47_...`, `V37_...`). For another VMS version, add a block with a new number, for example `V55_...`, and use that number on the command line.
+   - `VMS_USER` / `VMS_PASSWORD`: the account to use, SYSTEM by default; leave the password empty if there is none.
+   - `VMS_DATE`: the answer to the date prompt, used only if VMS asks.
+   - `PORT1` / `PORT2`: two free TCP ports.
+   - `SESSION_PREFIX`: the names of the kit's tmux sessions. The kit only stops sessions with this prefix and the simulators in them, nothing else of yours.
+3. Make the scripts executable: `chmod +x run_pair.sh run_all.sh vcon.py`.
+
+## Running
+
+One test, for example VMS V4.7 with a DMC11 on both nodes:
+
+```
+./run_pair.sh 47 DMC vax780
+```
+
+Mixed pair (DMF32 on node 1, DMC11 on node 2), keeping the simulators running afterwards to look at them:
+
+```
+KEEP=1 ./run_pair.sh 47 DMF vax780 DMC
+tmux attach -t dmct1        (leave with Ctrl-B, then D)
+```
+
+All tests in `tests.txt`:
+
+```
+./run_all.sh
+```
+
+A test takes about 4 to 6 minutes.
+
+## What a test does
+
+1. Fresh copies of the two disks; one `.ini` file per node (`n1/pair.ini`, `n2/pair.ini`), both simulators started.
+2. VMS boots. The script answers the date prompt if there is one, then logs in.
+3. On both nodes it replaces the DECnet lines and circuits of the permanent database with one point-to-point circuit, and starts DECnet:
+
+   ```
+   MC NCP PURGE KNOWN CIRCUITS ALL
+   MC NCP PURGE KNOWN LINES ALL
+   MC NCP DEFINE LINE DMC-0 STATE ON PROTOCOL DDCMP POINT
+   MC NCP DEFINE CIRCUIT DMC-0 STATE ON
+   MC NCP DEFINE EXECUTOR STATE ON
+   @SYS$MANAGER:STARTNET
+   ```
+
+4. It waits until each node reaches the other over the circuit.
+5. Both nodes copy `TEST_FILE` to the other node at the same time. Each fetches its copy back and runs DIFFERENCES against the original, which must report 0 difference sections.
+6. Node 1 switches its circuit off and on; the circuit must come back, and another copy must compare equal.
+7. It shows the circuit counters of both nodes, then the summary line `RESULT: PASS` or `RESULT: FAIL: <checks>`.
+
+Line names: VMS calls the DMC11 **and** the DMR11 `DMC-0`. The DMP11 is `DMP-0`, and the DMF32 synchronous line is `DMF-0` (VMS V4 and later only).
+
+## Where the results are
+
+In `WORKDIR`:
+
+| File | Contents |
+|---|---|
+| `n1/pane.log`, `n2/pane.log` | The complete consoles of the last test |
+| `n1/node1.log`, `n2/node2.log` | The SIMH console logs (the same text, written by SIMH) |
+| `n1/dmc1.dbg`, `n2/dmc2.dbg` | The DMC or DMP device trace (INFO and WARN) |
+| `results/` | Written by `run_all.sh`: per test `<name>.txt` (output) and `<name>_n1.log` / `_n2.log` (consoles), plus `summary.txt` |
+
+## Known behaviour
+
+- **REMRSRC on VMS V3.7:** the copy in step 5 sometimes fails with `-SYSTEM-F-REMRSRC, insufficient system resources at remote node`. This is a VMS V3.7 resource limit. It appeared equally with and without the DMC fixes, never on V4.7, and the circuit stays up. It shows as `FAIL: copy-node2`; repeat the test to see whether it was this.
+- **Copy times:** the time shown for the copies ("about ... s") is only rough.
+- **If a test stops with a timeout:** look at the end of `n1/pane.log` or `n2/pane.log`, or run it with `KEEP=1` and attach to the tmux session.
+
+## How the console automation works
+
+`vcon.py` starts each simulator in a tmux session (`<prefix>1`, `<prefix>2`) and copies everything the console prints into `n<N>/pane.log`. Typing is done with `tmux send-keys`. Waiting means searching `pane.log` for a regular expression, starting at the position after the previous command.
+
+Three details matter:
+- The SIMH console log is not used for waiting, because SIMH writes it buffered.
+- The VMS prompt comes as CR, NUL, `$ `, so the scripts remove NUL characters before they look at the output.
+- tmux treats a `;` at the end of an argument as a command separator, so `vcon.py` sends such a `;` as a separate key code.
+
+===== FILE: dmctest/dmctest.conf =====
+# /home/claude/dmctest/dmctest.conf  v1
+# Settings for the DECnet two-node test kit (run_pair.sh, run_all.sh,
+# vcon.py).  This file is read by bash ("source"), so use the form
+# NAME=value without spaces around "=", and quote values with spaces.
+# Change these to match your machine; nothing else needs editing.
+
+# --------------------------------------------------------------------------
+# Directories and programs
+# --------------------------------------------------------------------------
+
+# Working directory: the kit creates n1/ and n2/ in it (disk copies,
+# generated .ini files, console logs) and writes the result files there.
+# It must not be the directory that holds your original disk images.
+WORKDIR="$HOME/dmctest/work"
+
+# Directory with the simulator binaries.  run_pair.sh takes the binary
+# name as an argument (e.g. vax780 or vax780.v6), relative to this
+# directory, or an absolute path.
+SIMDIR="$HOME/dmctest/bin"
+
+# Prefix for the names of the tmux sessions the kit starts (<prefix>1 for
+# node 1, <prefix>2 for node 2).  The kit only ever stops sessions with
+# these names, so pick something no other session of yours uses.
+SESSION_PREFIX="dmct"
+
+# TCP ports of the synchronous line between the two simulators: node 1
+# listens on PORT1 and connects to PORT2, node 2 the other way round.
+PORT1=1111
+PORT2=2222
+
+# --------------------------------------------------------------------------
+# VMS systems.  One block per VMS version; the version is the first
+# argument of run_pair.sh (47 or 37 here - you can add more blocks with
+# other numbers, e.g. 55 for V5.5, using the same variable names).
+# The original disk images are only read: every run works on fresh copies.
+# --------------------------------------------------------------------------
+
+# VMS V4.7: two RA81 disks on the UDA50 (SIMH device RQ)
+V47_DISK1="$HOME/vms/VMS047-1.R81"
+V47_DISK2="$HOME/vms/VMS047-2.R81"
+V47_CTRL=RQ                 # SIMH disk controller device
+V47_DRIVE=RA81              # SIMH drive type (SET RQ0 RA81)
+V47_NODE1=MV1               # DECnet node name of disk 1
+V47_NODE2=MV2               # DECnet node name of disk 2
+
+# VMS V3.7: two RK07 disks on the RK611 (SIMH device HK)
+V37_DISK1="$HOME/vms/VMS037-1.RK07"
+V37_DISK2="$HOME/vms/VMS037-2.RK07"
+V37_CTRL=HK
+V37_DRIVE=RK07
+V37_NODE1=VAX1
+V37_NODE2=VAX2
+
+# --------------------------------------------------------------------------
+# Login and test file (the same for all VMS versions)
+# --------------------------------------------------------------------------
+
+# Account used on both nodes, for the console login and for the remote
+# file access (NODE"user password"::).  Leave VMS_PASSWORD empty if the
+# account has no password.  The account needs the privileges for NCP and
+# STARTNET (SYSTEM has them).
+VMS_USER=SYSTEM
+VMS_PASSWORD=""
+
+# Answer for the date prompt, if VMS asks for date and time at boot
+# (format DD-MMM-YYYY HH:MM).  Ignored when VMS does not ask.
+VMS_DATE="30-OCT-1998 12:00"
+
+# File copied between the nodes.  It should be some hundred blocks or more
+# so that many DDCMP messages are exchanged.
+TEST_FILE='SYS$HELP:HELPLIB.HLB'
+
+# Timeouts in seconds: boot to the end of the startup job, and one copy.
+BOOT_TIMEOUT=400
+COPY_TIMEOUT=900
+
+===== FILE: dmctest/run_pair.sh =====
+#!/bin/bash
+# /home/claude/dmctest/run_pair.sh  v8
+# Two-node DECnet test for the SIMH DMC11 / DMR11 / DMP11 and DMF32
+# emulations, on two VAX-11/780 simulators.
+#
+# v8: the DMP11 is the simulator's DMP device (SET DMP ENABLE, DMP0) - the
+#     DMC device has no TYPE=DMP any more; the DMF32 synchronous line is
+#     unit DMF-SYNC.
+# v7: portable kit version: all settings in dmctest.conf; stops only the
+#     kit's own tmux sessions and simulators; optional password and date
+#     prompt; PASS/FAIL summary; detailed comments.
+# v6: old DMC debug files removed before each run.
+# v5: VMS names the DMR11 line DMC-0, like the DMC11.
+# v4/v3: circuit check via SHOW NODE; DIFFERENCES result line.
+# v2: stop simulators by process name.  v1: first version.
+#
+# Usage
+# -----
+#   run_pair.sh VMS DEV SIM [DEV2]
+#     VMS   version key of a block in dmctest.conf: 47 = V4.7, 37 = V3.7
+#     DEV   line device of node 1: DMC, DMR, DMP or DMF
+#     SIM   simulator binary, in SIMDIR or as an absolute path
+#     DEV2  line device of node 2 if different (e.g. DMF on node 1 and DMC
+#           on node 2: the DMF32 speaks DDCMP to any of the DMx11 devices)
+#
+#   Environment:
+#     DMCTEST_CONF=file   other settings file (default: dmctest.conf next to
+#                         this script)
+#     KEEP=1              leave both simulators running at the end, to look
+#                         at them (tmux attach -t <prefix>1)
+#
+# What it does
+# ------------
+#   1. Fresh copies of the two VMS disks, one .ini file per node, start both
+#      simulators (each in its own tmux session).
+#   2. Boot VMS, answer the date prompt if there is one, log in.
+#   3. Replace the DECnet line and circuit in the PERMANENT database of the
+#      disk copies by one point-to-point circuit on the device under test,
+#      then @SYS$MANAGER:STARTNET.  (Only the copies are changed.)
+#   4. Wait until each node reaches the other over that circuit.
+#   5. Both nodes copy TEST_FILE to the other node at the same time; then
+#      each fetches its copy back and compares it with the original
+#      (DIFFERENCES must find 0 difference sections).
+#   6. Node 1 sets its circuit OFF and ON again; the circuit must come back,
+#      and a copy there and back must again compare equal.
+#   7. Print the circuit counters of both nodes and a PASS/FAIL summary.
+#
+# The results go to standard output.  The complete consoles are in
+# <WORKDIR>/n1/pane.log and n2/pane.log, the SIMH console logs in
+# n1/node1.log and n2/node2.log, the DMC trace (INFO/WARN) in n<N>/dmc<N>.dbg.
+#
+# Requirements: bash, python3, tmux, pgrep (Linux, macOS, or WSL on Windows).
+
+# ---- arguments and settings -----------------------------------------------
+if [ $# -lt 3 ]; then
+  sed -n '/^# Usage/,/^# What it does/p' "$0" | sed '$d'
+  exit 2
+fi
+VMS=$1; DEV=$2; SIM=$3; DEV2=${4:-$2}
+# Check the device names here: a check inside a function called as $(...)
+# could not stop the script.
+for d in "$DEV" "$DEV2"; do
+  case $d in DMC|DMR|DMP|DMF) ;; *) echo "unknown device $d (use DMC, DMR, DMP or DMF)"; exit 2;; esac
+done
+
+KIT=$(cd "$(dirname "$0")" && pwd)          # directory of this script
+CONF=${DMCTEST_CONF:-$KIT/dmctest.conf}
+[ -f "$CONF" ] || { echo "settings file $CONF not found"; exit 2; }
+source "$CONF"
+
+# The settings of the chosen VMS version: V47_DISK1 etc. are read through
+# "indirect expansion" (${!name} = the value of the variable named name).
+pick() { local n="V${VMS}_$1"; echo "${!n}"; }
+DISK1=$(pick DISK1); DISK2=$(pick DISK2)
+CTRL=$(pick CTRL);   DRIVE=$(pick DRIVE)
+NAME1=$(pick NODE1); NAME2=$(pick NODE2)
+[ -n "$DISK1" ] || { echo "no block V${VMS}_... in $CONF"; exit 2; }
+
+# The simulator: a name in SIMDIR or an absolute path
+case $SIM in /*) SIMPATH=$SIM;; *) SIMPATH=$SIMDIR/$SIM;; esac
+
+# Checks before anything is started
+for f in "$DISK1" "$DISK2"; do [ -f "$f" ] || { echo "disk $f not found"; exit 2; }; done
+[ -x "$SIMPATH" ] || { echo "simulator $SIMPATH not found or not executable"; exit 2; }
+for p in tmux python3 pgrep; do
+  command -v $p > /dev/null || { echo "$p is needed but not installed"; exit 2; }
+done
+
+# vcon.py reads the work directory and the session prefix from these
+export DMCTEST_WORKDIR=$WORKDIR DMCTEST_PREFIX=$SESSION_PREFIX
+V="python3 $KIT/vcon.py"
+mkdir -p "$WORKDIR/n1" "$WORKDIR/n2"
+cd "$WORKDIR" || exit 2
+
+# VMS DECnet line name of each device.  The DMC11 and the DMR11 are both
+# driven by XMDRIVER (device XMA0) and are both called DMC-n; VMS does not
+# accept DMR-0.  DMP11 = XDDRIVER (XDA0), DMF32 synchronous = XGDRIVER (XGA0,
+# VMS V4 and later only).
+line_of() {
+  case $1 in
+    DMC|DMR) echo DMC-0;;
+    DMP)     echo DMP-0;;
+    DMF)     echo DMF-0;;
+  esac
+}
+L1=$(line_of $DEV); L2=$(line_of $DEV2)
+
+# Remote file access string NODE"user password"::  (no password: "user")
+access() { echo "$1\"$VMS_USER${VMS_PASSWORD:+ $VMS_PASSWORD}\"::"; }
+
+# Console output contains NUL characters (VMS fill characters); they are
+# removed before grep looks at it.
+clean() { tr -d '\000'; }
+
+# ---- 1. stop an earlier run of this kit, wait for free ports -----------------
+# Only the kit's own two sessions and the simulators in them are stopped.
+$V 1 stop; $V 2 stop
+# The TCP ports of the line may still be held for a moment by the
+# operating system after a simulator ended; wait until both are free.
+python3 - "$PORT1" "$PORT2" <<'EOF'
+import socket, sys, time
+ports = [int(p) for p in sys.argv[1:]]
+for attempt in range(60):
+    busy = False
+    for p in ports:
+        s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(('0.0.0.0', p))
+        except OSError:
+            busy = True
+        s.close()
+    if not busy:
+        sys.exit(0)
+    time.sleep(2)
+sys.exit('ports %s still in use' % ports)
+EOF
+[ $? = 0 ] || exit 2
+
+# ---- 1. fresh disk copies, .ini files, start the simulators ------------------
+for n in 1 2; do
+  if [ $n = 1 ]; then D=$DEV;  DISK=$DISK1; MY=$PORT1; PEER=$PORT2
+  else                D=$DEV2; DISK=$DISK2; MY=$PORT2; PEER=$PORT1; fi
+  DNAME=$(basename "$DISK")
+  rm -f n$n/node$n.log n$n/dmc$n.dbg n$n/pair.ini
+  find n$n -maxdepth 1 -name "$DNAME" -delete
+  cp "$DISK" n$n/ && chmod u+w "n$n/$DNAME"
+  {
+    echo "; $WORKDIR/n$n/pair.ini  - generated by run_pair.sh v8"
+    echo "; VMS V$VMS node $n, line $D, $(date '+%d-%b-%Y %H:%M')"
+    echo "SET CONSOLE LOG=node$n.log"
+    echo "SET CPU IDLE=VMS"
+    echo "SET $CTRL ENABLE"
+    echo "SET ${CTRL}0 $DRIVE"
+    echo "ATTACH ${CTRL}0 $DNAME"
+    case $D in
+      DMC|DMR)
+        # The DMC device emulates a DMC11 or DMR11 (SET DMC0 TYPE=...).
+        # PEER = the other simulator's port.
+        echo "SET DMC ENABLE"
+        echo "SET DMC0 TYPE=$D"
+        echo "SET DMC0 PEER=LOCALHOST:$PEER"
+        echo "ATTACH DMC0 $MY"
+        echo "SET DMC DEBUG=INFO;WARN"         # trace: master clears, warnings
+        echo "SET DEBUG -N dmc$n.dbg";;
+      DMP)
+        # The DMP11 is a device of its own (DMP, at the DMP11 address).
+        echo "SET DMP ENABLE"
+        echo "SET DMP0 PEER=LOCALHOST:$PEER"
+        echo "ATTACH DMP0 $MY"
+        echo "SET DMP DEBUG=INFO;WARN"         # trace: master clears, warnings
+        echo "SET DEBUG -N dmc$n.dbg";;
+      DMF)
+        # DMF32: unit DMF-SYNC is the synchronous line.
+        echo "SET DMF ENABLE"
+        echo "SET DMF-SYNC PEER=LOCALHOST:$PEER"
+        echo "ATTACH DMF-SYNC $MY";;
+    esac
+    echo "BOOT ${CTRL}0"
+  } > n$n/pair.ini
+  $V $n start pair.ini "$SIMPATH"
+done
+echo "=== VMS V$VMS: node 1 $NAME1 $DEV ($L1), node 2 $NAME2 $DEV2 ($L2), simulator $SIM"
+
+# ---- 2. boot, date prompt, login ---------------------------------------------
+# Wait for the end of the startup job ("SYSTEM job terminated") or the
+# date prompt.  VMS prints the startup job's end only on the console.
+for n in 1 2; do
+  # (output captured in a variable goes through clean: bash drops NUL
+  # bytes there anyway, but with a warning)
+  out=$($V $n wait "job terminated|ENTER DATE AND TIME" $BOOT_TIMEOUT | clean)
+  # Success is judged from the text: one of the two expected messages
+  echo "$out" | grep -aq "job terminated\|ENTER DATE" ||
+    { echo "node $n: VMS did not boot"; exit 1; }
+  if echo "$out" | grep -aq "ENTER DATE"; then
+    $V $n cmd "$VMS_DATE" "job terminated" $BOOT_TIMEOUT > /dev/null ||
+      { echo "node $n: VMS did not finish booting after the date"; exit 1; }
+  fi
+  sleep 2
+  $V $n cmd "" "Username: *$" 30 > /dev/null          # RETURN wakes up login
+  out=$($V $n cmd "$VMS_USER" 'Password: *$|\$ $' 60 | clean)
+  if echo "$out" | grep -aq "Password:"; then
+    $V $n cmd "$VMS_PASSWORD" '\$ $' 60 > /dev/null
+  fi
+done
+
+# ---- 3. one point-to-point circuit in the permanent database, STARTNET -------
+# PURGE removes all lines and circuits of the permanent database (the
+# disks may still describe another set-up, e.g. a multipoint DMP-0).
+# The executor is set to STATE ON as well: without it STARTNET leaves the
+# executor off (seen on VMS V3.7) and no circuit ever starts.
+# Every NCP message ("%...") is shown.
+for n in 1 2; do
+  if [ $n = 1 ]; then L=$L1; else L=$L2; fi
+  for c in "MC NCP PURGE KNOWN CIRCUITS ALL" "MC NCP PURGE KNOWN LINES ALL" \
+           "MC NCP DEFINE LINE $L STATE ON PROTOCOL DDCMP POINT" \
+           "MC NCP DEFINE CIRCUIT $L STATE ON" \
+           "MC NCP DEFINE EXECUTOR STATE ON"; do
+    $V $n cmd "$c" | clean | grep -a "%" | grep -av "NMLRSP, listener response - Success\|RECDELET"
+  done
+done
+for n in 1 2; do
+  $V $n cmd '@SYS$MANAGER:STARTNET' '\$ $' 300 | clean | grep -a "%" | grep -av "PROC_ID\|OPCOM"
+done
+
+# ---- 4. wait until the circuit is up ---------------------------------------
+# "Up" means: SHOW NODE <other node> names this circuit.  (The SHOW CIRCUIT
+# summary does not list the adjacent node on every VMS version, and an
+# end node shows no "reachable" state, so these are not used.)
+# Waits up to 40 x 5 s.  Prints "up" or "DOWN".
+wait_up() {     # $1 = node number, $2 = circuit, $3 = name of the other node
+  for i in $(seq 1 40); do
+    if $V $1 cmd "MC NCP SHOW NODE $3" | clean | grep -aq "($3) .*$2"; then
+      echo up; return 0
+    fi
+    sleep 5
+  done
+  echo DOWN; return 1
+}
+FAIL=""                                     # list of failed checks
+t0=$(date +%s)
+r=$(wait_up 1 $L1 "$NAME2"); echo "4. circuit $L1 on node 1: $r after $(( $(date +%s) - t0 )) s"
+[ "$r" = up ] || FAIL="$FAIL circuit-node1"
+r=$(wait_up 2 $L2 "$NAME1"); echo "   circuit $L2 on node 2: $r"
+[ "$r" = up ] || FAIL="$FAIL circuit-node2"
+
+# ---- 5. copies both ways at the same time, fetch back, compare -----------------
+# compare: DIFFERENCES between the original and the copy fetched back.
+# Sets CMP to the "Number of difference sections found" line (or the
+# error) and adds the check to FAIL if it did not find 0 differences.
+# (It sets variables instead of printing, because a function called as
+# $(compare ...) runs in a subshell and could not change FAIL.)
+compare() {     # $1 = node number, $2 = check name for the summary
+  CMP=$($V $1 cmd "DIFFERENCES $TEST_FILE SYS\$LOGIN:BACK.TMP" '\$ $' $COPY_TIMEOUT | clean |
+        grep -a "sections found\|%" | head -2)
+  echo "$CMP" | grep -q "sections found: 0" || FAIL="$FAIL $2"
+}
+show_errors() { clean | grep -a "%" | grep -av "OPCOM" | sed 's/^/   /'; }   # VMS messages of a command
+
+t0=$(date +%s)
+# Type both COPY commands first, then wait for both prompts, so that the
+# two transfers really run at the same time (in both directions).
+$V 1 mark; $V 2 mark
+$V 1 raw "COPY $TEST_FILE $(access $NAME2)SYS\$LOGIN:FROM1.TMP"; $V 1 raw "^M"
+$V 2 raw "COPY $TEST_FILE $(access $NAME1)SYS\$LOGIN:FROM2.TMP"; $V 2 raw "^M"
+o1=$($V 1 wait '\$ $' $COPY_TIMEOUT | clean)
+o2=$($V 2 wait '\$ $' $COPY_TIMEOUT | clean)
+echo "5. simultaneous copies of $TEST_FILE each way: about $(( $(date +%s) - t0 )) s"
+echo "$o1" | show_errors
+echo "$o2" | show_errors
+
+$V 1 cmd "COPY $(access $NAME2)SYS\$LOGIN:FROM1.TMP SYS\$LOGIN:BACK.TMP" '\$ $' $COPY_TIMEOUT | show_errors
+compare 1 copy-node1; echo "   node 1 fetched its copy back: $CMP"
+$V 2 cmd "COPY $(access $NAME1)SYS\$LOGIN:FROM2.TMP SYS\$LOGIN:BACK.TMP" '\$ $' $COPY_TIMEOUT | show_errors
+compare 2 copy-node2; echo "   node 2 fetched its copy back: $CMP"
+
+# ---- 6. circuit off and on, copy again -----------------------------------------
+$V 1 cmd "MC NCP SET CIRCUIT $L1 STATE OFF" | show_errors
+sleep 10
+$V 1 cmd "MC NCP SET CIRCUIT $L1 STATE ON" | show_errors
+t0=$(date +%s)
+r=$(wait_up 1 $L1 "$NAME2"); echo "6. circuit off/on on node 1: $r after $(( $(date +%s) - t0 )) s"
+[ "$r" = up ] || FAIL="$FAIL restart"
+$V 1 cmd 'DELETE SYS$LOGIN:BACK.TMP;*' > /dev/null
+$V 1 cmd "COPY $TEST_FILE $(access $NAME2)SYS\$LOGIN:AGAIN.TMP" '\$ $' $COPY_TIMEOUT | show_errors
+$V 1 cmd "COPY $(access $NAME2)SYS\$LOGIN:AGAIN.TMP SYS\$LOGIN:BACK.TMP" '\$ $' $COPY_TIMEOUT | show_errors
+compare 1 copy-restart; echo "   copy after the restart: $CMP"
+
+# ---- 7. counters and summary -----------------------------------------------------
+for n in 1 2; do
+  if [ $n = 1 ]; then L=$L1; else L=$L2; fi
+  echo "7. node $n circuit $L counters:"
+  $V $n cmd "MC NCP SHOW CIRCUIT $L COUNTERS" | clean |
+    grep -aiE "error|timeout|buffer unavail|blocks|Circuit =|down|failure" | sed 's/^/     /'
+  # master clears of the DMx11 (from the SIMH trace; not for the DMF32)
+  [ -f n$n/dmc$n.dbg ] && echo "     DMC master clears: $(grep -ac 'Master clear' n$n/dmc$n.dbg)"
+done
+
+# Note: on VMS V3.7 the simultaneous copy (5.) sometimes fails with
+# REMRSRC ("insufficient system resources at remote node") - a V3.7
+# resource limit, seen with and without the DMC fixes; it shows up here
+# as FAIL copy-node2.
+if [ -z "$FAIL" ]; then echo "RESULT: PASS"; else echo "RESULT: FAIL:$FAIL"; fi
+
+if [ "$KEEP" != 1 ]; then $V 1 stop; $V 2 stop; fi
+echo "=== end"
+
+===== FILE: dmctest/run_all.sh =====
+#!/bin/bash
+# /home/claude/dmctest/run_all.sh  v3
+# Run a list of two-node tests one after another (run_pair.sh for each line).
+#
+# v3: kit version: the list is a separate file; one-line summary per test.
+# v2: restarted list after the DMR line-name fix.  v1: first version.
+#
+# Usage:  run_all.sh [LIST]        LIST defaults to tests.txt next to this script
+#
+# Each line of LIST:  VMS DEV SIM [DEV2]   (the arguments of run_pair.sh);
+# empty lines and lines starting with # are skipped.
+#
+# For each test the full output goes to <WORKDIR>/results/<name>.txt and the
+# two consoles to <name>_n1.log and <name>_n2.log, where <name> is
+# r<VMS>_<DEV>[_<DEV2>]_<simulator name>.  At the end a table of the
+# RESULT lines is printed (and kept in results/summary.txt).
+KIT=$(cd "$(dirname "$0")" && pwd)
+LIST=${1:-$KIT/tests.txt}
+source "${DMCTEST_CONF:-$KIT/dmctest.conf}"
+mkdir -p "$WORKDIR/results"
+RES=$WORKDIR/results
+
+while read -r vms dev sim dev2; do
+  case $vms in ''|\#*) continue;; esac          # skip empty and comment lines
+  name=r${vms}_${dev}${dev2:+_$dev2}_$(basename "$sim")
+  echo "--- $name"
+  "$KIT/run_pair.sh" $vms $dev $sim $dev2 > "$RES/$name.txt" 2>&1 < /dev/null
+  for n in 1 2; do cp "$WORKDIR/n$n/pane.log" "$RES/${name}_n$n.log" 2>/dev/null; done
+  grep -a "^RESULT" "$RES/$name.txt" || echo "RESULT: no result (see $RES/$name.txt)"
+done < "$LIST"
+
+# Summary table: test name and its RESULT line
+for f in "$RES"/r*.txt; do
+  printf '%-32s %s\n' "$(basename "$f" .txt)" "$(grep -a '^RESULT' "$f" || echo 'no result')"
+done | tee "$RES/summary.txt"
+
+===== FILE: dmctest/tests.txt =====
+# /home/claude/dmctest/tests.txt  v1
+# Test list for run_all.sh: one test per line,  VMS DEV SIM [DEV2]
+#   VMS   47 or 37 (a version block in dmctest.conf)
+#   DEV   DMC, DMR, DMP or DMF (line device of node 1)
+#   SIM   simulator binary in SIMDIR (or an absolute path)
+#   DEV2  line device of node 2, if different from DEV
+# Lines starting with # are skipped.  This list is the regression of
+# 30 Oct 2026 for the build with the DMC v7 fixes.  To compare with an
+# older build, add the same lines with that binary's name.
+
+47 DMC vax780
+47 DMR vax780
+47 DMP vax780
+47 DMF vax780
+47 DMF vax780 DMC
+37 DMC vax780
+37 DMR vax780
+37 DMP vax780
+
+===== FILE: dmctest/vcon.py =====
+#!/usr/bin/env python3
+# /home/claude/dmctest/vcon.py  v3
+# Console helper for SIMH simulators that run inside tmux sessions.
+#
+# v3: portable version for the test kit: work directory and session prefix
+#     come from the environment (set by run_pair.sh from dmctest.conf);
+#     "stop" only stops this kit's own simulator; detailed comments.
+# v2: the VMS prompt arrives as CR NUL "$ ".
+# v1: first version (/home/claude/vmstest).
+#
+# How it works
+# ------------
+# Each simulated node N runs in its own tmux session <prefix>N.  Everything
+# the simulator writes to its console is copied, unbuffered, into
+# <workdir>/n<N>/pane.log (tmux "pipe-pane").  To "type" on the console the
+# helper uses "tmux send-keys".  To wait for an answer it reads pane.log
+# and searches for a regular expression, starting at a remembered position
+# (the "mark"), so that it only finds output that arrived after the last
+# command.  The mark is kept in pane.log.pos.
+#
+# The SIMH console log (SET CONSOLE LOG=...) is not used for this because
+# SIMH writes it buffered: prompts often show up there only seconds later.
+#
+# Usage
+# -----
+#   vcon.py N start INI SIM    start node N: new tmux session, SIM with INI
+#                              (run in <workdir>/n<N>), fresh pane.log
+#   vcon.py N cmd TEXT [RE] [S]
+#                              set the mark, type TEXT + RETURN, wait up to
+#                              S seconds (default 120) for the regular
+#                              expression RE (default: the VMS "$ " prompt),
+#                              print the console output since the mark;
+#                              exit status 1 on timeout
+#   vcon.py N raw TEXT         type TEXT without RETURN; "^E" etc. sends
+#                              that control character
+#   vcon.py N wait RE [S]      wait for RE after the mark (default 300 s)
+#   vcon.py N mark             set the mark to the end of the output
+#   vcon.py N stop             ^E and EXIT to the simulator, then end the
+#                              tmux session and, if needed, the simulator
+#
+# Environment (run_pair.sh sets these from dmctest.conf):
+#   DMCTEST_WORKDIR   work directory (contains n1/, n2/)
+#   DMCTEST_PREFIX    tmux session name prefix
+#
+# Requirements: python3, tmux.
+import os, re, signal, subprocess, sys, time
+
+WORKDIR = os.environ.get('DMCTEST_WORKDIR', os.path.expanduser('~/dmctest/work'))
+PREFIX = os.environ.get('DMCTEST_PREFIX', 'dmct')
+
+# Default prompt: VMS sends CR, NUL, "$ " (the NUL is fill for slow
+# terminals).  Carriage returns are removed when the log is read (see
+# read_log), so the prompt looks like LF, NUL, "$ " at the end of the text.
+VMS_PROMPT = r'\n\x00*\$ $'
+
+
+def paths(n):
+    """Directory, console copy and mark file of node n."""
+    d = os.path.join(WORKDIR, 'n%s' % n)
+    return d, os.path.join(d, 'pane.log'), os.path.join(d, 'pane.log.pos')
+
+
+def session(n):
+    return '%s%s' % (PREFIX, n)
+
+
+def tmux(n, *keys):
+    """Send keys to the tmux session of node n."""
+    subprocess.run(['tmux', 'send-keys', '-t', session(n)] + list(keys), check=True)
+
+
+def read_log(n):
+    """The console output of node n so far, without carriage returns."""
+    try:
+        with open(paths(n)[1], 'rb') as f:
+            return f.read().decode('latin1').replace('\r', '')
+    except FileNotFoundError:
+        return ''
+
+
+def mark(n):
+    """Remember the current end of the output; the next wait starts here."""
+    open(paths(n)[2], 'w').write(str(len(read_log(n))))
+
+
+def get_mark(n):
+    try:
+        return int(open(paths(n)[2]).read())
+    except (OSError, ValueError):
+        return 0
+
+
+def send(n, text, cr=True):
+    """Type text on the console of node n, followed by RETURN if cr."""
+    m = re.fullmatch(r'\^([A-Za-z])', text)
+    if m:                                   # "^E" -> the key Ctrl-E
+        tmux(n, 'C-' + m.group(1).lower())
+        return
+    # tmux takes an argument that ends in ";" as a command separator, even
+    # with -l (literal), and drops the ";".  So send the text without its
+    # trailing semicolons, then each ";" as a hex key code (0x3B).
+    tail = ''
+    while text.endswith(';'):
+        text, tail = text[:-1], tail + ';'
+    if text:
+        tmux(n, '-l', text)                 # -l: no key name lookup
+    for _ in tail:
+        tmux(n, '-H', '3b')
+    if cr:
+        tmux(n, 'C-m')                      # RETURN
+
+
+def wait(n, pattern, timeout):
+    """Wait until pattern appears after the mark; print the output since the
+    mark and move the mark behind the match.  0 = found, 1 = timeout."""
+    start = get_mark(n)
+    t0 = time.time()
+    rx = re.compile(pattern)
+    while True:
+        data = read_log(n)
+        m = rx.search(data, start)
+        if m:
+            sys.stdout.write(data[start:m.end()] + '\n')
+            open(paths(n)[2], 'w').write(str(m.end()))
+            return 0
+        if time.time() - t0 > timeout:
+            sys.stdout.write(data[start:] +
+                             '\n*** TIMEOUT (node %s) waiting for %r ***\n' % (n, pattern))
+            return 1
+        time.sleep(0.5)
+
+
+def session_exists(n):
+    return subprocess.run(['tmux', 'has-session', '-t', session(n)],
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+
+def simulator_pids(n):
+    """PIDs of the processes started inside node n's tmux session (the
+    simulator is a child of the session's shell)."""
+    r = subprocess.run(['tmux', 'list-panes', '-t', session(n), '-F', '#{pane_pid}'],
+                       capture_output=True, text=True)
+    pids = []
+    for shell in r.stdout.split():
+        c = subprocess.run(['pgrep', '-P', shell], capture_output=True, text=True)
+        pids += [int(p) for p in c.stdout.split()]
+    return pids
+
+
+def stop(n):
+    """Stop node n's simulator and end its tmux session - nothing else."""
+    if not session_exists(n):
+        return
+    pids = simulator_pids(n)
+    send(n, '^E')                           # SIMH: back to the sim> prompt
+    time.sleep(1)
+    send(n, 'EXIT')                         # leave the simulator normally
+    time.sleep(2)
+    for pid in pids:                        # a simulator can survive the end
+        try:                                # of its session: stop it for sure
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    subprocess.run(['tmux', 'kill-session', '-t', session(n)], stderr=subprocess.DEVNULL)
+
+
+def start(n, ini, sim):
+    d, log, pos = paths(n)
+    stop(n)
+    for p in (log, pos):
+        if os.path.exists(p):
+            os.remove(p)
+    # The shell keeps the session open after the simulator ends ("sleep"),
+    # so that its last output can still be read.
+    subprocess.run(['tmux', 'new-session', '-d', '-s', session(n), '-x', '132', '-y', '50',
+                    'cd "%s" && "%s" "%s"; sleep 999999' % (d, sim, ini)], check=True)
+    subprocess.run(['tmux', 'pipe-pane', '-o', '-t', session(n), 'cat >> "%s"' % log], check=True)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 3:
+        sys.exit(__doc__ or 'usage: vcon.py N start|cmd|raw|wait|mark|stop ...')
+    n, op, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+    if op == 'start':
+        start(n, args[0], args[1])
+    elif op == 'cmd':
+        mark(n)
+        send(n, args[0])
+        sys.exit(wait(n, args[1] if len(args) > 1 else VMS_PROMPT,
+                      int(args[2]) if len(args) > 2 else 120))
+    elif op == 'raw':
+        send(n, args[0], cr=False)
+    elif op == 'wait':
+        sys.exit(wait(n, args[0], int(args[1]) if len(args) > 1 else 300))
+    elif op == 'mark':
+        mark(n)
+    elif op == 'stop':
+        stop(n)
+    else:
+        sys.exit('unknown operation: %s' % op)
