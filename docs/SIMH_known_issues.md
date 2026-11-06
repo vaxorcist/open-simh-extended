@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v6 (v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v7 (v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -45,6 +45,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 22 | OPEN | Suspicious | `PDP11/pdp11_rq.c` / MicroVAX 3900 console | Self-test error `?53 2 xx` at BOOT CPU after a failed VMB boot when a unit becomes available meanwhile |
 | 23 | DONE | Bug | `sim_sound.c` `sim_spindle_init` | More than 32 spindles failed silently; the drive then never became ready |
 | 24 | OPEN | Minor | `PDP11/pdp11_rq.c` RC25 | RC25/RCF25 accepted on every MSCP controller type; KLESI specifics not simulated |
+| 25 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_avl` (normal mode) | DISMOUNT/UNLOAD of an RC25 cartridge detaches it while the fixed platter on the same spindle keeps running |
 
 ## Details
 
@@ -237,4 +238,12 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Where:** `PDP11/pdp11_rq.c`. The header (29-Jan-11, HUH) says the KLESI controller and port types are "not yet implemented"; `SET RQ KLESI` only sets the name and type.
 - **Effect:** RC25/RCF25 units can be set on an RQDX3, UDA50, etc.; a real RC25 only works with its KLESI adapter. The KLESI specifics in Appendix A of the RC25 User Guide (command limit 14, vector 154, controller timeout 15 s, no NV bit in step 1, ...) are not simulated. VMS does not seem to care; untested.
 - **Found:** 2026-11-06 (RC25 realism work).
+
+### 25 — OPEN — Suspicious: RC25 cartridge unloaded while its fixed platter runs (normal mode)
+- **Where:** `PDP11/pdp11_rq.c`, `rq_avl`: AVAILABLE with spin-down on a removable unit calls `sim_disk_unload` (detach). The RC25 is a removable type (`RQDF_RMV`), the RCF25 is not.
+- **Observed (VMS V3.5 on the VAX-11/730, test N1):** with the system disk on the fixed platter DUA1, `DISMOUNT/UNLOAD DUA0:` (and plain `DISMOUNT`, which unloads by default) detaches the cartridge image while DUA1 keeps working.
+- **Real drive:** the cartridge can only be ejected with the spindle stopped, and that would stop the fixed platter too; with the system disk on it, the drive would rather stay running (see the realism mode).
+- **Realism mode (Claude's code, sound patch v12):** the drive spins down only if the other unit is not online, so in this case nothing stops and the cartridge stays attached (test R1).
+- **Effect:** none harmful; the old normal-mode behavior (an RC25 is unloaded like an RX50) is kept on purpose.
+- **Found:** 2026-11-06 (RC25 VMS tests).
 

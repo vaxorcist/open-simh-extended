@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v13 (RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v14 (RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02. Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -529,9 +529,31 @@ The device table is at v3: RB80 with 31 sectors per track.
 | pdp11 with `SET RQ KLESI`, RC25/RCF25: `SET -N RQ0 ONLINE` → "spinning up, 60.0 s left" | ok |
 | Build (`-Werror`, no warnings): microvax3900, microvax2, pdp11, vax730, vax750, vax780, vax8600; `pdp11_rq.c` and `sim_sound.c` also with `-Wall -Wextra` | ok |
 | VAX diagnostics 730/750/780, MicroVAX 3900 core test | passed |
-| VMS on an RC25 | **not tested yet**: Ulli is preparing a VMS V3.5 RC25 image |
+| VMS on an RC25 | see the next section (2026-11-06) |
 
 Found while testing (not changed): known issues case 22 (`?53` self-test error after a failed VMB boot; also with plain ATTACH in normal mode) and case 24 (RC25 on any controller type).
+
+### Tests with VMS V3.5 on the VAX-11/730 (2026-11-06)
+
+Ulli's image `VMS035.RC25` (26,061,824 bytes = 50,902 blocks; volume VAXVMSRL3, ODS-2) is the **fixed platter**: RQ1 RCF25 = DUA1, the system disk. The cartridge RQ0 RC25 = DUA0 starts as an empty file. Test script `tests/rc25/rc25test.py` v2 (notes branch); the image is copied, the original stays unchanged. VMS V3.5 does not ask for the date on the 730; SYSTEM/MANAGER.
+
+| Test | Result |
+|---|---|
+| N1 (normal mode): boot DUA1, log in, SHOW DEVICE DU (DUA0–DUA3 on line, DUA1 mounted) | ok, 13 s for the whole run |
+| N1: INITIALIZE DUA0 RC25T, MOUNT, COPY 2 files, DIRECTORY/SIZE, DISMOUNT/NOUNLOAD | ok, no error messages |
+| N1: `SET RQ0 OFFLINE` (Run button) under the running system, then a DCL command | "_DUA1: is offline. Mount verification in progress." (the system disk turns on the same spindle) |
+| N1: `SET RQ1 ONLINE` (button via the fixed unit) | "_DUA1: has completed mount verification", the command completes |
+| N1: MOUNT DUA0, DISMOUNT/UNLOAD DUA0 | the cartridge is detached (old normal-mode behavior; known issues case 25) |
+| R1 (realism, SPINUPRC25 5000, SPINDOWNRC25 3000): `SET RQ1 ONLINE` with no cartridge | refused: "no cartridge in RQ0: the RC25 does not start without one" |
+| R1: cartridge attached, `SET RQ1 ONLINE` (fixed unit) | waits 5 s, "RQ0: up to speed, ready"; boot DUA1, log in |
+| R1: the same DCL work on DUA0 | ok, no error messages |
+| R1: DISMOUNT/UNLOAD DUA0 with DUA1 online | the drive keeps running (SHOW RQ0 SPINDLE "online"), cartridge stays attached |
+| R1: `SET -N RQ0 OFFLINE` under the running system | spin-down 3 s; DUA1 into mount verification |
+| R1: `SET RQ0 ONLINE` | waits 5 s for the spin-up; DUA1 completes mount verification |
+| R1: transfers / seek sounds (whole run, 42 s) | 839 realistic transfers, longest 124 ms; seek sounds DUA1 226 short / 177 medium / 79 long, DUA0 8 / 4 / 12 (DUA0 seeks start where DUA1 left the shared actuator) |
+| No `%...-W/E/F-` messages and no error log entries in either run | ok |
+
+Note: VMS `DISMOUNT` unloads by default (`/NOUNLOAD` keeps the volume loaded); the first script version lost the cartridge that way.
 
 ### Spindle sounds and device table
 
@@ -546,12 +568,12 @@ Found while testing (not changed): known issues case 22 (`?53` self-test error a
 3. **Transfer rate:** the guide gives both "spiral read 31 ms per track" (0.51 MB/s, used) and "average long transfer rate 0.57 MB/s typical". The model follows the spiral read; fine?
 4. **Lone RC25 / RCF25:** real drives are always pairs. Keep allowing a lone RC25 (own spindle) and a lone RCF25 (fixed disk), or enforce pairs?
 5. **Pairing by unit index** (RQ0/RQ1, ...), not by the PLUG register; on the VAX they are the same by default.
-6. **Your RC25 VMS V3.5 image:** which unit is the system disk (cartridge DUA0 or fixed DUA1), is there a second image for the other platter, and which controller type (KLESI?) do you use?
+6. ~~Your RC25 VMS V3.5 image~~: settled 2026-11-06, the system disk is the fixed platter DUA1 (VAX-11/730, default UDA50 controller type).
 
 ## Not done yet (after phase B)
 
 - RX and TU58 later without spin-up/spin-down; tapes afterwards. (The RA60 and the RC25 are done, see phase C steps 3 and 5.)
-- RC25: test with VMS V3.5 (Ulli's image); the open questions above.
+- RC25: the open questions above (VMS V3.5 tests done, 2026-11-06).
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.
 - Installing the `sound/` directory with `make install`/CMake packaging.

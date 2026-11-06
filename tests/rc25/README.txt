@@ -1,4 +1,4 @@
-open-simh-extended/tests/rc25/README.txt  v1 (2026-11-06)
+open-simh-extended/tests/rc25/README.txt  v2 (2026-11-06; v2: rc25test.py)
 
 RC25 sound realism tests on the MicroVAX 3900 simulator (console and VMB
 only, no operating system).  Run them from the directory that holds the
@@ -33,3 +33,11 @@ c9b    the same with DETACH/ATTACH instead of the button     ?53 too: not relate
 
 Set SET DEBUG only after the console self-test (the expect lines do
 this): debug output during the self-test causes ?53 errors by itself.
+
+VMS V3.5 tests (VAX-11/730; the system disk is an RCF25 image, e.g. Ulli's
+VMS035.RC25; the image is copied, not changed):
+
+    python3 -I tests/rc25/rc25test.py BIN/vax730 VMS035.RC25 <work dir> [N1] [R1]
+
+N1 normal mode, R1 realism mode; see the header of rc25test.py and the
+handover (section "Tests with VMS V3.5 on the VAX-11/730").
