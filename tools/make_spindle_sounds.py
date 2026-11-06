@@ -1,4 +1,4 @@
-# open-simh-extended/tools/make_spindle_sounds.py  v1
+# open-simh-extended/tools/make_spindle_sounds.py  v2
 #
 # Synthesizes the optional spindle sounds of the SIMH sound system for every
 # removable-media disk drive with a RUN/STOP (or LOAD) button:
@@ -14,6 +14,13 @@
 # overridden on the command line, e.g. when SPINUP/SPINDOWN are changed:
 # the sounds should last exactly as long as the drive takes in SIMH.
 #
+# v2 (2026-11-06): the RC25 (rc25, 2850 rpm, start 60 s, stop 30 s) and the
+# optional row field "reach": the time (s) in which the motor reaches the
+# nominal speed, when the drive's start time is longer than the run-up
+# (RC25: the 60 s include the air purge and the self-test).  The rest of
+# the spin-up sound runs at the nominal speed.  With --spinup the reach
+# time scales with the spin-up time.
+#
 # Model (as in make_rk07_spindle.py v1):
 # - The spindle turns at f(t) revolutions per second (2400 rpm = 40 Hz).
 # - Motor sound = sum of harmonics of f(t), with a "whine" region in the
@@ -25,7 +32,8 @@
 #   drives also the blower), band-limited around a drive-specific centre
 #   frequency, level rising with speed^2.
 # - Spin-up f(t) = F (1 - e^(-t/tau)) / (1 - e^(-T/tau)) with tau = 0.3 T:
-#   fast at first, reaching the nominal speed exactly at T.  Spin-down:
+#   fast at first, reaching the nominal speed exactly at T (T = the reach
+#   time if the row has one, else the spin-up time).  Spin-down:
 #   exponential decay (friction, brake) with tau = 0.23 T, reaching zero
 #   exactly at T.
 # - Frequencies come from phase accumulators, so the pitch glides smoothly.
@@ -67,10 +75,13 @@ H_LARGE = {1: 1.0, 2: 0.70, 3: 0.50, 4: 0.40, 5: 0.25, 6: 0.30, 7: 0.15,        
            8: 0.18, 9: 0.10, 10: 0.12, 12: 0.10, 14: 0.05}
 H_RA60 = {1: 1.0, 2: 0.60, 3: 0.45, 4: 0.35, 5: 0.22, 6: 0.28, 7: 0.12,         # RA60: quieter motor,
           8: 0.16, 9: 0.10, 10: 0.14, 12: 0.12, 15: 0.06, 18: 0.04}            # more electronics hum
+H_RC25 = {1: 1.0, 2: 0.50, 3: 0.40, 4: 0.25, 5: 0.15, 6: 0.20, 8: 0.16,         # RC25: small 8" platters,
+          10: 0.10, 12: 0.14, 14: 0.10, 16: 0.08, 20: 0.05, 24: 0.03}          # brushless motor, quiet (53 dB)
 
 # One row per sound prefix (= sound directory of the drive type in SIMH).
 #   rpm, up, down: nominal speed, spin-up and spin-down seconds (the SIMH
 #                  SPINUP/SPINDOWN defaults; "prov." = provisional there)
+#   reach:         optional: seconds to the nominal speed if shorter than up
 #   harm, drive:   harmonic profile, tanh distortion drive
 #   noise, nc, nw: air-noise level at speed, band centre (Hz), band width (octave-ish)
 DRIVES = {
@@ -90,6 +101,9 @@ DRIVES = {
                  harm=H_LARGE, drive=2.4, noise=0.18, nc=400.0, nw=1.0),
     "ra60": dict(desc="RA60 (RQ), DEC: start 35 s, stop 35 s", rpm=3600, up=35, down=35,
                  harm=H_RA60, drive=2.0, noise=0.14, nc=600.0, nw=0.9),
+    "rc25": dict(desc="RC25 (RQ), DEC: start 60 s incl. purge/self-test, stop 30 s; run-up 25 s prov.",
+                 rpm=2850, up=60, down=30, reach=25,
+                 harm=H_RC25, drive=1.8, noise=0.12, nc=750.0, nw=0.9),
 }
 # Not here: RM80 and RP07 are fixed disks (no RUN/STOP button, SIMH plays no
 # spindle sounds for them); RX01/RX02, RX50/RX33 and TU58 have no spin-up.
@@ -129,11 +143,12 @@ class Synth:
         speed = freq / self.F
         return speed ** 1.3 * self.harmonics(phase, speed) + self.noise(len(freq), speed)
 
-    def make(self, t_up, t_down):
+    def make(self, t_up, t_down, t_reach):
         F = self.F
         t = np.arange(int(round(t_up * RATE))) / RATE
-        tau = 0.3 * t_up
-        up = F * (1 - np.exp(-t / tau)) / (1 - np.exp(-t_up / tau))
+        tau = 0.3 * t_reach
+        up = F * (1 - np.exp(-t / tau)) / (1 - np.exp(-t_reach / tau))
+        up = np.minimum(up, F)                          # at speed after t_reach
         t = np.arange(int(round(t_down * RATE))) / RATE
         tau_d = 0.233 * t_down
         down = F * (np.exp(-t / tau_d) - np.exp(-t_down / tau_d)) / (1 - np.exp(-t_down / tau_d))
@@ -192,15 +207,16 @@ def main():
             p["rpm"] = a.rpm
         t_up = a.spinup or p["up"]
         t_down = a.spindown or p["down"]
+        t_reach = t_up * min(1.0, p.get("reach", p["up"]) / p["up"])   # scales with --spinup
         seed = a.seed if a.seed is not None else zlib.crc32(n.encode())
-        s_up, s_run, s_down, revs, n_loop = Synth(p, seed).make(t_up, t_down)
+        s_up, s_run, s_down, revs, n_loop = Synth(p, seed).make(t_up, t_down, t_reach)
         d = os.path.join(a.outdir, n) if a.tree else a.outdir
         os.makedirs(d, exist_ok=True)
         write(os.path.join(d, n + "_spinup.wav"), s_up)
         write(os.path.join(d, n + "_running.wav"), s_run)
         write(os.path.join(d, n + "_spindown.wav"), s_down)
-        print("%-5s %4g rpm: spin-up %g s, loop %d revolutions (%.3f s), spin-down %g s -> %s"
-              % (n, p["rpm"], t_up, revs, n_loop / RATE, t_down, d))
+        print("%-5s %4g rpm: spin-up %g s (at speed after %g s), loop %d revolutions (%.3f s), spin-down %g s -> %s"
+              % (n, p["rpm"], t_up, t_reach, revs, n_loop / RATE, t_down, d))
     return 0
 
 

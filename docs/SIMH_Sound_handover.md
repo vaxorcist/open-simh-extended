@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v12 (RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v13 (RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02. Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -475,9 +475,83 @@ The device table is at v3: RB80 with 31 sectors per track.
   - the loop wraps without error: harmonics 4·10⁻¹³, noise periodic.
 - The generated WAV files are not part of the patch, like the RK07 ones.
 
+## Phase C, step 5: RC25 on the MSCP controllers (RQ device) (2026-11-06)
+
+### Where things are
+
+- Branch `sound` of vaxorcist/open-simh-extended: commit 76d3fd07 on top of 1e0e392; branch `integration`: the same change as 0c1bc2a8.
+- Patch **`opensimh_5_sound_v12.patch`** (cumulative, replaces v1–v11, applies on top of `opensimh_6_rb730_v1.patch`; like v11 without the Visual Studio project files). Checked by `git am --keep-cr` on a fresh 87eb7d5: patches 6 + 5 give exactly the tree of v11 plus the RC25 commit; the full order 1, 2, 3, 4, 6, 5 applies.
+- Changed files: `PDP11/pdp11_rq.c` (pdp11 and every VAX with an MSCP controller), `sim_sound.c` (known issues case 23). New: `sound/rc25` with `rc25-s/m/l.wav` (copies of the RK07 seek sounds) and a `README.txt`.
+- Source of the drive facts: **RC25 Disk Subsystem User Guide, EK-ORC25-UG-002** (Sep 1983), supplied by Ulli.
+
+### Facts from the RC25 User Guide
+
+| Item | Value |
+|---|---|
+| Platters | two 8" platters on **one spindle**: removable cartridge (even unit number) and fixed platter (next odd unit number) |
+| Capacity | 26,061,824 bytes per platter = 50,902 blocks of 512 bytes (31 sectors × 2 surfaces × 821 cylinders) |
+| Speed | 2850 ± 9 rpm; average latency 10.5 ms, maximum 21.0 ms |
+| Seek | one track 10 ms, average 35 ms max., maximum 55 ms max.; average access 45.5 ms |
+| Spiral read | 31 ms per track, 50 s per platter, 1 min 40 s per drive |
+| Start / stop | 60 s (includes purge and self-test) / 30 s |
+| Run button | alternate action; spins both platters up or down. The host can spin the drive down while Run is pressed; release and press Run again to start it |
+| Cartridge | "The fixed disk does not spin-up and run without a removable cartridge in place" |
+| Write protect | one button per platter (SIMH: SET RQn LOCKED per unit, as before) |
+| Master/slave | a master drive has the controller and serves up to two spindles (overlapped seeks) |
+
+### Behavior
+
+- **Pairs:** an RCF25 belongs to the RC25 in the unit just before it, at an even unit (RQ0/RQ1, RQ2/RQ3, ...). An RCF25 without such an RC25 is a fixed disk of its own, as before. A lone RC25 has its own spindle.
+- **Run button:** `SET RQn ONLINE` / `OFFLINE` on **either** unit of a pair acts on the one spindle; `SHOW RQn SPINDLE` shows it ("spindle of RQ0: online", "no cartridge in RQ0, stopped", ...). ONLINE needs the cartridge (RC25 unit attached).
+- **Realism mode:**
+  - ATTACH only loads the cartridge (or the fixed platter's image); the drive waits for ONLINE. Spin-up `SPINUPRC25` 60000 ms, spin-down `SPINDOWNRC25` 30000 ms; at the prompt the commands wait unless `SET -N`.
+  - While the spindle is not up to speed, both units report "offline, no volume"; spinning down takes both out of the online state; at speed both get the "available" attention.
+  - No cartridge: the RCF25 stays offline; DETACH of the cartridge stops the fixed platter too.
+  - AVAILABLE with spin-down (VMS `DISMOUNT/UNLOAD`) on either unit spins the drive down **only if the other unit is not online** to the host (otherwise the unit only becomes available). See open question 1.
+  - Timing (both units, **one shared actuator**): seek curve fitted to 10/35/55 ms (exponent 0.512), rotational latency 0..21.05 ms, 31 sector slots per revolution (0.679 ms per block), plus 9.95 ms per track crossed (31 ms spiral read − one revolution). The model's average access is 45.5 ms, as published.
+  - Seek sounds `sound/rc25/rc25-s/m/l.wav`, limits `SEEKRC25S` / `SEEKRC25M` = 50 / 300 cylinders (821 cylinders). Optional `rc25_spinup.wav`, `rc25_running.wav`, `rc25_spindown.wav`.
+- **Normal mode:** timing unchanged (QTIME/XTIME); ATTACH of the cartridge spins up at once; the Run button acts on both units at once; an RCF25 works without a cartridge in its RC25 (as before), SHOW says so.
+- The RA60 code is now table driven (`rq_rlz_types[]`: one entry per drive type); RA60 behavior and timing are unchanged (test c5). `SET RQ DEBUG=TRACE` now logs each realistic transfer: LBN, blocks, cylinders, time.
+
+### Tests (MicroVAX 3900 console, no operating system yet; `tests/rc25/` on the notes branch)
+
+| Test | Result |
+|---|---|
+| c1 (realism): RCF25 without cartridge: SHOW "no cartridge in RQ0, stopped", ONLINE refused; cartridge attached: "offline"; `SET RQ1 ONLINE` spins up the drive of RQ0 (waits 2 s) | ok |
+| c1: lone RCF25 at RQ2: "fixed disk", ONLINE refused; RA60 without pack refused | ok |
+| c1: console SHOW DEVICE lists DUA0 (RC 25), DUA1 (RCF25); BOOT DUA1 reads the blank disk (`?43 FILESTRUCT`) | ok |
+| c1: OFFLINE via RQ0 waits 1.5 s; `SET -N RQ0 ONLINE` then DETACH RQ0 during the spin-up: RQ1 "no cartridge in RQ0, stopped" | ok |
+| c2 (realism): BOOT DUA1 with the drive stopped | `?4D DEVOFFLINE` |
+| c4 (realism): VMB boot block loads 100 blocks at LBN 40000 of DUA1 | long seek 645 cylinders, 156.8 ms (model 147–168 ms) |
+| c4: then BOOT DUA0 (cartridge) | first read seeks **646 cylinders back** (shared actuator, 51.4 ms); 10 blocks at LBN 3000: short seek 48 cylinders, 50.5 ms |
+| c5: RA60 regression (realism), 50 blocks at LBN 300000 | long seek 1190 cylinders, 86.2 ms (old model 80.2–96.9 ms) |
+| c6 (normal mode): RCF25 alone boots; with cartridge both "online"; `SET RQ1 OFFLINE` → BOOT DUA1 `?4D DEVOFFLINE`; ONLINE, DETACH of the cartridge → RCF25 boots again | ok |
+| pdp11 with `SET RQ KLESI`, RC25/RCF25: `SET -N RQ0 ONLINE` → "spinning up, 60.0 s left" | ok |
+| Build (`-Werror`, no warnings): microvax3900, microvax2, pdp11, vax730, vax750, vax780, vax8600; `pdp11_rq.c` and `sim_sound.c` also with `-Wall -Wextra` | ok |
+| VAX diagnostics 730/750/780, MicroVAX 3900 core test | passed |
+| VMS on an RC25 | **not tested yet**: Ulli is preparing a VMS V3.5 RC25 image |
+
+Found while testing (not changed): known issues case 22 (`?53` self-test error after a failed VMB boot; also with plain ATTACH in normal mode) and case 24 (RC25 on any controller type).
+
+### Spindle sounds and device table
+
+- `tools/make_spindle_sounds.py` **v2**: new drive `rc25` (2850 rpm, spin-up 60 s, spin-down 30 s) and the row field `reach`: the motor is at speed after 25 s (provisional), the rest of the 60 s spin-up (purge, self-test) runs at speed. Check: lengths 60.00 / 2.000 / 30.00 s, level −15.3 dBFS at the end of the spin-up, in the loop and −15.8 at the start of the spin-down, peak −6.9 dBFS, loop of 95 revolutions without a seam. Other drives unchanged.
+- `docs/SIMH_Sound_devices.ods` table **v4**: rows RC25 and RCF25 (generator `tools/make_sound_devices_ods.py` v5).
+- New tool `tools/make_vmb_seek_disk.py` v2: a raw disk image with a MicroVAX VMB boot block that loads N blocks at a given LBN, to drive realistic transfers from the console.
+
+### Open questions (RC25)
+
+1. **Host spin-down while the other platter is online:** the guide only says the host can spin the drive down. Implemented: AVAILABLE with spin-down spins down only if the other unit is not online. Should it spin down anyway (and take the other unit offline)?
+2. **Run-up within the 60 s start time** (for the spin-up sound only): assumed 25 s to speed, then purge and self-test at speed. Do you know (or can you hear on a real RC25) how long the motor itself takes?
+3. **Transfer rate:** the guide gives both "spiral read 31 ms per track" (0.51 MB/s, used) and "average long transfer rate 0.57 MB/s typical". The model follows the spiral read; fine?
+4. **Lone RC25 / RCF25:** real drives are always pairs. Keep allowing a lone RC25 (own spindle) and a lone RCF25 (fixed disk), or enforce pairs?
+5. **Pairing by unit index** (RQ0/RQ1, ...), not by the PLUG register; on the VAX they are the same by default.
+6. **Your RC25 VMS V3.5 image:** which unit is the system disk (cartridge DUA0 or fixed DUA1), is there a second image for the other platter, and which controller type (KLESI?) do you use?
+
 ## Not done yet (after phase B)
 
-- RX and TU58 later without spin-up/spin-down; tapes afterwards. (The RA60 is done, see phase C step 3.)
+- RX and TU58 later without spin-up/spin-down; tapes afterwards. (The RA60 and the RC25 are done, see phase C steps 3 and 5.)
+- RC25: test with VMS V3.5 (Ulli's image); the open questions above.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.
 - Installing the `sound/` directory with `make install`/CMake packaging.

@@ -1,0 +1,35 @@
+open-simh-extended/tests/rc25/README.txt  v1 (2026-11-06)
+
+RC25 sound realism tests on the MicroVAX 3900 simulator (console and VMB
+only, no operating system).  Run them from the directory that holds the
+disk images, e.g. with SDL_AUDIODRIVER=dummy on a host without audio:
+
+    BIN/microvax3900 tests/rc25/c1.ini
+
+Images for c4, c5, c6, c9, c9b (raw, LBN order, made by
+tools/make_vmb_seek_disk.py; block 0 is a VMB boot block, the loaded
+blocks are zero = HALT):
+
+    python3 -I tools/make_vmb_seek_disk.py rcf.img 50902 40000 100
+    python3 -I tools/make_vmb_seek_disk.py rcr.img 50902 3000 10
+    python3 -I tools/make_vmb_seek_disk.py ra60.img 400176 300000 50
+
+c1, c2 and c6 create their own empty images (ATTACH -N).
+
+Test   What                                                  Expected
+-----  ----------------------------------------------------  ---------------------------------
+c1     realism: pairing, Run button on either unit, no       messages as in the handover
+       start without a cartridge, waits, DETACH, HELP RQ
+c2     realism: BOOT DUA1 with the drive stopped             ?4D DEVOFFLINE
+c4     realism: VMB transfers, SET RQ DEBUG=TRACE timing     DUA1: long seek 645 cyl, ~157 ms;
+                                                             DUA0 seeks back from cyl 646
+                                                             (shared actuator)
+c5     RA60 regression (realism)                             long seek 1190 cyl, 80..97 ms
+c6     normal mode: RCF25 without cartridge, Run button      boots; OFFLINE -> ?4D; DETACH of
+       acts on both units, DETACH of the cartridge           the cartridge -> RCF25 boots
+c9     ?53 self-test error after a failed VMB boot and       see known issues case 22
+       SET RQ0 ONLINE (RA60, normal mode)
+c9b    the same with DETACH/ATTACH instead of the button     ?53 too: not related to the sound work
+
+Set SET DEBUG only after the console self-test (the expect lines do
+this): debug output during the self-test causes ?53 errors by itself.

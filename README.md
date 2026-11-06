@@ -1,4 +1,4 @@
-<!-- open-simh-extended/README.md  v1 (branch notes, 2026-11-05) -->
+<!-- open-simh-extended/README.md  v2 (branch notes, 2026-11-06; v2: RC25, patch 5 v12) -->
 # open-simh-extended: notes, tools and tests
 
 This is the `notes` branch of **vaxorcist/open-simh-extended**, a fork of
@@ -19,7 +19,7 @@ meant to go back to Open SIMH as separate pull requests, one per topic.
 | DMC11/DMR11 fixes for the ULTRIX-32 V1.1 `if_dmc` driver | `dmc-ultrix` | all with the DMC device |
 | VAX 8200 DWBUA: interrupts at all BI levels, Unibus init on self-test (VMS V4.7 boots) | `vax8200-uba` | VAX 8200 |
 | RB730: DEC logical block order (RB02 images interchangeable with the RL11), SIMH disk library (VHD, autosize), status, seek and range fixes | `rb730` | VAX-11/730 |
-| Common SDL2 sound system and a realism mode (`SET SOUND ENABLED`): power and blower sounds, RUN/STOP buttons, spin-up/spin-down, realistic seek and transfer times and seek sounds for the RK06/07, RL01/02, Massbus packs (RP04–RP07, RM03/05/80), RA60 and RB02/RB80 | `sound` | all (sound for the disks above) |
+| Common SDL2 sound system and a realism mode (`SET SOUND ENABLED`): power and blower sounds, RUN/STOP buttons, spin-up/spin-down, realistic seek and transfer times and seek sounds for the RK06/07, RL01/02, Massbus packs (RP04–RP07, RM03/05/80), RA60, RC25/RCF25 and RB02/RB80 | `sound` | all (sound for the disks above) |
 
 The branch `integration` has all of it together, in the right order. It is
 the one to build and run:
@@ -78,6 +78,7 @@ make vax780              # or any other simulator; SDL2 development files for so
 |---|---|
 | `rb730_layout_convert.py` | converts RB02/RB80 images between the old RB730 layout of earlier SIMH versions and the standard layout (DEC logical block order): `python3 -I tools/rb730_layout_convert.py {old2std\|std2old} {rb02\|rb80} <input> <output>` |
 | `make_spindle_sounds.py` | generates the synthetic spindle sounds of the disks, with the drive characteristics as parameters |
+| `make_vmb_seek_disk.py` | makes a raw MSCP disk image whose VMB boot block loads N blocks at a given LBN (drives realistic transfers from the MicroVAX console): `python3 -I tools/make_vmb_seek_disk.py <image> <blocks> <lbn> <size>` |
 | `make_sound_devices_ods.py` | builds `docs/SIMH_Sound_devices.ods`; when a device gets sound support, add it there and run `python3 tools/make_sound_devices_ods.py docs/SIMH_Sound_devices.ods` |
 
 ### tests/
@@ -90,6 +91,7 @@ make vax780              # or any other simulator; SDL2 development files for so
 | `rb730/rbtest.py` | RB730 regression: VMS V3.5 on the VAX-11/730 (RB80 and RB02), then the RB02 cartridge on the VAX-11/750 RL11. The VMS disk images are not included; give their paths in `RBTEST_RB80` and `RBTEST_RP06` |
 | `rb730/mkvhd.ini`, `rb730/mkvhd31.ini` | copy an RB80 image into a VHD container (for the VHD test runs) |
 | `rb730/realism.ini` | realism mode on the VAX-11/730: RB80 and RB02 with RUN/STOP, mount verification and seek sounds |
+| `rc25/` | RC25 realism tests on the MicroVAX 3900 console (`c1`–`c9b`); see `rc25/README.txt` |
 
 ### patches/
 
@@ -103,14 +105,14 @@ git am --keep-cr patches/opensimh_1_dmv11_v10.patch \
                  patches/opensimh_3_vax8200_uba_fix.patch \
                  patches/opensimh_4_dmc_ultrix_v8.patch \
                  patches/opensimh_6_rb730_v1.patch \
-                 patches/opensimh_5_sound_v11.patch
+                 patches/opensimh_5_sound_v12.patch
 ```
 
 - Patch 6 must come before patch 5.
 - Patch 3 and patch 6 also apply on their own; patches 2 and 4 need patch 1.
 - `opensimh_2_dmf32_v6_standalone.patch` is the DMF32 without the
   DMV11/DMP11; use it instead of patches 1 and 2, not together with them.
-- Patch 5 (v11) leaves out the Visual Studio project files, so a Visual
+- Patch 5 (v12) leaves out the Visual Studio project files, so a Visual
   Studio build does not compile `sim_sound.c` yet. The makefile, CMake and
   `descrip.mms` builds are complete. The `sound` branch still has the
   Visual Studio changes.
