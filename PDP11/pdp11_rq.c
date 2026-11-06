@@ -26,6 +26,13 @@
 
    rq           MSCP disk controller
 
+   06-Nov-26    Ulli    Sound realism mode for the RC25: the removable RC25
+                        and the fixed RCF25 of one drive share one spindle and
+                        one actuator (RUN button: SET RQn ONLINE/OFFLINE on
+                        either unit, registers SPINUPRC25/SPINDOWNRC25, the
+                        fixed disk only turns with a cartridge loaded);
+                        realistic RC25 seek/transfer times and seek sounds
+                        (sound/rc25, registers SEEKRC25S/SEEKRC25M)
    04-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED) for the RA60,
                         the removable-pack drive: SET RQn ONLINE/OFFLINE (RUN/
                         STOP button) spins the drive up/down (registers SPINUP,
@@ -1068,62 +1075,118 @@ int32 rq_itime4 = 10;                                   /* stage 4 */
 int32 rq_qtime = RQ_QTIME;                              /* queue time */
 int32 rq_xtime = RQ_XTIME;                              /* transfer time */
 
-/* Sound realism mode (SET SOUND ENABLED) for the RA60
+/* Sound realism mode (SET SOUND ENABLED) for the drives with a RUN/STOP
+   button: the RA60 and the RC25
 
-   The RA60 is the only removable-pack drive of the RA series.  Its RUN/STOP
-   button is SET RQn ONLINE / SET RQn OFFLINE: OFFLINE spins the drive down
-   (the pack stays attached), ONLINE spins it up.  A spindle (SND_SPINDLE,
-   common support in sim_sound) times this with the registers SPINUP and
-   SPINDOWN; at the sim> prompt the commands wait unless SET -N.  While the
-   drive is not up to speed, the unit reports "offline, no volume" (the MSCP
-   status for a drive stopped by its RUN/STOP switch): GET UNIT STATUS and
-   ONLINE fail, transfers end with that status, and a unit that was online
-   loses its online state (the host must bring it online again, e.g. VMS
-   mount verification).  When the drive is up to speed, the controller
-   sends an "available" attention message, as after an ATTACH.
+   The RA60 is the only removable-pack drive of the RA series.  The RC25 is
+   one drive with two platters on one spindle: a removable cartridge (MSCP
+   unit RC25, even unit number) and a fixed platter (unit RCF25, the next
+   odd unit number).  Both platters are reached by one head actuator.  The
+   fixed platter only turns with a cartridge loaded (RC25 User Guide,
+   EK-ORC25-UG-002).  In SIMH an RCF25 belongs to the RC25 in the unit just
+   before it (units 0/1, 2/3, ...); an RCF25 without such a partner is a
+   fixed disk of its own, as before.
 
-   - Realism mode: ATTACH only loads the pack; the drive waits for SET RQn
-     ONLINE.  AVAILABLE with the spin-down modifier (VMS DISMOUNT/UNLOAD)
-     spins the drive down instead of detaching the pack.  Transfers take
-     realistic times: seek t(d) = a + b * d^e (d cylinders) through the
-     track-to-track, average (at a third of the stroke) and maximum seek
-     times, plus rotational latency (0 .. one revolution) and one sector
-     slot (43 per track: 42 + 1 spare) per block, plus a track-to-track seek
-     per cylinder crossed.  Seeks play ra60-s.wav, -m.wav or -l.wav from the
-     sound directory ra60 for short, medium and long seeks (registers
-     SEEKRA60S/SEEKRA60M, in cylinders).  Optional spindle sounds
-     ra60_spinup.wav, ra60_running.wav and ra60_spindown.wav play if found.
+   The RUN/STOP (RA60) or Run (RC25) button is SET RQn ONLINE / SET RQn
+   OFFLINE: OFFLINE spins the drive down (the pack or cartridge stays
+   attached), ONLINE spins it up.  On an RC25 drive both units act on the
+   one spindle.  A spindle (SND_SPINDLE, common support in sim_sound) times
+   this with the registers SPINUP/SPINDOWN (RA60) or SPINUPRC25/
+   SPINDOWNRC25 (RC25); at the sim> prompt the commands wait unless SET -N.
+   While the spindle is not up to speed, the units on it report "offline,
+   no volume" (the MSCP status for a drive stopped by its RUN/STOP switch):
+   GET UNIT STATUS and ONLINE fail, transfers end with that status, and a
+   unit that was online loses its online state (the host must bring it
+   online again, e.g. VMS mount verification).  When the spindle is up to
+   speed, the controller sends an "available" attention message for each
+   attached unit on it, as after an ATTACH.
+
+   - Realism mode: ATTACH only loads the pack or cartridge; the drive waits
+     for SET RQn ONLINE.  An RC25 drive cannot start without a cartridge:
+     ONLINE needs the RC25 unit attached, and DETACH of the cartridge stops
+     the fixed platter too.  AVAILABLE with the spin-down modifier (VMS
+     DISMOUNT/UNLOAD) spins the drive down instead of detaching the pack;
+     on an RC25 drive only if the other unit is not online to the host.
+     Transfers take realistic times: seek t(d) = a + b * d^e (d cylinders)
+     through the track-to-track, average (at a third of the stroke) and
+     maximum seek times, plus rotational latency (0 .. one revolution) and
+     one sector slot per block, plus the time to go on to the next track
+     (RA60: a track-to-track seek per cylinder crossed; RC25: per track
+     crossed, from the spiral read time).  Seeks play <prefix>-s.wav,
+     -m.wav or -l.wav from the drive's sound directory (ra60, rc25) for
+     short, medium and long seeks (registers SEEKRA60S/M, SEEKRC25S/M, in
+     cylinders).  Optional spindle sounds <prefix>_spinup.wav,
+     _running.wav and _spindown.wav play if found.
    - Normal mode: ATTACH spins up at once and ONLINE/OFFLINE take effect at
-     once; the timing is unchanged (QTIME/XTIME).
+     once; the timing is unchanged (QTIME/XTIME).  An RCF25 whose RC25 has
+     no cartridge works as before (it is ready when attached).
 
-   Fixed RA/RD/RF drives are unchanged in both modes.
+   Other fixed RA/RD/RF drives are unchanged in both modes.
 
-   Published RA60 figures (DEC RA60/RA80/RA81 brochure, Aug 1982): 3600 rpm,
-   seek 7 ms track-to-track, 42 ms average, 70 ms maximum, start 35 s,
-   stop 35 s.
+   Published figures:
+   - RA60 (DEC RA60/RA80/RA81 brochure, Aug 1982): 3600 rpm, seek 7 ms
+     track-to-track, 42 ms average, 70 ms maximum, start 35 s, stop 35 s.
+   - RC25 (RC25 Disk Subsystem User Guide, EK-ORC25-UG-002, Sep 1983):
+     2850 rpm, seek 10 ms one track, 35 ms average, 55 ms maximum, spiral
+     read 31 ms per track, start 60 s (including purge and self-test), stop
+     30 s; 31 sectors, 2 surfaces, 821 cylinders per platter (50,902
+     blocks; geometry from the Computer History Wiki and the table above).
 
    The per-unit realism state (spindle, current cylinder) is allocated when
    first needed, since a controller can have up to RQ_MAXDR units. */
 
-#define RA60_SND        "ra60"                          /* sound directory and prefix */
-#define RA60_RPM        3600.0
-#define RA60_T2T_MS     7.0                             /* track-to-track seek */
-#define RA60_AVG_MS     42.0                            /* average seek */
-#define RA60_MAX_MS     70.0                            /* maximum seek */
 #define RQ_SEEK_GAIN    0.3
 #define RQ_SPIN_GAIN    1.0
 
-typedef struct {
-    SND_SPINDLE         sp;                             /* the drive's spindle */
-    int32               cyl;                            /* current cylinder */
-    } RQ_RLZ;
-
 int32 rq_spinup_ms = 35000;                             /* realism: RA60 spin-up time (ms) */
 int32 rq_spindown_ms = 35000;                           /* realism: RA60 spin-down time (ms) */
-int32 rq_seek60s = 100;                                 /* short seek up to n cylinders */
-int32 rq_seek60m = 600;                                 /* medium seek up to n cylinders */
+int32 rq_seek60s = 100;                                 /* RA60 short seek up to n cylinders */
+int32 rq_seek60m = 600;                                 /* RA60 medium seek up to n cylinders */
+int32 rq_spinup25_ms = 60000;                           /* realism: RC25 spin-up time (ms) */
+int32 rq_spindown25_ms = 30000;                         /* realism: RC25 spin-down time (ms) */
+int32 rq_seek25s = 50;                                  /* RC25 short seek up to n cylinders */
+int32 rq_seek25m = 300;                                 /* RC25 medium seek up to n cylinders */
+
+/* Drive types with realistic timing */
+
+typedef struct {
+    uint32      dtype;                                  /* drive type (RCF25: shares the RC25 entry) */
+    const char  *name;                                  /* for messages */
+    const char  *snd;                                   /* sound directory and prefix */
+    double      rpm;                                    /* rotation speed */
+    double      t2t_ms;                                 /* track-to-track seek */
+    double      avg_ms;                                 /* average seek */
+    double      max_ms;                                 /* maximum seek */
+    double      next_trk_ms;                            /* to the next track (0: t2t per cylinder) */
+    uint32      sect;                                   /* sectors per track */
+    uint32      slots;                                  /* sector slots per revolution */
+    uint32      surf;                                   /* surfaces (tracks per cylinder) */
+    uint32      cyl;                                    /* cylinders */
+    int32       *spinup_ms;                             /* spin-up time register */
+    int32       *spindown_ms;                           /* spin-down time register */
+    int32       *seek_s;                                /* short seek limit register */
+    int32       *seek_m;                                /* medium seek limit register */
+    SND_SAMPLE  *smp[3];                                /* seek sounds */
+    t_bool      fitted;                                 /* seek curve fitted? */
+    double      ea, ca, cb;                             /* t(d) = ca + cb * d^ea (ms) */
+    } RQ_RLZ_TYPE;
+
+static RQ_RLZ_TYPE rq_rlz_types[] = {
+    { RA60_DTYPE, "RA60", "ra60", 3600.0, 7.0,  42.0, 70.0, 0.0,
+      42, 43, 6, 1600,                                  /* 42 + 1 spare slot per track */
+      &rq_spinup_ms, &rq_spindown_ms, &rq_seek60s, &rq_seek60m },
+    { RC25_DTYPE, "RC25", "rc25", 2850.0, 10.0, 35.0, 55.0, 31.0 - 60000.0 / 2850.0,
+      31, 31, 2, 821,                                   /* next track: spiral 31 ms - 1 rev */
+      &rq_spinup25_ms, &rq_spindown25_ms, &rq_seek25s, &rq_seek25m },
+    };
+
+typedef struct {
+    SND_SPINDLE         sp;                             /* the drive's spindle (owner unit) */
+    RQ_RLZ_TYPE         *sp_type;                       /* type the spindle is set up for */
+    int32               cyl;                            /* current cylinder (actuator) */
+    } RQ_RLZ;
+
 static RQ_RLZ *rq_rlz[RQ_NUMCT][RQ_MAXDR + 2];          /* per-unit realism state */
-static SND_SAMPLE *rq_seek_smp[3];                      /* RA60 seek sounds */
 static uint32 rq_rand_state = 1;                        /* rotational latency */
 
 typedef struct {
@@ -1224,10 +1287,13 @@ t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr
 const char *rq_description (DEVICE *dptr);
 t_stat rq_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rq_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
-static t_bool rq_is_ra60 (UNIT *uptr);
-static RQ_RLZ *rq_rlz_get (UNIT *uptr);
+static RQ_RLZ_TYPE *rq_rlz_type (UNIT *uptr);
+static UNIT *rq_spindle_owner (UNIT *uptr);
 static t_bool rq_ready (UNIT *uptr);
 static void rq_spin_down (UNIT *uptr);
+static t_bool rq_avl_spins_down (UNIT *uptr);
+static t_bool rq_rlz_attach (UNIT *uptr);
+static void rq_rlz_detach (UNIT *uptr);
 static double rq_rlz_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc);
 
 t_bool rq_step4 (MSC *cp);
@@ -1333,6 +1399,10 @@ REG rq_reg[] = {
     { DRDATAD (SPINDOWN, rq_spindown_ms,            24, "RA60 spin-down time in ms (sound realism mode)"), PV_LEFT },
     { DRDATAD (SEEKRA60S, rq_seek60s,               24, "RA60 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEKRA60M, rq_seek60m,               24, "RA60 medium seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SPINUPRC25, rq_spinup25_ms,          24, "RC25 spin-up time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWNRC25, rq_spindown25_ms,      24, "RC25 spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SEEKRC25S, rq_seek25s,               24, "RC25 short seek sound up to n cylinders"), PV_LEFT },
+    { DRDATAD (SEEKRC25M, rq_seek25m,               24, "RC25 medium seek sound up to n cylinders"), PV_LEFT },
     { VBRDATAD (PKTS,   rq_ctx.pak,     DEV_RDX,    16, sizeof(rq_ctx.pak)/2, "packet buffers, 33W each, 32 entries") },
     { URDATAD (CPKT,    rq_unit[0].cpkt, 10, 5, 0, RQ_NUMDR, 0, "current packet, units 0 to 3") },
     { URDATAD (UCNUM,   rq_unit[0].cnum, 10, 5, 0, RQ_NUMDR, 0, "ctrl number, units 0 to 3") },
@@ -1352,11 +1422,11 @@ MTAB rq_mod[] = {
     { MTAB_XTD|MTAB_VUN,        1,  NULL, "LOCKED", 
         &rq_set_wlk, NULL, NULL, "Write lock disk drive"  },
     { MTAB_XTD|MTAB_VUN,        1,  NULL, "ONLINE",
-        &rq_set_online, NULL, NULL, "RA60 RUN/STOP button: spin the drive up" },
+        &rq_set_online, NULL, NULL, "RA60/RC25 RUN/STOP button: spin the drive up" },
     { MTAB_XTD|MTAB_VUN,        0,  NULL, "OFFLINE",
-        &rq_set_online, NULL, NULL, "RA60 RUN/STOP button: spin the drive down" },
+        &rq_set_online, NULL, NULL, "RA60/RC25 RUN/STOP button: spin the drive down" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SPINDLE", NULL,
-        NULL, &rq_show_spindle, NULL, "Display the RA60 spindle state" },
+        NULL, &rq_show_spindle, NULL, "Display the RA60/RC25 spindle state" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_RI, "RINGS", NULL,
       NULL, &rq_show_ctrl, NULL, "Display command and response rings" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_FR, "FREEQ", NULL,
@@ -2128,11 +2198,17 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
         }
     uptr->flags = uptr->flags & ~UNIT_ONL;              /* not online */
     if ((mdf & MD_SPD) && RQ_RMV (uptr)) {              /* unload of removable device */
-        if (sim_sound_enabled () && rq_is_ra60 (uptr))  /* realism: the RA60 */
-            rq_spin_down (uptr);                        /* spins down, pack stays */
+        if (sim_sound_enabled () && (rq_spindle_owner (uptr) != NULL)) {
+            if (rq_avl_spins_down (uptr))               /* realism: RA60, RC25 */
+                rq_spin_down (uptr);                    /* spin down, pack stays */
+            }
         else
             sim_disk_unload (uptr);
         }
+    else if ((mdf & MD_SPD) && sim_sound_enabled () &&  /* realism: RCF25 of an */
+             (rq_spindle_owner (uptr) != NULL) &&       /* RC25 drive: the one */
+             rq_avl_spins_down (uptr))                  /* spindle */
+        rq_spin_down (uptr);
     uptr->uf = 0;                                       /* clr flags */
     sts = ST_SUC;                                       /* success */
     }
@@ -2383,7 +2459,7 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
         cp->pak[pkt].d[RW_WMPL] = cp->pak[pkt].d[RW_MAPL];
         cp->pak[pkt].d[RW_WMPH] = cp->pak[pkt].d[RW_MAPH];
         uptr->iostarttime = sim_grtime();
-        if (sim_sound_enabled () && rq_is_ra60 (uptr))  /* realism: seek, rotation, */
+        if (sim_sound_enabled () && (rq_rlz_type (uptr) != NULL)) /* realism: seek, */
             sim_sound_activate_us (uptr,                /* sector times, seek sound */
                 rq_rlz_xfer_us (uptr, GETP32 (pkt, RW_LBNL), GETP32 (pkt, RW_BCL)));
         else
@@ -3333,20 +3409,8 @@ r = sim_disk_attach_ex (uptr, cptr, RQ_NUMBY, sizeof (uint16), dontchangecapac, 
 if (r != SCPE_OK)
     return r;
 
-if (rq_is_ra60 (uptr)) {                                /* the RA60 spindle */
-    RQ_RLZ *rz = rq_rlz_get (uptr);
-
-    if (rz == NULL)
-        return SCPE_MEM;
-    rz->cyl = 0;                                        /* heads at home */
-    if (sim_sound_enabled ()) {                         /* realism: pack loaded, */
-        sim_sound_seek_load (rq_seek_smp, RA60_SND, RA60_SND);
-        sim_spindle_load (&rz->sp, RA60_SND, RA60_SND);
-        sim_spindle_off (&rz->sp);                      /* waits for SET RQn ONLINE */
-        return SCPE_OK;
-        }
-    sim_spindle_ready (&rz->sp);                        /* ATTACH spins up */
-    }
+if (!rq_rlz_attach (uptr))                              /* realism: waits for ONLINE */
+    return SCPE_OK;
 if ((cp->csta == CST_UP) && sim_disk_isavailable (uptr))
     uptr->flags = uptr->flags | UNIT_ATP;
 return SCPE_OK;
@@ -3363,8 +3427,7 @@ if (r != SCPE_OK)
     return r;
 uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP);     /* clr onl, atn pend */
 uptr->uf = 0;                                           /* clr unit flgs */
-if (rq_is_ra60 (uptr) && (rq_rlz_get (uptr) != NULL))
-    sim_spindle_off (&rq_rlz_get (uptr)->sp);           /* the pack is gone */
+rq_rlz_detach (uptr);                                   /* the pack is gone */
 return SCPE_OK;
 } 
 
@@ -3704,12 +3767,8 @@ if (val & RQ_SH_UN) {
 return SCPE_OK;
 }
 
-/* Sound realism mode: the RA60 (see the description at rq_spinup_ms) */
-
-static t_bool rq_is_ra60 (UNIT *uptr)
-{
-return (GET_DTYPE (uptr->flags) == RA60_DTYPE);
-}
+/* Sound realism mode: the RA60 and the RC25 (see the description at
+   rq_spinup_ms) */
 
 /* Unit index within its controller */
 
@@ -3718,22 +3777,96 @@ static int32 rq_unit_index (UNIT *uptr)
 return (int32) (uptr - rq_devmap[uptr->cnum]->units);
 }
 
-/* The spindle is up to speed: the unit is available again, so the
-   controller sends an "available" attention message (rq_tmrsvc). */
+/* The RC25 that an RCF25 belongs to: the unit just before it, if that is
+   an RC25 and the RCF25 has an odd unit index.  NULL for anything else. */
 
-static void rq_on_ready (UNIT *uptr)
+static UNIT *rq_rc25_of (UNIT *uptr)
+{
+int32 u;
+
+if (GET_DTYPE (uptr->flags) != RCF25_DTYPE)
+    return NULL;
+u = rq_unit_index (uptr);
+if (((u & 1) == 0) || (u >= RQ_MAXDR))
+    return NULL;
+if (GET_DTYPE (rq_devmap[uptr->cnum]->units[u - 1].flags) != RC25_DTYPE)
+    return NULL;
+return &rq_devmap[uptr->cnum]->units[u - 1];
+}
+
+/* The RCF25 that belongs to an RC25 (the unit just after it), NULL if none */
+
+static UNIT *rq_rcf25_of (UNIT *uptr)
+{
+int32 u;
+UNIT *fptr;
+
+if (GET_DTYPE (uptr->flags) != RC25_DTYPE)
+    return NULL;
+u = rq_unit_index (uptr);
+if (((u & 1) != 0) || ((u + 1) >= RQ_MAXDR))
+    return NULL;
+fptr = &rq_devmap[uptr->cnum]->units[u + 1];
+return (rq_rc25_of (fptr) == uptr) ? fptr : NULL;
+}
+
+/* The unit that owns the spindle (RUN/STOP button) a unit turns on: the
+   unit itself for an RA60 and an RC25, the RC25 for an RCF25 that belongs
+   to one; NULL for a unit without a button (fixed disks, a lone RCF25). */
+
+static UNIT *rq_spindle_owner (UNIT *uptr)
+{
+switch (GET_DTYPE (uptr->flags)) {
+    case RA60_DTYPE:
+    case RC25_DTYPE:
+        return uptr;
+    case RCF25_DTYPE:
+        return rq_rc25_of (uptr);
+    default:
+        return NULL;
+    }
+}
+
+/* The realistic timing of a unit's drive type, NULL if none.  An RCF25
+   uses the RC25 entry, whether it belongs to an RC25 or not. */
+
+static RQ_RLZ_TYPE *rq_rlz_type (UNIT *uptr)
+{
+uint32 dt = GET_DTYPE (uptr->flags);
+size_t i;
+
+if (dt == RCF25_DTYPE)
+    dt = RC25_DTYPE;
+for (i = 0; i < sizeof (rq_rlz_types) / sizeof (rq_rlz_types[0]); i++)
+    if (rq_rlz_types[i].dtype == dt)
+        return &rq_rlz_types[i];
+return NULL;
+}
+
+/* The spindle is up to speed: every attached unit on it is available again,
+   so the controller sends an "available" attention message (rq_tmrsvc). */
+
+static void rq_on_ready_unit (UNIT *uptr)
 {
 MSC *cp = rq_ctxmap[uptr->cnum];
 
-if (!(uptr->flags & UNIT_ATT))
-    return;
-sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RA60 up to speed\n", sim_uname (uptr));
-if ((cp->csta == CST_UP) && sim_disk_isavailable (uptr))
+if ((uptr->flags & UNIT_ATT) && (cp->csta == CST_UP) && sim_disk_isavailable (uptr))
     uptr->flags = uptr->flags | UNIT_ATP;
 }
 
-/* The unit's realism state, allocated (and its spindle set up) on first
-   use; NULL only if out of memory. */
+static void rq_on_ready (UNIT *uptr)
+{
+UNIT *fptr = rq_rcf25_of (uptr);
+
+sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: %s up to speed\n", sim_uname (uptr),
+           drv_tab[GET_DTYPE (uptr->flags)].name);
+rq_on_ready_unit (uptr);
+if (fptr != NULL)                                       /* RC25: the fixed platter too */
+    rq_on_ready_unit (fptr);
+}
+
+/* The unit's realism state, allocated on first use; NULL only if out of
+   memory or the unit is not part of a controller. */
 
 static RQ_RLZ *rq_rlz_get (UNIT *uptr)
 {
@@ -3748,68 +3881,158 @@ if (rz == NULL) {
     rz = (RQ_RLZ *) calloc (1, sizeof (*rz));
     if (rz == NULL)
         return NULL;
-    sim_spindle_init (&rz->sp, uptr, &rq_spinup_ms, &rq_spindown_ms,
-                      &rq_on_ready, NULL, SND_GRP_DISK, RQ_SPIN_GAIN);
     rq_rlz[c][u] = rz;
     }
 return rz;
 }
 
-/* Is the unit ready: attached and (RA60) spun up?  An RA60 without a
-   realism state (never attached since start) counts as ready if attached. */
+/* The realism state that holds the spindle of a unit's drive, with the
+   spindle set up for the drive type (on first use, and again when the
+   owner's type was changed meanwhile).  NULL for a unit without a button. */
+
+static RQ_RLZ *rq_rlz_spindle (UNIT *uptr)
+{
+UNIT *optr = rq_spindle_owner (uptr);
+RQ_RLZ_TYPE *ty;
+RQ_RLZ *rz;
+
+if ((optr == NULL) || ((ty = rq_rlz_type (optr)) == NULL) ||
+    ((rz = rq_rlz_get (optr)) == NULL))
+    return NULL;
+if (rz->sp.uptr == NULL)                                /* first use */
+    sim_spindle_init (&rz->sp, optr, ty->spinup_ms, ty->spindown_ms,
+                      &rq_on_ready, NULL, SND_GRP_DISK, RQ_SPIN_GAIN);
+if (rz->sp.uptr == NULL)                                /* no spindle slot left */
+    return NULL;
+if (rz->sp_type != ty) {                                /* (new) type: its times */
+    sim_spindle_off (&rz->sp);
+    rz->sp.spinup_ms = ty->spinup_ms;
+    rz->sp.spindown_ms = ty->spindown_ms;
+    rz->sp_type = ty;
+    }
+return rz;
+}
+
+/* The spindle a unit turns on, if it was ever set up (no allocation) */
+
+static SND_SPINDLE *rq_spindle_peek (UNIT *uptr)
+{
+UNIT *optr = rq_spindle_owner (uptr);
+RQ_RLZ *rz;
+
+if ((optr == NULL) || (optr->cnum >= RQ_NUMCT) ||
+    ((rz = rq_rlz[optr->cnum][rq_unit_index (optr)]) == NULL) ||
+    (rz->sp.uptr == NULL) || (rz->sp_type != rq_rlz_type (optr)))
+    return NULL;
+return &rz->sp;
+}
+
+/* Is the unit ready: attached and its spindle up to speed?  A unit whose
+   spindle was never set up (never attached since the start) counts as
+   ready if attached, as do units without a button.  An RCF25 needs the
+   cartridge of its RC25 in the realism mode; in the normal mode an RCF25
+   whose RC25 has no cartridge works as before. */
 
 static t_bool rq_ready (UNIT *uptr)
 {
-RQ_RLZ *rz;
+UNIT *optr;
+SND_SPINDLE *sp;
 
 if (!(uptr->flags & UNIT_ATT))
     return FALSE;
-if (!rq_is_ra60 (uptr))
+if ((optr = rq_spindle_owner (uptr)) == NULL)
     return TRUE;
-if ((uptr->cnum >= RQ_NUMCT) || ((rz = rq_rlz[uptr->cnum][rq_unit_index (uptr)]) == NULL))
-    return TRUE;
-return (sim_spindle_state (&rz->sp) == SND_SPIN_READY);
+if (optr != uptr) {                                     /* RCF25 of an RC25 */
+    if (!(optr->flags & UNIT_ATT))                      /* no cartridge: */
+        return !sim_sound_enabled ();                   /* platters stopped (realism) */
+    }
+if ((sp = rq_spindle_peek (uptr)) == NULL)
+    return (optr == uptr) || !sim_sound_enabled ();
+return (sim_spindle_state (sp) == SND_SPIN_READY);
 }
 
-/* Spin the RA60 down (STOP button, or AVAILABLE with spin-down in the
-   realism mode).  The unit leaves the online state; a transfer in progress
-   ends with "offline, no volume" when it is serviced next (rq_svc).  The
-   pack stays attached. */
+/* A unit loses its online state because its spindle stops or its
+   cartridge is gone; a transfer in progress ends with "offline, no
+   volume" when it is serviced next (rq_svc). */
+
+static void rq_unit_stopped (UNIT *uptr)
+{
+uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP);
+uptr->uf = 0;
+}
+
+/* Spin a drive down (RUN/STOP button, or AVAILABLE with spin-down in the
+   realism mode).  Every unit on the spindle leaves the online state.  The
+   pack or cartridge stays attached. */
 
 static void rq_spin_down (UNIT *uptr)
 {
-RQ_RLZ *rz = rq_rlz_get (uptr);
+RQ_RLZ *rz = rq_rlz_spindle (uptr);
+UNIT *optr = rq_spindle_owner (uptr);
+UNIT *fptr;
 int32 st;
 
-if (rz == NULL)
+if ((rz == NULL) || (optr == NULL))
     return;
 st = sim_spindle_state (&rz->sp);
 if ((st == SND_SPIN_STOPPED) || (st == SND_SPIN_DOWN))
     return;
-sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RA60 spin down\n", sim_uname (uptr));
-uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP);     /* not online any more */
-uptr->uf = 0;
+sim_debug (DBG_TRC, rq_devmap[optr->cnum], "%s: %s spin down\n", sim_uname (optr),
+           drv_tab[GET_DTYPE (optr->flags)].name);
+rq_unit_stopped (optr);
+if ((fptr = rq_rcf25_of (optr)) != NULL)                /* RC25: the fixed platter too */
+    rq_unit_stopped (fptr);
 sim_spindle_stop (&rz->sp);
 }
 
-/* SET RQn ONLINE / OFFLINE: the RUN/STOP button of the RA60.  Realism
-   mode at the sim> prompt: wait until ready or at rest unless SET -N. */
+/* AVAILABLE with the spin-down modifier in the realism mode: does it spin
+   the drive down?  An RA60 always; an RC25 drive only if the other unit
+   on the spindle is not online to the host (its platter turns on the same
+   spindle). */
+
+static t_bool rq_avl_spins_down (UNIT *uptr)
+{
+UNIT *optr = rq_spindle_owner (uptr);
+UNIT *other;
+
+if (optr == NULL)
+    return FALSE;
+if (GET_DTYPE (optr->flags) != RC25_DTYPE)
+    return TRUE;
+other = (optr == uptr) ? rq_rcf25_of (optr) : optr;
+return (other == NULL) || !(other->flags & UNIT_ONL);
+}
+
+/* SET RQn ONLINE / OFFLINE: the RUN/STOP button of the RA60, the Run
+   button of the RC25 (on either unit of the drive).  Realism mode at the
+   sim> prompt: wait until ready or at rest unless SET -N. */
 
 t_stat rq_set_online (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
+UNIT *optr = rq_spindle_owner (uptr);
 RQ_RLZ *rz;
 
 if (cptr != NULL)
     return SCPE_ARG;
-if (!rq_is_ra60 (uptr))
-    return sim_messagef (SCPE_NOFNC, "%s: the %s has no RUN/STOP button (only the RA60)\n",
+if (optr == NULL) {
+    if (GET_DTYPE (uptr->flags) == RCF25_DTYPE)
+        return sim_messagef (SCPE_NOFNC, "%s: this RCF25 belongs to no RC25 (the RC25 must be the unit before it, at an even unit)\n",
+                             sim_uname (uptr));
+    return sim_messagef (SCPE_NOFNC, "%s: the %s has no RUN/STOP button (only the RA60 and the RC25)\n",
                          sim_uname (uptr), drv_tab[GET_DTYPE (uptr->flags)].name);
-if (!(uptr->flags & UNIT_ATT))
-    return sim_messagef (SCPE_UNATT, "%s: no pack loaded (not attached)\n", sim_uname (uptr));
-if ((rz = rq_rlz_get (uptr)) == NULL)
+    }
+if (!(optr->flags & UNIT_ATT)) {
+    if (optr != uptr)
+        return sim_messagef (SCPE_UNATT, "%s: no cartridge in %s: the RC25 does not start without one\n",
+                             sim_uname (uptr), sim_uname (optr));
+    return sim_messagef (SCPE_UNATT, "%s: no %s loaded (not attached)\n", sim_uname (uptr),
+                         (GET_DTYPE (uptr->flags) == RC25_DTYPE) ? "cartridge" : "pack");
+    }
+if ((rz = rq_rlz_spindle (uptr)) == NULL)
     return SCPE_MEM;
 if (val) {
-    sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RA60 spin up\n", sim_uname (uptr));
+    sim_debug (DBG_TRC, rq_devmap[optr->cnum], "%s: %s spin up\n", sim_uname (optr),
+               drv_tab[GET_DTYPE (optr->flags)].name);
     sim_spindle_start (&rz->sp);
     }
 else
@@ -3823,32 +4046,86 @@ return SCPE_OK;
 
 t_stat rq_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
+UNIT *optr = rq_spindle_owner (uptr);
 t_stat r = SCPE_OK;
 
-if (!rq_is_ra60 (uptr))
+if (optr == NULL)
     fprintf (st, "fixed disk (no RUN/STOP button)");
-else if (!(uptr->flags & UNIT_ATT))
-    fprintf (st, "no pack");
-else if (rq_rlz_get (uptr) == NULL)
+else if (!(optr->flags & UNIT_ATT)) {
+    if (optr != uptr)                                   /* (normal mode: usable) */
+        fprintf (st, sim_sound_enabled () ? "no cartridge in %s, stopped" :
+                     "no cartridge in %s (fixed disk usable: realism mode off)", sim_uname (optr));
+    else
+        fprintf (st, "no %s", (GET_DTYPE (uptr->flags) == RC25_DTYPE) ? "cartridge" : "pack");
+    }
+else if (rq_rlz_spindle (uptr) == NULL)
     r = SCPE_MEM;
-else
-    r = sim_spindle_show (st, &rq_rlz_get (uptr)->sp);
+else {
+    if (optr != uptr)
+        fprintf (st, "spindle of %s: ", sim_uname (optr));
+    r = sim_spindle_show (st, &rq_rlz_spindle (uptr)->sp);
+    }
 fputc ('\n', st);
 return r;
 }
 
-/* RA60 seek curve t(d) = a + b * d^e (us): the exponent is fitted
-   (bisection) so that the curve goes through the track-to-track, the
-   average (at a third of the stroke) and the maximum seek time. */
+/* ATTACH in the realism mode or the normal mode (rq_attach): set up the
+   spindle and the actuator.  Returns TRUE if the unit is ready (then the
+   controller reports it available). */
 
-static double rq_seek_us (int32 dist)
+static t_bool rq_rlz_attach (UNIT *uptr)
 {
-static double ea, ca, cb;
-static t_bool done = FALSE;
+RQ_RLZ_TYPE *ty = rq_rlz_type (uptr);
+UNIT *optr = rq_spindle_owner (uptr);
+RQ_RLZ *rz;
 
-if (!done) {
-    double d = (double) (RA60_CYL - 1);
-    double want = (RA60_AVG_MS - RA60_T2T_MS) / (RA60_MAX_MS - RA60_T2T_MS);
+if (ty == NULL)                                         /* no realistic timing */
+    return TRUE;
+if (sim_sound_enabled ())
+    sim_sound_seek_load (ty->smp, ty->snd, ty->snd);
+if ((rz = rq_rlz_get (uptr)) != NULL)                   /* a lone RCF25: own actuator */
+    rz->cyl = 0;
+if (optr == NULL)                                       /* lone RCF25: no button */
+    return TRUE;
+if (optr != uptr)                                       /* RCF25 of an RC25: */
+    return rq_ready (uptr);                             /* as the spindle is */
+if ((rz = rq_rlz_spindle (uptr)) == NULL)
+    return TRUE;
+rz->cyl = 0;                                            /* heads at home */
+if (sim_sound_enabled ()) {                             /* realism: pack loaded, */
+    sim_spindle_load (&rz->sp, ty->snd, ty->snd);
+    sim_spindle_off (&rz->sp);                          /* waits for SET RQn ONLINE */
+    return FALSE;
+    }
+sim_spindle_ready (&rz->sp);                            /* normal: spins up at once */
+return TRUE;
+}
+
+/* DETACH: the pack or cartridge is gone.  The spindle stops at once; on
+   an RC25 drive the fixed platter stops too (realism mode). */
+
+static void rq_rlz_detach (UNIT *uptr)
+{
+SND_SPINDLE *sp;
+UNIT *fptr;
+
+if (rq_spindle_owner (uptr) != uptr)                    /* no button or an RCF25 */
+    return;
+if ((sp = rq_spindle_peek (uptr)) != NULL)
+    sim_spindle_off (sp);
+if (sim_sound_enabled () && ((fptr = rq_rcf25_of (uptr)) != NULL))
+    rq_unit_stopped (fptr);
+}
+
+/* Seek curve t(d) = a + b * d^e (us): the exponent is fitted (bisection)
+   so that the curve goes through the track-to-track, the average (at a
+   third of the stroke) and the maximum seek time. */
+
+static double rq_seek_us (RQ_RLZ_TYPE *ty, int32 dist)
+{
+if (!ty->fitted) {
+    double d = (double) (ty->cyl - 1);
+    double want = (ty->avg_ms - ty->t2t_ms) / (ty->max_ms - ty->t2t_ms);
     double lo = 0.2, hi = 1.5, e = 0.69;
     int32 i;
 
@@ -3859,48 +4136,64 @@ if (!done) {
         else
             hi = e;
         }
-    cb = (RA60_MAX_MS - RA60_T2T_MS) / (pow (d, e) - 1.0);
-    ca = RA60_T2T_MS - cb;
-    ea = e;
-    done = TRUE;
+    ty->cb = (ty->max_ms - ty->t2t_ms) / (pow (d, e) - 1.0);
+    ty->ca = ty->t2t_ms - ty->cb;
+    ty->ea = e;
+    ty->fitted = TRUE;
     }
 if (dist <= 0)
     return 0.0;
-return (ca + cb * pow ((double) dist, ea)) * 1000.0;
+return (ty->ca + ty->cb * pow ((double) dist, ty->ea)) * 1000.0;
 }
 
 /* Realistic time of a transfer command (us): seek from the current
-   cylinder (with its sound), rotational latency, one sector slot per
-   block and a track-to-track seek per cylinder crossed.  Updates the
-   current cylinder. */
+   cylinder of the drive's actuator (with its sound), rotational latency,
+   one sector slot per block and the time to go on to each next track.
+   Updates the current cylinder.  The units of an RC25 drive share the
+   actuator; both platters have the same geometry. */
 
 static double rq_rlz_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc)
 {
-RQ_RLZ *rz = rq_rlz_get (uptr);
-uint32 lpc = RA60_SECT * RA60_SURF;                     /* blocks per cylinder */
+RQ_RLZ_TYPE *ty = rq_rlz_type (uptr);
+UNIT *optr = rq_spindle_owner (uptr);
+RQ_RLZ *rz = rq_rlz_get ((optr != NULL) ? optr : uptr);
 uint32 nblk = (bc + RQ_NUMBY - 1) / RQ_NUMBY;
-double rev_us = 60000000.0 / RA60_RPM;
-int32 c0, c1, dist, cls;
+uint32 lpc, t0, t1;
+double rev_us;
+int32 c0, c1, from, dist, cls;
 double us;
 
-if (rz == NULL)
+if ((rz == NULL) || (ty == NULL))
     return 0.0;
+lpc = ty->sect * ty->surf;                              /* blocks per cylinder */
+rev_us = 60000000.0 / ty->rpm;
 if (nblk == 0)
     nblk = 1;
 c0 = (int32) (lbn / lpc);                               /* first and last cylinder */
 c1 = (int32) ((lbn + nblk - 1) / lpc);
-dist = abs (c0 - rz->cyl);
-us = rq_seek_us (dist);
-cls = sim_sound_seek (rq_seek_smp, dist, rq_seek60s, rq_seek60m, FALSE, SND_GRP_DISK, RQ_SEEK_GAIN);
+from = rz->cyl;
+dist = abs (c0 - from);
+us = rq_seek_us (ty, dist);
+cls = sim_sound_seek (ty->smp, dist, *ty->seek_s, *ty->seek_m, FALSE, SND_GRP_DISK, RQ_SEEK_GAIN);
 if (cls >= 0)
-    sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RA60 seek sound %s (%d cylinders)\n",
-               sim_uname (uptr), (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), dist);
+    sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: %s seek sound %s (%d cylinders)\n",
+               sim_uname (uptr), ty->name, (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), dist);
 rq_rand_state = rq_rand_state * 1103515245u + 12345u;   /* latency 0 .. one rev */
 us += fmod ((double) (rq_rand_state >> 8), rev_us);
-us += (double) nblk * rev_us / (RA60_SECT + 1);         /* 42 + 1 spare slots */
-us += (double) (c1 - c0) * RA60_T2T_MS * 1000.0;        /* cylinders crossed */
+us += (double) nblk * rev_us / ty->slots;               /* sector slots */
+if (ty->next_trk_ms > 0.0) {                            /* per track crossed */
+    t0 = lbn / ty->sect;
+    t1 = (lbn + nblk - 1) / ty->sect;
+    us += (double) (t1 - t0) * ty->next_trk_ms * 1000.0;
+    }
+else                                                    /* per cylinder crossed */
+    us += (double) (c1 - c0) * ty->t2t_ms * 1000.0;
 rz->cyl = c1;
-return (us < 100.0) ? 100.0 : us;
+if (us < 100.0)
+    us = 100.0;
+sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: %s LBN %u, %u blocks: from cylinder %d, cylinders %d-%d, %.0f us\n",
+           sim_uname (uptr), ty->name, lbn, nblk, from, c0, c1, us);
+return us;
 }
 
 t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
@@ -3925,28 +4218,44 @@ fprintf (st, "disk in either MB (1000000 bytes) or logical block numbers (LBN's,
 fprintf (st, "each), or binary MB (1024*1024 bytes).  The minimum size is 5MB; the maximum\n");
 fprintf (st, "size is 2GB without extended file support, 1TB with extended file support.\n\n");
 fprintf (st, "The %s controllers support the BOOT command.\n\n", dptr->name);
-fprintf (st, "SET RQn ONLINE and SET RQn OFFLINE are the RUN/STOP button of the RA60, the\n");
-fprintf (st, "removable-pack drive: OFFLINE spins the drive down (the pack stays\n");
-fprintf (st, "attached, the unit reports offline, no volume), ONLINE spins it up; the\n");
-fprintf (st, "controller then reports the unit available.  SHOW RQn SPINDLE shows the\n");
-fprintf (st, "spindle state.  The other drive types have no such button.\n\n");
+fprintf (st, "SET RQn ONLINE and SET RQn OFFLINE are the RUN/STOP button of the drives\n");
+fprintf (st, "with removable media, the RA60 and the RC25: OFFLINE spins the drive down\n");
+fprintf (st, "(the pack or cartridge stays attached, the unit reports offline, no\n");
+fprintf (st, "volume), ONLINE spins it up; the controller then reports the unit\n");
+fprintf (st, "available.  SHOW RQn SPINDLE shows the spindle state.  The other drive\n");
+fprintf (st, "types have no such button.\n\n");
+fprintf (st, "An RC25 drive has two platters on one spindle: the removable cartridge (set\n");
+fprintf (st, "an even unit to RC25) and the fixed platter (set the next unit to RCF25,\n");
+fprintf (st, "e.g. SET RQ0 RC25, SET RQ1 RCF25).  The Run button acts on both units, so\n");
+fprintf (st, "SET RQ0 ONLINE and SET RQ1 ONLINE do the same.  An RCF25 that does not follow\n");
+fprintf (st, "an RC25 is a fixed disk of its own.\n\n");
 fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
-fprintf (st, "  - ATTACH of an RA60 only loads the pack; the drive stays stopped until\n");
-fprintf (st, "    SET RQn ONLINE (spin-up time register SPINUP, spin-down SPINDOWN, both\n");
-fprintf (st, "    35000 ms by default, set with DEPOSIT RQ SPINUP n); at the sim> prompt\n");
-fprintf (st, "    the commands wait until the drive is ready or at rest (SET -N RQn ...\n");
-fprintf (st, "    returns at once);\n");
-fprintf (st, "  - an AVAILABLE command with spin-down (e.g. VMS DISMOUNT/UNLOAD) spins the\n");
-fprintf (st, "    RA60 down instead of detaching the pack;\n");
-fprintf (st, "  - RA60 transfers take realistic times (3600 rpm; seek 7 ms track-to-track,\n");
-fprintf (st, "    42 ms average, 70 ms maximum) and seeks play ra60-s.wav, ra60-m.wav or\n");
-fprintf (st, "    ra60-l.wav from the sound directory ra60 for short, medium and long\n");
-fprintf (st, "    seeks (limits in the registers SEEKRA60S and SEEKRA60M, default 100 and\n");
-fprintf (st, "    600 cylinders); optional spindle sounds ra60_spinup.wav, ra60_running.wav\n");
-fprintf (st, "    and ra60_spindown.wav are used if found;\n");
+fprintf (st, "  - ATTACH of an RA60 or RC25 only loads the pack or cartridge; the drive\n");
+fprintf (st, "    stays stopped until SET RQn ONLINE.  Spin-up and spin-down times are the\n");
+fprintf (st, "    registers SPINUP and SPINDOWN (RA60, 35000 ms each) and SPINUPRC25 and\n");
+fprintf (st, "    SPINDOWNRC25 (RC25, 60000 and 30000 ms), set e.g. with DEPOSIT RQ\n");
+fprintf (st, "    SPINUPRC25 n; at the sim> prompt the commands wait until the drive is\n");
+fprintf (st, "    ready or at rest (SET -N RQn ... returns at once);\n");
+fprintf (st, "  - an RC25 drive does not start without a cartridge: its RCF25 stays\n");
+fprintf (st, "    offline until the RC25 unit is attached and the drive is spun up, and\n");
+fprintf (st, "    DETACH of the cartridge stops the fixed platter too;\n");
+fprintf (st, "  - an AVAILABLE command with spin-down (e.g. VMS DISMOUNT/UNLOAD) spins\n");
+fprintf (st, "    the drive down instead of detaching the pack; on an RC25 drive only if\n");
+fprintf (st, "    the other unit is not online to the host;\n");
+fprintf (st, "  - RA60 and RC25 transfers take realistic times (RA60: 3600 rpm, seek 7 ms\n");
+fprintf (st, "    track-to-track, 42 ms average, 70 ms maximum; RC25: 2850 rpm, seek 10 ms\n");
+fprintf (st, "    one track, 35 ms average, 55 ms maximum, 31 ms per track spiral read;\n");
+fprintf (st, "    the two units of an RC25 drive share the head actuator);\n");
+fprintf (st, "  - seeks play <type>-s.wav, <type>-m.wav or <type>-l.wav from the sound\n");
+fprintf (st, "    directory ra60 or rc25 for short, medium and long seeks (limits in the\n");
+fprintf (st, "    registers SEEKRA60S/SEEKRA60M, default 100/600 cylinders, and\n");
+fprintf (st, "    SEEKRC25S/SEEKRC25M, default 50/300); optional spindle sounds\n");
+fprintf (st, "    <type>_spinup.wav, <type>_running.wav and <type>_spindown.wav are used\n");
+fprintf (st, "    if found;\n");
 fprintf (st, "  - the other drive types keep the QTIME/XTIME timing.\n");
-fprintf (st, "Without the realism mode an RA60 spins up at ATTACH, ONLINE and OFFLINE\n");
-fprintf (st, "take effect at once, and the timing is unchanged.\n\n");
+fprintf (st, "Without the realism mode an RA60 or RC25 spins up at ATTACH, ONLINE and\n");
+fprintf (st, "OFFLINE take effect at once, an RCF25 works without a cartridge in its RC25,\n");
+fprintf (st, "and the timing is unchanged.\n\n");
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
 fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");

@@ -1073,7 +1073,7 @@ sim_activate (uptr, (int32)inst);
 
 /* Spindles (see sim_sound.h) */
 
-#define SND_MAX_SPINDLES 32
+#define SND_MAX_SPINDLES 64                     /* (pdp11: HK 8, RL 4, RP 8, RQ up to 16 per controller) */
 
 static SND_SPINDLE *snd_spindles[SND_MAX_SPINDLES];    /* registered spindles */
 static UNIT snd_spindle_units[SND_MAX_SPINDLES];        /* their timers */
@@ -1195,8 +1195,11 @@ if (sp->uptr != NULL)                           /* already initialized */
     return;
 for (i = 0; (i < SND_MAX_SPINDLES) && (snd_spindles[i] != NULL); i++)
     ;
-if (i == SND_MAX_SPINDLES)
-    return;
+if (i == SND_MAX_SPINDLES) {                    /* sp->uptr stays NULL: */
+    sim_printf ("Sound: no spindle slot left for %s (at most %d drives with a spindle)\n",
+                sim_uname (uptr), SND_MAX_SPINDLES);
+    return;                                     /* (RQ: the drive works without */
+    }                                           /* realism; see known issues 23) */
 memset (sp, 0, sizeof (*sp));
 sp->uptr = uptr;
 sp->spinup_ms = spinup_ms;
