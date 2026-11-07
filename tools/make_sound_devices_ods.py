@@ -1,11 +1,11 @@
-# open-simh-extended/tools/make_sound_devices_ods.py  v6 (v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
+# open-simh-extended/tools/make_sound_devices_ods.py  v7 (v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
 #
 # Builds SIMH_Sound_devices.ods: the devices prepared for SIMH sound (realism
 # mode, SET SOUND ENABLED) with rotation speed, access times and spin times.
 #
 # The table is generated from the data below, which mirrors the constants in
 # the device sources (pdp11_hk.c, pdp11_rl.c, pdp11_rp.c, pdp11_rq.c,
-# vax730_rb.c) and
+# vax730_rb.c, pdp11_ts.c) and
 # vax750_syslist.c.  When a device gets sound support, add a row here, bump
 # TABLE_VERSION and run:
 #     python3 tools/make_sound_devices_ods.py docs/SIMH_Sound_devices.ods
@@ -25,7 +25,7 @@ from odf.table import Table, TableColumn, TableRow, TableCell
 from odf.text import P
 from odf.dc import Title
 
-TABLE_VERSION = "v5"
+TABLE_VERSION = "v6"
 TABLE_DATE = "2026-11-07"
 
 # ---------------------------------------------------------------- data
@@ -119,6 +119,31 @@ DISKS = [
        regs="as the RC25", snd="rc25",
        src="RC25 Disk Subsystem User Guide EK-ORC25-UG-002 (Sep 1983)",
        notes="realism mode: offline while no cartridge is loaded in the RC25 unit; normal mode: usable without one"),
+]
+
+# Tape transports (pdp11_ts.c ts_type_ts11 / ts_type_tsv05, sim_sound.c SND_REEL)
+TAPES = [
+  dict(dev="TS (TS11, Unibus)", drive="TS11 (TS04 transport)", motion="start/stop for every record",
+       ips=45.0, rew=(150.0, 150.0, 150.0), bpi=1600, gap=0.6, tm=0.7, start=8.0, stop=8.0, ramp=0.342,
+       access=0.0, rew_extra=1.5, erase=3.0, clean="10 in forward and back",
+       load=8, unload=8, load_src="provisional (manual pages 4-4/4-5 missing in the scan)",
+       regs="LOADTIME, UNLOADTIME, REEL (SET TS REEL=600|1200|2400), TPOS",
+       snd="ts11 (own: none) -> default_tape (all eight files)",
+       src="TS11 Subsystem Technical Manual EK-OTS11-TM-003 (Jan 1984); data sheet: 45 in/s, rewind 150 in/s "
+           "(3 min for a 10.5 in reel), start/stop 8 ms, gap 0.5 in minimum",
+       notes="gap 0.6 in (ANSI nominal; the manual gives 0.5 minimum); a full-reel skip takes 15-20 min "
+             "(manual), the model gives about 15 min for 512-byte records"),
+  dict(dev="TS (TSV05, Qbus)", drive="TSV05 (TS05 transport)", motion="streaming; 40 ms access from rest",
+       ips=25.0, rew=(130.0, 150.0, 180.0), bpi=1600, gap=0.65, tm=0.75, start=0.0, stop=0.0, ramp=0.0,
+       access=40.0, rew_extra=2.0, erase=3.0, clean="no-op",
+       load=30, unload=15, load_src="published (load 30 s typical, unload 15 s max from BOT)",
+       regs="LOADTIME, UNLOADTIME, REEL, TPOS",
+       snd="tsv05 (own: load, unload, motion, start, stop) -> default_tape (rewind)",
+       src="TSV05 Tape Transport Subsystem User's Guide EK-TSV05-UG-003: 25 in/s (TS11 software), "
+           "rewind 130-180 in/s by reel size (max 0.9/1.6/2.8 min), access 40 ms from rest, 140 ms worst, "
+           "gap 0.65 in typical, 40 KB/s",
+       notes="100 in/s mode (special software) not simulated; the tape coasts through one gap after a "
+             "command, a command in that time continues streaming"),
 ]
 
 SYSTEMS = [
@@ -229,6 +254,43 @@ add_table("Disks", ["3.6cm", "2.4cm", "2.0cm", "1.8cm", "1.8cm", "1.6cm", "1.8cm
           "SIMH sound: disk drives with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
           hdr, rows)
 
+# ---------------------------------------------------------------- sheet: tapes
+def tape_record_ms(t, nbytes):
+    dist = nbytes / float(t["bpi"]) + t["gap"]
+    if t["access"] > 0:
+        return 1000.0 * dist / t["ips"]
+    run = max(0.0, dist - t["ramp"])
+    return t["start"] + t["stop"] + 1000.0 * run / t["ips"]
+
+thdr = ["SIMH device", "Transport", "Motion", "Read/write speed (in/s)", "Density (bpi)", "Gap (in)",
+        "Tape mark (in)", "Start / stop (ms)", "Access from rest (ms)",
+        "Record 512 B (ms)", "Record 2048 B (ms)", "Record 8192 B (ms)",
+        "Throughput 8 KB records (KB/s)", "BOT to EOT, 2400 ft (MB in 8 KB records)",
+        "Skip a full 2400 ft reel of 512 B records (min)",
+        "Rewind speed 600/1200/2400 ft (in/s)", "Full rewind 2400 ft (s)", "Erase (in)", "Clean",
+        "Load (s)", "Unload from BOT (s)", "Load/unload: origin", "Registers", "Sound directory",
+        "Timing source", "Notes"]
+trows = []
+for t in TAPES:
+    eot_in = (2400 - 16 - 25) * 12.0
+    r8 = tape_record_ms(t, 8192)
+    n8 = eot_in / (8192.0 / t["bpi"] + t["gap"])
+    n512 = eot_in / (512.0 / t["bpi"] + t["gap"])
+    trows.append([t["dev"], t["drive"], t["motion"], t["ips"], t["bpi"], t["gap"], t["tm"],
+                  "%g / %g" % (t["start"], t["stop"]) if t["access"] == 0 else "-",
+                  t["access"] if t["access"] else "-",
+                  round(tape_record_ms(t, 512), 1), round(tape_record_ms(t, 2048), 1), round(r8, 1),
+                  round(8.0 / (r8 / 1000.0), 1), round(n8 * 8192 / 1e6, 1),
+                  round(n512 * tape_record_ms(t, 512) / 60000.0, 1),
+                  "%g / %g / %g" % t["rew"], round(eot_in / t["rew"][2] + t["rew_extra"], 0),
+                  t["erase"], t["clean"], t["load"], t["unload"], t["load_src"], t["regs"],
+                  "sound/" + t["snd"], t["src"], t["notes"]])
+add_table("Tapes", ["3.2cm", "3.2cm", "3.2cm", "1.8cm", "1.6cm", "1.4cm", "1.6cm", "1.8cm", "1.8cm",
+                    "1.8cm", "1.8cm", "1.8cm", "2.2cm", "2.4cm", "2.6cm", "2.6cm", "2.0cm", "1.4cm", "2.6cm",
+                    "1.4cm", "1.6cm", "5.0cm", "5.0cm", "5.0cm", "7.0cm", "7.0cm"],
+          "SIMH sound: tape transports with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          thdr, trows)
+
 # ---------------------------------------------------------------- sheet: systems
 add_table("Systems", ["4.2cm", "2.6cm", "9.0cm", "3.2cm", "5.0cm", "6.0cm"],
           "SIMH sound: system (CPU cabinet) sounds, table %s, %s" % (TABLE_VERSION, TABLE_DATE),
@@ -253,10 +315,19 @@ notes = [
                   "sounds; since sound patch v14 no drive has own seek sounds yet)."],
   ["Default sounds", "Per file, an own file wins: default_disk (seek sounds, no spindle sounds), default_cpu "
                      "(system sounds, recordings of a real VAX-11/750, for simulators that opt in), default_tape "
-                     "(to come). SHOW SOUND lists the defaults in use."],
-  ["Not yet", "RX01/RX02, RX50/RX33 and TU58 (no spin-up/spin-down), tapes."],
+                     "(synthetic TS11 transport sounds, since sound patch v16). SHOW SOUND lists the defaults in use."],
+  ["Tape model", "Physical position in inches from the BOT marker, counted from the records moved over "
+                 "(bytes / bpi + gap; tape marks; erase). BOT marker 16 ft after the tape start, EOT marker 25 ft "
+                 "before its end: a reel of L ft has L - 41 ft between the markers. Start/stop transport (TS11): "
+                 "start + (length - start and stop distances) / speed + stop per record. Streaming transport "
+                 "(TSV05): length / speed, plus the access time when the tape was at rest. Rewind: position / "
+                 "rewind speed + ramps (BOT overshoot and creep back)."],
+  ["Tape sounds", "load, unload, rewind_start, rewind (reel motor loop at 8 rev/s, played per reel with a pitch "
+                  "glide that follows the reel radius), rewind_stop, start, motion (loop), stop; "
+                  "<dir>/<prefix>_<name>.wav, else default_tape/<name>.wav. Made by tools/make_tape_sounds.py."],
+  ["Not yet", "RX01/RX02, RX50/RX33 and TU58 (no spin-up/spin-down); tapes other than the TS device (TM, TU, TQ)."],
   ["Update", "Generated by tools/make_sound_devices_ods.py (open-simh-extended, branch notes); add new devices there."],
-  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu)."],
+  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device)."],
 ]
 add_table("Notes", ["4.0cm", "22cm"], "SIMH sound devices: notes, table %s" % TABLE_VERSION,
           ["Topic", "Explanation"], notes)

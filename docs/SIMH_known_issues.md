@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v10 (v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v11 (v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -49,6 +49,14 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 26 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_set_plug` | A unit number is "in use" while a disabled unit holds it: on the VAX, `SET RQ0 UNIT=8` is refused because of the disabled RQ8 |
 | 27 | DONE | Bug | `sim_sound.c` unit loops, run hooks | Fixed tables of 64 unit loops and 8 run hooks: a unit loop beyond 64 got no power-on restore |
 | 28 | DONE | Bug | Visual Studio `MicroVAX2.vcxproj`, `VAX.vcxproj` (+ `.filters`) | The DMV11 patch added `pdp11_dmc.c` only to the old `.vcproj` files: a Visual Studio 2010+ build of the MicroVAX II and 3900 could not link `dmv_dev` |
+| 29 | OPEN | Suspicious | `PDP11/pdp11_ts.c` `ts_svc` (FNC_INIT) | The Initialize command rewinds the tape; both manuals say it is a no-op (a status update) unless microdiagnostic errors are shown |
+| 30 | OPEN | Suspicious | `PDP11/pdp11_ts.c` `ts_svc` (FNC_WRIT), `fnc_mod` | Write Data Retry is mode 2 (0010) in both manuals; SIMH runs it as mode 1 and rejects mode 2 as an illegal command |
+| 31 | OPEN | Suspicious | `PDP11/pdp11_ts.c` `ts_svc` (FNC_CTL mode 4) | Control mode 4 is the TSV05's "rewind with immediate interrupt" (not in the TS11 repertoire); SIMH accepts it on the Unibus TS11 too |
+| 32 | OPEN | Suspicious | `PDP11/pdp11_ts.c` `ts_svc` (FNC_CTL mode 1) | Rewind and Unload calls `sim_tape_detach` directly, bypassing `ts_detach`: no attention message when the drive goes off-line (normal mode) |
+| 33 | OPEN | Minor | `PDP11/pdp11_ts.c` `ts_description` | The Qbus description says "TSV11/TSV05"; there is no TSV11 |
+| 34 | OPEN | Minor | `PDP11/pdp11_ts.c` `ts_help` | HELP TS mentions "type options" and a "bad block option" that the TS device does not have (copied from a disk driver) |
+| 35 | OPEN | Suspicious | `scp.c` SET (and help listing) | For a single-unit device, HELP lists unit-only modifiers as `SET dev ...` (e.g. `set TS LOCKED`), but SET at device level refuses them ("Invalid argument"); `SET TS0 LOCKED` works |
+| 36 | OPEN | Minor | `PDP11/pdp11_ts.c` `ts_rd`, `ts_wr` debug | The REG debug lines name the registers the wrong way round (the base address, TSBA/TSDB, is shown as TSSR and vice versa) |
 
 ## Details
 
@@ -282,3 +290,43 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Fix:** `pdp11_dmc.c` in the `.vcxproj` and `.filters` of MicroVAX2 and VAX (and MicroVAX1 with the new DMV11). DMV11 patch v11.
 - **Found and fixed:** 2026-11-07 (adding the DMV11 to the MicroVAX I).
 
+### 29 — OPEN — Suspicious: the TS Initialize command rewinds the tape
+- **Where:** `PDP11/pdp11_ts.c`, `ts_svc`, case `FNC_INIT`: it rewinds the tape (`sim_tape_rewind`, MOT set) and then sends the end packet like Get Status.
+- **Manuals:** TS11 Technical Manual EK-OTS11-TM-003, 5.2.2.8: "The drive initialize command is a no-op. It results in a message update, just like a get status, if there are no microdiagnostic or runaway errors. However, if errors are displayed, the command does the same thing as a write to the TSSR." TSV05 User's Guide EK-TSV05-UG-003, 5.3.4.9: the same. A write to the TSSR (subsystem initialize) does rewind ("auto-load sequence and positions the tape at BOT", if on-line).
+- **Effect:** a driver that issues the Initialize command loses its tape position. Not changed: in the realism mode the rewind takes its real time (as SIMH's semantics stand).
+- **Found:** 2026-11-07 (TS11 sound work).
+
+### 30 — OPEN — Suspicious: Write Data Retry mode
+- **Where:** `PDP11/pdp11_ts.c`, `ts_svc`, case `FNC_WRIT` (mode 1 = "rewrite": space reverse, write) and `fnc_mod[5] = 2` (modes 0 and 1 allowed).
+- **Manuals:** Write command modes 0000 = write data, 0010 = write data retry (space reverse, erase, write data) in both manuals (TS11 table 5-10 and figure 5-11, TSV05 table 5-2 and the mode table). Write Tape Mark Retry is mode 0010 in SIMH and the manuals alike.
+- **Effect:** a driver's write retry (mode 2) gets an illegal command (ILC) termination; mode 1 is accepted though undefined. Drivers retry only after errors, which SIMH never produces, so this is hardly ever seen.
+- **Found:** 2026-11-07.
+
+### 31 — OPEN — Suspicious: Control mode 4 (rewind) on the TS11
+- **Where:** `PDP11/pdp11_ts.c`, `ts_svc`, case `FNC_CTL` mode 4 (and `fnc_mod[012] = 5`).
+- **Manuals:** the TS11 manual lists Control modes 0 (message buffer release), 1 (rewind and unload) and 2 (clean) only. The TSV05 manual adds mode 4, "rewind with immediate interrupt" (marked "extended function, not part of the TS11/TS04 repertoire"): the end packet comes at the start of the rewind, a following motion command waits for BOT.
+- **Effect:** the Unibus TS11 accepts a TSV05-only function. Not changed; in the realism mode mode 4 behaves as the TSV05 function on both buses (ends at once, the tape rewinds, a following motion command waits for BOT).
+- **Found:** 2026-11-07.
+
+### 32 — OPEN — Suspicious: Rewind and Unload bypasses ts_detach
+- **Where:** `PDP11/pdp11_ts.c`, `ts_svc`, case `FNC_CTL` mode 1: `sim_tape_detach (uptr)` instead of `ts_detach`.
+- **Effect:** in the normal mode the drive goes off-line without the attention message that `ts_detach` sends (when attention interrupts are enabled); the same pattern as case 10 on the RQ. In the realism mode the command no longer detaches (the tape rewinds and unloads, the transport goes off-line with an attention message).
+- **Found:** 2026-11-07.
+
+### 33 — OPEN — Minor: ts_description says "TSV11/TSV05"
+- **Where:** `PDP11/pdp11_ts.c`, `ts_description`: the Qbus text is "TSV11/TSV05 magnetic tape controller". There is no TSV11; the Qbus subsystem is the TSV05 (M7196 controller, TS05 transport).
+- **Found:** 2026-11-07.
+
+### 34 — OPEN — Minor: HELP TS mentions options the device does not have
+- **Where:** `PDP11/pdp11_ts.c`, `ts_help`: "The type options can be used only when a unit is not attached to a file.  The bad block option can be used only when a unit is attached to a file." The TS device has neither (text from a disk driver).
+- **Found:** 2026-11-07.
+
+### 35 — OPEN — Suspicious: SET of unit modifiers on a single-unit device
+- **Where:** `scp.c`, `set_cmd`: a device-level SET (`SET TS LOCKED`) refuses an extended modifier that has only `MTAB_VUN` (`((lvl & mptr->mask) & ~MTAB_XTD) == 0` → "Invalid argument"), while the help listing (`fprint_set_help_ex`) prints such modifiers as `set TS LOCKED` for single-unit devices. `SET TS0 LOCKED` works.
+- **Effect:** the documented command fails for TS LOCKED, WRITEENABLED, FORMAT, CAPACITY (and the same pattern on other single-unit devices). The new TS panel modifiers (LOAD, ONLINE, OFFLINE, REWIND, UNLOAD, REEL, TRANSPORT) have `MTAB_VDV` as well, so `SET TS ONLINE` works.
+- **Found:** 2026-11-07 (TS11 sound work, first panel test).
+
+### 36 — OPEN — Minor: TS debug output names the registers the wrong way round
+- **Where:** `PDP11/pdp11_ts.c`, `ts_rd` and `ts_wr`: `((PA >> 1) & 01) ? "TSBA" : "TSSR"` (and `"TSDB" : "TSSR"`), while the code below decodes PA<1> = 0 as TSBA/TSDB and PA<1> = 1 as TSSR.
+- **Effect:** `SET TS DEBUG=REG` shows a write of the command pointer (TSDB, base address) as "TSSR" and a read of TSSR as "TSBA"; misleading when tracing a driver. Behaviour is not affected.
+- **Found:** 2026-11-07 (TS realism debugging under VMS V4.7).

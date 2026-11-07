@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v17 (patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v18 (v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02. Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-07). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -683,13 +683,105 @@ Narrowed down, not fixed: it happens on plain Open SIMH with nothing attached af
 - Patch 6 v2 (RB730, at most one RB80; branch `rb730` commit 3df3769b) adds a history line at the top of `VAX/vax730_rb.c`, so patch 5 v14 no longer applied after it. **`opensimh_5_sound_v15.patch`** is the same sound work rebuilt on patch 6 v2 (no code change in the sound work). Branch `sound`: the RB80 commit cherry-picked as 2f3bbe8e; `integration`: b80a3eb1.
 - Checked: the full order 1 (v11), 2, 3, 4, 6 (v2), 5 (v15) on a fresh 87eb7d5 gives the `integration` tree (apart from the Visual Studio, CI and README files that only the branches have).
 
+## Phase D, step 1: tapes, TS11 and TSV05 (TS device) (2026-11-07)
+
+### Where things are
+
+- Branch `sound`: commit a24907d6 on top of 2f3bbe8e; branch `integration`: the same change as bcf33be5.
+- Patch **`opensimh_5_sound_v16.patch`** (cumulative, replaces v1–v15, applies on top of `opensimh_6_rb730_v2.patch`, without the Visual Studio project files). About 4.5 MB (v15: 0.95 MB): the new WAV files are in it as binary patches. Checked by `git am --keep-cr` on a fresh 87eb7d5: patches 6 + 5 give exactly the `sound` tree; the full order 1, 2, 3, 4, 6, 5 gives the `integration` tree apart from the CI and README files.
+- Changed files: `sim_sound.c`, `sim_sound.h`, `PDP11/pdp11_ts.c`, `scp.c` (HELP SET SOUND: default tape sounds).
+- New files: `sound/default_tape/` (`load.wav`, `unload.wav`, `rewind_start.wav`, `rewind.wav`, `rewind_stop.wav`, `start.wav`, `motion.wav`, `stop.wav`, `README.txt`) and `sound/tsv05/` (`tsv05_load.wav`, `tsv05_unload.wav`, `tsv05_motion.wav`, `tsv05_start.wav`, `tsv05_stop.wav`, `README.txt`).
+- Notes branch: `tools/make_tape_sounds.py` v1 (the generator), `tests/ts11/tstest.py` v1 (VMS tests), `docs/SIMH_Sound_devices.ods` table v6 (new sheet **Tapes**, generator v7), `docs/SIMH_known_issues.md` v11 (cases 29–35).
+- Sources: **TS11 Subsystem Technical Manual EK-OTS11-TM-003** (Jan 1984; pages 4-4/4-5 "Loading and Threading" are missing in the scan) with Ulli's data sheet, and **TSV05 Tape Transport Subsystem User's Guide EK-TSV05-UG-003**.
+
+### Decisions (Ulli, 2026-11-07)
+
+1. No recordings exist: the sounds are synthesized (reel motors, capstan, start/stop transients, load, unload).
+2. The rewind sound glides with the reels' rotation rate (mixer extension).
+3. EOT comes from the physical position on the reel, `SET TS REEL=600|1200|2400` (feet, default 2400).
+4. A separate TSV05 model for the Qbus.
+5. Provisional TS11 `LOADTIME` 8 s and `UNLOADTIME` 8 s (plus the rewind), as registers.
+6. DETACH is allowed at any time in the realism mode (may change later).
+7. Tests with Ulli's `VMS047-1.R81` (VAX/VMS V4.7, RA81, VHD) on the VAX-11/750 and the MicroVAX II.
+8. The first tape sounds are the default tape sounds (`sound/default_tape`).
+
+### Common code (sim_sound)
+
+- **Mixer:** every voice has a playback rate (linear interpolation) that can **glide** (`sim_sound_glide`): linearly, or along the reel curve `SND_GLIDE_REEL` (1/rate² linear in time: a reel at constant tape speed; its radius² changes linearly, its rotation rate is ∝ 1/radius). Voices can start after a **delay** and fade out after a **lifetime** (`sim_sound_play_timed`, `sim_sound_extend`): the audio thread times them, so sounds stay right while the simulator is at the `sim>` prompt. A stopped voice that has not started yet is dropped at once.
+- **Realtime timers** (`SND_TIMER`, `sim_sound_timer_*`): simulated time while the CPU runs, wall time at the prompt; own timer units in internal devices per kind (`INT-SPINDLE…`, `INT-REEL…`). Factored out of the spindle code; the spindles now use them (behaviour unchanged).
+- **Tape transports** (`SND_REEL`, `sim_reel_*`): states no reel / mounted / loading / ready / moving / rewinding / unloading; the physical position in 1/10000 in from the BOT marker, counted from the records the device moves over; BOT marker 16 ft after the tape start, EOT marker 25 ft before its end (a reel of L ft has L − 41 ft between them); per transport type (`SND_REEL_TYPE`): speeds, gap, tape mark, start/stop, streaming access time, rewind speeds per reel size, erase/clean lengths, load/unload times. Callbacks to the device when a load, a motion, a rewind or an unload is over. Normal mode: everything at once.
+- **Sounds:** `<dir>/<prefix>_<name>.wav`, else `default_tape/<name>.wav`; SHOW SOUND lists `ts11 (tape) -> default_tape`.
+  - Rewind: `rewind_start`, two `rewind` loops (take-up and supply reel, rate = rev/s ÷ 8, reel glide to the rates at BOT), `rewind_stop` (run-down, BOT overshoot, creep, stop).
+  - Start/stop transport: per record `start` + `motion` (gated loop) + `stop`, queued in batches of 8 records with delays.
+  - Streaming transport: one `motion` loop extended record by record; `start` when the tape was at rest; `stop` after it has coasted through a gap without a new command.
+
+### TS device
+
+| | TS11 (Unibus) | TSV05 (Qbus) |
+|---|---|---|
+| Transport | TS04: capstan, tension arms | TS05: reel-to-reel, compliance arm, air threading |
+| Read/write | 45 in/s, start 8 ms + stop 8 ms per record (0.180 + 0.162 in) | 25 in/s streaming; 40 ms access from rest |
+| Gap / tape mark | 0.6 in (0.5 minimum) / 0.7 in | 0.65 in typical / 0.75 in |
+| Rewind | 150 in/s (+1.5 s ramps, overshoot) | 130/150/180 in/s for 600/1200/2400 ft (+2 s) |
+| Load / unload | 8 s / 8 s (provisional) | 30 s / 15 s (manual) |
+| Erase / clean | 3 in / 10 in and back | 3 in / no-op |
+| Model check | 512-byte records: 28.8 ms; full-reel skip 14.8 min (manual: 15–20 min) | 8 KB records 34.7 KB/s; full rewind 159 s (manual: 2.8 min max.) |
+
+- **Operator panel** (both modes; in the normal mode at once):
+  - `ATTACH` mounts the reel. Realism mode: not loaded, off-line. Normal mode: loaded and on-line at once, as before.
+  - `SET TS LOAD` (LOAD button), `SET TS ONLINE` / `OFFLINE` (ON-LINE switch; ONLINE loads the tape first, also after waiting for an unload), `SET TS REWIND` and `SET TS UNLOAD` (off-line only; the file stays attached), `SET TS REEL=n`, `SHOW TS TRANSPORT`.
+  - At the prompt they wait with messages (`TS: loading, at BOT in 8 s ...`, `TS: at BOT`, `TS: unloading, unloaded in 21 s ...`); `SET -N` returns at once.
+  - Registers `LOADTIME`, `UNLOADTIME` (defaults set by the bus: TS11 or TSV05), `REEL` (read-only, set with SET), `TPOS` (position, read-only), `ONLSW`.
+- **Guest side, realism mode:**
+  - Motion commands take their time; the end packet (and the interrupt) come at the end, SSR is clear meanwhile. `ts_svc` holds the end packet (`ts_endcmd` while `ts_defer`); the transport callback sends it.
+  - Rewind (Position mode 4): end packet at BOT. Initialize command: the same (SIMH rewinds here, see case 29). Control mode 4 (TSV05 rewind with immediate interrupt): ends at once; a following motion command waits for BOT.
+  - Rewind and Unload: ends at once; the tape rewinds and unloads off-line, the file stays attached; `SET TS ONLINE` loads it again.
+  - Subsystem initialize (TSSR write, bus init, RUN, BOOT): an on-line tape that is not at BOT rewinds in real time, SSR comes back at BOT.
+  - On-line ↔ off-line: volume check and an attention message (if enabled).
+  - EOT from the physical position; a forward command at the physical end of the tape fails (MTSE_EOM → TC6, OPI).
+- **Normal mode:** unchanged (timing, ATTACH, the guest's unload detaches); the panel commands work at once; the physical position is still counted (`SHOW TS TRANSPORT`).
+
+### Tests (`tests/ts11/tstest.py` v1 on the notes branch; VMS V4.7, SYSTEM/MANAGER)
+
+| Test | Result |
+|---|---|
+| Panel, vax750 (s1.ini): realism ATTACH → "reel mounted, not loaded"; REWIND refused (not loaded); ONLINE loads (LOADTIME 2000: waits 2 s) and goes on-line; REWIND refused while on-line; OFFLINE, REWIND at BOT 1.5 s, UNLOAD, `-N ONLINE` → "loading, 2.0 s left"; REEL refused while loaded, accepted after DETACH | ok |
+| Panel, pdp11 11/70 (p2.ini): normal mode at once (ATTACH on-line, OFFLINE, UNLOAD keeps the file, ONLINE reloads); realism `-N ONLINE` then LOAD waits; `-N UNLOAD` then UNLOAD waits | ok |
+| N1 normal mode, vax750 (TS11): INITIALIZE, MOUNT/FOREIGN, BACKUP of SYS$HELP:*.HLB (4324 blocks), BACKUP/LIST, DISMOUNT | 0.2 s per BACKUP as before; 153 ft counted; DISMOUNT detaches (as before) |
+| R1 realism mode, vax750 (TS11), THROTTLE 300K | SET TS ONLINE: 8 s load; BACKUP 54 s guest time (model: 298 records × 135.5 ms = 40 s of tape plus CPU); BACKUP/LIST 66 s (rewind 152 ft 13.7 s + reading); DISMOUNT: "unloading, 21.5 s left" (model 21.7 s), file stays attached; SET TS ONLINE waits for the unload, loads (8 s); MOUNT/FOREIGN, BACKUP/LIST, DISMOUNT/NOUNLOAD ok |
+| E1 realism mode, vax750, REEL=600, BACKUP/BLOCK_SIZE=2048 of SYS$SYSTEM:*.EXE (14210 blocks) | `%BACKUP-I-RESUME, resuming operation on volume 2`, `mount volume 2 on _MSA0: for writing`: VMS hit the physical EOT and unloaded the reel ("unloading, 54.1 s left": rewind of about 559 ft + 8 s, model 54.2 s) |
+| P1 realism mode, vax750: DISMOUNT/NOUNLOAD after the BACKUP, simulator stopped during the guest's rewind | SHOW TS TRANSPORT "rewinding, 11.9 s left"; after `SLEEP 5` "6.9 s left" (wall time at the prompt); CONTINUE: the rewind completes, DISMOUNT returns; `SET -N TS UNLOAD` returns at once |
+| Q1 realism mode, MicroVAX II (TSV05), B DUA0 from the console ROM | 30 s load; BACKUP 77 s (model 69 s of tape plus accesses); BACKUP/LIST 88 s (rewind 154 ft at 180 in/s ≈ 12 s); DISMOUNT: unloading 24.8 s left; SET TS ONLINE reloads (30 s), MOUNT/FOREIGN, BACKUP/LIST ok |
+| Audio of R1 (SDL disk driver) | during the 152 ft rewinds the take-up reel's whine rises 540 → 590 Hz (model 533 → 611 Hz): the reel glide works |
+| Spindle regression after the timer refactoring (sp1.ini): HK0 RK07 ONLINE 2 s, `-N OFFLINE` 1.5 → 0.5 s after `SLEEP 1`, ONLINE again; RA60 ONLINE 1 s; internal devices INT-SPINDLE and INT-REEL | ok, as before |
+| Build `-Werror` (pdp11, vax730, vax750, vax780, vax8200, vax8600, microvax1, microvax2, microvax3900, rtvax1000, pdp8, altair) on `sound`; vax750, microvax2, pdp11 on `integration` | no warnings; all VAX diagnostics and the PDP-11 tests passed |
+| `sim_sound.c` with gcc `-Wall -Wextra` (with and without SDL2), clang, g++; `pdp11_ts.c` with `-Wall -Wextra` for the VAX 750, MicroVAX II and PDP-11 | no new warnings (only SIMH's usual unused-parameter / missing-initializer style warnings) |
+| Sounds (`make_tape_sounds.py --check`) | lengths exact; peaks −9 … −18 dBFS; loop seams within the normal sample-to-sample steps |
+
+Notes from testing:
+- First realism run: VMS reported `%INIT-F-DEVOFFLINE`. `ts_svc` returns from inside its switch for several functions (Write Characteristics, Get Status, …), so the held end packet was never sent. Fixed by making `ts_svc` a wrapper around the command code (`ts_svc_cmd`) that always releases it.
+- `SET TS ONLINE` while the tape was unloading waited and then did not load; fixed (it waits for the unload, then loads). `SET TS UNLOAD` during an unload now waits instead of failing.
+- VMS V4.7 calls the transport MSA0 on both buses (`SHOW DEVICE/FULL`: device type TS11 on the VAX-11/750).
+
+### Suspicious code found (known issues 29–35, not changed)
+
+- 29: the Initialize command rewinds (manuals: a no-op); 30: Write Data Retry is mode 2 in the manuals, SIMH uses mode 1; 31: Control mode 4 (TSV05 only) accepted on the TS11; 32: Rewind and Unload bypasses `ts_detach` (no attention message, normal mode); 33: "TSV11/TSV05"; 34: HELP TS mentions options the device does not have; 35 (SCP): `SET TS LOCKED` refused although HELP lists it (single-unit devices; `SET TS0 LOCKED` works).
+- Also seen: the debug labels in `ts_rd`/`ts_wr` are swapped (an access at the base address is shown as TSSR; base is TSBA/TSDB). Case 36.
+
+### Open
+
+- Real TS11 load/unload times (provisional 8 s / 8 s); tape mark length and gap are ANSI-nominal guesses.
+- The TSV05 100 in/s mode (special software) is not simulated; subsystem initialize on the TSV05 is modelled like the TS11 (the TSV05 manual does not say).
+- Sound levels by ear; recordings of a real transport would replace the synthetic ones file by file.
+- Other tape devices (TM11/TU10, TU16/45/77 on the RH, TQK50/TU81 on the TQ) can use `SND_REEL` and `default_tape`.
+
 ## Not done yet (after phase B)
 
-- RX and TU58 later without spin-up/spin-down; tapes afterwards. (The RA60 and the RC25 are done, see phase C steps 3 and 5.)
+- RX and TU58 later without spin-up/spin-down. (The RA60 and the RC25 are done, see phase C steps 3 and 5; the TS11/TSV05 tapes in phase D step 1; other tapes later.)
 - RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.
 - Installing the `sound/` directory with `make install`/CMake packaging.
-- Default tape sounds (`default_tape`) with the first tape sounds; other simulators may opt in to `default_cpu`.
+- Other simulators may opt in to `default_cpu`. (Default tape sounds: done with the TS11, phase D step 1.)
 - `vid_beep` migration (phase D).
 - Overlap policy for repeated events, by listening tests.
