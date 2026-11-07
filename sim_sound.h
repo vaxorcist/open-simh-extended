@@ -23,6 +23,9 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   07-Nov-26    Ulli    Tape transports (SND_REEL), realtime timers shared
+                        with the spindles, playback rate with glides,
+                        delayed and time-limited voices
    03-Nov-26    Ulli    Spindles: common spin-up/spin-down support for
                         removable-media disk drives; realistic durations
    03-Nov-26    Ulli    Run hooks for devices; power on restores unit loops
@@ -54,6 +57,11 @@
    - Events (group EVENT or the device's group): fire-and-forget one-shots
      such as a seek.  Playing an event only queues a request and never
      blocks the simulation.
+   - Timed voices: a voice can start after a delay, fade out after a given
+     lifetime and change its playback rate (pitch and speed) in a glide.
+     The audio thread times them by itself, so they stay correct while the
+     simulator sits at the sim> prompt (e.g. a tape rewinding: the reel
+     whine rises and falls as the tape moves from one reel to the other).
 
    Realism mode
    ------------
@@ -98,6 +106,13 @@ extern "C" {
 #define SND_F_LOOP      0x0001                  /* loop the sample endlessly */
 #define SND_F_RANDPHASE 0x0002                  /* start a loop at a random position */
 
+/* Glide curves for sim_sound_glide () */
+
+#define SND_GLIDE_LINEAR 0                      /* the rate changes linearly */
+#define SND_GLIDE_REEL   1                      /* 1/rate^2 changes linearly: a tape reel at
+                                                   constant tape speed (its radius^2 changes
+                                                   linearly, its rotation rate is ~ 1/radius) */
+
 /* A loaded, converted sample (opaque to callers) */
 
 typedef struct SND_SAMPLE SND_SAMPLE;
@@ -127,7 +142,10 @@ void sim_sound_set_system (const char *dir, const char *starting,
      SND_DEFAULT_DISK   seek sounds seek-s.wav, seek-m.wav, seek-l.wav
                         (used by sim_sound_seek_load ()); no default
                         spindle sounds
-     SND_DEFAULT_TAPE   tape sounds (still to come)
+     SND_DEFAULT_TAPE   tape transport sounds load.wav, unload.wav,
+                        rewind_start.wav, rewind.wav, rewind_stop.wav,
+                        start.wav, motion.wav, stop.wav (the synthetic
+                        TS11 sounds; used by sim_reel_set_type ())
      SND_DEFAULT_CPU    system sounds starting.wav, running.wav,
                         stopping.wav, only for a simulator that calls
                         sim_sound_use_default_cpu () (opt-in) during its
@@ -190,6 +208,17 @@ void sim_sound_register_enable_check (t_stat (*fn) (void));
    sim_sound_stop ()     stops a voice, fading it out over fade_ms
                          milliseconds (0 = a short click-free fade).
    sim_sound_duration () length of a sample in seconds (0.0 for NULL).
+   sim_sound_play_rate () like sim_sound_play (), at a playback rate (1.0 =
+                         as recorded, 2.0 = an octave higher and twice as
+                         fast), fading in over fade_ms.
+   sim_sound_play_timed () also with a delay before the start and a
+                         lifetime (seconds, 0 = none) after which the voice
+                         fades out over fade_ms.  The audio thread does the
+                         timing, so it goes on at the sim> prompt.
+   sim_sound_glide ()    changes the playback rate of a voice to rate over
+                         secs seconds along a curve (SND_GLIDE_xxx).
+   sim_sound_extend ()   gives a voice a new lifetime of secs from now (0:
+                         none).
 */
 
 SND_SAMPLE *sim_sound_load (const char *dir, const char *file);
@@ -197,6 +226,12 @@ SND_SAMPLE *sim_sound_load_optional (const char *dir, const char *file);
 SND_HANDLE sim_sound_play (SND_SAMPLE *smp, int32 group, double gain, uint32 flags);
 void sim_sound_stop (SND_HANDLE handle, uint32 fade_ms);
 double sim_sound_duration (const SND_SAMPLE *smp);
+SND_HANDLE sim_sound_play_rate (SND_SAMPLE *smp, int32 group, double gain, uint32 flags,
+                                double rate, uint32 fade_ms);
+SND_HANDLE sim_sound_play_timed (SND_SAMPLE *smp, int32 group, double gain, uint32 flags,
+                                 double rate, double delay_s, double life_s, uint32 fade_ms);
+void sim_sound_glide (SND_HANDLE handle, double rate, double secs, int32 curve);
+void sim_sound_extend (SND_HANDLE handle, double secs);
 
 /* Unit loops: the sound of a unit that runs continuously, e.g. a disk
    spindle, made of three optional samples: a start one-shot (spin-up), a
@@ -239,6 +274,42 @@ void sim_sound_unit_stop (SND_UNITLOOP *ul, int32 group, double gain);
 double sim_sound_inst_per_us (void);
 void sim_sound_activate_us (UNIT *uptr, double usecs);
 
+/* Realtime timers: a realistic duration that is simulated time while the
+   CPU runs (the guest always sees the full time) and wall time while the
+   simulator is stopped at the sim> prompt.  Each timer has its own timer
+   unit (internal devices INT-<kind>, INT-<kind>2, ...; no fixed limit),
+   which device resets, controller clears and the emptied event queue of
+   RUN/BOOT do not affect: at the prompt the remaining time is kept in the
+   structure and scheduled again when execution resumes.  When the time is
+   over, done () is called (at the prompt: when the timer is next looked
+   at with sim_sound_timer_busy (), or when execution resumes); it may
+   start the timer again.
+
+   sim_sound_timer_init ()    once per timer; kind names its internal
+                              device ("SPINDLE", "REEL"); FALSE if out of
+                              memory.  Later calls do nothing.
+   sim_sound_timer_start ()   time usecs from now (restarts a busy timer).
+   sim_sound_timer_cancel ()  stop timing, without calling done ().
+   sim_sound_timer_busy ()    still timing? (at the prompt it first takes
+                              the wall time into account)
+   sim_sound_timer_left_s ()  seconds left. */
+
+typedef struct SND_TIMER {
+    UNIT *unit;                                 /* own timer unit (NULL: not initialized) */
+    void (*done) (struct SND_TIMER *t);         /* the time is over */
+    void *ctx;                                  /* owner (e.g. the spindle) */
+    t_bool busy;                                /* timing */
+    t_bool paused;                              /* at the prompt: the time is kept in left_us */
+    double left_us;                             /* ... time left */
+    uint32 ref_ms;                              /* ... at this wall clock time */
+    } SND_TIMER;
+
+t_bool sim_sound_timer_init (SND_TIMER *t, const char *kind, void (*done) (SND_TIMER *t), void *ctx);
+void sim_sound_timer_start (SND_TIMER *t, double usecs);
+void sim_sound_timer_cancel (SND_TIMER *t);
+t_bool sim_sound_timer_busy (SND_TIMER *t);
+double sim_sound_timer_left_s (SND_TIMER *t);
+
 /* Spindles: the drive RUN/STOP button of removable-media disk drives.
 
    A SND_SPINDLE per drive is stopped, spinning up, ready or spinning
@@ -249,15 +320,11 @@ void sim_sound_activate_us (UNIT *uptr, double usecs);
    - Normal mode (sound disabled): start and stop take effect at once and
      the callbacks are made at once.
    - Realism mode: the spin-up takes *spinup_ms and the spin-down
-     *spindown_ms (the device's registers).  While the CPU runs this is
-     simulated time, so the guest always sees the full time; while the
-     simulator is stopped at the sim> prompt it goes on in wall time.
-     The spindle has a timer unit of its own (internal devices
-     INT-SPINDLE, INT-SPINDLE2, ...; there is no limit on the number of
-     spindles), which device resets, controller clears and the emptied
-     event queue of RUN/BOOT do not affect: at the prompt the remaining
-     time is kept in the structure and scheduled again when execution
-     resumes.  The spindle sounds (prefix_spinup.wav, prefix_running.wav,
+     *spindown_ms (the device's registers), timed by a realtime timer
+     (SND_TIMER, internal devices INT-SPINDLE, INT-SPINDLE2, ...): while
+     the CPU runs this is simulated time, so the guest always sees the
+     full time; while the simulator is stopped at the sim> prompt it goes
+     on in wall time.  The spindle sounds (prefix_spinup.wav, prefix_running.wav,
      prefix_spindown.wav) play if they exist.
 
    sim_spindle_init ()   once per drive (e.g. in the device reset); later
@@ -289,10 +356,7 @@ typedef struct SND_SPINDLE {
     int32 group;                                /* sound group and gain */
     double gain;
     int32 state;                                /* SND_SPIN_xxx */
-    double left_us;                             /* at the prompt: time left */
-    uint32 ref_ms;                              /* ... at this wall clock time */
-    t_bool paused;                              /* the time is kept in left_us */
-    UNIT *timer;                                /* own timer unit */
+    SND_TIMER tmr;                              /* spin-up/spin-down timer */
     SND_UNITLOOP sound;                         /* spindle sounds */
     } SND_SPINDLE;
 
@@ -307,6 +371,151 @@ void sim_spindle_ready (SND_SPINDLE *sp);
 int32 sim_spindle_state (SND_SPINDLE *sp);
 void sim_spindle_wait (SND_SPINDLE *sp);
 t_stat sim_spindle_show (FILE *st, SND_SPINDLE *sp);
+
+/* Tape transports (reel-to-reel 9-track drives): the operator panel
+   (load, rewind, unload, on-line), the physical tape position and the
+   timing of tape motion, and the transport sounds.
+
+   The device keeps the controller semantics; the SND_REEL keeps the
+   transport.  A transport type (SND_REEL_TYPE, a constant table in the
+   device) gives the speeds, gaps, start/stop and load/unload times.
+
+   Physical position: inches from the BOT marker, counted from the
+   records the device moves over (bytes / bpi + the interrecord gap; a
+   tape mark; an erase).  It gives the rewind time, the reel radii (the
+   pitch of the reel motors) and the physical end of tape: the EOT marker
+   is REEL_EOT_FT before the end of the tape, the BOT marker
+   REEL_LEADER_FT after its start, so a reel of L feet has L - 41 feet
+   between the markers.
+
+   States: no reel -> mounted (not loaded) -> loading -> ready (loaded,
+   at rest) <-> moving / rewinding; ready or rewinding -> unloading ->
+   mounted.  The device is called back (on_done) when a load, a motion,
+   a rewind or an unload is over.
+
+   - Normal mode (sound disabled): everything takes effect at once (the
+     callbacks are made at once); the position is still counted.
+   - Realism mode: the times are realistic; long actions (load, rewind,
+     unload) go on in wall time at the prompt (realtime timer, internal
+     devices INT-REEL, ...).
+
+   Sounds: <dir>/<prefix>_<name>.wav, else default_tape/<name>.wav, for
+   the names load, unload, rewind_start, rewind (a loop of a reel motor,
+   played once per reel with a pitch glide that follows the reel's
+   rotation rate), rewind_stop, start, motion (a loop while the tape
+   moves at read/write speed), stop.
+
+   sim_reel_init ()       once per transport.
+   sim_reel_set_type ()   the transport type; loads the sounds.
+   sim_reel_mount ()      ATTACH: the reel is mounted; normal mode: also
+                          loaded at once (at BOT).
+   sim_reel_remove ()     DETACH: everything stops, no reel.
+   sim_reel_load ()       LOAD button: thread the tape and go to BOT.
+   sim_reel_rewind ()     rewind to BOT (button or command).
+   sim_reel_unload ()     rewind and unload onto the supply reel.
+   sim_reel_abort ()      stop what is going on (subsystem initialize),
+                          without callback; the position is where the
+                          tape got to.
+   sim_reel_motion_begin (), sim_reel_record (), sim_reel_tapemark (),
+   sim_reel_erase (), sim_reel_motion_end ():
+                          a guest motion command: count the records the
+                          device moves over, then start the motion;
+                          motion_end returns the time in microseconds
+                          (0: done at once, no callback; normal mode).
+   sim_reel_past_eot ()   at or beyond the EOT marker.
+   sim_reel_past_end ()   the physical end of the tape is reached.
+   sim_reel_state (), sim_reel_wait (), sim_reel_show (): state (at the
+                          prompt the wall time is taken into account),
+                          waiting with messages at the prompt, display. */
+
+#define SND_REEL_NOREEL     0                   /* no reel mounted */
+#define SND_REEL_MOUNTED    1                   /* reel mounted, tape not loaded */
+#define SND_REEL_LOADING    2                   /* load sequence */
+#define SND_REEL_READY      3                   /* loaded, tape at rest */
+#define SND_REEL_MOVING     4                   /* guest motion command */
+#define SND_REEL_REWINDING  5                   /* rewinding to BOT */
+#define SND_REEL_UNLOADING  6                   /* rewinding and unloading */
+
+#define SND_REEL_DONE_LOAD   1                  /* on_done (): what is over */
+#define SND_REEL_DONE_MOTION 2
+#define SND_REEL_DONE_REWIND 3
+#define SND_REEL_DONE_UNLOAD 4
+
+#define SND_REEL_NSMP       8                   /* number of transport sounds */
+
+#define REEL_LEADER_FT      16                  /* tape start to the BOT marker */
+#define REEL_EOT_FT         25                  /* EOT marker to the tape end */
+
+typedef struct {
+    const char *name;                           /* "TS11" */
+    const char *dir;                            /* sound directory, e.g. "ts11" */
+    const char *prefix;                         /* sound file prefix, e.g. "ts11" */
+    double ips;                                 /* read/write speed (in/s) */
+    double rewind_ips[3];                       /* rewind speed with 600, 1200, 2400 ft reels */
+    double bpi;                                 /* recording density */
+    double gap_in;                              /* interrecord gap */
+    double tm_in;                               /* tape mark with its gap */
+    double start_ms;                            /* start time (start/stop motion) */
+    double stop_ms;                             /* stop time */
+    double ramp_in;                             /* tape moved during a start plus a stop */
+    double access_ms;                           /* streaming drive: access from rest; 0: the
+                                                   tape starts and stops for every record */
+    double rewind_extra_ms;                     /* ramps, BOT overshoot and creep back */
+    double erase_in;                            /* one erase */
+    double clean_in;                            /* clean: forward and back again */
+    int32 load_ms;                              /* default LOADTIME */
+    int32 unload_ms;                            /* default UNLOADTIME (from BOT) */
+    } SND_REEL_TYPE;
+
+typedef struct SND_REEL {
+    UNIT *uptr;                                 /* tape unit (NULL: not initialized) */
+    const SND_REEL_TYPE *type;                  /* transport type */
+    int32 *load_ms;                             /* device registers: LOADTIME */
+    int32 *unload_ms;                           /*  UNLOADTIME */
+    int32 *reel_ft;                             /*  reel length 600/1200/2400 */
+    void (*on_done) (UNIT *uptr, int32 what);   /* a load/motion/rewind/unload is over */
+    int32 group;                                /* sound group and gain */
+    double gain;
+    int32 state;                                /* SND_REEL_xxx */
+    uint32 pos;                                 /* position from the BOT marker, 1/10000 in
+                                                   (a register for SAVE/RESTORE) */
+    double rew_from_in;                         /* rewinding: position at the start */
+    double rew_ips;                             /*  ... speed */
+    double rew_us;                              /*  ... time of the rewind part */
+    double tot_us;                              /*  ... time of the whole action */
+    double mot_us;                              /* motion being counted: time */
+    double mot_in;                              /*  ... distance (+ forward, - reverse) */
+    int32 mot_items;                            /*  ... records and tape marks */
+    t_bool mot_rev;                             /*  ... direction of the last item */
+    t_bool streaming;                           /* streaming drive: the tape still moves */
+    t_bool stream_rev;                          /*  ... in this direction */
+    SND_TIMER tmr;                              /* load/motion/rewind/unload timer */
+    SND_TIMER coast;                            /* streaming: the tape coasts through a gap */
+    SND_SAMPLE *smp[SND_REEL_NSMP];             /* the transport sounds */
+    SND_HANDLE h[SND_REEL_NSMP + 1];            /* voices in use (one more: second reel) */
+    } SND_REEL;
+
+void sim_reel_init (SND_REEL *r, UNIT *uptr, int32 *load_ms, int32 *unload_ms, int32 *reel_ft,
+                    void (*on_done) (UNIT *uptr, int32 what), int32 group, double gain);
+void sim_reel_set_type (SND_REEL *r, const SND_REEL_TYPE *type);
+void sim_reel_mount (SND_REEL *r);
+void sim_reel_remove (SND_REEL *r);
+t_stat sim_reel_load (SND_REEL *r);
+t_stat sim_reel_rewind (SND_REEL *r);
+t_stat sim_reel_unload (SND_REEL *r);
+void sim_reel_abort (SND_REEL *r);
+void sim_reel_motion_begin (SND_REEL *r);
+void sim_reel_record (SND_REEL *r, uint32 bytes, t_bool reverse);
+void sim_reel_tapemark (SND_REEL *r, t_bool reverse);
+void sim_reel_erase (SND_REEL *r, double inches);
+double sim_reel_motion_end (SND_REEL *r);
+double sim_reel_pos_in (SND_REEL *r);
+void sim_reel_set_bot (SND_REEL *r);
+t_bool sim_reel_past_eot (SND_REEL *r);
+t_bool sim_reel_past_end (SND_REEL *r);
+int32 sim_reel_state (SND_REEL *r);
+void sim_reel_wait (SND_REEL *r);
+t_stat sim_reel_show (FILE *st, SND_REEL *r);
 
 /* Seek sounds: three samples (prefix-s.wav, prefix-m.wav, prefix-l.wav
    in dir, else seek-s/m/l.wav in SND_DEFAULT_DISK) for short, medium and
