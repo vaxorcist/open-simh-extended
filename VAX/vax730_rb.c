@@ -26,6 +26,8 @@
 
    rb           RB730 - RB02/RB80 disk controller
 
+   07-Nov-2026  Ulli    At most one RB80 (the IDC connects one R80 and up to
+                        three RL02, EK-RB730-TD-001 figure 3-2)
    07-Nov-2026  Ulli    Help: seek sounds fall back to sound/default_disk
    04-Nov-2026  Ulli    Sound realism mode (SET SOUND ENABLED): SET RBn
                         ONLINE/LOAD and OFFLINE/UNLOAD are the LOAD button of
@@ -875,8 +877,19 @@ return sim_disk_detach (uptr);
 
 t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
+int32 i;
+
 if (uptr->flags & UNIT_ATT)
     return SCPE_ALATT;
+if (val & UNIT_RB80) {                                  /* only one R80 on the IDC */
+    for (i = 0; i < RB_NUMDR; i++) {
+        UNIT *optr = rb_dev.units + i;
+
+        if ((optr != uptr) && (optr->flags & UNIT_RB80))
+            return sim_messagef (SCPE_ARG, "%s: %s is already the RB80; the RB730 connects one RB80 and up to three RB02\n",
+                                 sim_uname (uptr), sim_uname (optr));
+        }
+    }
 uptr->capac = (val & UNIT_RB80) ?
     ((uptr->flags & UNIT_OLDL) ? RB80_SIZE_OLD : RB80_SIZE) : RB02_SIZE;
 return SCPE_OK;
@@ -924,7 +937,9 @@ t_stat rb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr
 fprintf (st, "RB730 Disk Controller (RB)\n\n");
 fprintf (st, "The RB730 is the integrated disk controller of the VAX-11/730.  Unit 0 is\n");
 fprintf (st, "an RB80 (an R80 fixed disk, the RM80's drive) by default, units 1-3 are RB02\n");
-fprintf (st, "drives (RL02 cartridge drives); SET RBn RB02/RB80 changes the type.\n\n");
+fprintf (st, "drives (RL02 cartridge drives); SET RBn RB02/RB80 changes the type.  As on\n");
+fprintf (st, "the real IDC (one R80 and up to three RL02), at most one unit can be an\n");
+fprintf (st, "RB80: to make another unit the RB80, first SET the current one to RB02.\n\n");
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprintf (st, "\nImage layout: the disk images are in DEC logical block order (cylinder by\n");
