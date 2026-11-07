@@ -147,6 +147,15 @@ void sim_sound_run_state (t_bool running);      /* instruction execution starts/
 
 void sim_sound_register_run_hook (void (*fn)(t_bool running));
 
+/* Configuration checks: SET SOUND ENABLED calls every registered function
+   before it switches the realism mode on; a function returns SCPE_OK, or
+   prints why the configuration cannot run in the realism mode and returns
+   an error, which refuses SET SOUND ENABLED (e.g. the RQ: RC25 drives
+   only as pairs on a KLESI).  Registering the same function twice is
+   harmless. */
+
+void sim_sound_register_enable_check (t_stat (*fn) (void));
+
 /* Sample and voice API for devices.
 
    sim_sound_load ()     loads and converts a WAV file (cached by file name).
@@ -223,8 +232,9 @@ void sim_sound_activate_us (UNIT *uptr, double usecs);
      *spindown_ms (the device's registers).  While the CPU runs this is
      simulated time, so the guest always sees the full time; while the
      simulator is stopped at the sim> prompt it goes on in wall time.
-     The spindle has a timer unit of its own (internal device
-     INT-SPINDLE), which device resets, controller clears and the emptied
+     The spindle has a timer unit of its own (internal devices
+     INT-SPINDLE, INT-SPINDLE2, ...; there is no limit on the number of
+     spindles), which device resets, controller clears and the emptied
      event queue of RUN/BOOT do not affect: at the prompt the remaining
      time is kept in the structure and scheduled again when execution
      resumes.  The spindle sounds (prefix_spinup.wav, prefix_running.wav,
