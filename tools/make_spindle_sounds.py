@@ -1,4 +1,4 @@
-# open-simh-extended/tools/make_spindle_sounds.py  v2
+# open-simh-extended/tools/make_spindle_sounds.py  v3
 #
 # Synthesizes the optional spindle sounds of the SIMH sound system for every
 # removable-media disk drive with a RUN/STOP (or LOAD) button:
@@ -58,6 +58,11 @@
 # Example: RP06 with SET RP SPINUP=45000: make_spindle_sounds.py --spinup 45 out rp06
 #
 # Output: mono, 16 bit, 44100 Hz WAV, peak about -7 dBFS.  Needs numpy.
+#
+# v3 (2026-11-07): only comments.  Since sound patch v14 the bundled sound
+# tree has no per-drive directories (seek sounds come from
+# sound/default_disk); spindle sounds have no default, so --tree creates
+# the drive's directory (e.g. sound/rl02/) for them.
 
 import sys, wave, argparse, zlib
 import numpy as np
@@ -87,7 +92,7 @@ H_RC25 = {1: 1.0, 2: 0.50, 3: 0.40, 4: 0.25, 5: 0.15, 6: 0.20, 8: 0.16,         
 DRIVES = {
     "rk07": dict(desc="RK06/RK07 (HK), sound/rk07 is shared", rpm=2400, up=30, down=30,
                  harm=H_SMALL, drive=2.2, noise=0.10, nc=500.0, nw=0.9),
-    "rl02": dict(desc="RL01/RL02 (RL), sound/rl02 is shared", rpm=2400, up=40, down=30,
+    "rl02": dict(desc="RL01/RL02 (RL) and RB02, sound/rl02 is shared", rpm=2400, up=40, down=30,
                  harm=H_CART, drive=2.0, noise=0.08, nc=900.0, nw=0.8),
     "rm03": dict(desc="RM02/RM03 (RP), spin times prov.", rpm=3600, up=30, down=30,
                  harm=H_LARGE, drive=2.4, noise=0.16, nc=420.0, nw=1.0),

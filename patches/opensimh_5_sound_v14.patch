@@ -1,6 +1,6 @@
-From a78237cbbb1db10c688df64ded194d23d2f5f03c Mon Sep 17 00:00:00 2001
+From 87483e7e19c58f1fa98070e7d5748742bd505e0a Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
-Date: Sat, 7 Nov 2026 10:40:23 +0100
+Date: Sat, 7 Nov 2026 11:59:36 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
  sound pilot
 
@@ -28,9 +28,11 @@ Sound for all simulators (sim_sound.c/.h), phases A and B:
   (SPINUP), UNLOAD spins down instead of detaching, realistic RK06/RK07
   seek, latency and transfer times, short/medium/long seek sounds
   (SEEK6S/SEEK6M/SEEK7S/SEEK7M), optional spindle sounds.
-- VAX-11/750: bundled recordings of a real 11/750 (power relay and blower
-  start, running blower as a seamless loop, power off and run-down) and
-  THROTTLE 300K (provisional); sound/rk07: synthetic seek sounds.  All
+- Default sounds (per file, an own file wins): sound/default_cpu/ with
+  recordings of a real VAX-11/750 (power relay and blower start, running
+  blower as a seamless loop, power off and run-down), used by simulators
+  that opt in (the vax750, also THROTTLE 300K, provisional);
+  sound/default_disk/: synthetic seek sounds for every disk drive.  All
   sounds under the SIMH license.
 - Builds: makefile (SDL2 audio for all simulators, NOSOUND=1), CMake
   (WITH_SOUND, simh_sound), descrip.mms.  The Visual Studio
@@ -52,35 +54,36 @@ or at rest (SPINUP, SPINDOWN); SET -N returns at once.
 Common spindle support for removable-media disks (sim_spindle_*, own
 timers, wall time at the prompt, waiting), used by the RK611 and the
 RL11: RL01/RL02 realism mode with ONLINE/LOAD and OFFLINE/UNLOAD as the
-LOAD button (40 s / 30 s), realistic RL seek and transfer times, seek
-sounds in sound/rl02.
+LOAD button (40 s / 30 s), realistic RL seek and transfer times, seek sounds (rl02,
+default_disk).
 
 Massbus disks (RP): RUN/STOP button for the removable-pack drives,
 realistic times per drive type (rotation speed, fitted seek curve),
-seek sounds in a sound directory per drive type.
+seek sounds per drive type (default_disk).
 
 MSCP disks (RQ): the RA60, the only removable-pack drive of the RA
 series, gets the RUN/STOP button (SET RQn ONLINE/OFFLINE, offline-no-
 volume while stopped, available attention when up to speed), AVAILABLE
 with spin-down spins it down in the realism mode, realistic RA60 times
-and seek sounds in sound/ra60.  SHOW RLn SPINDLE ends its line.
+and seek sounds (ra60, default_disk).  SHOW RLn SPINDLE ends its line.
 
 RB730 (VAX-11/730): the RB02 (an RL02) gets the LOAD button and the
 realism mode (stopped drive: not ready, drive and spin error, so VMS sees
-the medium offline), realistic RB02 and RB80 times, seek sounds from
-sound/rl02 and sound/rm80.
+the medium offline), realistic RB02 and RB80 times, seek sounds (rl02
+and rm80, default_disk).
 
 MSCP disks (RQ), RC25: the removable RC25 and the fixed RCF25 (next
 unit) share one spindle and one actuator.  SET RQn ONLINE/OFFLINE on
 either unit is the Run button; in the realism mode the drive does not
 start without a cartridge, spin-up 60 s / spin-down 30 s (SPINUPRC25,
 SPINDOWNRC25), realistic RC25 times (2850 rpm, seek 10/35/55 ms, 31 ms
-per track) and seek sounds in sound/rc25; a realistic configuration is
+per track) and seek sounds (rc25, default_disk); a realistic configuration is
 required (RC25 pairs with even/odd unit numbers on a KLESI, which only
 connects RC25 drives), AVAILABLE with spin-down stops the whole drive,
 KLESI controller timeout 15 s and ABORT of queued commands only.  RC25
 geometry 31 x 2 x 821 in both modes.  sim_sound: no fixed limit on the
-number of spindles; SET SOUND ENABLED configuration checks of devices.
+number of spindles, unit loops and run hooks; SET SOUND ENABLED
+configuration checks of devices.
 
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
@@ -88,123 +91,43 @@ also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01SuavtdQSNbdrn1UBP6mkZX
 ---
- .gitattributes                   |    1 +
- CMakeLists.txt                   |    4 +
- PDP11/pdp11_hk.c                 |  342 +++++-
- PDP11/pdp11_rl.c                 |  282 ++++-
- PDP11/pdp11_rp.c                 |  344 +++++-
- PDP11/pdp11_rq.c                 | 1072 +++++++++++++++++-
- VAX/vax730_rb.c                  |  314 +++++-
- VAX/vax750_syslist.c             |   12 +
- cmake/add_simulator.cmake        |    2 +
- cmake/dep-link.cmake             |   27 +
- cmake/dep-locate.cmake           |   17 +
- descrip.mms                      |    2 +-
- makefile                         |   43 +-
- scp.c                            |   58 +
- sim_sound.c                      | 1796 ++++++++++++++++++++++++++++++
- sim_sound.h                      |  305 +++++
- sim_timer.c                      |   51 +
- sim_timer.h                      |    3 +
- sound/ra60/README.txt            |   56 +
- sound/ra60/ra60-l.wav            |  Bin 0 -> 318 bytes
- sound/ra60/ra60-m.wav            |  Bin 0 -> 250 bytes
- sound/ra60/ra60-s.wav            |  Bin 0 -> 226 bytes
- sound/rc25/README.txt            |   61 +
- sound/rc25/rc25-l.wav            |  Bin 0 -> 318 bytes
- sound/rc25/rc25-m.wav            |  Bin 0 -> 250 bytes
- sound/rc25/rc25-s.wav            |  Bin 0 -> 226 bytes
- sound/rk07/README.txt            |   55 +
- sound/rk07/rk07-l.wav            |  Bin 0 -> 318 bytes
- sound/rk07/rk07-m.wav            |  Bin 0 -> 250 bytes
- sound/rk07/rk07-s.wav            |  Bin 0 -> 226 bytes
- sound/rl02/README.txt            |   56 +
- sound/rl02/rl02-l.wav            |  Bin 0 -> 318 bytes
- sound/rl02/rl02-m.wav            |  Bin 0 -> 250 bytes
- sound/rl02/rl02-s.wav            |  Bin 0 -> 226 bytes
- sound/rm03/README.txt            |   55 +
- sound/rm03/rm03-l.wav            |  Bin 0 -> 318 bytes
- sound/rm03/rm03-m.wav            |  Bin 0 -> 250 bytes
- sound/rm03/rm03-s.wav            |  Bin 0 -> 226 bytes
- sound/rm05/README.txt            |   55 +
- sound/rm05/rm05-l.wav            |  Bin 0 -> 318 bytes
- sound/rm05/rm05-m.wav            |  Bin 0 -> 250 bytes
- sound/rm05/rm05-s.wav            |  Bin 0 -> 226 bytes
- sound/rm80/README.txt            |   49 +
- sound/rm80/rm80-l.wav            |  Bin 0 -> 318 bytes
- sound/rm80/rm80-m.wav            |  Bin 0 -> 250 bytes
- sound/rm80/rm80-s.wav            |  Bin 0 -> 226 bytes
- sound/rp04/README.txt            |   55 +
- sound/rp04/rp04-l.wav            |  Bin 0 -> 318 bytes
- sound/rp04/rp04-m.wav            |  Bin 0 -> 250 bytes
- sound/rp04/rp04-s.wav            |  Bin 0 -> 226 bytes
- sound/rp05/README.txt            |   55 +
- sound/rp05/rp05-l.wav            |  Bin 0 -> 318 bytes
- sound/rp05/rp05-m.wav            |  Bin 0 -> 250 bytes
- sound/rp05/rp05-s.wav            |  Bin 0 -> 226 bytes
- sound/rp06/README.txt            |   55 +
- sound/rp06/rp06-l.wav            |  Bin 0 -> 318 bytes
- sound/rp06/rp06-m.wav            |  Bin 0 -> 250 bytes
- sound/rp06/rp06-s.wav            |  Bin 0 -> 226 bytes
- sound/rp07/README.txt            |   49 +
- sound/rp07/rp07-l.wav            |  Bin 0 -> 318 bytes
- sound/rp07/rp07-m.wav            |  Bin 0 -> 250 bytes
- sound/rp07/rp07-s.wav            |  Bin 0 -> 226 bytes
- sound/vax750/README.txt          |   51 +
- sound/vax750/blower_running.wav  |  Bin 0 -> 376374 bytes
- sound/vax750/blower_starting.wav |  Bin 0 -> 64634 bytes
- sound/vax750/blower_stopping.wav |  Bin 0 -> 127198 bytes
- 66 files changed, 5265 insertions(+), 62 deletions(-)
+ .gitattributes                 |    1 +
+ CMakeLists.txt                 |    4 +
+ PDP11/pdp11_hk.c               |  346 +++++-
+ PDP11/pdp11_rl.c               |  284 ++++-
+ PDP11/pdp11_rp.c               |  346 +++++-
+ PDP11/pdp11_rq.c               | 1075 +++++++++++++++++-
+ VAX/vax730_rb.c                |  317 +++++-
+ VAX/vax750_syslist.c           |   15 +
+ cmake/add_simulator.cmake      |    2 +
+ cmake/dep-link.cmake           |   27 +
+ cmake/dep-locate.cmake         |   17 +
+ descrip.mms                    |    2 +-
+ makefile                       |   43 +-
+ scp.c                          |   69 ++
+ sim_sound.c                    | 1884 ++++++++++++++++++++++++++++++++
+ sim_sound.h                    |  326 ++++++
+ sim_timer.c                    |   51 +
+ sim_timer.h                    |    3 +
+ sound/default_cpu/README.txt   |   56 +
+ sound/default_cpu/running.wav  |  Bin 0 -> 376374 bytes
+ sound/default_cpu/starting.wav |  Bin 0 -> 64634 bytes
+ sound/default_cpu/stopping.wav |  Bin 0 -> 127198 bytes
+ sound/default_disk/README.txt  |   77 ++
+ sound/default_disk/seek-l.wav  |  Bin 0 -> 318 bytes
+ sound/default_disk/seek-m.wav  |  Bin 0 -> 250 bytes
+ sound/default_disk/seek-s.wav  |  Bin 0 -> 226 bytes
+ 26 files changed, 4883 insertions(+), 62 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
- create mode 100644 sound/ra60/README.txt
- create mode 100644 sound/ra60/ra60-l.wav
- create mode 100644 sound/ra60/ra60-m.wav
- create mode 100644 sound/ra60/ra60-s.wav
- create mode 100644 sound/rc25/README.txt
- create mode 100644 sound/rc25/rc25-l.wav
- create mode 100644 sound/rc25/rc25-m.wav
- create mode 100644 sound/rc25/rc25-s.wav
- create mode 100644 sound/rk07/README.txt
- create mode 100644 sound/rk07/rk07-l.wav
- create mode 100644 sound/rk07/rk07-m.wav
- create mode 100644 sound/rk07/rk07-s.wav
- create mode 100644 sound/rl02/README.txt
- create mode 100644 sound/rl02/rl02-l.wav
- create mode 100644 sound/rl02/rl02-m.wav
- create mode 100644 sound/rl02/rl02-s.wav
- create mode 100644 sound/rm03/README.txt
- create mode 100644 sound/rm03/rm03-l.wav
- create mode 100644 sound/rm03/rm03-m.wav
- create mode 100644 sound/rm03/rm03-s.wav
- create mode 100644 sound/rm05/README.txt
- create mode 100644 sound/rm05/rm05-l.wav
- create mode 100644 sound/rm05/rm05-m.wav
- create mode 100644 sound/rm05/rm05-s.wav
- create mode 100644 sound/rm80/README.txt
- create mode 100644 sound/rm80/rm80-l.wav
- create mode 100644 sound/rm80/rm80-m.wav
- create mode 100644 sound/rm80/rm80-s.wav
- create mode 100644 sound/rp04/README.txt
- create mode 100644 sound/rp04/rp04-l.wav
- create mode 100644 sound/rp04/rp04-m.wav
- create mode 100644 sound/rp04/rp04-s.wav
- create mode 100644 sound/rp05/README.txt
- create mode 100644 sound/rp05/rp05-l.wav
- create mode 100644 sound/rp05/rp05-m.wav
- create mode 100644 sound/rp05/rp05-s.wav
- create mode 100644 sound/rp06/README.txt
- create mode 100644 sound/rp06/rp06-l.wav
- create mode 100644 sound/rp06/rp06-m.wav
- create mode 100644 sound/rp06/rp06-s.wav
- create mode 100644 sound/rp07/README.txt
- create mode 100644 sound/rp07/rp07-l.wav
- create mode 100644 sound/rp07/rp07-m.wav
- create mode 100644 sound/rp07/rp07-s.wav
- create mode 100644 sound/vax750/README.txt
- create mode 100644 sound/vax750/blower_running.wav
- create mode 100644 sound/vax750/blower_starting.wav
- create mode 100644 sound/vax750/blower_stopping.wav
+ create mode 100644 sound/default_cpu/README.txt
+ create mode 100644 sound/default_cpu/running.wav
+ create mode 100644 sound/default_cpu/starting.wav
+ create mode 100644 sound/default_cpu/stopping.wav
+ create mode 100644 sound/default_disk/README.txt
+ create mode 100644 sound/default_disk/seek-l.wav
+ create mode 100644 sound/default_disk/seek-m.wav
+ create mode 100644 sound/default_disk/seek-s.wav
 
 diff --git a/.gitattributes b/.gitattributes
 index 382bab0b..e5e4d249 100644
@@ -238,13 +161,14 @@ index 5b7f4f08..49a207ca 100644
  string(APPEND _feature_text "\n    * Build internal ROMS .............. ")
  if (DONT_SET_ROMS)
 diff --git a/PDP11/pdp11_hk.c b/PDP11/pdp11_hk.c
-index 42131348..59109c8f 100644
+index 42131348..53252168 100644
 --- a/PDP11/pdp11_hk.c
 +++ b/PDP11/pdp11_hk.c
-@@ -25,6 +25,17 @@
+@@ -25,6 +25,18 @@
  
     hk           RK611/RK06/RK07 disk
  
++   07-Nov-26    Ulli    Help: seek sounds fall back to sound/default_disk
 +   03-Nov-26    Ulli    Spindle handling moved to the common sim_spindle support
 +                        (sim_sound); OFFLINE takes the spin-down time
 +   03-Nov-26    Ulli    Realism mode: SET HKn ONLINE/OFFLINE at the prompt wait
@@ -259,7 +183,7 @@ index 42131348..59109c8f 100644
     23-Oct-13    RMS     Revised for new boot setup routine
     01-Sep-13    RMS     Revised error handling to command-response model
                          Revised interrupt logic to follow the hardware
-@@ -69,6 +80,8 @@ extern uint32 cpu_opt;
+@@ -69,6 +81,8 @@ extern uint32 cpu_opt;
  #endif
  
  #include "sim_disk.h"
@@ -268,7 +192,7 @@ index 42131348..59109c8f 100644
  
  #define HK_NUMDR        8                               /* #drives */
  #define HK_NUMCY6       411                             /* cyl/drive */
-@@ -153,7 +166,7 @@ static struct drvtyp drv_tab[] = {
+@@ -153,7 +167,7 @@ static struct drvtyp drv_tab[] = {
  
  static const char *hk_funcs[] = {
      "NOP", "PACK", "DCLR", "UNLOAD", "START", "RECAL", "OFFSET", "SEEK", 
@@ -277,7 +201,7 @@ index 42131348..59109c8f 100644
  
  BITFIELD hk_cs1_bits[] = {
    BIT(GO),                                  /* go */
-@@ -563,6 +576,64 @@ int32 hk_min2wait = 300;                                /* min time to 2nd int *
+@@ -563,6 +577,65 @@ int32 hk_min2wait = 300;                                /* min time to 2nd int *
  int16 hkdb[3] = { 0 };                                  /* data buffer silo */
  int16 hk_off[HK_NUMDR] = { 0 };                         /* saved offset */
  int16 hk_dif[HK_NUMDR] = { 0 };                         /* cylinder diff */
@@ -331,7 +255,8 @@ index 42131348..59109c8f 100644
 +    };
 +
 +/* Sounds: seek samples (short, medium, long) and the optional spindle
-+   sounds, all in the sound directory "rk07" (the RK06 uses the same) */
++   sounds, all in the sound directory "rk07" (the RK06 uses the same);
++   seek samples that are not there come from sound/default_disk */
 +
 +#define HK_SND_DIR      "rk07"
 +#define HK_SEEK_GAIN    0.3                             /* seeks are recorded hot */
@@ -342,7 +267,7 @@ index 42131348..59109c8f 100644
  static const uint8 reg_in_drive[16] = {
   0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
  
-@@ -583,6 +654,16 @@ void hk_go (int32 drv);
+@@ -583,6 +656,16 @@ void hk_go (int32 drv);
  t_stat hk_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  t_stat hk_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
  t_stat hk_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
@@ -359,7 +284,7 @@ index 42131348..59109c8f 100644
  t_stat hk_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
  const char *hk_description (DEVICE *dptr);
  
-@@ -646,6 +727,12 @@ REG hk_reg[] = {
+@@ -646,6 +729,12 @@ REG hk_reg[] = {
      { DRDATAD (STIME,       hk_swait, 24,             "seek time, per cylinder"), REG_NZ + PV_LEFT },
      { DRDATAD (RTIME,       hk_rwait, 24,             "rotational delay"), REG_NZ + PV_LEFT },
      { DRDATAD (MIN2TIME, hk_min2wait, 24,             "minimum time between DONE and ATA"), REG_NZ + PV_LEFT },
@@ -372,7 +297,7 @@ index 42131348..59109c8f 100644
      { URDATA  (FNC,   hk_unit[0].FNC, DEV_RDX, 5, 0,
                HK_NUMDR, REG_HRO) },
      { URDATA  (CYL, hk_unit[0].CYL, DEV_RDX, 10, 0,
-@@ -672,6 +759,12 @@ MTAB hk_mod[] = {
+@@ -672,6 +761,12 @@ MTAB hk_mod[] = {
        &hk_set_type, NULL, NULL, "Set RK07 Disk Type" },
      { MTAB_XTD|MTAB_VUN, 0, "TYPE", NULL,
        NULL, &hk_show_type, NULL, "Display device type" },
@@ -385,7 +310,7 @@ index 42131348..59109c8f 100644
      { UNIT_NOAUTO,       0, "autosize", "AUTOSIZE", 
        NULL, NULL, NULL, "Set type based on file size at attach" },
      { UNIT_NOAUTO, UNIT_NOAUTO, "noautosize",   "NOAUTOSIZE",   
-@@ -968,7 +1061,7 @@ if (fnc_nxf[fnc] && ((hkds[drv] & DS_VV) == 0)) {       /* need vol valid? */
+@@ -968,7 +1063,7 @@ if (fnc_nxf[fnc] && ((hkds[drv] & DS_VV) == 0)) {       /* need vol valid? */
      hk_err (CS1_ERR|CS1_DI|CS1_DONE, 0, ER_NXF, drv);   /* set err, no op */
      return;
      }
@@ -394,7 +319,7 @@ index 42131348..59109c8f 100644
      hkds[drv] = hkds[drv] | DS_ATA;                     /* set ATTN */
      hk_err (CS1_ERR|CS1_DI|CS1_DONE, 0, ER_UNS, drv);   /* set err, no op */
      return;
-@@ -1047,7 +1140,16 @@ switch (fnc) {                                          /* case on function */
+@@ -1047,7 +1142,16 @@ switch (fnc) {                                          /* case on function */
          hk_dif[drv] = (int16)(hkdc - uptr->CYL);        /* cyl diff */
          t = abs (hk_dif[drv]);                          /* |cyl diff| */
          uptr->FNC = fnc;                                /* save function */
@@ -412,7 +337,7 @@ index 42131348..59109c8f 100644
          uptr->CYL = hkdc;                               /* update cyl */
          return;
  
-@@ -1084,11 +1186,15 @@ switch (fnc) {                                          /* case on function */
+@@ -1084,11 +1188,15 @@ switch (fnc) {                                          /* case on function */
     because ATTACH implicitly spins up the drive */
  
      case FNC_UNLOAD:                                    /* unload */
@@ -429,7 +354,7 @@ index 42131348..59109c8f 100644
  /* Positioning commands provide two interrupts, an immediate controller done
     and a delayed drive interrupt */
  
-@@ -1116,11 +1222,20 @@ switch (fnc) {                                          /* case on function */
+@@ -1116,11 +1224,20 @@ switch (fnc) {                                          /* case on function */
              hk_off[drv] = 0;                            /* clr offset */
              dc = (fnc == FNC_SEEK)? hkdc: 0;            /* get cyl */
              hk_dif[drv] = (int16)(dc - uptr->CYL);      /* cyl diff */
@@ -455,7 +380,7 @@ index 42131348..59109c8f 100644
              update_hkcs (CS1_DONE, drv);                /* done */
              }
          break;
-@@ -1319,7 +1434,7 @@ sim_debug (HKDEB_TRC, &hk_dev, "update_hkds(drv=%d)\n", drv);
+@@ -1319,7 +1436,7 @@ sim_debug (HKDEB_TRC, &hk_dev, "update_hkds(drv=%d)\n", drv);
  hkds[drv] = (hkds[drv] & (DS_VV | DS_PIP | DS_ATA)) | DS_VLD | DS_DRA;
  if (hk_unit[drv].flags & UNIT_RK07)
      hkds[drv] = hkds[drv] | DS_DT;
@@ -464,7 +389,7 @@ index 42131348..59109c8f 100644
      if (!sim_is_active (&hk_unit[drv]))                 /* not busy? */
          hkds[drv] = hkds[drv] | DS_RDY;                 /* set RDY */
      if (hk_off[drv])                                    /* offset? set OF */
-@@ -1327,8 +1442,11 @@ if (hk_unit[drv].flags & UNIT_ATT) {                    /* attached? */
+@@ -1327,8 +1444,11 @@ if (hk_unit[drv].flags & UNIT_ATT) {                    /* attached? */
      if (hk_unit[drv].flags & UNIT_WPRT)                 /* write locked? */
          hkds[drv] = hkds[drv] | DS_WRL;                 /* set WRL */
      }
@@ -477,7 +402,7 @@ index 42131348..59109c8f 100644
  if (old_ds != hkds[drv])
      sim_debug_bits (HKDEB_TRC, &hk_dev, hk_ds_bits, old_ds, hkds[drv], 1);
  return;
-@@ -1393,12 +1511,15 @@ switch (msg) {
+@@ -1393,12 +1513,15 @@ switch (msg) {
                  ((hk_off[drv])? A0_OF: 0) |
                  ((uptr->flags & UNIT_RK07)? A0_DT: 0) |
                  ((hkds[drv] & DS_VV)? A0_VV: 0) | A0_DRA;
@@ -496,7 +421,7 @@ index 42131348..59109c8f 100644
              if (sim_is_active (uptr)) {
                  if (fnc == FNC_UNLOAD)
                      v = v | A1_UNL;
-@@ -1478,9 +1599,10 @@ hkba = hkwc = 0;
+@@ -1478,9 +1601,10 @@ hkba = hkwc = 0;
  hkof = hkspr = 0;
  hkci = hkdi = hkei = 0;                                 /* clear intr flops */
  CLR_INT (HK);                                           /* clear intr req */
@@ -508,7 +433,7 @@ index 42131348..59109c8f 100644
      if (uptr->flags & UNIT_ATT)
          hkds[i] = hkds[i] & (DS_VV | DS_DT);
      else hkds[i] = 0;
-@@ -1513,14 +1635,26 @@ r = sim_disk_attach_ex (uptr, cptr, HK_NUMWD * sizeof (uint16),
+@@ -1513,14 +1637,26 @@ r = sim_disk_attach_ex (uptr, cptr, HK_NUMWD * sizeof (uint16),
  if (r != SCPE_OK)                                       /* error? */
      return r;
  drv = (uint32) (uptr - hk_dev.units);                   /* get drv number */
@@ -539,7 +464,7 @@ index 42131348..59109c8f 100644
  if ((old_hkds & DS_ATA) == 0)                           /* ATN transition? */
      update_hkcs (CS1_DI, drv);                          /* upd ctlr status */
  return SCPE_OK;
-@@ -1546,9 +1680,159 @@ if (sim_is_active (uptr)) {                             /* unit active? */
+@@ -1546,9 +1682,159 @@ if (sim_is_active (uptr)) {                             /* unit active? */
      }
  if ((old_hkds & DS_ATA) == 0)                           /* ATN transition? */
      update_hkcs (CS1_DI, drv);                          /* upd ctlr status */
@@ -699,7 +624,7 @@ index 42131348..59109c8f 100644
  /* Set type command validation routine */
  
  t_stat hk_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
-@@ -1651,6 +1935,26 @@ fprint_set_help (st, dptr);
+@@ -1651,6 +1937,28 @@ fprint_set_help (st, dptr);
  fprint_show_help (st, dptr);
  fprintf (st, "\nThe type options can be used only when a unit is not attached to a file.\n");
  fprintf (st, "The bad block option can be used only when a unit is attached to a file.\n");
@@ -719,21 +644,24 @@ index 42131348..59109c8f 100644
 +fprintf (st, "  - seeks and transfers take realistic times (RK07: 6.5 ms track-to-track,\n");
 +fprintf (st, "    36.5 ms average, 71 ms maximum seek; RK06: 8/38/75 ms; 2400 rpm);\n");
 +fprintf (st, "  - seeks play the sounds rk07-s.wav, rk07-m.wav or rk07-l.wav (directory\n");
-+fprintf (st, "    rk07) for short, medium and long seeks.  The limits are the registers\n");
-+fprintf (st, "    SEEK7S/SEEK7M (RK07, default 50/300 cylinders) and SEEK6S/SEEK6M (RK06,\n");
-+fprintf (st, "    default 25/150); a recalibrate is always long.  Optional spindle sounds\n");
-+fprintf (st, "    rk07_spinup.wav, rk07_running.wav and rk07_spindown.wav are used if found.\n");
++fprintf (st, "    rk07; if missing, the default disk sounds seek-s/m/l.wav in the\n");
++fprintf (st, "    directory default_disk) for short, medium and long seeks.  The limits\n");
++fprintf (st, "    are the registers SEEK7S/SEEK7M (RK07, default 50/300 cylinders) and\n");
++fprintf (st, "    SEEK6S/SEEK6M (RK06, default 25/150); a recalibrate is always long.\n");
++fprintf (st, "    Optional spindle sounds rk07_spinup.wav, rk07_running.wav and\n");
++fprintf (st, "    rk07_spindown.wav are used if found (no default).\n");
  #if defined (VM_PDP11)
  fprintf (st, "The HK device supports the BOOT command.\n");
  fprintf (st, "The RK611 is disabled in a Qbus system with more than 256KB of memory.\n");
 diff --git a/PDP11/pdp11_rl.c b/PDP11/pdp11_rl.c
-index 0d7e0ec7..438990d9 100644
+index 0d7e0ec7..21990654 100644
 --- a/PDP11/pdp11_rl.c
 +++ b/PDP11/pdp11_rl.c
-@@ -25,6 +25,13 @@
+@@ -25,6 +25,14 @@
  
     rl           RL11(RLV12)/RL01/RL02 cartridge disk
  
++   07-Nov-26    Ulli    Help: seek sounds fall back to sound/default_disk
 +   03-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): SET RLn ONLINE
 +                        and LOAD spin the drive up, OFFLINE and UNLOAD spin it
 +                        down (40 s / 30 s, registers SPINUP and SPINDOWN, the
@@ -744,7 +672,7 @@ index 0d7e0ec7..438990d9 100644
     28-Nov-22    RMS     Fixed word count adjustment on NXM
     23-Oct-13    RMS     Revised for new boot setup routine
     24-Mar-11    JAD     Various changes to support diagnostics, including:
-@@ -99,6 +106,8 @@
+@@ -99,6 +107,8 @@
  #endif
  
  #include "sim_disk.h"
@@ -753,7 +681,7 @@ index 0d7e0ec7..438990d9 100644
  
  /* Constants */
  
-@@ -273,6 +282,51 @@ int32 rl_swait = 10;                                    /* seek wait */
+@@ -273,6 +283,51 @@ int32 rl_swait = 10;                                    /* seek wait */
  int32 rl_rwait = 10;                                    /* rotate wait */
  int32 rl_stopioe = 1;                                   /* stop on error */
  
@@ -805,7 +733,7 @@ index 0d7e0ec7..438990d9 100644
  /* forward references */
  t_stat rl_rd (int32 *data, int32 PA, int32 access);
  t_stat rl_wr (int32 data, int32 PA, int32 access);
-@@ -291,6 +345,13 @@ t_stat rl_show_cover (FILE *, UNIT *, int32, CONST void *);
+@@ -291,6 +346,13 @@ t_stat rl_show_cover (FILE *, UNIT *, int32, CONST void *);
  t_stat rl_set_load (UNIT *, int32, CONST char *, void *);
  t_stat rl_show_load (FILE *, UNIT *, int32, CONST void *);
  t_stat rl_show_dstate (FILE *, UNIT *, int32, CONST void *);
@@ -819,7 +747,7 @@ index 0d7e0ec7..438990d9 100644
  #if defined (VM_PDP11)
  t_stat rl_set_ctrl (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  #endif
-@@ -333,6 +394,12 @@ static const REG rl_reg[] = {
+@@ -333,6 +395,12 @@ static const REG rl_reg[] = {
      { FLDATAD (IE,                rlcs, CSR_V_IE,       "interrupt enable flag (CSR<6>)") },
      { DRDATAD (STIME,         rl_swait, 24,             "seek time, per cylinder"), PV_LEFT },
      { DRDATAD (RTIME,         rl_rwait, 24,             "rotational delay"), PV_LEFT },
@@ -832,7 +760,7 @@ index 0d7e0ec7..438990d9 100644
      { URDATA  (CAPAC, rl_unit[0].capac, 10, T_ADDR_W, 0,
                RL_NUMDR, PV_LEFT + REG_HRO) },
      { FLDATAD (STOP_IOE,    rl_stopioe, 0,              "stop on I/O error flag") },
-@@ -348,10 +415,16 @@ static const MTAB rl_mod[] = {
+@@ -348,10 +416,16 @@ static const MTAB rl_mod[] = {
      { MTAB_XTD|MTAB_VDV,                   0, NULL, "RLV12", 
          &rl_set_ctrl, NULL,          NULL, "Set controller type RLV12" },
  #endif
@@ -853,7 +781,7 @@ index 0d7e0ec7..438990d9 100644
      { UNIT_BRUSH,          0, NULL,          "NOBRUSH",
          NULL, NULL, NULL, "Disable brushes" },
      { UNIT_BRUSH, UNIT_BRUSH, "has brushes", "BRUSH",
-@@ -529,7 +602,9 @@ bit is cleared by software.  If set, check for interrupts and return.
+@@ -529,7 +603,9 @@ bit is cleared by software.  If set, check for interrupts and return.
              rl_set_done (0);
              break;
          case RLCS_SEEK:                                 /* seek */
@@ -864,7 +792,7 @@ index 0d7e0ec7..438990d9 100644
                  rl_set_done (RLCS_ERR | RLCS_INCMP);
                  uptr->STAT |= RLDS_STO;
                  break;
-@@ -568,7 +643,20 @@ max 17ms for 1 track seek w/head switch
+@@ -568,7 +644,20 @@ max 17ms for 1 track seek w/head switch
                      (int32) (uptr - rl_dev.units),
                      abs (newc - curr), (rlda & RLDA_SK_HD), tim);
              uptr->FNC = RLCS_SEEK;
@@ -886,7 +814,7 @@ index 0d7e0ec7..438990d9 100644
              rl_set_done (0);                        /* ctrlr is ready */
              break;
          case RLCS_GSTA:
-@@ -598,6 +686,11 @@ max 17ms for 1 track seek w/head switch
+@@ -598,6 +687,11 @@ max 17ms for 1 track seek w/head switch
                  rl_set_done (RLCS_INCMP);
                  break;
                  }
@@ -898,7 +826,7 @@ index 0d7e0ec7..438990d9 100644
  /*
  EK-0RL11-TD-001, p2-3: "If the CPU software initiates another
  operation on a drive that is busy seeking, the controller will
-@@ -613,7 +706,21 @@ operation now, and queue the next operation.
+@@ -613,7 +707,21 @@ operation now, and queue the next operation.
                  rl_svc (uptr);
                  }
              uptr->FNC = GET_FUNC (rlcs);
@@ -921,7 +849,7 @@ index 0d7e0ec7..438990d9 100644
              break;
              }                                           /* end switch func */
          break;                                          /* end case RLCS */
-@@ -1006,6 +1113,7 @@ UNIT *uptr;
+@@ -1006,6 +1114,7 @@ UNIT *uptr;
  rlcs = CSR_DONE;
  rlda = rlba = rlbae = rlmp = rlmp1 = rlmp2 = 0;
  CLR_INT (RL);
@@ -929,7 +857,7 @@ index 0d7e0ec7..438990d9 100644
  for (i = 0; i < RL_NUMDR; i++) {
      uptr = rl_dev.units + i;
      sim_cancel (uptr);
-@@ -1032,12 +1140,23 @@ r = sim_disk_attach_ex (uptr, cptr, RL_NUMWD * sizeof (uint16),
+@@ -1032,12 +1141,23 @@ r = sim_disk_attach_ex (uptr, cptr, RL_NUMWD * sizeof (uint16),
                          (uptr->flags & UNIT_NOAUTO) ? NULL : drives);
  if (r != SCPE_OK)                                       /* error? */
      return r;
@@ -954,7 +882,7 @@ index 0d7e0ec7..438990d9 100644
  return SCPE_OK;
  }
  
-@@ -1045,6 +1164,7 @@ t_stat rl_detach (UNIT *uptr)
+@@ -1045,6 +1165,7 @@ t_stat rl_detach (UNIT *uptr)
  {
  sim_cancel (uptr);
  uptr->STAT = RLDS_BHO | RLDS_LOAD;
@@ -962,7 +890,7 @@ index 0d7e0ec7..438990d9 100644
  return sim_disk_detach (uptr);
  }
  
-@@ -1096,6 +1216,8 @@ t_stat rl_show_cover (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+@@ -1096,6 +1217,8 @@ t_stat rl_show_cover (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
  /* simulate the LOAD button on the drive */
  t_stat rl_set_load (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
  {
@@ -971,7 +899,7 @@ index 0d7e0ec7..438990d9 100644
      if (val == 0) {                                     /* LOAD */
          if (uptr->STAT & RLDS_CVO)                      /* cover open? */
              return (SCPE_NOFNC);
-@@ -1123,6 +1245,138 @@ t_stat rl_show_load (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+@@ -1123,6 +1246,138 @@ t_stat rl_show_load (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
      return (SCPE_OK);
  }
  
@@ -1110,7 +1038,7 @@ index 0d7e0ec7..438990d9 100644
  t_stat rl_show_dstate (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
  {
      int32   cnt;
-@@ -1253,6 +1507,18 @@ return SCPE_NOFNC;
+@@ -1253,6 +1508,19 @@ return SCPE_NOFNC;
  t_stat rl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
  {
  fprintf (st, "RL11/RL01/RL02 Cartridge Disk (RL)\n\n");
@@ -1121,8 +1049,9 @@ index 0d7e0ec7..438990d9 100644
 +fprintf (st, "the drive is ready or at rest; SET -N RLn ... returns at once.  SHOW RLn\n");
 +fprintf (st, "SPINDLE shows the spindle state.  Seeks and transfers take realistic times\n");
 +fprintf (st, "(15 ms track-to-track, 55 ms average, 100 ms maximum seek, 2400 rpm), and\n");
-+fprintf (st, "seeks play rl02-s.wav, rl02-m.wav or rl02-l.wav (sound directory rl02)\n");
-+fprintf (st, "for short, medium and long seeks; the limits are the registers SEEK1S/SEEK1M\n");
++fprintf (st, "seeks play rl02-s.wav, rl02-m.wav or rl02-l.wav (sound directory rl02; if\n");
++fprintf (st, "missing, the default disk sounds seek-s/m/l.wav in default_disk) for\n");
++fprintf (st, "short, medium and long seeks; the limits are the registers SEEK1S/SEEK1M\n");
 +fprintf (st, "(RL01, default 15/95 cylinders) and SEEK2S/SEEK2M (RL02, default 30/190).\n");
 +fprintf (st, "Optional spindle sounds: rl02_spinup.wav, rl02_running.wav, rl02_spindown.wav.\n");
 +fprintf (st, "Without the sound realism mode ONLINE/OFFLINE only switch the drive select.\n\n");
@@ -1130,13 +1059,14 @@ index 0d7e0ec7..438990d9 100644
  fprintf (st, "to set the drive type to RL01, RL02, or autosize, and to write a DEC standard\n");
  fprintf (st, "144 compliant bad block table on the last track:\n\n");
 diff --git a/PDP11/pdp11_rp.c b/PDP11/pdp11_rp.c
-index 1d3c6e17..9ebb1e1c 100644
+index 1d3c6e17..bccf87ed 100644
 --- a/PDP11/pdp11_rp.c
 +++ b/PDP11/pdp11_rp.c
-@@ -25,6 +25,13 @@
+@@ -25,6 +25,14 @@
  
     rp           RH/RP/RM moving head disks
  
++   07-Nov-26    Ulli    Help: seek sounds fall back to sound/default_disk
 +   03-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): SET RPn ONLINE
 +                        and OFFLINE are the RUN/STOP button of the removable-
 +                        pack drives (RM02/03, RP04/05/06, RM05), the UNLOAD
@@ -1147,7 +1077,7 @@ index 1d3c6e17..9ebb1e1c 100644
     13-Mar-17    RMS     Annotated intentional fall through in switch
     23-Oct-13    RMS     Revised for new boot setup routine
     06-Mar-11    MP      Converted to using sim_disk library and refactored 
-@@ -72,6 +79,8 @@
+@@ -72,6 +80,8 @@
  #endif
  
  #include "sim_disk.h"
@@ -1156,7 +1086,7 @@ index 1d3c6e17..9ebb1e1c 100644
  #include <math.h>
  
  #define RP_CTRL         0                               /* ctrl is RP */
-@@ -581,6 +590,63 @@ int32 rp_stopioe = 1;                                   /* stop on error */
+@@ -581,6 +591,63 @@ int32 rp_stopioe = 1;                                   /* stop on error */
  int32 rp_swait = 26;                                    /* seek time */
  int32 rp_rwait = 10;                                    /* rotate time */
  
@@ -1220,7 +1150,7 @@ index 1d3c6e17..9ebb1e1c 100644
  t_stat rp_mbrd (int32 *data, int32 ofs, int32 drv);
  t_stat rp_mbwr (int32 data, int32 ofs, int32 drv);
  t_stat rp_svc (UNIT *uptr);
-@@ -596,6 +662,15 @@ t_stat rp_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+@@ -596,6 +663,15 @@ t_stat rp_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  t_stat rp_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
  t_stat rp_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  int32 rp_abort (void);
@@ -1236,7 +1166,7 @@ index 1d3c6e17..9ebb1e1c 100644
  t_stat rp_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
  const char *rp_description (DEVICE *dptr);
  
-@@ -647,6 +722,22 @@ REG rp_reg[] = {
+@@ -647,6 +723,22 @@ REG rp_reg[] = {
      { BRDATAD  (MR2,              rmmr2, DEV_RDX, 16, RP_NUMDR, "maintenance register 2 (RM only)") },
      { DRDATAD  (STIME,         rp_swait, 24,                    "seek time, per cylinder"), REG_NZ + PV_LEFT },
      { DRDATAD  (RTIME,         rp_rwait, 24,                    "rotational delay"), REG_NZ + PV_LEFT },
@@ -1259,7 +1189,7 @@ index 1d3c6e17..9ebb1e1c 100644
      { URDATA   (CAPAC, rp_unit[0].capac, 10, T_ADDR_W, 0, 
                RP_NUMDR, PV_LEFT | REG_HRO) },
      { FLDATAD  (STOP_IOE,    rp_stopioe, 0,                     "stop on I/O error") },
-@@ -679,6 +770,12 @@ MTAB rp_mod[] = {
+@@ -679,6 +771,12 @@ MTAB rp_mod[] = {
        &rp_set_type, NULL, NULL, "Set RP07 Disk Type" },
      { MTAB_XTD|MTAB_VUN, 0, "TYPE", NULL,
        NULL, &rp_show_type, NULL, "Display device type" },
@@ -1272,7 +1202,7 @@ index 1d3c6e17..9ebb1e1c 100644
      { UNIT_AUTO, UNIT_AUTO, "autosize", "AUTOSIZE", 
        NULL, NULL, NULL, "Set type based on file size at attach" },
      { UNIT_AUTO,         0, "noautosize",   "NOAUTOSIZE",   
-@@ -1025,7 +1122,7 @@ switch (fnc) {                                          /* case on function */
+@@ -1025,7 +1123,7 @@ switch (fnc) {                                          /* case on function */
  
      case FNC_OFFSET:                                    /* offset mode */
      case FNC_RETURN:
@@ -1281,7 +1211,7 @@ index 1d3c6e17..9ebb1e1c 100644
              rp_set_er (ER1_UNS, drv);                   /* unsafe */
              break;
              }
-@@ -1038,6 +1135,10 @@ switch (fnc) {                                          /* case on function */
+@@ -1038,6 +1136,10 @@ switch (fnc) {                                          /* case on function */
              rp_set_er (ER1_ILF, drv);                   /* not supported */
              break;
              }
@@ -1292,7 +1222,7 @@ index 1d3c6e17..9ebb1e1c 100644
          rp_detach (uptr);                               /* detach unit */
          return SCPE_OK;
  
-@@ -1045,7 +1146,7 @@ switch (fnc) {                                          /* case on function */
+@@ -1045,7 +1147,7 @@ switch (fnc) {                                          /* case on function */
          dc = 0;                                         /* seek to 0 */
      case FNC_SEEK:                                      /* seek */
      case FNC_SEARCH:                                    /* search */
@@ -1301,7 +1231,7 @@ index 1d3c6e17..9ebb1e1c 100644
              rp_set_er (ER1_UNS, drv);                   /* unsafe */
              break;
              }
-@@ -1057,6 +1158,16 @@ switch (fnc) {                                          /* case on function */
+@@ -1057,6 +1159,16 @@ switch (fnc) {                                          /* case on function */
              }
          rpds[drv] = (rpds[drv] & ~DS_RDY) | DS_PIP;     /* set positioning */
          t = abs (dc - uptr->CYL);                       /* cyl diff */
@@ -1318,7 +1248,7 @@ index 1d3c6e17..9ebb1e1c 100644
          if (t == 0)                                     /* min time */
              t = 1;
          sim_activate (uptr, rp_swait * t);              /* schedule */
-@@ -1068,7 +1179,7 @@ switch (fnc) {                                          /* case on function */
+@@ -1068,7 +1180,7 @@ switch (fnc) {                                          /* case on function */
      case FNC_WCHK:                                      /* write check */
      case FNC_READ:                                      /* read */
      case FNC_READH:                                     /* read headers */
@@ -1327,7 +1257,7 @@ index 1d3c6e17..9ebb1e1c 100644
              rp_set_er (ER1_UNS, drv);                   /* unsafe */
              break;
              }
-@@ -1079,7 +1190,16 @@ switch (fnc) {                                          /* case on function */
+@@ -1079,7 +1191,16 @@ switch (fnc) {                                          /* case on function */
              break;
              }
          rpds[drv] = rpds[drv] & ~DS_RDY;                /* clear drive rdy */
@@ -1345,7 +1275,7 @@ index 1d3c6e17..9ebb1e1c 100644
          uptr->CYL = dc;                                 /* save cylinder */
          return SCPE_OK;
  
-@@ -1134,7 +1254,7 @@ fnc = GET_FNC (rpcs1[drv]);                             /* get function */
+@@ -1134,7 +1255,7 @@ fnc = GET_FNC (rpcs1[drv]);                             /* get function */
  
  sim_debug(DBG_TRC, dptr, "rp_svc(rp%d(%s), %s, da=0x%X, fnc=%s)\n", drv, drv_tab[dtype].name, uptr->io_complete ? "Bottom" : "Top", da, rp_fname[fnc]);
  
@@ -1354,7 +1284,7 @@ index 1d3c6e17..9ebb1e1c 100644
      rp_set_er (ER1_UNS, drv);                           /* set drive error */
      if (fnc >= FNC_XFER)                                /* xfr? set done */
          mba_set_don (dibp->ba);
-@@ -1306,7 +1426,7 @@ uint16 o_ds = rpds[drv];
+@@ -1306,7 +1427,7 @@ uint16 o_ds = rpds[drv];
  if (rp_unit[drv].flags & UNIT_DIS)
      rpds[drv] = rper1[drv] = 0;
  else rpds[drv] = (rpds[drv] | DS_DPR) & ~DS_PGM;
@@ -1363,7 +1293,7 @@ index 1d3c6e17..9ebb1e1c 100644
      rpds[drv] = rpds[drv] | DS_MOL;
  else rpds[drv] = rpds[drv] & ~(DS_MOL | DS_VV | DS_RDY);
  if (rper1[drv] | rper2[drv] | rper3[drv])
-@@ -1334,13 +1454,16 @@ UNIT *uptr;
+@@ -1334,13 +1455,16 @@ UNIT *uptr;
  sim_debug(DBG_TRC, dptr, "rp_reset()\n");
  
  mba_set_enbdis (dptr);
@@ -1382,7 +1312,7 @@ index 1d3c6e17..9ebb1e1c 100644
      else if (uptr->flags & UNIT_DIS)
          rpds[i] = 0;
      else rpds[i] = DS_DPR;
-@@ -1382,9 +1505,22 @@ r = sim_disk_attach_ex (uptr, cptr, RP_NUMWD * sizeof (uint16),
+@@ -1382,9 +1506,22 @@ r = sim_disk_attach_ex (uptr, cptr, RP_NUMWD * sizeof (uint16),
  if (r != SCPE_OK)                                       /* error? */
      return r;
  drv = (int32) (uptr - dptr->units);                     /* get drv number */
@@ -1406,7 +1336,7 @@ index 1d3c6e17..9ebb1e1c 100644
  rp_update_ds (DS_ATA, drv);                             /* upd ctlr status */
  return SCPE_OK;
  }
-@@ -1400,11 +1536,182 @@ if (!(uptr->flags & UNIT_ATT))                          /* attached? */
+@@ -1400,11 +1537,182 @@ if (!(uptr->flags & UNIT_ATT))                          /* attached? */
      return SCPE_OK;
  drv = (int32) (uptr - dptr->units);                     /* get drv number */
  rpds[drv] = rpds[drv] & ~(DS_MOL | DS_RDY | DS_WRL | DS_VV | DS_OFM);
@@ -1589,7 +1519,7 @@ index 1d3c6e17..9ebb1e1c 100644
  /* Set type command validation routine */
  
  t_stat rp_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
-@@ -1508,6 +1815,25 @@ fprint_show_help (st, dptr);
+@@ -1508,6 +1816,26 @@ fprint_show_help (st, dptr);
  fprintf (st, "\nThe type options can be used only when a unit is not attached to a file.\n");
  fprintf (st, "The bad block option can be used only when a unit is attached to a file.\n");
  fprintf (st, "The RP device supports the BOOT command.\n");
@@ -1607,7 +1537,8 @@ index 1d3c6e17..9ebb1e1c 100644
 +fprintf (st, "    3633 rpm; RM03 6/30/55 ms, RP04/05 7/28/50 ms, RP06 10/30/55 ms, RM05\n");
 +fprintf (st, "    6/23 ms, RM80 6/25/50 ms, RP07 5/23 ms track-to-track/average/maximum);\n");
 +fprintf (st, "  - seeks play <type>-s.wav, -m.wav or -l.wav from the sound directory of the\n");
-+fprintf (st, "    drive type (rm03, rp04, rp05, rm80, rp06, rm05, rp07) for short, medium\n");
++fprintf (st, "    drive type (rm03, rp04, rp05, rm80, rp06, rm05, rp07; if missing, the\n");
++fprintf (st, "    default disk sounds seek-s/m/l.wav in default_disk) for short, medium\n");
 +fprintf (st, "    and long seeks, with the limits in the registers SEEK<type>S and\n");
 +fprintf (st, "    SEEK<type>M (e.g. SEEKRP06S/SEEKRP06M, default 50/300 cylinders); a\n");
 +fprintf (st, "    recalibrate is always long.  Optional spindle sounds <type>_spinup.wav,\n");
@@ -1616,13 +1547,14 @@ index 1d3c6e17..9ebb1e1c 100644
  fprintf (st, "\nError handling is as follows:\n\n");
  fprintf (st, "    error         STOP_IOE   processed as\n");
 diff --git a/PDP11/pdp11_rq.c b/PDP11/pdp11_rq.c
-index 2cdfedf6..721378b2 100644
+index 2cdfedf6..6a905f1f 100644
 --- a/PDP11/pdp11_rq.c
 +++ b/PDP11/pdp11_rq.c
-@@ -26,6 +26,29 @@
+@@ -26,6 +26,30 @@
  
     rq           MSCP disk controller
  
++   07-Nov-26    Ulli    Help: seek sounds fall back to sound/default_disk
 +   07-Nov-26    Ulli    RC25/RCF25 geometry 31 sectors x 2 surfaces x 821
 +                        cylinders (was 50 x 8 x 1260; GET UNIT STATUS); sound
 +                        realism mode: realistic configuration rules (RC25
@@ -1649,7 +1581,7 @@ index 2cdfedf6..721378b2 100644
     23-Oct-13    RMS     Revised for new boot setup routine
     09-Dec-12    MB      Added support for changing controller type.
     24-Oct-12    MB      Added mapped transfers for VAX
-@@ -131,6 +154,8 @@ extern int32 MMR2;
+@@ -131,6 +155,8 @@ extern int32 MMR2;
  #include "pdp11_uqssp.h"
  #include "pdp11_mscp.h"
  #include "sim_disk.h"
@@ -1658,7 +1590,7 @@ index 2cdfedf6..721378b2 100644
  
  #define UF_MSK          (UF_CMR|UF_CMW)                 /* settable flags */
  
-@@ -589,14 +614,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
+@@ -589,14 +615,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
  #define RD32_FLGS       0
  
  #define RC25_DTYPE      17                              /*  */
@@ -1677,7 +1609,7 @@ index 2cdfedf6..721378b2 100644
  #define RC25_RCTS       0                               /*  */
  #define RC25_RCTC       1
  #define RC25_RBN        0                               /*  */
-@@ -605,14 +630,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
+@@ -605,14 +631,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
  #define RC25_FLGS       RQDF_RMV
  
  #define RCF25_DTYPE     18                              /*  */
@@ -1696,7 +1628,7 @@ index 2cdfedf6..721378b2 100644
  #define RCF25_RCTS      0                               /*  */
  #define RCF25_RCTC      1
  #define RCF25_RBN       0                               /*  */
-@@ -890,6 +915,8 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
+@@ -890,6 +916,8 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
  #define KLESI_CTYPE     1               // RC25 controller (UNIBUS and QBUS both)
  #define KLESI_UQPM      3
  #define KLESI_MODEL     3
@@ -1705,7 +1637,7 @@ index 2cdfedf6..721378b2 100644
  
  #define RUX50_CTYPE     2               // UNIBUS RX50-only controller
  #define RUX50_UQPM      10		// this should be 10 according to the MSCP spec
-@@ -1060,6 +1087,125 @@ int32 rq_itime4 = 10;                                   /* stage 4 */
+@@ -1060,6 +1088,126 @@ int32 rq_itime4 = 10;                                   /* stage 4 */
  int32 rq_qtime = RQ_QTIME;                              /* queue time */
  int32 rq_xtime = RQ_XTIME;                              /* transfer time */
  
@@ -1752,7 +1684,8 @@ index 2cdfedf6..721378b2 100644
 +     one sector slot per block, plus the time to go on to the next track
 +     (RA60: a track-to-track seek per cylinder crossed; RC25: per track
 +     crossed, from the spiral read time).  Seeks play <prefix>-s.wav,
-+     -m.wav or -l.wav from the drive's sound directory (ra60, rc25) for
++     -m.wav or -l.wav from the drive's sound directory (ra60, rc25; if
++     missing, seek-s/m/l.wav from default_disk) for
 +     short, medium and long seeks (registers SEEKRA60S/M, SEEKRC25S/M, in
 +     cylinders).  Optional spindle sounds <prefix>_spinup.wav,
 +     _running.wav and _spindown.wav play if found.
@@ -1831,7 +1764,7 @@ index 2cdfedf6..721378b2 100644
  typedef struct {
      uint32              cnum;                           /* ctrl number */
      uint32              sa;                             /* status, addr */
-@@ -1156,6 +1302,24 @@ t_stat rq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+@@ -1156,6 +1304,24 @@ t_stat rq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
  t_stat rq_show_unitq (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
  t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
  const char *rq_description (DEVICE *dptr);
@@ -1856,7 +1789,7 @@ index 2cdfedf6..721378b2 100644
  
  t_bool rq_step4 (MSC *cp);
  t_bool rq_mscp (MSC *cp, uint16 pkt, t_bool q);
-@@ -1256,6 +1420,14 @@ REG rq_reg[] = {
+@@ -1256,6 +1422,14 @@ REG rq_reg[] = {
      { DRDATAD (I4TIME,  rq_itime4,                  24, "init stage 4 delay"), PV_LEFT + REG_NZ },
      { DRDATAD (QTIME,   rq_qtime,                   24, "response time for 'immediate' packets"), PV_LEFT + REG_NZ },
      { DRDATAD (XTIME,   rq_xtime,                   24, "response time for data transfers"), PV_LEFT + REG_NZ },
@@ -1871,7 +1804,7 @@ index 2cdfedf6..721378b2 100644
      { VBRDATAD (PKTS,   rq_ctx.pak,     DEV_RDX,    16, sizeof(rq_ctx.pak)/2, "packet buffers, 33W each, 32 entries") },
      { URDATAD (CPKT,    rq_unit[0].cpkt, 10, 5, 0, RQ_NUMDR, 0, "current packet, units 0 to 3") },
      { URDATAD (UCNUM,   rq_unit[0].cnum, 10, 5, 0, RQ_NUMDR, 0, "ctrl number, units 0 to 3") },
-@@ -1274,6 +1446,12 @@ MTAB rq_mod[] = {
+@@ -1274,6 +1448,12 @@ MTAB rq_mod[] = {
          &rq_set_wlk, &rq_show_wlk, NULL, "Write enable disk drive" },
      { MTAB_XTD|MTAB_VUN,        1,  NULL, "LOCKED", 
          &rq_set_wlk, NULL, NULL, "Write lock disk drive"  },
@@ -1884,7 +1817,7 @@ index 2cdfedf6..721378b2 100644
      { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_RI, "RINGS", NULL,
        NULL, &rq_show_ctrl, NULL, "Display command and response rings" },
      { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_FR, "FREEQ", NULL,
-@@ -1995,7 +2173,9 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_abo\n");
+@@ -1995,7 +2175,9 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_abo\n");
  tpkt = 0;                                               /* set no mtch */
  if ((uptr = rq_getucb (cp, lu))) {                      /* get unit */
      if (uptr->cpkt &&                                   /* curr pkt? */
@@ -1895,7 +1828,7 @@ index 2cdfedf6..721378b2 100644
          tpkt = uptr->cpkt;                              /* save match */
          uptr->cpkt = 0;                                 /* gonzo */
          sim_cancel (uptr);                              /* cancel unit */
-@@ -2044,8 +2224,18 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
+@@ -2044,8 +2226,18 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
          return OK;
          }
      uptr->flags = uptr->flags & ~UNIT_ONL;              /* not online */
@@ -1916,7 +1849,7 @@ index 2cdfedf6..721378b2 100644
      uptr->uf = 0;                                       /* clr flags */
      sts = ST_SUC;                                       /* success */
      }
-@@ -2099,7 +2289,7 @@ if (cp->pak[pkt].d[CMD_MOD] & MD_NXU) {                 /* next unit? */
+@@ -2099,7 +2291,7 @@ if (cp->pak[pkt].d[CMD_MOD] & MD_NXU) {                 /* next unit? */
          }
      }
  if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
@@ -1925,7 +1858,7 @@ index 2cdfedf6..721378b2 100644
          sts = ST_OFL | SB_OFL_NV;                       /* offl no vol */
      else if (uptr->flags & UNIT_ONL)                    /* online */
          sts = ST_SUC;
-@@ -2140,7 +2330,7 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
+@@ -2140,7 +2332,7 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
          rq_enqt (cp, &uptr->pktq, pkt);                 /* do later */
          return OK;
          }
@@ -1934,7 +1867,7 @@ index 2cdfedf6..721378b2 100644
          sts = ST_OFL | SB_OFL_NV;                       /* offl no vol */
      else if (uptr->flags & UNIT_ONL)                    /* already online? */
          sts = ST_SUC | SB_SUC_ON;
-@@ -2181,7 +2371,8 @@ else {
+@@ -2181,7 +2373,8 @@ else {
      if ((cp->htmo = cp->pak[pkt].d[SCC_TMO]))           /* set timeout */
          cp->htmo = cp->htmo + 2;                        /* if nz, round up */
      cp->pak[pkt].d[SCC_CFL] = cp->cflgs;                /* return flags */
@@ -1944,7 +1877,7 @@ index 2cdfedf6..721378b2 100644
      cp->pak[pkt].d[SCC_VER] = (RQ_HVER << SCC_VER_V_HVER) |
          (RQ_SVER << SCC_VER_V_SVER);
      cp->pak[pkt].d[SCC_CIDA] = 0;                       /* ctrl ID */
-@@ -2296,7 +2487,11 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
+@@ -2296,7 +2489,11 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
          cp->pak[pkt].d[RW_WMPL] = cp->pak[pkt].d[RW_MAPL];
          cp->pak[pkt].d[RW_WMPH] = cp->pak[pkt].d[RW_MAPH];
          uptr->iostarttime = sim_grtime();
@@ -1957,7 +1890,7 @@ index 2cdfedf6..721378b2 100644
          sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_rw - started\n");
          return OK;                                      /* done */
          }
-@@ -2316,7 +2511,7 @@ uint32 lbn = GETP32 (pkt, RW_LBNL);                     /* get lbn */
+@@ -2316,7 +2513,7 @@ uint32 lbn = GETP32 (pkt, RW_LBNL);                     /* get lbn */
  uint32 bc = GETP32 (pkt, RW_BCL);                       /* get byte cnt */
  uint32 maxlbn = (uint32)uptr->capac;                    /* get max lbn */
  
@@ -1966,7 +1899,7 @@ index 2cdfedf6..721378b2 100644
      return (ST_OFL | SB_OFL_NV);                        /* offl no vol */
  if ((uptr->flags & UNIT_ONL) == 0)                      /* not online? */
      return ST_AVL;                                      /* only avail */
-@@ -2479,7 +2674,8 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_svc(%s,unit=%d, pkt=%d, cmd=%s, lbn
+@@ -2479,7 +2676,8 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_svc(%s,unit=%d, pkt=%d, cmd=%s, lbn
  
  tbc = (bc > RQ_MAXFR)? RQ_MAXFR: bc;                    /* trim cnt to max */
  
@@ -1976,7 +1909,7 @@ index 2cdfedf6..721378b2 100644
      rq_rw_end (cp, uptr, 0, ST_OFL | SB_OFL_NV);        /* offl no vol */
      return SCPE_OK;
      }
-@@ -3122,6 +3318,15 @@ if (cptr) {
+@@ -3122,6 +3320,15 @@ if (cptr) {
          return SCPE_ARG;
      drv_tab[val].lbn = cap;
      }
@@ -1992,7 +1925,7 @@ index 2cdfedf6..721378b2 100644
  uptr->flags = (uptr->flags & ~UNIT_DTYPE) | (val << UNIT_V_DTYPE);
  uptr->capac = (t_addr)drv_tab[val].lbn;
  return SCPE_OK;
-@@ -3154,6 +3359,8 @@ if (uptr->unit_plug == plug)
+@@ -3154,6 +3361,8 @@ if (uptr->unit_plug == plug)
  for (i=0; i < dptr->numunits - 2; i++)
      if (dptr->units[i].unit_plug == plug)
          return sim_messagef (SCPE_ARG, "Unit Plug %d Already In Use on %s\n", plug, sim_uname (&dptr->units[i]));
@@ -2001,7 +1934,7 @@ index 2cdfedf6..721378b2 100644
  uptr->unit_plug = plug;
  return SCPE_OK;
  }
-@@ -3179,6 +3386,10 @@ if ((r != SCPE_OK) || (new_drives > RQ_MAXDR) || (new_drives < RQ_NUMDR))
+@@ -3179,6 +3388,10 @@ if ((r != SCPE_OK) || (new_drives > RQ_MAXDR) || (new_drives < RQ_NUMDR))
      return sim_messagef (SCPE_ARG, "Invalid Number of Drives: %s\n", cptr);
  if (old_drives == new_drives)
      return SCPE_OK;                         /* Nothing to do */
@@ -2012,7 +1945,7 @@ index 2cdfedf6..721378b2 100644
  for (i=new_drives; i < old_drives; i++) {
      if (dptr->units[i].flags & UNIT_ATT)
          return sim_messagef (SCPE_ALATT, "Can't change number of drives on %s with %s attached to %s.\n", 
-@@ -3211,6 +3422,8 @@ MSC *cp = rq_ctxmap[uptr->cnum];
+@@ -3211,6 +3424,8 @@ MSC *cp = rq_ctxmap[uptr->cnum];
  
  if (val < 0)
      return SCPE_ARG;
@@ -2021,7 +1954,7 @@ index 2cdfedf6..721378b2 100644
  cp->ctype = val;
  return SCPE_OK;
  }
-@@ -3232,6 +3445,9 @@ MSC *cp = rq_ctxmap[uptr->cnum];
+@@ -3232,6 +3447,9 @@ MSC *cp = rq_ctxmap[uptr->cnum];
  t_stat r;
  t_bool dontchangecapac = (uptr->flags & UNIT_NOAUTO);
  
@@ -2031,7 +1964,7 @@ index 2cdfedf6..721378b2 100644
  if (drv_tab[GET_DTYPE (uptr->flags)].flgs & RQDF_RO) {
      sim_switches |= SWMASK ('R');
      dontchangecapac = FALSE;
-@@ -3241,6 +3457,8 @@ r = sim_disk_attach_ex (uptr, cptr, RQ_NUMBY, sizeof (uint16), dontchangecapac,
+@@ -3241,6 +3459,8 @@ r = sim_disk_attach_ex (uptr, cptr, RQ_NUMBY, sizeof (uint16), dontchangecapac,
  if (r != SCPE_OK)
      return r;
  
@@ -2040,7 +1973,7 @@ index 2cdfedf6..721378b2 100644
  if ((cp->csta == CST_UP) && sim_disk_isavailable (uptr))
      uptr->flags = uptr->flags | UNIT_ATP;
  return SCPE_OK;
-@@ -3257,6 +3475,7 @@ if (r != SCPE_OK)
+@@ -3257,6 +3477,7 @@ if (r != SCPE_OK)
      return r;
  uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP);     /* clr onl, atn pend */
  uptr->uf = 0;                                           /* clr unit flgs */
@@ -2048,7 +1981,7 @@ index 2cdfedf6..721378b2 100644
  return SCPE_OK;
  } 
  
-@@ -3285,6 +3504,7 @@ if (cp->ctype == DEFAULT_CTYPE)
+@@ -3285,6 +3506,7 @@ if (cp->ctype == DEFAULT_CTYPE)
      cp->ctype = (UNIBUS    ? UDA50A_CTYPE :
                   MICROVAX1 ? RQDX1_CTYPE : RQDX3_CTYPE);
  
@@ -2056,7 +1989,7 @@ index 2cdfedf6..721378b2 100644
  if (!plugs_inited ) {
  #if !defined (VM_VAX)
      uint32 u = 0;
-@@ -3312,6 +3532,8 @@ if (!plugs_inited ) {
+@@ -3312,6 +3534,8 @@ if (!plugs_inited ) {
                  rq_devmap[i]->units[d].flags |= UNIT_DIS;
                  rq_devmap[i]->units[d].flags &= ~UNIT_DISABLE;
                  }
@@ -2065,7 +1998,7 @@ index 2cdfedf6..721378b2 100644
              rq_devmap[i]->units[d].unit_plug = 
  #if defined (VM_VAX)
                  d;          /* VAX default units */
-@@ -3596,6 +3818,772 @@ if (val & RQ_SH_UN) {
+@@ -3596,6 +3820,772 @@ if (val & RQ_SH_UN) {
  return SCPE_OK;
  }
  
@@ -2838,7 +2771,7 @@ index 2cdfedf6..721378b2 100644
  t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
  {
  fprintf (st, "UDA50A MSCP Disk Controller (%s)\n\n", dptr->name);
-@@ -3618,6 +4606,56 @@ fprintf (st, "disk in either MB (1000000 bytes) or logical block numbers (LBN's,
+@@ -3618,6 +4608,57 @@ fprintf (st, "disk in either MB (1000000 bytes) or logical block numbers (LBN's,
  fprintf (st, "each), or binary MB (1024*1024 bytes).  The minimum size is 5MB; the maximum\n");
  fprintf (st, "size is 2GB without extended file support, 1TB with extended file support.\n\n");
  fprintf (st, "The %s controllers support the BOOT command.\n\n", dptr->name);
@@ -2883,11 +2816,12 @@ index 2cdfedf6..721378b2 100644
 +fprintf (st, "    one track, 35 ms average, 55 ms maximum, 31 ms per track spiral read;\n");
 +fprintf (st, "    the two units of an RC25 drive share the head actuator);\n");
 +fprintf (st, "  - seeks play <type>-s.wav, <type>-m.wav or <type>-l.wav from the sound\n");
-+fprintf (st, "    directory ra60 or rc25 for short, medium and long seeks (limits in the\n");
-+fprintf (st, "    registers SEEKRA60S/SEEKRA60M, default 100/600 cylinders, and\n");
-+fprintf (st, "    SEEKRC25S/SEEKRC25M, default 50/300); optional spindle sounds\n");
-+fprintf (st, "    <type>_spinup.wav, <type>_running.wav and <type>_spindown.wav are used\n");
-+fprintf (st, "    if found;\n");
++fprintf (st, "    directory ra60 or rc25 (if missing, the default disk sounds\n");
++fprintf (st, "    seek-s/m/l.wav in default_disk) for short, medium and long seeks\n");
++fprintf (st, "    (limits in the registers SEEKRA60S/SEEKRA60M, default 100/600\n");
++fprintf (st, "    cylinders, and SEEKRC25S/SEEKRC25M, default 50/300); optional spindle\n");
++fprintf (st, "    sounds <type>_spinup.wav, <type>_running.wav and <type>_spindown.wav\n");
++fprintf (st, "    are used if found (no default);\n");
 +fprintf (st, "  - the other drive types keep the QTIME/XTIME timing.\n");
 +fprintf (st, "Without the realism mode an RA60 or RC25 spins up at ATTACH, ONLINE and\n");
 +fprintf (st, "OFFLINE take effect at once, an RCF25 works without a cartridge in its RC25,\n");
@@ -2896,13 +2830,14 @@ index 2cdfedf6..721378b2 100644
  fprint_reg_help (st, dptr);
  fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");
 diff --git a/VAX/vax730_rb.c b/VAX/vax730_rb.c
-index c58181c9..edb56c29 100644
+index c58181c9..14966474 100644
 --- a/VAX/vax730_rb.c
 +++ b/VAX/vax730_rb.c
-@@ -26,6 +26,12 @@
+@@ -26,6 +26,13 @@
  
     rb           RB730 - RB02/RB80 disk controller
  
++   07-Nov-2026  Ulli    Help: seek sounds fall back to sound/default_disk
 +   04-Nov-2026  Ulli    Sound realism mode (SET SOUND ENABLED): SET RBn
 +                        ONLINE/LOAD and OFFLINE/UNLOAD are the LOAD button of
 +                        the RB02 (an RL02), ATTACH waits for ONLINE, spin-up/
@@ -2912,7 +2847,7 @@ index c58181c9..edb56c29 100644
     04-Nov-2026  Ulli    A finishing seek only raises the drive's attention (it
                          decoded the controller's current command, which may
                          belong to another drive); RB80 with 31 sectors per
-@@ -61,6 +67,8 @@
+@@ -61,6 +68,8 @@
  
  #include "vax_defs.h"
  #include "sim_disk.h"
@@ -2921,7 +2856,7 @@ index c58181c9..edb56c29 100644
  
  /* Constants */
  
-@@ -246,6 +254,60 @@ int32 rb_swait = 150;                                   /* seek wait */
+@@ -246,6 +255,60 @@ int32 rb_swait = 150;                                   /* seek wait */
  int32 rb_mwait = 300;                                   /* seek wait */
  int32 rb_cwait = 50;                                    /* seek wait */
  
@@ -2982,7 +2917,7 @@ index c58181c9..edb56c29 100644
  t_stat rb_rd16 (int32 *data, int32 PA, int32 access);
  t_stat rb_wr16 (int32 data, int32 PA, int32 access);
  t_stat rb_rd32 (int32 *data, int32 PA, int32 access);
-@@ -261,6 +323,13 @@ t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+@@ -261,6 +324,13 @@ t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  t_stat rb_set_layout (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  t_stat rb_show_layout (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
  t_stat rb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
@@ -2996,7 +2931,7 @@ index c58181c9..edb56c29 100644
  
  /* RB730 data structures
  
-@@ -288,6 +357,12 @@ UNIT rb_unit[] = {
+@@ -288,6 +358,12 @@ UNIT rb_unit[] = {
      };
  
  REG rb_reg[] = {
@@ -3009,7 +2944,7 @@ index c58181c9..edb56c29 100644
      { NULL }
      };
  
-@@ -307,6 +382,16 @@ MTAB rb_mod[] = {
+@@ -307,6 +383,16 @@ MTAB rb_mod[] = {
          &set_writelock, NULL,   NULL, "Write lock disk drive" },
      { UNIT_DUMMY,      0, NULL,            "BADBLOCK", 
          &rb_set_bad, NULL, NULL, "write bad block table on last track" },
@@ -3026,7 +2961,7 @@ index c58181c9..edb56c29 100644
      { UNIT_NOAUTO,           0, "autosize", "AUTOSIZE",
          NULL, NULL, NULL, "Set type based on file size at attach" },
      { UNIT_NOAUTO, UNIT_NOAUTO, "noautosize", "NOAUTOSIZE",
-@@ -367,7 +452,7 @@ switch ((PA >> 2) & 07) {
+@@ -367,7 +453,7 @@ switch ((PA >> 2) & 07) {
              rbcs = rbcs | RBCS_ERR;
          uptr = rb_dev.units + GET_DRIVE (rbcs);
          if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
@@ -3035,7 +2970,7 @@ index c58181c9..edb56c29 100644
              rbcs = rbcs & ~RBCS_DRDY;
          else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
          if (uptr->flags & UNIT_RB80)
-@@ -419,7 +504,7 @@ switch ((PA >> 2) & 07) {
+@@ -419,7 +505,7 @@ switch ((PA >> 2) & 07) {
              rbcs = rbcs | RBCS_ERR;
          uptr = rb_dev.units + GET_DRIVE (data);
          if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
@@ -3044,7 +2979,7 @@ index c58181c9..edb56c29 100644
              rbcs = rbcs & ~RBCS_DRDY;
          else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
          if (uptr->flags & UNIT_RB80)
-@@ -450,7 +535,11 @@ switch ((PA >> 2) & 07) {
+@@ -450,7 +536,11 @@ switch ((PA >> 2) & 07) {
              sim_activate (uptr, rb_swait);
              break;
          default:                                        /* data transfer */
@@ -3057,7 +2992,7 @@ index c58181c9..edb56c29 100644
              break;
              }                                           /* end switch func */
          break;
-@@ -526,6 +615,16 @@ if (func == RBCS_GSTA) {                                /* get status */
+@@ -526,6 +616,16 @@ if (func == RBCS_GSTA) {                                /* get status */
          if (uptr->flags & UNIT_WPRT)
              rbmp = rbmp | RB80DS_WLK;
          }
@@ -3074,7 +3009,7 @@ index c58181c9..edb56c29 100644
      else {
          if (rbmp & RBMP_RST)
              uptr->STAT = uptr->STAT & ~RB02DS_ERR;
-@@ -547,7 +646,7 @@ if (func == RBCS_RHDR) {                                /* read header? */
+@@ -547,7 +647,7 @@ if (func == RBCS_RHDR) {                                /* read header? */
      return SCPE_OK;
      }
  
@@ -3083,7 +3018,7 @@ index c58181c9..edb56c29 100644
      rbcs = rbcs & ~RBCS_DRDY;                           /* clear drive ready */
      rbcs = rbcs | (1u << (RBCS_V_ATN + GET_DRIVE (rbcs)));
      if ((uptr->flags & UNIT_RB80) == 0)
-@@ -578,8 +677,14 @@ if (func == RBCS_SEEK) {                                /* seek? */
+@@ -578,8 +678,14 @@ if (func == RBCS_SEEK) {                                /* seek? */
                  (rbda & RBDA_TRACK);                        /* (head selected) */
              swait = rb_cwait * abs (newc - curr);
              if (swait < rb_mwait) swait = rb_mwait;
@@ -3099,7 +3034,7 @@ index c58181c9..edb56c29 100644
          rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
          rbcs = rbcs | RBCS_IRQ;
          rb_set_done(0);
-@@ -697,6 +802,7 @@ UNIT *uptr;
+@@ -697,6 +803,7 @@ UNIT *uptr;
  rbcs = CSR_DONE;
  rbda = rbba = rbbc = rbmp = 0;
  CLR_INT (RB);
@@ -3107,7 +3042,7 @@ index c58181c9..edb56c29 100644
  for (i = 0; i < RB_NUMDR; i++) {
      uptr = rb_dev.units + i;
      sim_cancel (uptr);
-@@ -737,6 +843,20 @@ if (uptr->flags & UNIT_OLDL)
+@@ -737,6 +844,20 @@ if (uptr->flags & UNIT_OLDL)
  uptr->TRK = 0;                                          /* cylinder 0 */
  if ((uptr->flags & UNIT_RB80) == 0)
      uptr->STAT = RB02DS_VCK;                            /* new volume */
@@ -3128,7 +3063,7 @@ index c58181c9..edb56c29 100644
  return SCPE_OK;
  }
  
-@@ -745,6 +865,8 @@ return SCPE_OK;
+@@ -745,6 +866,8 @@ return SCPE_OK;
  t_stat rb_detach (UNIT *uptr)
  {
  sim_cancel (uptr);
@@ -3137,7 +3072,7 @@ index c58181c9..edb56c29 100644
  return sim_disk_detach (uptr);
  }
  
-@@ -813,5 +935,187 @@ fprintf (st, "images can still be used with SET RBn LAYOUT=OLD before the ATTACH
+@@ -813,5 +936,189 @@ fprintf (st, "images can still be used with SET RBn LAYOUT=OLD before the ATTACH
  fprintf (st, "temporary option); converting them once is better.\n");
  fprintf (st, "The RB80 has 31 sectors per track as DEC's drivers use it (242,606 blocks,\n");
  fprintf (st, "like the RM80, which has the same R80 drive); the old layout has 32.\n");
@@ -3154,10 +3089,12 @@ index c58181c9..edb56c29 100644
 +fprintf (st, "    seek 15 ms track-to-track, 100 ms maximum; RB80 as the RM80: 3600 rpm,\n");
 +fprintf (st, "    6/25/50 ms track-to-track/average/maximum);\n");
 +fprintf (st, "  - seeks play rl02-s/m/l.wav (RB02) or rm80-s/m/l.wav (RB80) from the sound\n");
-+fprintf (st, "    directories rl02 and rm80 for short, medium and long seeks (limits in the\n");
-+fprintf (st, "    registers SEEK02S/SEEK02M, default 30/190, and SEEK80S/SEEK80M, default\n");
-+fprintf (st, "    35/205 cylinders); optional spindle sounds rl02_spinup.wav,\n");
-+fprintf (st, "    rl02_running.wav and rl02_spindown.wav are used if found.\n");
++fprintf (st, "    directories rl02 and rm80 (if missing, the default disk sounds\n");
++fprintf (st, "    seek-s/m/l.wav in default_disk) for short, medium and long seeks\n");
++fprintf (st, "    (limits in the registers SEEK02S/SEEK02M, default 30/190, and\n");
++fprintf (st, "    SEEK80S/SEEK80M, default 35/205 cylinders); optional spindle sounds\n");
++fprintf (st, "    rl02_spinup.wav, rl02_running.wav and rl02_spindown.wav are used if\n");
++fprintf (st, "    found (no default).\n");
 +fprintf (st, "Without the realism mode an RB02 spins up at ATTACH, ONLINE and OFFLINE take\n");
 +fprintf (st, "effect at once, and the timing is unchanged.\n");
 +fprint_reg_help (st, dptr);
@@ -3326,13 +3263,14 @@ index c58181c9..edb56c29 100644
 +               (cls == 0) ? "short" : ((cls == 1) ? "medium" : "long"), dist);
 +}
 diff --git a/VAX/vax750_syslist.c b/VAX/vax750_syslist.c
-index 75642805..a1eebaa6 100644
+index 75642805..2fe1c94a 100644
 --- a/VAX/vax750_syslist.c
 +++ b/VAX/vax750_syslist.c
-@@ -24,16 +24,28 @@
+@@ -24,16 +24,31 @@
     used in advertising or otherwise to promote the sale, use or other dealings
     in this Software without prior written authorization from the author(s).
  
++   07-Nov-2026  Ulli    System sounds from sound/default_cpu (opt-in)
 +   02-Nov-2026  Ulli    Added the default system sounds (sim_sound)
     21-Oct-2012  MB      First Version
  */
@@ -3345,11 +3283,13 @@ index 75642805..a1eebaa6 100644
  void vax_init(void)
  {
  sim_savename = "VAX750";
-+/* Sound: the bundled VAX-11/750 recordings in sound/vax750/ - the power
-+   relay and blower start-up, the running blower (loop) and the power-off
-+   with the blower running down */
-+sim_sound_set_system ("vax750", "blower_starting.wav", "blower_running.wav",
-+                      "blower_stopping.wav");
++/* Sound: own system sounds would be sound/vax750/starting.wav,
++   running.wav and stopping.wav; there are none, because the recordings
++   of a real VAX-11/750 (power relay and blower start-up, running blower,
++   power-off with the blower running down) are the default CPU sounds in
++   sound/default_cpu/, which this simulator uses (opt-in) */
++sim_sound_set_system ("vax750", "starting.wav", "running.wav", "stopping.wav");
++sim_sound_use_default_cpu ();
 +/* Realistic CPU speed in the sound realism mode: about 0.6 of a
 +   VAX-11/780 (roughly 0.5 million VAX instructions per second), so about
 +   300,000 instructions per second.  Provisional: to be calibrated against
@@ -3564,7 +3504,7 @@ index b460a38b..4793a032 100644
  DISPLAYD = ${SIMHD}/display
  
 diff --git a/scp.c b/scp.c
-index 9f2eced3..4b1636ad 100644
+index 9f2eced3..b496c8da 100644
 --- a/scp.c
 +++ b/scp.c
 @@ -233,6 +233,7 @@
@@ -3575,7 +3515,7 @@ index 9f2eced3..4b1636ad 100644
  #include "sim_sock.h"
  #include "sim_frontpanel.h"
  #include "sim_printf_fmts.h"
-@@ -1470,6 +1471,50 @@ static const char simh_help1[] =
+@@ -1470,6 +1471,61 @@ static const char simh_help1[] =
        "3Asynch\n"
        "+SET ASYNCH                  enable asynchronous I/O\n"
        "+SET NOASYNCH                disable asynchronous I/O\n"
@@ -3623,10 +3563,21 @@ index 9f2eced3..4b1636ad 100644
 +      " where <sim> is the simulator's sound directory (e.g. vax750), so a user\n"
 +      " file overrides a bundled file of the same name.  SHOW SOUND shows the\n"
 +      " current settings and the files in use.\n"
++      "4Default sounds\n"
++      " A device or simulator without a sound of its own uses a default, file by\n"
++      " file (its own file always wins):\n\n"
++      "++disks: seek sounds seek-s.wav, seek-m.wav, seek-l.wav in default_disk\n"
++      "++tapes: default_tape (still to come)\n"
++      "++CPUs: starting.wav, running.wav, stopping.wav in default_cpu (the\n"
++      "++recordings of a real VAX-11/750), for simulators that use them\n"
++      "++(at present the vax750)\n\n"
++      " Spindle sounds have no default (they must match the drive).  The default\n"
++      " directories are searched in the same order as above.  SHOW SOUND lists\n"
++      " the defaults in use.\n"
  #define HLP_SET_ENVIRON "*Commands SET Environment"
        "3Environment\n"
        "4Explicitily Changing a Variable\n"
-@@ -1600,6 +1645,7 @@ static const char simh_help2[] =
+@@ -1600,6 +1656,7 @@ static const char simh_help2[] =
        "+sh{ow} video                show video capabilities\n"
        "+sh{ow} clocks               show calibrated timer information\n"
        "+sh{ow} throttle             show throttle info\n"
@@ -3634,7 +3585,7 @@ index 9f2eced3..4b1636ad 100644
        "+sh{ow} on                   show on condition actions\n"
        "+sh{ow} do                   show do nesting state\n"
        "+sh{ow} runlimit             show execution limit states\n"
-@@ -1621,6 +1667,7 @@ static const char simh_help2[] =
+@@ -1621,6 +1678,7 @@ static const char simh_help2[] =
  #define HLP_SHOW_LOG            "*Commands SHOW"
  #define HLP_SHOW_DEBUG          "*Commands SHOW"
  #define HLP_SHOW_THROTTLE       "*Commands SHOW"
@@ -3642,7 +3593,7 @@ index 9f2eced3..4b1636ad 100644
  #define HLP_SHOW_ASYNCH         "*Commands SHOW"
  #define HLP_SHOW_ETHERNET       "*Commands SHOW"
  #define HLP_SHOW_SERIAL         "*Commands SHOW"
-@@ -2619,6 +2666,7 @@ static CTAB set_glob_tab[] = {
+@@ -2619,6 +2677,7 @@ static CTAB set_glob_tab[] = {
      { "NODEBUG",    &sim_set_deboff,            0, HLP_SET_DEBUG  },
      { "THROTTLE",   &sim_set_throt,             1, HLP_SET_THROTTLE },
      { "NOTHROTTLE", &sim_set_throt,             0, HLP_SET_THROTTLE },
@@ -3650,7 +3601,7 @@ index 9f2eced3..4b1636ad 100644
      { "CLOCKS",     &sim_set_timers,            1, HLP_SET_CLOCK },
      { "ASYNCH",     &sim_set_asynch,            1, HLP_SET_ASYNCH },
      { "NOASYNCH",   &sim_set_asynch,            0, HLP_SET_ASYNCH },
-@@ -2682,6 +2730,7 @@ static SHTAB show_glob_tab[] = {
+@@ -2682,6 +2741,7 @@ static SHTAB show_glob_tab[] = {
      { "TELNET",         &sim_show_telnet,           0 },    /* deprecated */
      { "DEBUG",          &sim_show_debug,            0, HLP_SHOW_DEBUG },
      { "THROTTLE",       &sim_show_throt,            0, HLP_SHOW_THROTTLE },
@@ -3658,7 +3609,7 @@ index 9f2eced3..4b1636ad 100644
      { "ASYNCH",         &sim_show_asynch,           0, HLP_SHOW_ASYNCH },
      { "ETHERNET",       &eth_show_devices,          0, HLP_SHOW_ETHERNET },
      { "SERIAL",         &sim_show_serial,           0, HLP_SHOW_SERIAL },
-@@ -2988,6 +3037,7 @@ if (SCPE_BARE_STATUS(stat) != SCPE_EXIT)
+@@ -2988,6 +3048,7 @@ if (SCPE_BARE_STATUS(stat) != SCPE_EXIT)
  
  cleanup_and_exit:
  
@@ -3666,7 +3617,7 @@ index 9f2eced3..4b1636ad 100644
  detach_all (0, TRUE);                                   /* close files */
  sim_set_deboff (0, NULL);                               /* close debug */
  sim_set_logoff (0, NULL);                               /* close log */
-@@ -9318,6 +9368,12 @@ else
+@@ -9318,6 +9379,12 @@ else
  if (sim_switches & SIM_SW_HIDE)                         /* Setup only for Remote Console Mode */
      return SCPE_OK;
  
@@ -3679,7 +3630,7 @@ index 9f2eced3..4b1636ad 100644
  for (i = 1; (dptr = sim_devices[i]) != NULL; i++) {     /* reposition all */
      for (j = 0; j < dptr->numunits; j++) {              /* seq devices */
          uptr = dptr->units + j;
-@@ -9353,6 +9409,7 @@ if (sim_step)                                           /* set step timer */
+@@ -9353,6 +9420,7 @@ if (sim_step)                                           /* set step timer */
      sim_sched_step ();
  sim_activate_after (&sim_flush_unit, sim_flush_interval * 1000000);/* Enable periodic buffer flushing */
  stop_cpu = FALSE;
@@ -3687,7 +3638,7 @@ index 9f2eced3..4b1636ad 100644
  sim_is_running = TRUE;                                  /* flag running */
  fflush(stdout);                                         /* flush stdout */
  if (sim_log)                                            /* flush log if enabled */
-@@ -9419,6 +9476,7 @@ if ((SCPE_BARE_STATUS(r) == SCPE_STOP) &&               /* WRU exit from sim_ins
+@@ -9419,6 +9487,7 @@ if ((SCPE_BARE_STATUS(r) == SCPE_STOP) &&               /* WRU exit from sim_ins
      (sim_on_actions[sim_do_depth][0] == NULL))
      sim_os_ms_sleep (sim_stop_sleep_ms);                /* wait a bit for SIGINT */
  sim_is_running = FALSE;                                 /* flag idle */
@@ -3697,10 +3648,10 @@ index 9f2eced3..4b1636ad 100644
  sim_brk_clrall (BRK_TYP_DYN_STEPOVER);                  /* cancel any step/over subroutine breakpoints */
 diff --git a/sim_sound.c b/sim_sound.c
 new file mode 100644
-index 00000000..1ef194ee
+index 00000000..67aacbf4
 --- /dev/null
 +++ b/sim_sound.c
-@@ -0,0 +1,1796 @@
+@@ -0,0 +1,1884 @@
 +/* sim_sound.c: common sound support for all simulators
 +
 +   Copyright (c) 2026, Ulli (vaxorcist)
@@ -3805,11 +3756,34 @@ index 00000000..1ef194ee
 +static char snd_sys_user[SND_SYS_COUNT][CBUFSIZE];   /* SET SOUND STARTING/RUNNING/STOPPING */
 +static SND_SAMPLE *snd_sys_smp[SND_SYS_COUNT];  /* loaded system sounds (may be NULL) */
 +static SND_HANDLE snd_sys_handle = 0;           /* voice of the starting/running chain */
-+#define SND_MAX_UNITLOOPS 64                     /* registered unit loops */
-+#define SND_MAX_RUNHOOKS  8                      /* registered run hooks */
++/* Registries without a fixed limit (up to sound patch v13: 64 unit loops
++   and 8 run hooks; a unit loop beyond 64 was not restored at power on,
++   known issues case 27): arrays that grow as needed.  They hold pointers,
++   so growing them moves nothing that is in use. */
 +
-+static SND_UNITLOOP *snd_unitloops[SND_MAX_UNITLOOPS];/* every unit loop ever loaded */
-+static void (*snd_runhooks[SND_MAX_RUNHOOKS])(t_bool running);
++static SND_UNITLOOP **snd_unitloops = NULL;     /* every unit loop ever loaded */
++static int32 snd_n_unitloops = 0;
++static void (**snd_runhooks) (t_bool running) = NULL;
++static int32 snd_n_runhooks = 0;
++
++/* Default sounds, used when a device or simulator has no sound of its
++   own (2026-11-07, Ulli: "DRY"):
++   - disks: seek sounds sound/default_disk/seek-s.wav, seek-m.wav,
++     seek-l.wav (the former synthetic RK07 seek sounds); there are no
++     default spindle sounds (they must match the drive's speed and times);
++   - tapes: sound/default_tape/ (the first tape sounds, still to come);
++   - CPUs: sound/default_cpu/starting.wav, running.wav, stopping.wav (the
++     recordings of a real VAX-11/750), only for simulators that opt in with
++     sim_sound_use_default_cpu ().
++   The fallback is per file: a device's own file wins.  Defaults are found
++   through the same search order as every sound file.  SHOW SOUND lists
++   which defaults are in use. */
++
++static t_bool snd_sys_use_default = FALSE;      /* the simulator opted in to default_cpu */
++static char *snd_default_uses = NULL;           /* "dir (what), ..." for SHOW SOUND */
++
++static const char *snd_sys_default_file[SND_SYS_COUNT] = {
++    "starting.wav", "running.wav", "stopping.wav" };
 +static char snd_throttle[CBUFSIZE] = "";        /* simulator default throttle (realism mode) */
 +static t_bool snd_throttle_set = FALSE;         /* the throttle was set by sim_sound */
 +static uint32 snd_throttle_delay = 0;           /* THROT_DELAY before sim_sound set it */
@@ -4622,6 +4596,53 @@ index 00000000..1ef194ee
 +return snd_load (dir, file, TRUE);
 +}
 +
++/* Remember for SHOW SOUND that "dir (what)" uses a default (once each) */
++
++static void snd_note_default (const char *dir, const char *what, const char *ddir)
++{
++char entry[CBUFSIZE];
++size_t len;
++char *n;
++
++snprintf (entry, sizeof (entry), "%s (%s) -> %s", (dir && *dir) ? dir : "?", what, ddir);
++if ((snd_default_uses != NULL) && (strstr (snd_default_uses, entry) != NULL))
++    return;
++len = (snd_default_uses ? strlen (snd_default_uses) + 2 : 0) + strlen (entry) + 1;
++n = (char *) realloc (snd_default_uses, len);
++if (n == NULL)
++    return;
++if (snd_default_uses == NULL)
++    n[0] = '\0';
++else
++    strlcat (n, ", ", len);
++strlcat (n, entry, len);
++snd_default_uses = n;
++}
++
++/* A sound with a default: the device's own file dir/file if it exists
++   (no message if not), otherwise the default ddir/dfile (reported once if
++   that is missing too).  ddir == NULL: no default, dir/file is reported
++   if missing. */
++
++static SND_SAMPLE *snd_load_with_default (const char *dir, const char *file,
++                                          const char *ddir, const char *dfile, const char *what)
++{
++SND_SAMPLE *smp;
++
++if (ddir == NULL)
++    return sim_sound_load (dir, file);
++if ((smp = sim_sound_load_optional (dir, file)) != NULL)
++    return smp;
++if ((smp = sim_sound_load (ddir, dfile)) != NULL)
++    snd_note_default (dir, what, ddir);
++return smp;
++}
++
++void sim_sound_use_default_cpu (void)
++{
++snd_sys_use_default = TRUE;
++}
++
 +/* Forget cached entries of a file, so that SET SOUND PATH changes and newly
 +   added files are picked up on the next load. */
 +
@@ -4649,21 +4670,22 @@ index 00000000..1ef194ee
 +void sim_sound_unit_load (SND_UNITLOOP *ul, const char *dir, const char *start,
 +                          const char *run, const char *stop)
 +{
-+int32 i, free_slot = -1;
++int32 i;
++SND_UNITLOOP **n;
 +
 +ul->start = sim_sound_load_optional (dir, start);
 +ul->run = sim_sound_load_optional (dir, run);
 +ul->stop = sim_sound_load_optional (dir, stop);
 +ul->handle = 0;
 +ul->active = ul->silenced = FALSE;
-+for (i = 0; i < SND_MAX_UNITLOOPS; i++) {       /* register it (once) for */
++for (i = 0; i < snd_n_unitloops; i++)           /* register it (once) for */
 +    if (snd_unitloops[i] == ul)                 /* power off/on */
 +        return;
-+    if ((snd_unitloops[i] == NULL) && (free_slot < 0))
-+        free_slot = i;
-+    }
-+if (free_slot >= 0)
-+    snd_unitloops[free_slot] = ul;
++n = (SND_UNITLOOP **) realloc ((void *) snd_unitloops, (snd_n_unitloops + 1) * sizeof (*n));
++if (n == NULL)
++    return;
++snd_unitloops = n;
++snd_unitloops[snd_n_unitloops++] = ul;
 +}
 +
 +void sim_sound_unit_start (SND_UNITLOOP *ul, int32 group, double gain)
@@ -4696,7 +4718,7 @@ index 00000000..1ef194ee
 +{
 +int32 i;
 +
-+for (i = 0; i < SND_MAX_UNITLOOPS; i++) {
++for (i = 0; i < snd_n_unitloops; i++) {
 +    SND_UNITLOOP *ul = snd_unitloops[i];
 +
 +    if ((ul != NULL) && ul->active && ul->silenced) {
@@ -4713,7 +4735,7 @@ index 00000000..1ef194ee
 +{
 +int32 i;
 +
-+for (i = 0; i < SND_MAX_UNITLOOPS; i++) {
++for (i = 0; i < snd_n_unitloops; i++) {
 +    SND_UNITLOOP *ul = snd_unitloops[i];
 +
 +    if ((ul != NULL) && ul->active) {
@@ -4728,15 +4750,16 @@ index 00000000..1ef194ee
 +void sim_sound_register_run_hook (void (*fn)(t_bool running))
 +{
 +int32 i;
++void (**n) (t_bool running);
 +
-+for (i = 0; i < SND_MAX_RUNHOOKS; i++) {
++for (i = 0; i < snd_n_runhooks; i++)
 +    if (snd_runhooks[i] == fn)
 +        return;
-+    if (snd_runhooks[i] == NULL) {
-+        snd_runhooks[i] = fn;
-+        return;
-+        }
-+    }
++n = (void (**) (t_bool)) realloc ((void *) snd_runhooks, (snd_n_runhooks + 1) * sizeof (*n));
++if (n == NULL)
++    return;
++snd_runhooks = n;
++snd_runhooks[snd_n_runhooks++] = fn;
 +}
 +
 +static void snd_spindles_run_state (t_bool running);
@@ -4746,10 +4769,8 @@ index 00000000..1ef194ee
 +int32 i;
 +
 +snd_spindles_run_state (running);
-+for (i = 0; i < SND_MAX_RUNHOOKS; i++) {
-+    if (snd_runhooks[i] != NULL)
-+        snd_runhooks[i] (running);
-+    }
++for (i = 0; i < snd_n_runhooks; i++)
++    snd_runhooks[i] (running);
 +}
 +
 +/* Realistic durations (see sim_sound.h) */
@@ -5081,11 +5102,14 @@ index 00000000..1ef194ee
 +{
 +static const char *cls[3] = { "s", "m", "l" };
 +char name[CBUFSIZE];
++char dname[CBUFSIZE];
 +int32 i;
 +
-+for (i = 0; i < 3; i++) {
++
++for (i = 0; i < 3; i++) {                       /* own file, else the default */
 +    snprintf (name, sizeof (name), "%s-%s.wav", prefix, cls[i]);
-+    smp[i] = sim_sound_load (dir, name);
++    snprintf (dname, sizeof (dname), "seek-%s.wav", cls[i]);
++    smp[i] = snd_load_with_default (dir, name, SND_DEFAULT_DISK, dname, "seek");
 +    }
 +}
 +
@@ -5127,8 +5151,22 @@ index 00000000..1ef194ee
 +{
 +int32 i;
 +
-+for (i = 0; i < SND_SYS_COUNT; i++)
-+    snd_sys_smp[i] = sim_sound_load (snd_sys_dir, snd_sys_file (i));
++for (i = 0; i < SND_SYS_COUNT; i++) {
++    const char *file = snd_sys_file (i);
++
++    if (snd_sys_user[i][0] != '\0')              /* the user's file: no default */
++        snd_sys_smp[i] = sim_sound_load (snd_sys_dir, file);
++    else if (!snd_sys_use_default)              /* no default for this simulator */
++        snd_sys_smp[i] = (file[0] != '\0') ? sim_sound_load (snd_sys_dir, file) : NULL;
++    else if (file[0] == '\0') {                  /* no own name: the default */
++        snd_sys_smp[i] = sim_sound_load (SND_DEFAULT_CPU, snd_sys_default_file[i]);
++        if (snd_sys_smp[i] != NULL)
++            snd_note_default (snd_sys_dir, "system", SND_DEFAULT_CPU);
++        }
++    else
++        snd_sys_smp[i] = snd_load_with_default (snd_sys_dir, file, SND_DEFAULT_CPU,
++                                                snd_sys_default_file[i], "system");
++    }
 +}
 +
 +/* Start the system sound.  With direct == FALSE the starting one-shot is
@@ -5493,16 +5531,17 @@ index 00000000..1ef194ee
 +#endif
 +    fprintf (st, "\n");
 +    }
++fprintf (st, "Defaults: %s\n", snd_default_uses ? snd_default_uses : "(none used yet)");
 +if (sim_sound_available ())
 +    fprintf (st, "Voices:  %d playing\n", (int)snd_active_voices ());
 +return SCPE_OK;
 +}
 diff --git a/sim_sound.h b/sim_sound.h
 new file mode 100644
-index 00000000..57ac79f0
+index 00000000..de68f99d
 --- /dev/null
 +++ b/sim_sound.h
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,326 @@
 +/* sim_sound.h: common sound support for all simulators
 +
 +   Copyright (c) 2026, Ulli (vaxorcist)
@@ -5624,6 +5663,26 @@ index 00000000..57ac79f0
 +
 +void sim_sound_set_system (const char *dir, const char *starting,
 +                           const char *running, const char *stopping);
++
++/* Default sounds, used when a device or simulator has no sound of its own
++   (per file: an own file always wins).  The default directories are
++   searched like every sound directory (SET SOUND PATH, SIMH_SOUND_PATH,
++   <exe>/sound, ./sound):
++     SND_DEFAULT_DISK   seek sounds seek-s.wav, seek-m.wav, seek-l.wav
++                        (used by sim_sound_seek_load ()); no default
++                        spindle sounds
++     SND_DEFAULT_TAPE   tape sounds (still to come)
++     SND_DEFAULT_CPU    system sounds starting.wav, running.wav,
++                        stopping.wav, only for a simulator that calls
++                        sim_sound_use_default_cpu () (opt-in) during its
++                        initialization
++   SHOW SOUND lists the defaults in use. */
++
++#define SND_DEFAULT_DISK        "default_disk"
++#define SND_DEFAULT_TAPE        "default_tape"
++#define SND_DEFAULT_CPU         "default_cpu"
++
++void sim_sound_use_default_cpu (void);
 +
 +/* Simulator default for the realistic CPU speed in the realism mode, as a
 +   SET THROTTLE argument (e.g. "300K"); NULL or "" for none. */
@@ -5793,8 +5852,9 @@ index 00000000..57ac79f0
 +void sim_spindle_wait (SND_SPINDLE *sp);
 +t_stat sim_spindle_show (FILE *st, SND_SPINDLE *sp);
 +
-+/* Seek sounds: three samples (prefix-s.wav, prefix-m.wav, prefix-l.wav)
-+   for short, medium and long seeks.  sim_sound_seek () picks one by the
++/* Seek sounds: three samples (prefix-s.wav, prefix-m.wav, prefix-l.wav
++   in dir, else seek-s/m/l.wav in SND_DEFAULT_DISK) for short, medium and
++   long seeks.  sim_sound_seek () picks one by the
 +   distance and the device's limits (cylinders): up to s_lim short, up to
 +   m_lim medium, else long; distance 0 plays nothing unless forced long
 +   (a recalibrate).  Only in the realism mode. */
@@ -5891,1199 +5951,42 @@ index 8e304914..f113f466 100644
  t_stat sim_show_throt (FILE *st, DEVICE *dnotused, UNIT *unotused, int32 flag, CONST char *cptr);
  t_stat sim_set_idle (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  t_stat sim_clr_idle (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
-diff --git a/sound/ra60/README.txt b/sound/ra60/README.txt
+diff --git a/sound/default_cpu/README.txt b/sound/default_cpu/README.txt
 new file mode 100644
-index 00000000..7fab8960
+index 00000000..1c9f8ffb
 --- /dev/null
-+++ b/sound/ra60/README.txt
++++ b/sound/default_cpu/README.txt
 @@ -0,0 +1,56 @@
-+Sounds of the RA60 disk drive (sound/ra60)
-+==========================================
-+
-+Used by the MSCP disk controllers (RQ, RQB, RQC, RQD devices) of the
-+PDP-11 and VAX simulators for RA60 drives when sound is enabled (SET
-+SOUND ENABLED; see HELP SET SOUND and HELP RQ).
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+ra60-s.wav    short head movement (synthetic)             short seek
-+ra60-m.wav    medium head movement (synthetic)            medium seek
-+ra60-l.wav    long head movement (synthetic)              long seek
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RA60 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RQ register SEEKRA60S
-+(default 100) cylinders short, up to SEEKRA60M (default 600) medium,
-+beyond that long (1600 cylinders).  A transfer on the current cylinder
-+makes no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+If files with these names are found (here or in a directory of SET SOUND
-+PATH or SIMH_SOUND_PATH), they are used for every RA60 drive:
-+
-+ra60_spinup.wav      spindle starting (SET RQn ONLINE), plays once
-+ra60_running.wav     spindle running, loops seamlessly
-+ra60_spindown.wav    spindle stopping (SET RQn OFFLINE, or an AVAILABLE
-+                     command with spin-down such as DISMOUNT/UNLOAD),
-+                     plays once
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/ra60/ra60-l.wav b/sound/ra60/ra60-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/ra60/ra60-m.wav b/sound/ra60/ra60-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/ra60/ra60-s.wav b/sound/ra60/ra60-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rc25/README.txt b/sound/rc25/README.txt
-new file mode 100644
-index 00000000..6b2fa7a5
---- /dev/null
-+++ b/sound/rc25/README.txt
-@@ -0,0 +1,61 @@
-+Sounds of the RC25 disk drive (sound/rc25)
-+==========================================
-+
-+Used by the MSCP disk controllers (RQ, RQB, RQC, RQD devices) of the
-+PDP-11 and VAX simulators for RC25 drives when sound is enabled (SET
-+SOUND ENABLED; see HELP SET SOUND and HELP RQ).  An RC25 drive is one
-+spindle with two platters: the removable cartridge (unit type RC25) and
-+the fixed platter (unit type RCF25, the next unit).  Both units use
-+these sounds; they share one head actuator.
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rc25-s.wav    short head movement (synthetic)             short seek
-+rc25-m.wav    medium head movement (synthetic)            medium seek
-+rc25-l.wav    long head movement (synthetic)              long seek
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RC25 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RQ register SEEKRC25S
-+(default 50) cylinders short, up to SEEKRC25M (default 300) medium,
-+beyond that long (821 cylinders).  A transfer on the current cylinder
-+makes no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+If files with these names are found (here or in a directory of SET SOUND
-+PATH or SIMH_SOUND_PATH), they are used for every RC25 drive:
-+
-+rc25_spinup.wav      spindle starting (SET RQn ONLINE, the Run button),
-+                     plays once; the real drive takes about 60 s
-+                     including the air purge and the self-test
-+rc25_running.wav     spindle running (2850 rpm), loops seamlessly
-+rc25_spindown.wav    spindle stopping (SET RQn OFFLINE, or an AVAILABLE
-+                     command with spin-down such as DISMOUNT/UNLOAD),
-+                     plays once (30 s)
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rc25/rc25-l.wav b/sound/rc25/rc25-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rc25/rc25-m.wav b/sound/rc25/rc25-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rc25/rc25-s.wav b/sound/rc25/rc25-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rk07/README.txt b/sound/rk07/README.txt
-new file mode 100644
-index 00000000..7405a80e
---- /dev/null
-+++ b/sound/rk07/README.txt
-@@ -0,0 +1,55 @@
-+Sounds of the RK06/RK07 disk drives (sound/rk07)
-+=================================================
-+
-+These sounds were made by Ulli (vaxorcist).  They are used by the RK611
-+controller (HK device) of the PDP-11 and VAX simulators when sound is
-+enabled (SET SOUND ENABLED; see HELP SET SOUND and HELP HK).  The RK06
-+uses the same sounds.
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rk07-s.wav    short head movement (synthetic)             short seek
-+rk07-m.wav    medium head movement (synthetic)            medium seek
-+rk07-l.wav    long head movement (synthetic)              long seek,
-+                                                          recalibrate
-+
-+The files are mono, 16 bit, 16000 Hz WAV.  The seek class depends on the
-+seek distance: up to HK register SEEK7S (default 50) cylinders short, up
-+to SEEK7M (default 300) medium, beyond that long (RK06: SEEK6S/SEEK6M,
-+default 25/150).  A seek to the current cylinder makes no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+No spindle recordings exist yet.  If files with these names are found
-+(here or in a directory of SET SOUND PATH or SIMH_SOUND_PATH), they are
-+used for every drive:
-+
-+rk07_spinup.wav      spindle starting (SET HKn ONLINE), plays once
-+rk07_running.wav     spindle running, loops seamlessly
-+rk07_spindown.wav    spindle stopping (SET HKn OFFLINE, UNLOAD), plays once
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rk07/rk07-l.wav b/sound/rk07/rk07-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rk07/rk07-m.wav b/sound/rk07/rk07-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rk07/rk07-s.wav b/sound/rk07/rk07-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rl02/README.txt b/sound/rl02/README.txt
-new file mode 100644
-index 00000000..72068b6b
---- /dev/null
-+++ b/sound/rl02/README.txt
-@@ -0,0 +1,56 @@
-+Sounds of the RL01/RL02 disk drives (sound/rl02)
-+=================================================
-+
-+Used by the RL11/RLV11/RLV12 controller (RL device) of the PDP-11 and VAX
-+simulators when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND
-+and HELP RL).  The RL01 uses the same sounds.
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rl02-s.wav    short head movement (synthetic)             short seek
-+rl02-m.wav    medium head movement (synthetic)            medium seek
-+rl02-l.wav    long head movement (synthetic)              long seek
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RL02 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RL register SEEK2S
-+(default 30) cylinders short, up to SEEK2M (default 190) medium, beyond
-+that long (RL01: SEEK1S/SEEK1M, default 15/95).  A head switch without
-+a cylinder change makes no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+If files with these names are found (here or in a directory of SET SOUND
-+PATH or SIMH_SOUND_PATH), they are used for every drive:
-+
-+rl02_spinup.wav      spindle starting (SET RLn ONLINE or LOAD), plays once;
-+                     the RL02 takes about 40 s to become ready
-+rl02_running.wav     spindle running, loops seamlessly
-+rl02_spindown.wav    spindle stopping (SET RLn OFFLINE or UNLOAD), plays
-+                     once; about 30 s
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rl02/rl02-l.wav b/sound/rl02/rl02-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rl02/rl02-m.wav b/sound/rl02/rl02-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rl02/rl02-s.wav b/sound/rl02/rl02-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm03/README.txt b/sound/rm03/README.txt
-new file mode 100644
-index 00000000..67bb0cec
---- /dev/null
-+++ b/sound/rm03/README.txt
-@@ -0,0 +1,55 @@
-+Sounds of the RM02/RM03 disk drive (sound/rm03)
-+============================================
-+
-+Used by the Massbus disk controller (RP device) of the PDP-11 and VAX
-+simulators when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND
-+and HELP RP).
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rm03-s.wav    short head movement (synthetic)             short seek
-+rm03-m.wav    medium head movement (synthetic)            medium seek
-+rm03-l.wav    long head movement (synthetic)              long seek,
-+                                                          recalibrate
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RM02/RM03 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RP register SEEKRM03S
-+(default 50) cylinders short, up to SEEKRM03M (default 300) medium,
-+beyond that long (823 cylinders).  A seek to the current cylinder makes
-+no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+If files with these names are found (here or in a directory of SET SOUND
-+PATH or SIMH_SOUND_PATH), they are used for every RM02/RM03 drive:
-+
-+rm03_spinup.wav      spindle starting (SET RPn ONLINE), plays once
-+rm03_running.wav     spindle running, loops seamlessly
-+rm03_spindown.wav    spindle stopping (SET RPn OFFLINE, UNLOAD), plays once
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rm03/rm03-l.wav b/sound/rm03/rm03-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm03/rm03-m.wav b/sound/rm03/rm03-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm03/rm03-s.wav b/sound/rm03/rm03-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm05/README.txt b/sound/rm05/README.txt
-new file mode 100644
-index 00000000..c1f24d2e
---- /dev/null
-+++ b/sound/rm05/README.txt
-@@ -0,0 +1,55 @@
-+Sounds of the RM05 disk drive (sound/rm05)
-+=======================================
-+
-+Used by the Massbus disk controller (RP device) of the PDP-11 and VAX
-+simulators when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND
-+and HELP RP).
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rm05-s.wav    short head movement (synthetic)             short seek
-+rm05-m.wav    medium head movement (synthetic)            medium seek
-+rm05-l.wav    long head movement (synthetic)              long seek,
-+                                                          recalibrate
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RM05 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RP register SEEKRM05S
-+(default 50) cylinders short, up to SEEKRM05M (default 300) medium,
-+beyond that long (823 cylinders).  A seek to the current cylinder makes
-+no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+If files with these names are found (here or in a directory of SET SOUND
-+PATH or SIMH_SOUND_PATH), they are used for every RM05 drive:
-+
-+rm05_spinup.wav      spindle starting (SET RPn ONLINE), plays once
-+rm05_running.wav     spindle running, loops seamlessly
-+rm05_spindown.wav    spindle stopping (SET RPn OFFLINE, UNLOAD), plays once
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rm05/rm05-l.wav b/sound/rm05/rm05-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm05/rm05-m.wav b/sound/rm05/rm05-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm05/rm05-s.wav b/sound/rm05/rm05-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm80/README.txt b/sound/rm80/README.txt
-new file mode 100644
-index 00000000..66683fc4
---- /dev/null
-+++ b/sound/rm80/README.txt
-@@ -0,0 +1,49 @@
-+Sounds of the RM80 disk drive (sound/rm80)
-+=======================================
-+
-+Used by the Massbus disk controller (RP device) of the PDP-11 and VAX
-+simulators when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND
-+and HELP RP).
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rm80-s.wav    short head movement (synthetic)             short seek
-+rm80-m.wav    medium head movement (synthetic)            medium seek
-+rm80-l.wav    long head movement (synthetic)              long seek,
-+                                                          recalibrate
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RM80 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RP register SEEKRM80S
-+(default 35) cylinders short, up to SEEKRM80M (default 205) medium,
-+beyond that long (559 cylinders).  A seek to the current cylinder makes
-+no sound.
-+
-+The RM80 is a fixed disk: it has no RUN/STOP button in the simulator,
-+so no spindle sounds are used.
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rm80/rm80-l.wav b/sound/rm80/rm80-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm80/rm80-m.wav b/sound/rm80/rm80-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rm80/rm80-s.wav b/sound/rm80/rm80-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp04/README.txt b/sound/rp04/README.txt
-new file mode 100644
-index 00000000..5e6eea1b
---- /dev/null
-+++ b/sound/rp04/README.txt
-@@ -0,0 +1,55 @@
-+Sounds of the RP04 disk drive (sound/rp04)
-+=======================================
-+
-+Used by the Massbus disk controller (RP device) of the PDP-11 and VAX
-+simulators when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND
-+and HELP RP).
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rp04-s.wav    short head movement (synthetic)             short seek
-+rp04-m.wav    medium head movement (synthetic)            medium seek
-+rp04-l.wav    long head movement (synthetic)              long seek,
-+                                                          recalibrate
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RP04 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RP register SEEKRP04S
-+(default 25) cylinders short, up to SEEKRP04M (default 150) medium,
-+beyond that long (411 cylinders).  A seek to the current cylinder makes
-+no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+If files with these names are found (here or in a directory of SET SOUND
-+PATH or SIMH_SOUND_PATH), they are used for every RP04 drive:
-+
-+rp04_spinup.wav      spindle starting (SET RPn ONLINE), plays once
-+rp04_running.wav     spindle running, loops seamlessly
-+rp04_spindown.wav    spindle stopping (SET RPn OFFLINE, UNLOAD), plays once
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rp04/rp04-l.wav b/sound/rp04/rp04-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp04/rp04-m.wav b/sound/rp04/rp04-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp04/rp04-s.wav b/sound/rp04/rp04-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp05/README.txt b/sound/rp05/README.txt
-new file mode 100644
-index 00000000..f97d95c1
---- /dev/null
-+++ b/sound/rp05/README.txt
-@@ -0,0 +1,55 @@
-+Sounds of the RP05 disk drive (sound/rp05)
-+=======================================
-+
-+Used by the Massbus disk controller (RP device) of the PDP-11 and VAX
-+simulators when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND
-+and HELP RP).
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rp05-s.wav    short head movement (synthetic)             short seek
-+rp05-m.wav    medium head movement (synthetic)            medium seek
-+rp05-l.wav    long head movement (synthetic)              long seek,
-+                                                          recalibrate
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RP05 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RP register SEEKRP05S
-+(default 25) cylinders short, up to SEEKRP05M (default 150) medium,
-+beyond that long (411 cylinders).  A seek to the current cylinder makes
-+no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+If files with these names are found (here or in a directory of SET SOUND
-+PATH or SIMH_SOUND_PATH), they are used for every RP05 drive:
-+
-+rp05_spinup.wav      spindle starting (SET RPn ONLINE), plays once
-+rp05_running.wav     spindle running, loops seamlessly
-+rp05_spindown.wav    spindle stopping (SET RPn OFFLINE, UNLOAD), plays once
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rp05/rp05-l.wav b/sound/rp05/rp05-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp05/rp05-m.wav b/sound/rp05/rp05-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp05/rp05-s.wav b/sound/rp05/rp05-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp06/README.txt b/sound/rp06/README.txt
-new file mode 100644
-index 00000000..1995728f
---- /dev/null
-+++ b/sound/rp06/README.txt
-@@ -0,0 +1,55 @@
-+Sounds of the RP06 disk drive (sound/rp06)
-+=======================================
-+
-+Used by the Massbus disk controller (RP device) of the PDP-11 and VAX
-+simulators when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND
-+and HELP RP).
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rp06-s.wav    short head movement (synthetic)             short seek
-+rp06-m.wav    medium head movement (synthetic)            medium seek
-+rp06-l.wav    long head movement (synthetic)              long seek,
-+                                                          recalibrate
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RP06 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RP register SEEKRP06S
-+(default 50) cylinders short, up to SEEKRP06M (default 300) medium,
-+beyond that long (815 cylinders).  A seek to the current cylinder makes
-+no sound.
-+
-+Optional spindle sounds
-+-----------------------
-+If files with these names are found (here or in a directory of SET SOUND
-+PATH or SIMH_SOUND_PATH), they are used for every RP06 drive:
-+
-+rp06_spinup.wav      spindle starting (SET RPn ONLINE), plays once
-+rp06_running.wav     spindle running, loops seamlessly
-+rp06_spindown.wav    spindle stopping (SET RPn OFFLINE, UNLOAD), plays once
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rp06/rp06-l.wav b/sound/rp06/rp06-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp06/rp06-m.wav b/sound/rp06/rp06-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp06/rp06-s.wav b/sound/rp06/rp06-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp07/README.txt b/sound/rp07/README.txt
-new file mode 100644
-index 00000000..0a736e76
---- /dev/null
-+++ b/sound/rp07/README.txt
-@@ -0,0 +1,49 @@
-+Sounds of the RP07 disk drive (sound/rp07)
-+=======================================
-+
-+Used by the Massbus disk controller (RP device) of the PDP-11 and VAX
-+simulators when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND
-+and HELP RP).
-+
-+File          Content                                     Use
-+------------  ------------------------------------------  -------------
-+rp07-s.wav    short head movement (synthetic)             short seek
-+rp07-m.wav    medium head movement (synthetic)            medium seek
-+rp07-l.wav    long head movement (synthetic)              long seek,
-+                                                          recalibrate
-+
-+These are copies of the RK07 seek sounds (sound/rk07) until recordings
-+of a real RP07 exist.  The files are mono, 16 bit, 16000 Hz WAV.  The
-+seek class depends on the seek distance: up to RP register SEEKRP07S
-+(default 40) cylinders short, up to SEEKRP07M (default 230) medium,
-+beyond that long (630 cylinders).  A seek to the current cylinder makes
-+no sound.
-+
-+The RP07 is a fixed disk: it has no RUN/STOP button in the simulator,
-+so no spindle sounds are used.
-+
-+License
-+-------
-+Copyright (c) 2026, Ulli (vaxorcist)
-+
-+Permission is hereby granted, free of charge, to any person obtaining a
-+copy of these sound files (the "Software"), to deal in the Software
-+without restriction, including without limitation the rights to use,
-+copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-+of the Software, and to permit persons to whom the Software is furnished
-+to do so, subject to the following conditions:
-+
-+The above copyright notice and this permission notice shall be included
-+in all copies or substantial portions of the Software.
-+
-+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-+
-+Except as contained in this notice, the name of the author shall not be
-+used in advertising or otherwise to promote the sale, use or other
-+dealings in this Software without prior written authorization from the
-+author.
-diff --git a/sound/rp07/rp07-l.wav b/sound/rp07/rp07-l.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
-GIT binary patch
-literal 318
-zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
-z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
-z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
-z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
-z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
-zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
-QzYD7Ys70olq^G$a=6vLg8UO$Q
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp07/rp07-m.wav b/sound/rp07/rp07-m.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
-GIT binary patch
-literal 250
-zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
-z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
-z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
-z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
-zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
-Az5oCK
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/rp07/rp07-s.wav b/sound/rp07/rp07-s.wav
-new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
-GIT binary patch
-literal 226
-zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
-z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
-zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
-z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
-ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
-
-literal 0
-HcmV?d00001
-
-diff --git a/sound/vax750/README.txt b/sound/vax750/README.txt
-new file mode 100644
-index 00000000..000152e4
---- /dev/null
-+++ b/sound/vax750/README.txt
-@@ -0,0 +1,51 @@
-+Sounds of the VAX-11/750 simulator (sound/vax750)
-+==================================================
++Default CPU sounds (sound/default_cpu)
++======================================
 +
 +These recordings were made by Ulli (vaxorcist) on his own VAX-11/750.
-+They are used by the vax750 simulator when sound is enabled
-+(SET SOUND ENABLED; see HELP SET SOUND).
++They are the default system sounds of every simulator that opts in to
++them (sim_sound_use_default_cpu () in its initialization; at present the
++vax750) when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND) and
++the simulator has no system sounds of its own.
 +
-+File                  Content                                     Use
-+--------------------  ------------------------------------------  ---------
-+blower_starting.wav   power relay closes, blower starts           STARTING
-+blower_running.wav    blower running (cut to loop seamlessly)     RUNNING
-+blower_stopping.wav   power relay opens, blower runs down         STOPPING
++File          Content                                     Use
++------------  ------------------------------------------  ---------
++starting.wav  power relay closes, blower starts           STARTING
++running.wav   blower running (cut to loop seamlessly)     RUNNING
++stopping.wav  power relay opens, blower runs down         STOPPING
 +
 +All files are mono, 16 bit, 44100 Hz WAV.
 +
-+blower_running.wav was cut from a 4.9 s recording into a 4.27 s loop:
-+the end crossfades (0.25 s) into the start at the point where the
-+recording resembles its own start best, so it repeats without a click.
-+blower_starting.wav and blower_stopping.wav are the original recordings
-+(originally blower_starting.wav and blower_stopping_fadeout.wav).
++running.wav was cut from a 4.9 s recording into a 4.27 s loop: the end
++crossfades (0.25 s) into the start at the point where the recording
++resembles its own start best, so it repeats without a click.
++starting.wav and stopping.wav are the original recordings (originally
++blower_starting.wav and blower_stopping_fadeout.wav; up to sound patch
++v13 these files were sound/vax750/blower_*.wav).
 +
-+To use your own sounds, put files with the same names into a directory
-+listed in SET SOUND PATH or in the environment variable SIMH_SOUND_PATH
-+(as <dir>/vax750/<file> or <dir>/<file>), or name other files with
-+SET SOUND STARTING=, RUNNING= and STOPPING=.
++Own sounds of a simulator win over these, file by file: the simulator
++looks for starting.wav, running.wav and stopping.wav in its own sound
++directory first (e.g. sound/vax750/; searched like every sound file: SET
++SOUND PATH, SIMH_SOUND_PATH, <exe>/sound, ./sound) and falls back to the
++file here.  SET SOUND STARTING=, RUNNING= and STOPPING= name other files
++(no fallback for those).  SHOW SOUND lists the defaults in use.
 +
 +License
 +-------
@@ -7110,7 +6013,7 @@ index 00000000..000152e4
 +used in advertising or otherwise to promote the sale, use or other
 +dealings in this Software without prior written authorization from the
 +author.
-diff --git a/sound/vax750/blower_running.wav b/sound/vax750/blower_running.wav
+diff --git a/sound/default_cpu/running.wav b/sound/default_cpu/running.wav
 new file mode 100644
 index 0000000000000000000000000000000000000000..0d189a5d97da7c960a70c46b548165e933610137
 GIT binary patch
@@ -14042,7 +12945,7 @@ P_Y8jqe~fO&TH*f(Nlgpq
 literal 0
 HcmV?d00001
 
-diff --git a/sound/vax750/blower_starting.wav b/sound/vax750/blower_starting.wav
+diff --git a/sound/default_cpu/starting.wav b/sound/default_cpu/starting.wav
 new file mode 100644
 index 0000000000000000000000000000000000000000..44e3fcf9bd2192ea1a697faedb7dd7c83bd021a9
 GIT binary patch
@@ -15186,7 +14089,7 @@ D%d2YJ
 literal 0
 HcmV?d00001
 
-diff --git a/sound/vax750/blower_stopping.wav b/sound/vax750/blower_stopping.wav
+diff --git a/sound/default_cpu/stopping.wav b/sound/default_cpu/stopping.wav
 new file mode 100644
 index 0000000000000000000000000000000000000000..ac78b660eee0f9a6e7c3862dfea8e1377cdb9bfd
 GIT binary patch
@@ -17199,6 +16102,134 @@ z!M$2b(MIqF-K)>~ExORRPbf#viMpTcjey=n1Hl|=mxu;5FVo%?0Ue6kM33>V*Q9$y
 z-*J9Y+(B|CkWiu~T@ybQZ&%xzX|<qT8l`qe;9JyF!5XMVaTZAs-TmaPqVu3nx~>+2
 zR@J8N)BWm`IJkDV`t+pL;Hvtlx9cb9hrU-!Y9shQxULrE@l+c@f1Zp$PXzZod9TJH
 VZuX@2dQ#s7Pyaui1*6u#{{zALWr_d*
+
+literal 0
+HcmV?d00001
+
+diff --git a/sound/default_disk/README.txt b/sound/default_disk/README.txt
+new file mode 100644
+index 00000000..735c9a96
+--- /dev/null
++++ b/sound/default_disk/README.txt
+@@ -0,0 +1,77 @@
++Default disk sounds (sound/default_disk)
++========================================
++
++These seek sounds were made by Ulli (vaxorcist); they are synthetic (they
++were the RK07 seek sounds).  Every disk drive with sound support uses them
++when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND) and the
++drive has no seek sounds of its own.
++
++File          Content                                     Use
++------------  ------------------------------------------  -------------
++seek-s.wav    short head movement (synthetic)             short seek
++seek-m.wav    medium head movement (synthetic)            medium seek
++seek-l.wav    long head movement (synthetic)              long seek,
++                                                          recalibrate
++
++The files are mono, 16 bit, 16000 Hz WAV.
++
++Own sounds of a drive type win over these, file by file: a drive looks
++for <dir>/<prefix>-s.wav, -m.wav and -l.wav first (searched like every
++sound file: SET SOUND PATH, SIMH_SOUND_PATH, <exe>/sound, ./sound) and
++falls back to the file here.  SHOW SOUND lists the defaults in use.
++
++Drive types, their sound directory and prefix, and the seek limits (in
++cylinders: up to the first short, up to the second medium, beyond long;
++a seek to the current cylinder makes no sound):
++
++Device  Drive        Directory/prefix  Limits (registers, defaults)
++------  -----------  ----------------  -------------------------------------
++HK      RK06         rk07              SEEK6S/SEEK6M 25/150
++HK      RK07         rk07              SEEK7S/SEEK7M 50/300
++RL      RL01         rl02              SEEK1S/SEEK1M 15/95
++RL      RL02         rl02              SEEK2S/SEEK2M 30/190
++RB      RB02         rl02              SEEK02S/SEEK02M 30/190
++RB      RB80         rm80              SEEK80S/SEEK80M 35/205
++RP      RM02/RM03    rm03              SEEKRM03S/SEEKRM03M 50/300
++RP      RP04         rp04              SEEKRP04S/SEEKRP04M 25/150
++RP      RP05         rp05              SEEKRP05S/SEEKRP05M 25/150
++RP      RM80         rm80              SEEKRM80S/SEEKRM80M 35/205
++RP      RP06         rp06              SEEKRP06S/SEEKRP06M 50/300
++RP      RM05         rm05              SEEKRM05S/SEEKRM05M 50/300
++RP      RP07         rp07              SEEKRP07S/SEEKRP07M 40/230
++RQ      RA60         ra60              SEEKRA60S/SEEKRA60M 100/600
++RQ      RC25/RCF25   rc25              SEEKRC25S/SEEKRC25M 50/300
++
++Spindle sounds have no default: they must match the drive's rotation
++speed and its spin-up and spin-down times.  A drive with a RUN/STOP (or
++LOAD) button plays <prefix>_spinup.wav (once), <prefix>_running.wav (a
++seamless loop) and <prefix>_spindown.wav (once) from its directory if
++they exist (all drives above except the fixed RM80, RP07 and RB80).
++tools/make_spindle_sounds.py (open-simh-extended, branch notes)
++synthesizes matching sets.
++
++License
++-------
++Copyright (c) 2026, Ulli (vaxorcist)
++
++Permission is hereby granted, free of charge, to any person obtaining a
++copy of these sound files (the "Software"), to deal in the Software
++without restriction, including without limitation the rights to use,
++copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++of the Software, and to permit persons to whom the Software is furnished
++to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included
++in all copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
++IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
++CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++
++Except as contained in this notice, the name of the author shall not be
++used in advertising or otherwise to promote the sale, use or other
++dealings in this Software without prior written authorization from the
++author.
+diff --git a/sound/default_disk/seek-l.wav b/sound/default_disk/seek-l.wav
+new file mode 100644
+index 0000000000000000000000000000000000000000..7deddac82ae031b8fc782a4a97f48cfa0f622ba3
+GIT binary patch
+literal 318
+zcmV-E0m1%KNk&FC0RRA3K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT^<0RR9B
+z015#^1tt#H8L%WJEDkWyFkdcrDDWN43zF}Y%)G5PpXjA7yieD1?$`dm3Of~L9laf=
+z4?*#w$pokuoI|R6$H(G2^jZRt7_d1?Th49kXU|NUD9{In?;G5a$5pYBpz)vGwtVC2
+z7=uNFUb<$1X!>b^X01~REF1Q9!DXFjkQ0`4q${<?$?xZ!5$-^oX}f+`dir3PJ)0SU
+z__Wt;v?h~rfUSo}sh`^B48%0NPiJBla8Y%#YhzDiBGT=Izl@<vl@ph3qG7bu&4u!!
+zAXQClY$|t4ZTwWSH$xeS_9oAmsRND_gsYMIvSi!V0TLuyKM7L5UZ`S|R8lmk3=-s#
+QzYD7Ys70olq^G$a=6vLg8UO$Q
+
+literal 0
+HcmV?d00001
+
+diff --git a/sound/default_disk/seek-m.wav b/sound/default_disk/seek-m.wav
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0d01cf8fb49048f5c3b74a731293b8f5794b214
+GIT binary patch
+literal 250
+zcmV<W00sY2Nk&HU00012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT{60000B
+z0QUj43fdW$Cmt`(Fw-m<BG3yy<hQmvpBSuP&UNk_1J@B|9pf7M{GQ1fp$emZ$DZjw
+z{gN1)MIdVHXAD8w5rprR)u6bKpw^_x((V`}P(WpYXx(WwTnQ|W<L{<ukX@Q(ug1x&
+z^fNJ>Y5#vDYm+@q4%*^xw3Lb$f<~$R>-s3ZPmO2obgygkL0JEUzoMHom2RTeyYl3s
+zAg)>cbxdtzOROV{_W!}6l^28?o9E5Z0U|D*OuJrDV0J*O4DZ&9uluLVq!6zl=DMhI
+Az5oCK
+
+literal 0
+HcmV?d00001
+
+diff --git a/sound/default_disk/seek-s.wav b/sound/default_disk/seek-s.wav
+new file mode 100644
+index 0000000000000000000000000000000000000000..f8e1006f4eb64083521a6e94c2f291063ba512bb
+GIT binary patch
+literal 226
+zcmV<803H8QNk&H600012K~_a(ZFC?I000010097iJ^%m!eE<Lg01yCVVRT`(0000A
+z0Gk3J4x1k$EY>hwF7PAE3t`^7tqY(sys_ih{uU5w9mW_&@$|MBoEo^r;_v#97;j6<
+zZD3rTD5?4%+*`bppiQWK<3}-uUd?CxX_Q|LEQQ)?oqUmdq@2F==Qk;!X{dkyU`i`~
+z_*ljvlYf9ksfP5!G{adHaJ6z~Pc;aGzh#*Zm!_)K&FKhOO@DMsZGlEX86xAFsaS@p
+ckrc<*0nIWCQe<L`RMQ|2<gK#)r!AzZx$X^NJpcdz
 
 literal 0
 HcmV?d00001

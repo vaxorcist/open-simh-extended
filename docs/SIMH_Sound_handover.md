@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v15 (RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v16 (default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02. Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -633,6 +633,51 @@ Not tested: the KLESI ABORT and timeout paths (VMS issued neither in the tests).
 
 Narrowed down, not fixed: it happens on plain Open SIMH with nothing attached after a failed VMB boot, and the failing test number varies; it looks like a timing problem of the KA655 self-test after BOOT CPU, not an RQ problem (known issues case 22). Proposal: a separate investigation.
 
+## Default sounds ("DRY") (2026-11-07)
+
+### Where things are
+
+- Branch `sound`: commit c4f8d503 on top of f5a394af; branch `integration`: the same change as bf6a01f7.
+- Patch **`opensimh_5_sound_v14.patch`** (cumulative, replaces v1–v13, applies on top of `opensimh_6_rb730_v1.patch`, without the Visual Studio project files). Checked by `git am --keep-cr` on a fresh 87eb7d5: identical tree; the full order 1, 2, 3, 4, 6, 5 applies. The patch got smaller (about 950 KB, v13 993 KB): ten copies of the seek sounds are gone.
+- Changed: `sim_sound.c`, `sim_sound.h`, `scp.c` (HELP SET SOUND), `VAX/vax750_syslist.c`, the help texts of `PDP11/pdp11_hk.c`, `pdp11_rl.c`, `pdp11_rp.c`, `pdp11_rq.c`, `VAX/vax730_rb.c`.
+- Sound tree now:
+
+  | Directory | Files | Was |
+  |---|---|---|
+  | `sound/default_disk` | `seek-s.wav`, `seek-m.wav`, `seek-l.wav`, `README.txt` (table of all drives with their directory/prefix and seek limits) | `sound/rk07/rk07-s/m/l.wav` |
+  | `sound/default_cpu` | `starting.wav`, `running.wav`, `stopping.wav`, `README.txt` | `sound/vax750/blower_starting/running/stopping.wav` |
+  | (removed) | | `sound/rl02`, `rm03`, `rm05`, `rm80`, `rp04`, `rp05`, `rp06`, `rp07`, `ra60`, `rc25` (copies of the RK07 seek sounds) |
+
+### Decisions (Ulli)
+
+- Default sounds for disks, tapes and CPUs, used when there are no real sounds.
+- Disks: the RK07 seek sounds, directory renamed to `default_disk`, generic file names. **No default spindle sounds.**
+- CPUs: the vax750 sounds, moved to `default_cpu`, generic file names; **opt-in per simulator.**
+- Tapes: the first tape sound we make (`default_tape`, name reserved as `SND_DEFAULT_TAPE`).
+
+### Behavior
+
+- **Per file:** a device first looks for its own file (`<dir>/<prefix>-s.wav` …, or for a simulator `<sim>/starting.wav` …) and falls back to the default file; both are searched in the usual order (SET SOUND PATH, SIMH_SOUND_PATH, `<exe>/sound`, `<exe>/../sound`, `./sound`). So real recordings can be added later, also by the user, without touching the defaults.
+- A missing own file is not reported when the default exists; a missing default is reported once.
+- `SET SOUND STARTING=/RUNNING=/STOPPING=` (user files) have no fallback.
+- `SHOW SOUND` has a new line `Defaults:`, e.g. `vax750 (system) -> default_cpu, rk07 (seek) -> default_disk, rl02 (seek) -> default_disk, ...`; the system sound lines show the file actually used.
+- `sim_sound_use_default_cpu ()`: the opt-in; the vax750 calls it with own names `starting.wav`, `running.wav`, `stopping.wav` in `sound/vax750` (none bundled).
+- `HELP SET SOUND` has a new topic "Default sounds"; the device help texts name the fallback.
+- Also fixed (known issues case 27): the unit loop and run hook registries grow as needed (were 64 and 8).
+
+### Tests (`tests/sound/` on the notes branch)
+
+| Test | Result |
+|---|---|
+| d1 (vax750, realism): SHOW SOUND after SET SOUND ENABLED | system sounds from `default_cpu` (0.73 / 4.27 / 1.44 s), `Defaults: vax750 (system) -> default_cpu` |
+| d1: ATTACH of RK07, RL02, RP06, RA60 | no "not found" message; `Defaults:` lists rk07, rl02, rp06, ra60 (seek) -> default_disk |
+| d2: an own `vax750/running.wav` via SET SOUND PATH | RUNNING from the own file, STARTING/STOPPING from `default_cpu` |
+| d1 with the simulator copied to a directory without a sound tree | each missing default reported once (`seek-s.wav not found (sound directory "default_disk")`), later attaches silent |
+| c4 (MicroVAX 3900, RC25) with the SDL disk audio driver | the seek sounds play (peak 0.244) |
+| R1 (VMS V3.5, vax730, RC25 realism) | all checks ok, as before |
+| Build `-Werror` pdp11, vax730, vax750, vax780, microvax3900; `sim_sound.c` with `-Wall -Wextra` with and without SDL2 | no warnings |
+| VAX diagnostics 730, 750 | passed |
+
 ## Not done yet (after phase B)
 
 - RX and TU58 later without spin-up/spin-down; tapes afterwards. (The RA60 and the RC25 are done, see phase C steps 3 and 5.)
@@ -640,5 +685,6 @@ Narrowed down, not fixed: it happens on plain Open SIMH with nothing attached af
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.
 - Installing the `sound/` directory with `make install`/CMake packaging.
+- Default tape sounds (`default_tape`) with the first tape sounds; other simulators may opt in to `default_cpu`.
 - `vid_beep` migration (phase D).
 - Overlap policy for repeated events, by listening tests.
