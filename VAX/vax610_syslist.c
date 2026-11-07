@@ -24,6 +24,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author(s).
 
+   07-Nov-2026  Ulli    Added the DMV11 (DMV device)
    15-Feb-2012  MB      First version
 */
 
@@ -56,6 +57,7 @@ extern DEVICE vh_dev;
 extern DEVICE vc_dev;
 extern DEVICE lk_dev;
 extern DEVICE vs_dev;
+extern DEVICE dmv_dev;
 
 DEVICE *sim_devices[] = { 
     &cpu_dev,
@@ -85,6 +87,7 @@ DEVICE *sim_devices[] = {
     &tq_dev,
     &xq_dev,
     &xqb_dev,
+    &dmv_dev,                                   /* DMV11 (the KA610 supports it) */
     NULL
     };
 

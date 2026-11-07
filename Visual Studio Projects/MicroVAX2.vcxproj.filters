@@ -21,6 +21,9 @@
     <ClCompile Include="..\PDP11\pdp11_cr.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\PDP11\pdp11_dmc.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\PDP11\pdp11_dup.c">
       <Filter>Source Files</Filter>
     </ClCompile>
