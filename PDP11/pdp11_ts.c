@@ -25,6 +25,10 @@
 
    ts           TS11/TSV05 magtape
 
+   07-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): TS11 and TSV05
+                        transports (operator panel, load/rewind/unload,
+                        realistic timing, physical tape position, EOT from
+                        the reel length, transport sounds)
    26-Mar-22    RMS     Added extra case points for new MTSE definitions
    27-Oct-14    RMS     Fixed bug in read forward with byte swap
    23-Oct-13    RMS     Revised for new boot setup routine
@@ -103,7 +107,53 @@
 #endif
 
 #include "sim_tape.h"
+#include "sim_sound.h"
 #define ADDRTEST        (UNIBUS? 0177774: 0177700)
+
+/* Sound realism mode (SET SOUND ENABLED; 2026-11-07, Ulli)
+
+   The controller is simulated as before; the tape transport behind it
+   gets an operator panel, realistic timing and sounds (SND_REEL in
+   sim_sound).  On the Unibus the transport is a TS11 (TS04 transport,
+   EK-OTS11-TM-003), on the Qbus a TSV05 (TS05 transport, EK-TSV05-UG-003).
+
+                    TS11 (Unibus)               TSV05 (Qbus)
+   read/write       45 in/s, start/stop         25 in/s, streaming
+                    per record (8 ms each)      (40 ms access from rest)
+   gap              0.6 in (0.5 minimum)        0.65 in typical
+   rewind           150 in/s                    130/150/180 in/s
+                                                (600/1200/2400 ft reels)
+   load / unload    8 s / 8 s (provisional)     30 s / 15 s (manual)
+
+   Operator panel (both modes; in the normal mode everything takes effect
+   at once):
+     ATTACH            mount a reel; realism mode: not loaded, off-line;
+                       normal mode: loaded and on-line at once (as before)
+     SET TS LOAD       LOAD button: thread the tape, go to BOT
+     SET TS ONLINE     ON-LINE switch on (loads the tape first if needed)
+     SET TS OFFLINE    ON-LINE switch off
+     SET TS REWIND     rewind to BOT (off-line only)
+     SET TS UNLOAD     rewind and unload (off-line only); the file stays
+                       attached
+     SET TS REEL=n     reel length 600, 1200 or 2400 ft (default 2400)
+     SHOW TS TRANSPORT state and position
+   At the prompt LOAD, ONLINE (with a load), REWIND and UNLOAD wait until
+   they are done; SET -N returns at once.
+
+   Realism mode, guest side:
+   - motion commands take their real time (records, gaps, tape marks,
+     start/stop or streaming); the end packet and the interrupt come at
+     the end, SSR is clear meanwhile;
+   - REWIND interrupts at BOT; REWIND AND UNLOAD ends at once, then the
+     tape rewinds and unloads, the transport goes off-line (the file stays
+     attached); the Control rewind (mode 4, TSV05 rewind with immediate
+     interrupt) ends at once and a following motion command waits for BOT;
+   - a subsystem initialize (TSSR write, bus init, RUN, BOOT) rewinds an
+     on-line tape that is not at BOT in real time; SSR comes back at BOT;
+   - EOT comes from the physical position on the reel (REEL); writing or
+     reading beyond the physical end of the tape fails (OPI);
+   - going on-line or off-line sets volume check and sends an attention
+     message (if enabled). */
 
 /* TSBA/TSDB - 17772520: base address/data buffer register
 
@@ -282,6 +332,43 @@ int32 ts_bcmd = 0;                                      /* boot cmd */
 int32 ts_time = 2000;                                   /* record latency */
 static uint16 cpy_buf[MAX_PLNT];                        /* copy buffer */
 
+/* Transport (sound realism mode, see above) */
+
+static const SND_REEL_TYPE ts_type_ts11 = {
+    "TS11", "ts11", "ts11",
+    45.0, { 150.0, 150.0, 150.0 }, 1600.0,              /* speeds, density */
+    0.6, 0.7,                                           /* gap, tape mark */
+    8.0, 8.0, 0.342,                                    /* start, stop, ramps 0.180 + 0.162 in */
+    0.0, 1500.0,                                        /* start/stop drive, rewind ramps */
+    3.0, 20.0,                                          /* erase, clean 10 in and back */
+    8000, 8000                                          /* load, unload (provisional) */
+    };
+static const SND_REEL_TYPE ts_type_tsv05 = {
+    "TSV05", "tsv05", "tsv05",
+    25.0, { 130.0, 150.0, 180.0 }, 1600.0,
+    0.65, 0.75,
+    0.0, 0.0, 0.0,
+    40.0, 2000.0,                                       /* streaming: 40 ms access from rest */
+    3.0, 0.0,                                           /* clean is a no-op */
+    30000, 15000
+    };
+
+SND_REEL ts_reel;                                       /* the transport */
+static const SND_REEL_TYPE *ts_rtype = NULL;            /* its type (by bus) */
+int32 ts_load_ms = 8000;                                /* LOADTIME */
+int32 ts_unload_ms = 8000;                              /* UNLOADTIME */
+int32 ts_reel_ft = 2400;                                /* REEL */
+int32 ts_onl_sw = 0;                                    /* ON-LINE switch */
+int32 ts_was_onl = 0;                                   /* on-line as last reported */
+static t_bool ts_defer = FALSE;                         /* ts_svc: hold the end packet */
+int32 ts_pend = 0;                                      /* an end packet is held */
+int32 ts_pend_tc = 0, ts_pend_xs0 = 0, ts_pend_msg = 0; /* ... its arguments */
+int32 ts_pend_rew = 0;                                  /* ... until the rewind is at BOT */
+int32 ts_initrew = 0;                                   /* subsystem init: SSR at BOT */
+int32 ts_wait_cmd = 0;                                  /* a command waits for BOT */
+
+#define TS_REAL         (sim_sound_enabled ())
+
 t_stat ts_rd (int32 *data, int32 PA, int32 access);
 t_stat ts_wr (int32 data, int32 PA, int32 access);
 t_stat ts_svc (UNIT *uptr);
@@ -296,6 +383,20 @@ void ts_endcmd (int32 ssf, int32 xs0f, int32 msg);
 int32 ts_map_status (t_stat st);
 t_stat ts_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *ts_description (DEVICE *dptr);
+static void ts_endcmd_now (int32 ssf, int32 xs0f, int32 msg);
+static void ts_reel_done (UNIT *uptr, int32 what);
+static t_bool ts_is_online (void);
+static void ts_check_online (void);
+static t_stat ts_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+static t_stat ts_set_reel (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+static t_stat ts_show_reel (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat ts_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+
+#define TS_PNL_LOAD     0                               /* ts_set_panel functions */
+#define TS_PNL_ONLINE   1
+#define TS_PNL_OFFLINE  2
+#define TS_PNL_REWIND   3
+#define TS_PNL_UNLOAD   4
 
 /* TS data structures
 
@@ -343,6 +444,13 @@ REG ts_reg[] = {
     { DRDATAD (POS,   ts_unit.pos, T_ADDR_W,       "position"), PV_LEFT + REG_RO },
     { GRDATA  (DEVADDR, ts_dib.ba, DEV_RDX, 32, 0), REG_HRO },
     { GRDATA  (DEVVEC, ts_dib.vec, DEV_RDX, 16, 0), REG_HRO },
+    { DRDATAD (LOADTIME, ts_load_ms, 24,           "realism mode: load time (ms)"), PV_LEFT },
+    { DRDATAD (UNLOADTIME, ts_unload_ms, 24,       "realism mode: unload time from BOT (ms)"), PV_LEFT },
+    { DRDATAD (REEL,      ts_reel_ft, 16,          "reel length (ft): 600, 1200, 2400"), PV_LEFT + REG_RO },
+    { DRDATAD (TPOS,   ts_reel.pos, 32,            "physical position from BOT (1/10000 in)"), PV_LEFT + REG_RO },
+    { FLDATAD (ONLSW,     ts_onl_sw, 0,            "ON-LINE switch") },
+    { FLDATA  (WASONL,   ts_was_onl, 0), REG_HRO },
+    { DRDATA  (RSTATE, ts_reel.state, 4), REG_HRO },
     { NULL }
     };
 
@@ -359,6 +467,22 @@ MTAB ts_mod[] = {
         &set_addr, &show_addr, NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0,       "VECTOR", "VECTOR",
         &set_vec, &show_vec, NULL, "Interrupt vector" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0,       NULL, "REEL",
+        &ts_set_reel, NULL, NULL, "Reel length in feet: 600, 1200 or 2400" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "REEL", "REEL",
+        &ts_set_reel, &ts_show_reel, NULL, "Reel length in feet: 600, 1200 or 2400" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_NMO, 0, "TRANSPORT", NULL,
+        NULL, &ts_show_transport, NULL, "Display the transport state and tape position" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN, TS_PNL_LOAD,    NULL, "LOAD",
+        &ts_set_panel, NULL, NULL, "LOAD button: load the tape to BOT" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN, TS_PNL_ONLINE,  NULL, "ONLINE",
+        &ts_set_panel, NULL, NULL, "ON-LINE switch on (loads the tape first)" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN, TS_PNL_OFFLINE, NULL, "OFFLINE",
+        &ts_set_panel, NULL, NULL, "ON-LINE switch off" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN, TS_PNL_REWIND,  NULL, "REWIND",
+        &ts_set_panel, NULL, NULL, "Rewind to BOT (off-line)" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN, TS_PNL_UNLOAD,  NULL, "UNLOAD",
+        &ts_set_panel, NULL, NULL, "Rewind and unload (off-line); the file stays attached" },
     { 0 }
     };
 
@@ -507,6 +631,34 @@ switch (st) {
 return 0;
 }
 
+/* Transport accounting: every record or tape mark the tape moves over is
+   counted on the physical tape (position, time).  A forward motion at the
+   physical end of the tape fails (realism mode only). */
+
+static void ts_acct (t_stat st, t_mtrlnt tbc, t_bool rev)
+{
+if (st == MTSE_OK)
+    sim_reel_record (&ts_reel, tbc, rev);
+else if (st == MTSE_TMK)
+    sim_reel_tapemark (&ts_reel, rev);
+if (rev && sim_tape_bot (&ts_unit))                     /* back at BOT */
+    sim_reel_set_bot (&ts_reel);
+}
+
+static t_bool ts_at_end (void)
+{
+return TS_REAL && sim_reel_past_end (&ts_reel);
+}
+
+/* EOT: realism mode from the physical position, else from CAPACITY */
+
+static t_bool ts_eot (void)
+{
+if (TS_REAL)
+    return sim_reel_past_eot (&ts_reel);
+return sim_tape_eot (&ts_unit);
+}
+
 int32 ts_spacef (UNIT *uptr, int32 fc, t_bool upd)
 {
 t_stat st;
@@ -516,7 +668,11 @@ do {
     fc = (fc - 1) & DMASK;                              /* decr wc */
     if (upd)
         msgrfc = fc;
-    if ((st = sim_tape_sprecf (uptr, &tbc)))            /* space rec fwd, err? */
+    if (ts_at_end ())                                   /* physical end of tape */
+        return ts_map_status (MTSE_EOM);
+    st = sim_tape_sprecf (uptr, &tbc);                  /* space rec fwd */
+    ts_acct (st, tbc, FALSE);
+    if (st)                                             /* err? */
         return ts_map_status (st);                      /* map status */
     msgxs0 = msgxs0 | XS0_MOT;                          /* tape has moved */
     } while (fc != 0);
@@ -533,7 +689,10 @@ msgrfc = fc;
 if (sim_tape_bot (uptr) && (wchopt & WCH_ENB))
     tmkprv = TRUE;
 do {
+    if (ts_at_end ())                                   /* physical end of tape */
+        return ts_map_status (MTSE_EOM);
     st = sim_tape_sprecf (uptr, &tbc);                  /* space rec fwd */
+    ts_acct (st, tbc, FALSE);
     if (st == MTSE_TMK) {                               /* tape mark? */
         msgrfc = (msgrfc - 1) & DMASK;                  /* decr count */
         msgxs0 = msgxs0 | XS0_MOT;                      /* tape has moved */
@@ -559,7 +718,9 @@ do {
     fc = (fc - 1) & DMASK;                              /* decr wc */
     if (upd)
         msgrfc = fc;
-    if ((st = sim_tape_sprecr (uptr, &tbc)))            /* space rec rev, err? */
+    st = sim_tape_sprecr (uptr, &tbc);                  /* space rec rev */
+    ts_acct (st, tbc, TRUE);
+    if (st)                                             /* err? */
         return ts_map_status (st);                      /* map status */
     msgxs0 = msgxs0 | XS0_MOT;                          /* tape has moved */
     } while (fc != 0);
@@ -575,6 +736,7 @@ t_bool tmkprv = FALSE;
 msgrfc = fc;
 do {
     st = sim_tape_sprecr (uptr, &tbc);                  /* space rec rev */
+    ts_acct (st, tbc, TRUE);
     if (st == MTSE_TMK) {                               /* tape mark? */
         msgrfc = (msgrfc - 1) & DMASK;                  /* decr count */
         msgxs0 = msgxs0 | XS0_MOT;                      /* tape has moved */
@@ -598,7 +760,10 @@ t_mtrlnt i, t, tbc, wbc;
 int32 wa;
 
 msgrfc = fc;
+if (ts_at_end ())                                       /* physical end of tape */
+    return ts_map_status (MTSE_EOM);
 st = sim_tape_rdrecf (uptr, tsxb, &tbc, MT_MAXFR);      /* read rec fwd */
+ts_acct (st, tbc, FALSE);
 if (st != MTSE_OK)                                      /* error? */
     return ts_map_status (st);
 if (fc == 0)                                            /* byte count */
@@ -641,6 +806,7 @@ int32 wa;
 
 msgrfc = fc;
 st = sim_tape_rdrecr (uptr, tsxb, &tbc, MT_MAXFR);      /* read rec rev */
+ts_acct (st, tbc, TRUE);
 if (st != MTSE_OK)                                      /* error? */
     return ts_map_status (st);
 if (fc == 0)                                            /* byte count */
@@ -692,11 +858,16 @@ else {
         return TC5;
         }
     }
-if ((st = sim_tape_wrrecf (uptr, tsxb, fc)))            /* write rec, err? */
+if (ts_at_end ())                                       /* physical end of tape */
+    return ts_map_status (MTSE_EOM);
+st = sim_tape_wrrecf (uptr, tsxb, fc);                  /* write rec */
+if (st == MTSE_OK)
+    sim_reel_record (&ts_reel, fc, FALSE);
+if (st)                                                 /* err? */
     return ts_map_status (st);                          /* return status */
 msgxs0 = msgxs0 | XS0_MOT;                              /* tape has moved */
 msgrfc = 0;
-if (sim_tape_eot (&ts_unit))                            /* EOT on write? */
+if (ts_eot ())                                          /* EOT on write? */
     return XTC (XS0_EOT, TC2);
 return 0;
 }
@@ -705,17 +876,46 @@ int32 ts_wtmk (UNIT *uptr)
 {
 t_stat st;
 
-if ((st = sim_tape_wrtmk (uptr)))                       /* write tmk, err? */
+if (ts_at_end ())                                       /* physical end of tape */
+    return ts_map_status (MTSE_EOM);
+st = sim_tape_wrtmk (uptr);                             /* write tmk */
+if (st == MTSE_OK)
+    sim_reel_tapemark (&ts_reel, FALSE);
+if (st)                                                 /* err? */
     return ts_map_status (st);                          /* return status */
 msgxs0 = msgxs0 | XS0_MOT;                              /* tape has moved */
-if (sim_tape_eot (&ts_unit))                            /* EOT on write? */
+if (ts_eot ())                                          /* EOT on write? */
     return XTC (XS0_EOT, TC2);
 return XTC (XS0_TMK, TC0);
 }
 
 /* Unit service */
 
+/* Unit service: execute the command.  In the realism mode the end packet
+   is held while the motion is counted (ts_defer) and sent when the tape
+   motion is over (ts_reel_done), or at once when nothing moved. */
+
+static t_stat ts_svc_cmd (UNIT *uptr);
+
 t_stat ts_svc (UNIT *uptr)
+{
+t_stat r = ts_svc_cmd (uptr);
+
+if (ts_defer) {                                         /* realism: */
+    ts_defer = FALSE;
+    if (ts_pend_rew && (sim_reel_state (&ts_reel) == SND_REEL_REWINDING))
+        return r;                                       /* end packet when at BOT */
+    ts_pend_rew = 0;
+    if ((sim_reel_motion_end (&ts_reel) <= 0.0) && ts_pend) {
+        ts_pend = 0;                                    /* no motion: end at once */
+        ts_endcmd_now (ts_pend_tc, ts_pend_xs0, ts_pend_msg);
+        }
+    ts_check_online ();                                 /* e.g. after an unload */
+    }
+return r;
+}
+
+static t_stat ts_svc_cmd (UNIT *uptr)
 {
 int32 i, t, bc, fnc, mod, st0, st1;
 
@@ -774,14 +974,20 @@ if (ts_qatn && (wchopt & WCH_EAI)) {                    /* attn pending? */
     ts_qatn = 0;                                        /* not pending */
     return SCPE_OK;
     }
+if (TS_REAL && (fnc_flg[fnc] & FLG_MO) &&               /* motion command while */
+    (sim_reel_state (&ts_reel) == SND_REEL_REWINDING) && /* rewinding: wait for BOT */
+    !ts_pend_rew) {
+    ts_wait_cmd = 1;
+    return SCPE_OK;
+    }
 if (cmdhdr & CMD_CVC)                                   /* cvc? clr vck */
     msgxs0 = msgxs0 & ~XS0_VCK;
 if ((cmdhdr & CMD_MBZ) || (mod >= fnc_mod[fnc])) {      /* test mbz */
     ts_endcmd (TC3, XS0_ILC, MSG_ACK | MSG_MILL | MSG_CFAIL);
     return SCPE_OK;
     }
-if ((fnc_flg[fnc] & FLG_MO) &&                          /* mot+(vck|!att)? */
-    ((msgxs0 & XS0_VCK) || !(uptr->flags & UNIT_ATT))) {
+if ((fnc_flg[fnc] & FLG_MO) &&                          /* mot+(vck|!online)? */
+    ((msgxs0 & XS0_VCK) || !ts_is_online ())) {
     ts_endcmd (TC3, XS0_NEF, MSG_ACK | MSG_MNEF | MSG_CFAIL);
     return SCPE_OK;
     }
@@ -802,12 +1008,21 @@ if ((fnc_flg[fnc] & FLG_AD) && (cmdadh & ADDRTEST)) {   /* buf addr > 22b? */
     }
 
 st0 = st1 = 0;
+if (TS_REAL) {                                          /* realism: count the motion, */
+    sim_reel_motion_begin (&ts_reel);                   /* hold the end packet */
+    ts_defer = TRUE;
+    }
 switch (fnc) {                                          /* case on func */
 
     case FNC_INIT:                                      /* init */
         if (!sim_tape_bot (uptr))                       /* set if tape moves */
             msgxs0 = msgxs0 | XS0_MOT;
-        sim_tape_rewind (uptr);                         /* rewind */
+        if (TS_REAL && ts_is_online () &&               /* realism: a real rewind */
+            (sim_reel_state (&ts_reel) == SND_REEL_READY)) {
+            ts_pend_rew = 1;                            /* end packet at BOT */
+            sim_reel_rewind (&ts_reel);
+            }
+        else sim_tape_rewind (uptr);                    /* rewind */
     case FNC_WSSM:                                      /* write mem */
     case FNC_GSTA:                                      /* get status */
         ts_endcmd (TC0, 0, MSG_ACK | MSG_CEND);         /* send end packet */
@@ -850,11 +1065,23 @@ switch (fnc) {                                          /* case on func */
         case 01:                                        /* rewind and unload */
             if (!sim_tape_bot (uptr))                   /* if tape moves */
                 msgxs0 = msgxs0 | XS0_MOT;
+            if (TS_REAL) {                              /* realism: ends at once, the tape */
+                ts_endcmd (TC0, 0, MSG_ACK | MSG_CEND); /* rewinds and unloads off-line, */
+                ts_onl_sw = 0;                          /* the file stays attached */
+                sim_reel_unload (&ts_reel);
+                break;
+                }
+            sim_reel_remove (&ts_reel);
+            ts_was_onl = 0;                             /* (no attention, as before) */
             sim_tape_detach (uptr);                     /* unload */
             ts_endcmd (TC0, 0, MSG_ACK | MSG_CEND);
             break;
 
         case 02:                                        /* clean */
+            if (TS_REAL && ts_is_online ()) {           /* realism: 10 in forward and */
+                sim_reel_erase (&ts_reel, ts_rtype->clean_in / 2.0);  /* back (TS11) */
+                sim_reel_erase (&ts_reel, -ts_rtype->clean_in / 2.0);
+                }
             ts_endcmd (TC0, 0, MSG_ACK | MSG_CEND);     /* nop */
             break;
 
@@ -865,6 +1092,12 @@ switch (fnc) {                                          /* case on func */
         case 04:                                        /* rewind */
             if (!sim_tape_bot (uptr))                   /* if tape moves */
                 msgxs0 = msgxs0 | XS0_MOT;
+            if (TS_REAL && ts_is_online () &&           /* realism: ends at once, the */
+                (sim_reel_state (&ts_reel) == SND_REEL_READY)) {    /* tape rewinds */
+                ts_endcmd (TC0, 0, MSG_ACK | MSG_CEND);
+                sim_reel_rewind (&ts_reel);
+                break;
+                }
             sim_tape_rewind (uptr);
             ts_endcmd (TC0, XS0_BOT, MSG_ACK | MSG_CEND);
             break;
@@ -930,6 +1163,7 @@ switch (fnc) {                                          /* case on func */
             break;
 
         case 01:                                        /* erase */
+            sim_reel_erase (&ts_reel, ts_rtype->erase_in);  /* 3 in of tape */
             break;
 
         case 02:                                        /* retry tmk */
@@ -962,7 +1196,11 @@ switch (fnc) {                                          /* case on func */
         case 04:                                        /* rewind */
             if (!sim_tape_bot (uptr))                   /* if tape moves */
                 msgxs0 = msgxs0 | XS0_MOT;
-            sim_tape_rewind (uptr);
+            if (TS_REAL && (sim_reel_state (&ts_reel) == SND_REEL_READY)) {
+                ts_pend_rew = 1;                        /* realism: end packet at BOT */
+                sim_reel_rewind (&ts_reel);
+                }
+            else sim_tape_rewind (uptr);
             break;
             }
         ts_cmpendcmd (st0, 0);
@@ -972,12 +1210,97 @@ switch (fnc) {                                          /* case on func */
 return SCPE_OK;
 }
 
+/* Transport callbacks (sim_reel): a load, motion, rewind or unload is over */
+
+static void ts_reel_done (UNIT *uptr, int32 what)
+{
+switch (what) {
+
+    case SND_REEL_DONE_LOAD:                            /* at BOT */
+        sim_tape_rewind (uptr);
+        break;
+
+    case SND_REEL_DONE_REWIND:                          /* at BOT */
+    case SND_REEL_DONE_UNLOAD:                          /* unloaded */
+        sim_tape_rewind (uptr);
+        if (ts_initrew) {                               /* subsystem init is done */
+            ts_initrew = 0;
+            tssr = ts_updtssr (tssr | TSSR_SSR);
+            }
+        if (ts_pend_rew) {                              /* end packet of a rewind */
+            ts_pend_rew = 0;
+            if (ts_pend) {
+                ts_pend = 0;
+                ts_endcmd_now (ts_pend_tc, ts_pend_xs0, ts_pend_msg);
+                }
+            }
+        if (ts_wait_cmd) {                              /* a command waited for BOT */
+            ts_wait_cmd = 0;
+            sim_activate (&ts_unit, ts_time);
+            }
+        break;
+
+    case SND_REEL_DONE_MOTION:                          /* records moved */
+        if (ts_pend) {
+            ts_pend = 0;
+            ts_endcmd_now (ts_pend_tc, ts_pend_xs0, ts_pend_msg);
+            }
+        break;
+        }
+ts_check_online ();
+}
+
+/* On-line: a reel is mounted and loaded and the ON-LINE switch is on (in
+   the normal mode ATTACH does all of that at once) */
+
+static t_bool ts_is_online (void)
+{
+int32 st;
+
+if (!(ts_unit.flags & UNIT_ATT) || !ts_onl_sw)
+    return FALSE;
+st = ts_reel.state;
+return (st == SND_REEL_READY) || (st == SND_REEL_MOVING) || (st == SND_REEL_REWINDING);
+}
+
+/* Attention message (if enabled): now if the tape owns the message buffer,
+   else queued for the next command */
+
+static void ts_attn (void)
+{
+if ((tssr & TSSR_NBA) || !(wchopt & WCH_EAI))           /* attn msg? */
+    return;
+if (ts_ownm) {                                          /* own msg buf? */
+    ts_endcmd_now (TC1, 0, MSG_MATN | MSG_CATN);        /* send attn */
+    SET_INT (TS);                                       /* set interrupt */
+    ts_qatn = 0;                                        /* don't queue */
+    }
+else ts_qatn = 1;                                       /* else queue */
+}
+
+/* The transport went on-line or off-line: volume check and attention */
+
+static void ts_check_online (void)
+{
+int32 onl = ts_is_online () ? 1 : 0;
+
+if (onl == ts_was_onl)
+    return;
+ts_was_onl = onl;
+tssr = ts_updtssr (tssr);                               /* OFL */
+if (ts_pend || ts_initrew)                              /* a command is in progress */
+    return;
+if (TS_REAL)                                            /* realism: volume check */
+    msgxs0 = ts_updxs0 (msgxs0 | XS0_VCK);
+ts_attn ();
+}
+
 /* Utility routines */
 
 int32 ts_updtssr (int32 t)
 {
 t = (t & ~TSSR_EMA) | ((tsba >> (16 - TSSR_V_EMA)) & TSSR_EMA);
-if (ts_unit.flags & UNIT_ATT)
+if (ts_is_online ())
     t = t & ~TSSR_OFL;
 else t = t | TSSR_OFL;
 return (t & ~TSSR_MBZ);
@@ -986,14 +1309,17 @@ return (t & ~TSSR_MBZ);
 int32 ts_updxs0 (int32 t)
 {
 t = (t & ~(XS0_ONL | XS0_WLK | XS0_BOT | XS0_IE)) | XS0_PET;
-if (ts_unit.flags & UNIT_ATT) {
+if (ts_is_online ()) {
     t = t | XS0_ONL;
     if (sim_tape_wrp (&ts_unit))
         t = t | XS0_WLK;
-    if (sim_tape_bot (&ts_unit))
+    if (sim_tape_bot (&ts_unit) &&                      /* (realism: not while */
+        (ts_reel.state != SND_REEL_REWINDING))          /* still rewinding) */
         t = (t | XS0_BOT) & ~XS0_EOT;
-    if (sim_tape_eot (&ts_unit))
+    if (ts_eot ())
         t = (t | XS0_EOT) & ~XS0_BOT;
+    if (ts_reel.state == SND_REEL_REWINDING)            /* realism: tape moving */
+        t = t | XS0_MOT;
     }
 else t = t & ~XS0_EOT;
 if (cmdhdr & CMD_IE)
@@ -1020,7 +1346,22 @@ ts_endcmd (ssr | (tc << TSSR_V_TC), xs0, msg[tc]);      /* end cmd */
 return;
 }
 
+/* End a command.  In the realism mode ts_svc holds the end packet while
+   it counts the motion; it is sent when the tape motion is over. */
+
 void ts_endcmd (int32 tc, int32 xs0, int32 msg)
+{
+if (ts_defer) {
+    ts_pend = 1;
+    ts_pend_tc = tc;
+    ts_pend_xs0 = xs0;
+    ts_pend_msg = msg;
+    return;
+    }
+ts_endcmd_now (tc, xs0, msg);
+}
+
+static void ts_endcmd_now (int32 tc, int32 xs0, int32 msg)
 {
 int32 i, t;
 
@@ -1054,8 +1395,33 @@ return;
 t_stat ts_reset (DEVICE *dptr)
 {
 int32 i;
+const SND_REEL_TYPE *ty = UNIBUS ? &ts_type_ts11 : &ts_type_tsv05;
+t_bool rew = FALSE;
 
-sim_tape_rewind (&ts_unit);
+sim_reel_init (&ts_reel, &ts_unit, &ts_load_ms, &ts_unload_ms, &ts_reel_ft,
+               &ts_reel_done, SND_GRP_TAPE, 1.0);
+if (ty != ts_rtype) {                                   /* TS11 or TSV05 (bus) */
+    ts_rtype = ty;
+    ts_load_ms = ty->load_ms;
+    ts_unload_ms = ty->unload_ms;
+    sim_reel_set_type (&ts_reel, ty);
+    }
+ts_pend = ts_pend_rew = ts_wait_cmd = 0;
+ts_defer = FALSE;
+if (TS_REAL && ts_is_online ()) {                       /* realism: a subsystem */
+    sim_reel_abort (&ts_reel);                          /* initialize stops the tape */
+    if ((ts_reel.pos != 0) || !sim_tape_bot (&ts_unit))
+        rew = TRUE;                                     /* and rewinds it to BOT */
+    }
+if (rew) {
+    ts_initrew = 1;                                     /* SSR at BOT */
+    sim_reel_rewind (&ts_reel);
+    }
+else {
+    ts_initrew = 0;
+    if (ts_reel.state != SND_REEL_REWINDING)
+        sim_tape_rewind (&ts_unit);
+    }
 tsba = tsdbx = 0;
 ts_ownc = ts_ownm = 0;
 ts_bcmd = 0;
@@ -1068,6 +1434,9 @@ for (i = 0; i < WCH_PLNT; i++)
 for (i = 0; i < MSG_PLNT; i++)
     tsmsgp[i] = 0;
 msgxs0 = ts_updxs0 (XS0_VCK);
+if (ts_initrew)                                         /* realism: busy until BOT */
+    tssr = tssr & ~TSSR_SSR;
+ts_was_onl = ts_is_online () ? 1 : 0;
 CLR_INT (TS);
 if (tsxb == NULL)
     tsxb = (uint8 *) calloc (MT_MAXFR, sizeof (uint8));
@@ -1076,7 +1445,9 @@ if (tsxb == NULL)
 return auto_config (0, 0);
 }
 
-/* Attach */
+/* Attach: mount a reel.  Realism mode: the tape is not loaded and the
+   transport is off-line until SET TS ONLINE (or LOAD, then ONLINE).
+   Normal mode: loaded and on-line at once, as before. */
 
 t_stat ts_attach (UNIT *uptr, CONST char *cptr)
 {
@@ -1085,19 +1456,19 @@ t_stat r;
 r = sim_tape_attach_ex (uptr, cptr, DBG_TAP, 0);        /* attach unit */
 if (r != SCPE_OK)                                       /* error? */
     return r;
-tssr = tssr & ~TSSR_OFL;                                /* clr offline */
-if ((tssr & TSSR_NBA) || !(wchopt & WCH_EAI))           /* attn msg? */
-    return r;
-if (ts_ownm) {                                          /* own msg buf? */
-    ts_endcmd (TC1, 0, MSG_MATN | MSG_CATN);            /* send attn */
-    SET_INT (TS);                                       /* set interrupt */
-    ts_qatn = 0;                                        /* don't queue */
+sim_reel_mount (&ts_reel);
+if (!TS_REAL) {                                         /* normal mode: on-line */
+    ts_onl_sw = 1;
+    ts_reel_done (uptr, SND_REEL_DONE_LOAD);
     }
-else ts_qatn = 1;                                       /* else queue */
+else ts_onl_sw = 0;
+tssr = ts_updtssr (tssr);                               /* clr offline */
+ts_check_online ();
 return r;
 }
 
-/* Detach routine */
+/* Detach routine: the reel is taken off (in the realism mode too, whatever
+   the transport does; a command in progress ends) */
 
 t_stat ts_detach (UNIT* uptr)
 {
@@ -1108,16 +1479,116 @@ if (!(uptr->flags & UNIT_ATT))                          /* attached? */
 r = sim_tape_detach (uptr);                             /* detach unit */
 if (r != SCPE_OK)
     return r;                                           /* error? */
-tssr = tssr | TSSR_OFL;                                 /* set offline */
-if ((tssr & TSSR_NBA) || !(wchopt & WCH_EAI))           /* attn msg? */
-    return r;
-if (ts_ownm) {                                          /* own msg buf? */
-    ts_endcmd (TC1, 0, MSG_MATN | MSG_CATN);            /* send attn */
-    SET_INT (TS);                                       /* set interrupt */
-    ts_qatn = 0;                                        /* don't queue */
+sim_reel_remove (&ts_reel);
+ts_pend_rew = 0;
+if (ts_pend) {                                          /* end a held command */
+    ts_pend = 0;
+    ts_endcmd_now (ts_pend_tc, ts_pend_xs0, ts_pend_msg);
     }
-else ts_qatn = 1;                                       /* else queue */
+if (ts_initrew) {                                       /* subsystem init is done */
+    ts_initrew = 0;
+    tssr = tssr | TSSR_SSR;
+    }
+if (ts_wait_cmd) {                                      /* a waiting command */
+    ts_wait_cmd = 0;                                    /* fails off-line */
+    sim_activate (&ts_unit, ts_time);
+    }
+tssr = ts_updtssr (tssr);                               /* set offline */
+ts_check_online ();
 return r;
+}
+
+/* Operator panel: LOAD, ON-LINE, REWIND, UNLOAD (see the comment at the
+   top).  Normal mode: everything at once. */
+
+static t_stat ts_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+int32 st;
+
+if (cptr != NULL)
+    return SCPE_ARG;
+if (!(uptr->flags & UNIT_ATT))
+    return sim_messagef (SCPE_UNATT, "%s: no reel mounted (ATTACH a tape first)\n", sim_uname (uptr));
+st = sim_reel_state (&ts_reel);
+if (((val == TS_PNL_ONLINE) || (val == TS_PNL_LOAD)) &&     /* load while unloading: */
+    (st == SND_REEL_UNLOADING)) {                       /* after the unload */
+    if (sim_switches & SWMASK ('N'))
+        return sim_messagef (SCPE_ARG, "%s: the tape is unloading, %s it when it is unloaded\n",
+                             sim_uname (uptr), (val == TS_PNL_LOAD) ? "load" : "load and put on-line");
+    sim_reel_wait (&ts_reel);
+    st = sim_reel_state (&ts_reel);
+    }
+switch (val) {
+
+    case TS_PNL_OFFLINE:
+        ts_onl_sw = 0;
+        break;
+
+    case TS_PNL_ONLINE:                                 /* loads the tape first */
+        ts_onl_sw = 1;
+        if (st == SND_REEL_MOUNTED)
+            sim_reel_load (&ts_reel);
+        break;
+
+    case TS_PNL_LOAD:
+        if (st == SND_REEL_MOUNTED)
+            sim_reel_load (&ts_reel);
+        else if (st != SND_REEL_LOADING)
+            return sim_messagef (SCPE_OK, "%s: the tape is loaded already\n", sim_uname (uptr));
+        break;
+
+    case TS_PNL_REWIND:
+    case TS_PNL_UNLOAD:
+        if (ts_is_online ())
+            return sim_messagef (SCPE_ARG, "%s: the transport must be off-line (SET %s OFFLINE)\n",
+                                 sim_uname (uptr), sim_uname (uptr));
+        if (st == SND_REEL_UNLOADING)                   /* already unloading: wait */
+            break;
+        if ((st == SND_REEL_MOUNTED) || (st == SND_REEL_LOADING))
+            return sim_messagef (SCPE_ARG, "%s: the tape is not loaded\n", sim_uname (uptr));
+        if (st == SND_REEL_MOVING)
+            return sim_messagef (SCPE_ARG, "%s: the tape is moving\n", sim_uname (uptr));
+        if (val == TS_PNL_REWIND)
+            sim_reel_rewind (&ts_reel);
+        else sim_reel_unload (&ts_reel);
+        break;
+        }
+ts_check_online ();
+if (!(sim_switches & SWMASK ('N')))                     /* at the prompt: wait */
+    sim_reel_wait (&ts_reel);
+ts_check_online ();
+return SCPE_OK;
+}
+
+static t_stat ts_set_reel (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+t_stat r;
+int32 ft;
+
+if (cptr == NULL)
+    return SCPE_ARG;
+ft = (int32) get_uint (cptr, 10, 2400, &r);
+if ((r != SCPE_OK) || ((ft != 600) && (ft != 1200) && (ft != 2400)))
+    return sim_messagef (SCPE_ARG, "Reel length must be 600, 1200 or 2400 (feet)\n");
+if (TS_REAL && (uptr->flags & UNIT_ATT) &&
+    (sim_reel_state (&ts_reel) != SND_REEL_MOUNTED))
+    return sim_messagef (SCPE_ARG, "%s: unload the tape first\n", sim_uname (uptr));
+ts_reel_ft = ft;
+return SCPE_OK;
+}
+
+static t_stat ts_show_reel (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fprintf (st, "%d ft reel", ts_reel_ft);
+return SCPE_OK;
+}
+
+static t_stat ts_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fprintf (st, "%s transport: ", (ts_rtype != NULL) ? ts_rtype->name : "TS");
+sim_reel_show (st, &ts_reel);
+fprintf (st, ", %s\n", ts_is_online () ? "on-line" : "off-line");
+return SCPE_OK;
 }
 
 /* Boot */
@@ -1200,6 +1671,30 @@ fprintf (st, "The TS11 device supports the BOOT command.\n");
 fprintf (st, "The TS11 does not support the BOOT command.\n");
 #endif
 fprint_reg_help (st, dptr);
+fprintf (st, "\nSound realism mode (SET SOUND ENABLED):\n\n");
+fprintf (st, "On the Unibus the transport is a TS11 (45 in/s, start/stop for every record),\n");
+fprintf (st, "on the Qbus a TSV05 (25 in/s, streaming).  The tape motion takes its real\n");
+fprintf (st, "time and is heard: records, rewinds (the reel motors' pitch follows the\n");
+fprintf (st, "reels), load and unload.  ATTACH only mounts the reel; the transport is\n");
+fprintf (st, "off-line until\n\n");
+fprintf (st, "   sim> SET TS ONLINE          (loads the tape to BOT first)\n\n");
+fprintf (st, "Operator panel (also in the normal mode, where it takes effect at once):\n\n");
+fprintf (st, "   SET TS LOAD                 LOAD button: load the tape to BOT\n");
+fprintf (st, "   SET TS ONLINE / OFFLINE     ON-LINE switch\n");
+fprintf (st, "   SET TS REWIND               rewind to BOT (off-line only)\n");
+fprintf (st, "   SET TS UNLOAD               rewind and unload (off-line only); the file\n");
+fprintf (st, "                               stays attached, SET TS ONLINE loads it again\n");
+fprintf (st, "   SET TS REEL=600|1200|2400   reel length in feet (default 2400)\n");
+fprintf (st, "   SHOW TS TRANSPORT           transport state and tape position\n\n");
+fprintf (st, "At the prompt these wait until the transport is done; SET -N returns at once.\n");
+fprintf (st, "The times are the registers LOADTIME and UNLOADTIME (ms; TS11 8000/8000,\n");
+fprintf (st, "provisional; TSV05 30000/15000).  EOT is at the physical position of the EOT\n");
+fprintf (st, "marker on the reel (a 2400 ft reel holds about 40 MB in 8 KB records);\n");
+fprintf (st, "beyond the end of the tape a command fails.  A subsystem initialize (and\n");
+fprintf (st, "RUN or BOOT) rewinds an on-line tape that is not at BOT, in real time.\n");
+fprintf (st, "The sounds are in the sound directory ts11 or tsv05 (files ts11_<name>.wav or\n");
+fprintf (st, "tsv05_<name>.wav), else default_tape (<name>.wav); names: load, unload,\n");
+fprintf (st, "rewind_start, rewind, rewind_stop, start, motion, stop.\n");
 fprintf (st, "\nError handling is as follows:\n\n");
 fprintf (st, "    error         processed as\n");
 fprintf (st, "    not attached  tape not ready\n\n");

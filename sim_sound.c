@@ -23,6 +23,9 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   07-Nov-26    Ulli    Tape transports (SND_REEL); realtime timers shared by
+                        spindles and transports; playback rate with glides,
+                        delayed and time-limited voices; default tape sounds
    03-Nov-26    Ulli    Spindles (common RUN/STOP support for removable-media
                         disks), seek sound helper, realistic durations
    03-Nov-26    Ulli    Run hooks for devices; power on restores the unit loops
@@ -117,7 +120,9 @@ static int32 snd_n_runhooks = 0;
    - disks: seek sounds sound/default_disk/seek-s.wav, seek-m.wav,
      seek-l.wav (the former synthetic RK07 seek sounds); there are no
      default spindle sounds (they must match the drive's speed and times);
-   - tapes: sound/default_tape/ (the first tape sounds, still to come);
+   - tapes: sound/default_tape/load.wav, unload.wav, rewind_start.wav,
+     rewind.wav, rewind_stop.wav, start.wav, motion.wav, stop.wav (the
+     synthetic TS11 transport sounds, tools/make_tape_sounds.py);
    - CPUs: sound/default_cpu/starting.wav, running.wav, stopping.wav (the
      recordings of a real VAX-11/750), only for simulators that opt in with
      sim_sound_use_default_cpu ().
@@ -332,6 +337,8 @@ return -1;
 #define SND_CMD_PLAY    1                       /* start a voice */
 #define SND_CMD_STOP    2                       /* fade out and stop a voice */
 #define SND_CMD_STOPALL 3                       /* fade out and stop every voice */
+#define SND_CMD_RATE    4                       /* change the playback rate of a voice */
+#define SND_CMD_EXTEND  5                       /* give a voice a new lifetime */
 
 typedef struct {
     int32 type;                                 /* SND_CMD_xxx */
@@ -342,7 +349,13 @@ typedef struct {
     float gain;                                 /* voice gain */
     uint32 flags;                               /* SND_F_xxx */
     uint32 chain_flags;                         /* SND_F_xxx of the chained loop */
-    uint32 fade;                                /* fade-in (PLAY) or fade-out (STOP) in frames */
+    uint32 fade;                                /* fade-in (PLAY) or fade-out (STOP) in frames;
+                                                   RATE: glide length in frames */
+    double rate;                                /* PLAY: initial rate; RATE: target rate */
+    int32 curve;                                /* RATE: SND_GLIDE_xxx */
+    uint32 delay;                               /* PLAY: silent frames before the start */
+    uint32 life;                                /* PLAY: fade out after this many frames (0: never) */
+    uint32 life_fade;                           /* PLAY: ... over this many frames */
     } SND_CMD;
 
 /* A voice: one sample being played.  Only the audio thread touches the
@@ -354,7 +367,16 @@ typedef struct {
     SND_SAMPLE *smp;                            /* sample */
     SND_SAMPLE *chain;                          /* loop to start near the end (or NULL) */
     uint32 chain_flags;                         /* flags of that loop */
-    uint32 pos;                                 /* next frame */
+    double pos;                                 /* next frame (fractional when the rate is not 1) */
+    double rate;                                /* playback rate (1.0 = as recorded) */
+    double glide_step;                          /* per-frame change of rate (linear) or of
+                                                   1/rate^2 (reel curve) during a glide */
+    double glide_inv2;                          /* reel curve: current 1/rate^2 */
+    uint32 glide_left;                          /* frames left in the glide (0: none) */
+    int32 glide_curve;                          /* SND_GLIDE_xxx */
+    uint32 delay;                               /* frames of silence before the start */
+    uint32 life;                                /* frames until the voice fades out (0: never) */
+    uint32 life_fade;                           /* ... fade length in frames */
     t_bool loop;                                /* loop at the end */
     int32 group;                                /* mixer group */
     float gain;                                 /* voice gain */
@@ -420,7 +442,8 @@ return (snd_rand_state >> 8);
 /* Start a voice (audio thread) */
 
 static void snd_voice_start (SND_HANDLE handle, SND_SAMPLE *smp, SND_SAMPLE *chain,
-                             uint32 chain_flags, int32 group, float gain, uint32 flags, uint32 fade)
+                             uint32 chain_flags, int32 group, float gain, uint32 flags, uint32 fade,
+                             double rate, uint32 delay, uint32 life, uint32 life_fade)
 {
 int32 i;
 SND_VOICE *v;
@@ -441,7 +464,11 @@ v->smp = smp;
 v->chain = ((chain != NULL) && (chain->data != NULL)) ? chain : NULL;
 v->chain_flags = chain_flags | SND_F_LOOP;
 v->loop = (flags & SND_F_LOOP) ? TRUE : FALSE;
-v->pos = ((flags & SND_F_RANDPHASE) && v->loop) ? (snd_random () % smp->frames) : 0;
+v->pos = ((flags & SND_F_RANDPHASE) && v->loop) ? (double)(snd_random () % smp->frames) : 0.0;
+v->rate = (rate > 0.0) ? rate : 1.0;
+v->delay = delay;
+v->life = life;
+v->life_fade = life_fade;
 v->group = ((group >= 0) && (group < SND_GRP_COUNT)) ? group : SND_GRP_EVENT;
 v->gain = gain;
 if (fade > 0) {                                 /* fade in */
@@ -471,6 +498,31 @@ v->active = FALSE;
 SDL_AtomicAdd (&snd_active_count, -1);
 }
 
+/* Start a glide of the playback rate to target over frames (audio thread).
+   SND_GLIDE_LINEAR changes the rate linearly.  SND_GLIDE_REEL changes
+   1/rate^2 linearly: the rotation rate of a tape reel whose radius r
+   changes at constant tape speed (r^2 grows or shrinks linearly with time,
+   the rotation rate is proportional to 1/r). */
+
+static void snd_voice_glide (SND_VOICE *v, double target, uint32 frames, int32 curve)
+{
+if (target <= 0.0)
+    return;
+if (frames == 0) {                              /* at once */
+    v->rate = target;
+    v->glide_left = 0;
+    return;
+    }
+v->glide_curve = curve;
+v->glide_left = frames;
+if (curve == SND_GLIDE_REEL) {
+    v->glide_inv2 = 1.0 / (v->rate * v->rate);
+    v->glide_step = ((1.0 / (target * target)) - v->glide_inv2) / (double)frames;
+    }
+else
+    v->glide_step = (target - v->rate) / (double)frames;
+}
+
 /* Execute the queued commands (audio thread, queue mutex held) */
 
 static void snd_process_queue (void)
@@ -482,18 +534,40 @@ while (snd_qhead != snd_qtail) {
     snd_qhead = (snd_qhead + 1) % SND_QSIZE;
     switch (c->type) {
         case SND_CMD_PLAY:
-            snd_voice_start (c->handle, c->smp, c->chain, c->chain_flags, c->group, c->gain, c->flags, c->fade);
+            snd_voice_start (c->handle, c->smp, c->chain, c->chain_flags, c->group, c->gain, c->flags, c->fade,
+                             c->rate, c->delay, c->life, c->life_fade);
+            break;
+        case SND_CMD_RATE:
+            for (i = 0; i < SND_VOICES; i++) {
+                if (snd_voices[i].active && (snd_voices[i].handle == c->handle))
+                    snd_voice_glide (&snd_voices[i], c->rate, c->fade, c->curve);
+                }
             break;
         case SND_CMD_STOP:
             for (i = 0; i < SND_VOICES; i++) {
-                if (snd_voices[i].active && (snd_voices[i].handle == c->handle))
-                    snd_voice_fade_out (&snd_voices[i], c->fade);
+                if (snd_voices[i].active && (snd_voices[i].handle == c->handle)) {
+                    if (snd_voices[i].delay > 0)        /* not started yet: gone */
+                        snd_voice_end (&snd_voices[i]);
+                    else
+                        snd_voice_fade_out (&snd_voices[i], c->fade);
+                    }
+                }
+            break;
+        case SND_CMD_EXTEND:
+            for (i = 0; i < SND_VOICES; i++) {
+                if (snd_voices[i].active && (snd_voices[i].handle == c->handle) &&
+                    (snd_voices[i].fade_step >= 0.0f))  /* not fading out */
+                    snd_voices[i].life = c->life;
                 }
             break;
         case SND_CMD_STOPALL:
             for (i = 0; i < SND_VOICES; i++) {
-                if (snd_voices[i].active)
-                    snd_voice_fade_out (&snd_voices[i], c->fade);
+                if (snd_voices[i].active) {
+                    if (snd_voices[i].delay > 0)        /* not started yet: gone */
+                        snd_voice_end (&snd_voices[i]);
+                    else
+                        snd_voice_fade_out (&snd_voices[i], c->fade);
+                    }
                 }
             break;
         }
@@ -527,6 +601,10 @@ for (k = 0; k < SND_VOICES; k++) {
 
     if (!v->active)
         continue;
+    if (v->delay >= (uint32)n) {                /* not started yet */
+        v->delay -= (uint32)n;
+        continue;
+        }
     /* A one-shot followed by a loop (system starting -> running): when the
        crossfade region is reached within this block, start the loop with a
        fade-in, hand the handle on to it and fade the one-shot out. */
@@ -537,8 +615,9 @@ for (k = 0; k < SND_VOICES; k++) {
             xfade = v->smp->frames / 2;
         if (xfade == 0)
             xfade = 1;
-        if (v->pos + (uint32)n >= v->smp->frames - xfade) {
-            snd_voice_start (v->handle, v->chain, NULL, 0, v->group, v->gain, v->chain_flags, xfade);
+        if (v->pos + (double)n * v->rate >= (double)(v->smp->frames - xfade)) {
+            snd_voice_start (v->handle, v->chain, NULL, 0, v->group, v->gain, v->chain_flags, xfade,
+                             v->rate, 0, 0, 0);
             v->handle = 0;
             v->chain = NULL;
             v->fade_step = -1.0f / (float)xfade;
@@ -548,14 +627,50 @@ for (k = 0; k < SND_VOICES; k++) {
     frames = v->smp->frames;
     g = v->gain * group_gain[v->group];
     for (i = 0; i < n; i++) {
-        if (v->pos >= frames) {
+        uint32 ip;
+        float x;
+
+        if (v->delay > 0) {                     /* starts within this block */
+            v->delay--;
+            continue;
+            }
+        if (v->life > 0) {                      /* limited lifetime: fade out */
+            if (--v->life == 0)
+                snd_voice_fade_out (v, v->life_fade);
+            }
+
+        if (v->pos >= (double)frames) {
             if (!v->loop) {                     /* one-shot finished */
                 snd_voice_end (v);
                 break;
                 }
-            v->pos = 0;
+            v->pos = fmod (v->pos, (double)frames);
             }
-        out[i] += data[v->pos++] * g * v->fade;
+        ip = (uint32)v->pos;
+        if (v->rate == 1.0)                     /* as recorded: no interpolation */
+            x = data[ip];
+        else {                                  /* resample: linear interpolation */
+            float fr = (float)(v->pos - (double)ip);
+            uint32 nx = ip + 1;
+
+            if (nx >= frames)                   /* a loop wraps, a one-shot ends */
+                nx = v->loop ? 0 : ip;
+            x = data[ip] + (data[nx] - data[ip]) * fr;
+            }
+        out[i] += x * g * v->fade;
+        v->pos += v->rate;
+        if (v->glide_left > 0) {                /* rate glide */
+            if (v->glide_curve == SND_GLIDE_REEL) {
+                v->glide_inv2 += v->glide_step;
+                if (v->glide_inv2 > 1e-6)
+                    v->rate = 1.0 / sqrt (v->glide_inv2);
+                }
+            else
+                v->rate += v->glide_step;
+            if (v->rate < 0.01)
+                v->rate = 0.01;
+            v->glide_left--;
+            }
         if (v->fade_step != 0.0f) {
             v->fade += v->fade_step;
             if (v->fade >= 1.0f) {              /* fade-in complete */
@@ -595,8 +710,29 @@ SDL_UnlockMutex (snd_qlock);
 return ok;
 }
 
+static SND_HANDLE snd_play_rate (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
+                                 int32 group, double gain, uint32 flags, uint32 fade_ms,
+                                 double rate);
+static SND_HANDLE snd_play_full (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
+                                 int32 group, double gain, uint32 flags, uint32 fade_ms,
+                                 double rate, double delay_s, double life_s, uint32 life_fade_ms);
+
 static SND_HANDLE snd_play_ex (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
                                int32 group, double gain, uint32 flags, uint32 fade_ms)
+{
+return snd_play_rate (smp, chain, chain_flags, group, gain, flags, fade_ms, 1.0);
+}
+
+static SND_HANDLE snd_play_rate (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
+                                 int32 group, double gain, uint32 flags, uint32 fade_ms,
+                                 double rate)
+{
+return snd_play_full (smp, chain, chain_flags, group, gain, flags, fade_ms, rate, 0.0, 0.0, 0);
+}
+
+static SND_HANDLE snd_play_full (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
+                                 int32 group, double gain, uint32 flags, uint32 fade_ms,
+                                 double rate, double delay_s, double life_s, uint32 life_fade_ms)
 {
 SND_CMD cmd;
 
@@ -612,7 +748,39 @@ cmd.group = group;
 cmd.gain = (float)gain;
 cmd.flags = flags;
 cmd.fade = (uint32)(((double)fade_ms * SND_RATE) / 1000.0);
+cmd.rate = rate;
+cmd.delay = (delay_s > 0.0) ? (uint32)(delay_s * SND_RATE) : 0;
+cmd.life = (life_s > 0.0) ? (uint32)(life_s * SND_RATE) + 1 : 0;
+cmd.life_fade = (uint32)(((double)life_fade_ms * SND_RATE) / 1000.0);
 return snd_queue_cmd (&cmd) ? cmd.handle : 0;
+}
+
+static void snd_extend_ex (SND_HANDLE handle, double secs)
+{
+SND_CMD cmd;
+
+if (handle == 0)
+    return;
+memset (&cmd, 0, sizeof (cmd));
+cmd.type = SND_CMD_EXTEND;
+cmd.handle = handle;
+cmd.life = (secs > 0.0) ? (uint32)(secs * SND_RATE) + 1 : 0;
+snd_queue_cmd (&cmd);
+}
+
+static void snd_glide_ex (SND_HANDLE handle, double rate, double secs, int32 curve)
+{
+SND_CMD cmd;
+
+if ((handle == 0) || (rate <= 0.0))
+    return;
+memset (&cmd, 0, sizeof (cmd));
+cmd.type = SND_CMD_RATE;
+cmd.handle = handle;
+cmd.rate = rate;
+cmd.curve = curve;
+cmd.fade = (secs > 0.0) ? (uint32)(secs * SND_RATE) : 0;
+snd_queue_cmd (&cmd);
 }
 
 static void snd_stop_ex (int32 type, SND_HANDLE handle, uint32 fade_ms)
@@ -802,6 +970,28 @@ return FALSE;
 
 static SND_HANDLE snd_play_ex (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
                                int32 group, double gain, uint32 flags, uint32 fade_ms)
+{
+return 0;
+}
+
+static SND_HANDLE snd_play_rate (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
+                                 int32 group, double gain, uint32 flags, uint32 fade_ms,
+                                 double rate)
+{
+return 0;
+}
+
+static void snd_glide_ex (SND_HANDLE handle, double rate, double secs, int32 curve)
+{
+}
+
+static void snd_extend_ex (SND_HANDLE handle, double secs)
+{
+}
+
+static SND_HANDLE snd_play_full (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
+                                 int32 group, double gain, uint32 flags, uint32 fade_ms,
+                                 double rate, double delay_s, double life_s, uint32 life_fade_ms)
 {
 return 0;
 }
@@ -1011,6 +1201,28 @@ SND_HANDLE sim_sound_play (SND_SAMPLE *smp, int32 group, double gain, uint32 fla
 return snd_play_ex (smp, NULL, 0, group, gain, flags, 0);
 }
 
+SND_HANDLE sim_sound_play_rate (SND_SAMPLE *smp, int32 group, double gain, uint32 flags,
+                                double rate, uint32 fade_ms)
+{
+return snd_play_rate (smp, NULL, 0, group, gain, flags, fade_ms, rate);
+}
+
+void sim_sound_glide (SND_HANDLE handle, double rate, double secs, int32 curve)
+{
+snd_glide_ex (handle, rate, secs, curve);
+}
+
+void sim_sound_extend (SND_HANDLE handle, double secs)
+{
+snd_extend_ex (handle, secs);
+}
+
+SND_HANDLE sim_sound_play_timed (SND_SAMPLE *smp, int32 group, double gain, uint32 flags,
+                                 double rate, double delay_s, double life_s, uint32 fade_ms)
+{
+return snd_play_full (smp, NULL, 0, group, gain, flags, fade_ms, rate, delay_s, life_s, fade_ms);
+}
+
 /* Unit loops (see sim_sound.h) */
 
 void sim_sound_unit_load (SND_UNITLOOP *ul, const char *dir, const char *start,
@@ -1108,13 +1320,13 @@ snd_runhooks = n;
 snd_runhooks[snd_n_runhooks++] = fn;
 }
 
-static void snd_spindles_run_state (t_bool running);
+static void snd_timers_run_state (t_bool running);
 
 void sim_sound_run_state (t_bool running)
 {
 int32 i;
 
-snd_spindles_run_state (running);
+snd_timers_run_state (running);
 for (i = 0; i < snd_n_runhooks; i++)
     snd_runhooks[i] (running);
 }
@@ -1141,63 +1353,74 @@ if (inst > 2000000000.0)
 sim_activate (uptr, (int32)inst);
 }
 
-/* Spindles (see sim_sound.h) */
+/* Realtime timers (see sim_sound.h)
 
-/* Spindle registry.  There is no fixed limit: spindles are registered in
-   chunks of SND_SPIN_CHUNK, each with its own internal timer device
-   (INT-SPINDLE, INT-SPINDLE2, ...), so a timer unit never moves while it
-   is on the event queue.  The number of drives is limited only by the
-   devices (controllers and their units).  (Up to sound patch v12 there
-   was a fixed table of 32, then 64, spindles: known issues case 23.)
-   A timer unit finds its spindle through up7. */
+   A timer measures a realistic duration: simulated time while the CPU
+   runs (the guest always sees the full time), wall time while the
+   simulator is stopped at the sim> prompt.  Used by the spindles and the
+   tape transports.
 
-#define SND_SPIN_CHUNK  32
+   Registry: there is no fixed limit.  Timers are registered in chunks of
+   SND_TMR_CHUNK, each with its own internal timer device per kind
+   (INT-SPINDLE, INT-SPINDLE2, ... for disk spindles; INT-REEL, ... for
+   tape transports), so a timer unit never moves while it is on the event
+   queue.  (Up to sound patch v12 there was a fixed table of 32, then 64,
+   spindles: known issues case 23.)  A timer unit finds its SND_TIMER
+   through up7. */
 
-typedef struct snd_spin_chunk {
-    SND_SPINDLE             *sp[SND_SPIN_CHUNK];        /* registered spindles */
-    UNIT                    units[SND_SPIN_CHUNK];      /* their timers */
-    DEVICE                  dev;                        /* internal device of the timers */
+#define SND_TMR_CHUNK   32
+
+typedef struct snd_tmr_chunk {
+    SND_TIMER               *t[SND_TMR_CHUNK];          /* registered timers */
+    UNIT                    units[SND_TMR_CHUNK];       /* their timer units */
+    DEVICE                  dev;                        /* internal device of the units */
     char                    name[24];                   /* its name */
-    struct snd_spin_chunk   *next;
-    } SND_SPIN_CHUNK_T;
+    const char              *kind;                      /* "SPINDLE", "REEL", ... */
+    struct snd_tmr_chunk    *next;
+    } SND_TMR_CHUNK_T;
 
-static SND_SPIN_CHUNK_T *snd_spin_chunks = NULL;        /* the chunks, in order */
+static SND_TMR_CHUNK_T *snd_tmr_chunks = NULL;          /* all chunks, in order */
 
-static const char *snd_spindle_description (DEVICE *dptr)
+static const char *snd_tmr_description (DEVICE *dptr)
 {
+if ((dptr->name != NULL) && (strncmp (dptr->name, "INT-REEL", 8) == 0))
+    return "Tape transport timers (sound realism mode)";
 return "Disk spindle timers (sound realism mode)";
 }
 
-/* The next free slot: its chunk and index (a new chunk if all are full);
-   FALSE only if out of memory */
+/* A free slot of the given kind: its chunk and index (a new chunk if all
+   are full); FALSE only if out of memory */
 
-static t_bool snd_spindle_slot (SND_SPIN_CHUNK_T **chunk, int32 *index)
+static t_bool snd_tmr_slot (const char *kind, SND_TMR_CHUNK_T **chunk, int32 *index)
 {
-SND_SPIN_CHUNK_T *c, **link = &snd_spin_chunks;
+SND_TMR_CHUNK_T *c, **link = &snd_tmr_chunks;
 int32 i, n = 0;
 
-for (c = snd_spin_chunks; c != NULL; c = c->next) {
-    for (i = 0; i < SND_SPIN_CHUNK; i++)
-        if (c->sp[i] == NULL) {
-            *chunk = c;
-            *index = i;
-            return TRUE;
-            }
+for (c = snd_tmr_chunks; c != NULL; c = c->next) {
+    if (strcmp (c->kind, kind) == 0) {
+        for (i = 0; i < SND_TMR_CHUNK; i++)
+            if (c->t[i] == NULL) {
+                *chunk = c;
+                *index = i;
+                return TRUE;
+                }
+        n = n + 1;
+        }
     link = &c->next;
-    n = n + 1;
     }
-c = (SND_SPIN_CHUNK_T *) calloc (1, sizeof (*c));
+c = (SND_TMR_CHUNK_T *) calloc (1, sizeof (*c));
 if (c == NULL)
     return FALSE;
+c->kind = kind;
 if (n == 0)
-    snprintf (c->name, sizeof (c->name), "INT-SPINDLE");
+    snprintf (c->name, sizeof (c->name), "INT-%s", kind);
 else
-    snprintf (c->name, sizeof (c->name), "INT-SPINDLE%d", n + 1);
+    snprintf (c->name, sizeof (c->name), "INT-%s%d", kind, n + 1);
 c->dev.name = c->name;
 c->dev.units = c->units;
-c->dev.numunits = SND_SPIN_CHUNK;
+c->dev.numunits = SND_TMR_CHUNK;
 c->dev.flags = DEV_NOSAVE;
-c->dev.description = &snd_spindle_description;
+c->dev.description = &snd_tmr_description;
 *link = c;
 sim_register_internal_device (&c->dev);
 *chunk = c;
@@ -1205,12 +1428,150 @@ sim_register_internal_device (&c->dev);
 return TRUE;
 }
 
+/* The time is over: call the owner (which may start the timer again) */
+
+static void snd_tmr_expired (SND_TIMER *t)
+{
+t->busy = FALSE;
+t->paused = FALSE;
+t->left_us = 0.0;
+if (t->done != NULL)
+    t->done (t);
+}
+
+static t_stat snd_tmr_svc (UNIT *uptr)
+{
+SND_TIMER *t = (SND_TIMER *) uptr->up7;
+
+if ((t != NULL) && t->busy)
+    snd_tmr_expired (t);
+return SCPE_OK;
+}
+
+/* At the prompt: deduct the wall time since the last look; expire the
+   timer if the time is over */
+
+static void snd_tmr_catch_up (SND_TIMER *t)
+{
+uint32 now;
+
+if (!t->busy || !t->paused)
+    return;
+now = sim_os_msec ();
+t->left_us -= 1000.0 * (double)(now - t->ref_ms);
+t->ref_ms = now;
+if (t->left_us < 1.0)
+    snd_tmr_expired (t);
+}
+
+/* Execution starts: schedule what is left; execution stops: keep it */
+
+static void snd_tmr_run_state (SND_TIMER *t, t_bool running)
+{
+if ((t == NULL) || !t->busy)
+    return;
+if (running) {
+    if (t->paused) {
+        snd_tmr_catch_up (t);
+        if (t->busy && t->paused) {
+            t->paused = FALSE;
+            sim_cancel (t->unit);
+            sim_sound_activate_us (t->unit, t->left_us);
+            }
+        }
+    else if (!sim_is_active (t->unit))          /* lost (event queue emptied): finish it */
+        snd_tmr_expired (t);
+    }
+else if (!t->paused) {
+    t->left_us = sim_is_active (t->unit) ?
+        (double)sim_activate_time (t->unit) / sim_sound_inst_per_us () : 0.0;
+    sim_cancel (t->unit);
+    t->paused = TRUE;
+    t->ref_ms = sim_os_msec ();
+    }
+}
+
+static void snd_timers_run_state (t_bool running)
+{
+SND_TMR_CHUNK_T *c;
+int32 i;
+
+for (c = snd_tmr_chunks; c != NULL; c = c->next)
+    for (i = 0; i < SND_TMR_CHUNK; i++)
+        snd_tmr_run_state (c->t[i], running);
+}
+
+t_bool sim_sound_timer_init (SND_TIMER *t, const char *kind, void (*done) (SND_TIMER *t), void *ctx)
+{
+SND_TMR_CHUNK_T *c;
+int32 i;
+
+if (t->unit != NULL)                            /* already initialized */
+    return TRUE;
+if (!snd_tmr_slot (kind, &c, &i))               /* out of memory */
+    return FALSE;
+memset (t, 0, sizeof (*t));
+t->done = done;
+t->ctx = ctx;
+memset (&c->units[i], 0, sizeof (c->units[i]));
+c->units[i].action = &snd_tmr_svc;
+c->units[i].up7 = t;
+t->unit = &c->units[i];
+c->t[i] = t;
+return TRUE;
+}
+
+void sim_sound_timer_start (SND_TIMER *t, double usecs)
+{
+if (t->unit == NULL)
+    return;
+sim_cancel (t->unit);
+t->busy = TRUE;
+t->left_us = (usecs > 1.0) ? usecs : 1.0;
+if (sim_is_running) {
+    t->paused = FALSE;
+    sim_sound_activate_us (t->unit, t->left_us);
+    }
+else {
+    t->paused = TRUE;
+    t->ref_ms = sim_os_msec ();
+    }
+}
+
+void sim_sound_timer_cancel (SND_TIMER *t)
+{
+if (t->unit != NULL)
+    sim_cancel (t->unit);
+t->busy = FALSE;
+t->paused = FALSE;
+t->left_us = 0.0;
+}
+
+t_bool sim_sound_timer_busy (SND_TIMER *t)
+{
+if (!sim_is_running)                            /* prompt: wall time passed */
+    snd_tmr_catch_up (t);
+return t->busy;
+}
+
+double sim_sound_timer_left_s (SND_TIMER *t)
+{
+if (!t->busy)
+    return 0.0;
+if (t->paused)
+    return t->left_us / 1000000.0;
+if (!sim_is_active (t->unit))
+    return 0.0;
+return (double)sim_activate_time (t->unit) / sim_sound_inst_per_us () / 1000000.0;
+}
+
+/* Spindles (see sim_sound.h) */
+
 /* A phase (spin-up or spin-down) is over */
 
 static void snd_spindle_phase_done (SND_SPINDLE *sp)
 {
-sp->paused = FALSE;
-sp->left_us = 0.0;
+sim_sound_timer_cancel (&sp->tmr);
 if (sp->state == SND_SPIN_UP) {
     sp->state = SND_SPIN_READY;
     if (sp->on_ready != NULL)
@@ -1223,99 +1584,22 @@ else if (sp->state == SND_SPIN_DOWN) {
     }
 }
 
-static t_stat snd_spindle_svc (UNIT *uptr)
+static void snd_spindle_tmr_done (SND_TIMER *t)
 {
-SND_SPINDLE *sp = (SND_SPINDLE *) uptr->up7;
-
-if (sp != NULL)
-    snd_spindle_phase_done (sp);
-return SCPE_OK;
-}
-
-/* Start timing a phase of usecs: scheduled now while the CPU runs, kept
-   in the structure (wall time) at the prompt */
-
-static void snd_spindle_schedule (SND_SPINDLE *sp, double usecs)
-{
-sim_cancel (sp->timer);
-sp->left_us = usecs;
-if (sim_is_running) {
-    sp->paused = FALSE;
-    sim_sound_activate_us (sp->timer, usecs);
-    }
-else {
-    sp->paused = TRUE;
-    sp->ref_ms = sim_os_msec ();
-    }
-}
-
-/* At the prompt: deduct the wall time since the last look; finish the
-   phase if it is over */
-
-static void snd_spindle_catch_up (SND_SPINDLE *sp)
-{
-uint32 now;
-
-if (!sp->paused || ((sp->state != SND_SPIN_UP) && (sp->state != SND_SPIN_DOWN)))
-    return;
-now = sim_os_msec ();
-sp->left_us -= 1000.0 * (double)(now - sp->ref_ms);
-sp->ref_ms = now;
-if (sp->left_us < 1.0)
-    snd_spindle_phase_done (sp);
-}
-
-/* Execution starts: schedule what is left; execution stops: keep it */
-
-static void snd_spindle_run_state (SND_SPINDLE *sp, t_bool running)
-{
-if ((sp == NULL) || ((sp->state != SND_SPIN_UP) && (sp->state != SND_SPIN_DOWN)))
-    return;
-if (running) {
-    if (sp->paused) {
-        snd_spindle_catch_up (sp);
-        if ((sp->state == SND_SPIN_UP) || (sp->state == SND_SPIN_DOWN)) {
-            sp->paused = FALSE;
-            sim_cancel (sp->timer);
-            sim_sound_activate_us (sp->timer, sp->left_us);
-            }
-        }
-    else if (!sim_is_active (sp->timer))        /* lost: finish it */
-        snd_spindle_phase_done (sp);
-    }
-else if (!sp->paused) {
-    sp->left_us = sim_is_active (sp->timer) ?
-        (double)sim_activate_time (sp->timer) / sim_sound_inst_per_us () : 0.0;
-    sim_cancel (sp->timer);
-    sp->paused = TRUE;
-    sp->ref_ms = sim_os_msec ();
-    }
-}
-
-static void snd_spindles_run_state (t_bool running)
-{
-SND_SPIN_CHUNK_T *c;
-int32 i;
-
-for (c = snd_spin_chunks; c != NULL; c = c->next)
-    for (i = 0; i < SND_SPIN_CHUNK; i++)
-        snd_spindle_run_state (c->sp[i], running);
+snd_spindle_phase_done ((SND_SPINDLE *) t->ctx);
 }
 
 void sim_spindle_init (SND_SPINDLE *sp, UNIT *uptr, int32 *spinup_ms, int32 *spindown_ms,
                        void (*on_ready) (UNIT *uptr), void (*on_stopped) (UNIT *uptr),
                        int32 group, double gain)
 {
-SND_SPIN_CHUNK_T *c;
-int32 i;
-
 if (sp->uptr != NULL)                           /* already initialized */
     return;
-if (!snd_spindle_slot (&c, &i)) {               /* out of memory: sp->uptr */
-    sim_printf ("Sound: out of memory for the spindle of %s\n", sim_uname (uptr));
-    return;                                     /* stays NULL (RQ: the drive */
-    }                                           /* works without realism) */
 memset (sp, 0, sizeof (*sp));
+if (!sim_sound_timer_init (&sp->tmr, "SPINDLE", &snd_spindle_tmr_done, sp)) {
+    sim_printf ("Sound: out of memory for the spindle of %s\n", sim_uname (uptr));
+    return;                                     /* sp->uptr stays NULL (RQ: the */
+    }                                           /* drive works without realism) */
 sp->uptr = uptr;
 sp->spinup_ms = spinup_ms;
 sp->spindown_ms = spindown_ms;
@@ -1324,11 +1608,6 @@ sp->on_stopped = on_stopped;
 sp->group = group;
 sp->gain = gain;
 sp->state = SND_SPIN_STOPPED;
-memset (&c->units[i], 0, sizeof (c->units[i]));
-c->units[i].action = &snd_spindle_svc;
-c->units[i].up7 = sp;
-sp->timer = &c->units[i];
-c->sp[i] = sp;
 }
 
 void sim_spindle_load (SND_SPINDLE *sp, const char *dir, const char *prefix)
@@ -1347,13 +1626,12 @@ if ((sp->uptr == NULL) || (sp->state == SND_SPIN_UP) || (sp->state == SND_SPIN_R
     return;
 sim_sound_unit_start (&sp->sound, sp->group, sp->gain);
 if (!snd_enabled) {                             /* normal mode: at once */
-    sim_cancel (sp->timer);
     sp->state = SND_SPIN_UP;
     snd_spindle_phase_done (sp);
     return;
     }
 sp->state = SND_SPIN_UP;
-snd_spindle_schedule (sp, 1000.0 * ((*sp->spinup_ms > 0) ? *sp->spinup_ms : 1));
+sim_sound_timer_start (&sp->tmr, 1000.0 * ((*sp->spinup_ms > 0) ? *sp->spinup_ms : 1));
 }
 
 void sim_spindle_stop (SND_SPINDLE *sp)
@@ -1361,12 +1639,12 @@ void sim_spindle_stop (SND_SPINDLE *sp)
 if ((sp->uptr == NULL) || (sp->state == SND_SPIN_STOPPED) || (sp->state == SND_SPIN_DOWN))
     return;
 sim_sound_unit_stop (&sp->sound, sp->group, sp->gain);
-sim_cancel (sp->timer);
+sim_sound_timer_cancel (&sp->tmr);
 sp->state = SND_SPIN_DOWN;
 if (!snd_enabled || (*sp->spindown_ms <= 0))    /* normal mode: at once */
     snd_spindle_phase_done (sp);
 else
-    snd_spindle_schedule (sp, 1000.0 * *sp->spindown_ms);
+    sim_sound_timer_start (&sp->tmr, 1000.0 * *sp->spindown_ms);
 }
 
 void sim_spindle_off (SND_SPINDLE *sp)
@@ -1375,34 +1653,23 @@ if (sp->uptr == NULL)
     return;
 if ((sp->state == SND_SPIN_UP) || (sp->state == SND_SPIN_READY))
     sim_sound_unit_stop (&sp->sound, sp->group, sp->gain);
-sim_cancel (sp->timer);
+sim_sound_timer_cancel (&sp->tmr);
 sp->state = SND_SPIN_STOPPED;
-sp->paused = FALSE;
 }
 
 void sim_spindle_ready (SND_SPINDLE *sp)
 {
 if (sp->uptr == NULL)
     return;
-sim_cancel (sp->timer);
+sim_sound_timer_cancel (&sp->tmr);
 sp->state = SND_SPIN_READY;
-sp->paused = FALSE;
 }
 
 int32 sim_spindle_state (SND_SPINDLE *sp)
 {
-if (!sim_is_running)                            /* prompt: wall time passed */
-    snd_spindle_catch_up (sp);
+if (sp->uptr != NULL)
+    sim_sound_timer_busy (&sp->tmr);            /* prompt: wall time passed */
 return sp->state;
-}
-
-static double snd_spindle_left_s (SND_SPINDLE *sp)
-{
-if (sp->paused)
-    return sp->left_us / 1000000.0;
-if (!sim_is_active (sp->timer))
-    return 0.0;
-return (double)sim_activate_time (sp->timer) / sim_sound_inst_per_us () / 1000000.0;
 }
 
 void sim_spindle_wait (SND_SPINDLE *sp)
@@ -1412,9 +1679,9 @@ int32 st = sim_spindle_state (sp);
 if (sim_is_running || ((st != SND_SPIN_UP) && (st != SND_SPIN_DOWN)))
     return;
 if (st == SND_SPIN_UP)
-    sim_printf ("%s: spinning up, ready in %.0f s ...\n", sim_uname (sp->uptr), snd_spindle_left_s (sp));
+    sim_printf ("%s: spinning up, ready in %.0f s ...\n", sim_uname (sp->uptr), sim_sound_timer_left_s (&sp->tmr));
 else
-    sim_printf ("%s: spinning down, at rest in %.0f s ...\n", sim_uname (sp->uptr), snd_spindle_left_s (sp));
+    sim_printf ("%s: spinning down, at rest in %.0f s ...\n", sim_uname (sp->uptr), sim_sound_timer_left_s (&sp->tmr));
 while (sim_spindle_state (sp) == st)
     sim_os_ms_sleep (50);
 if (sp->state == SND_SPIN_READY)
@@ -1427,18 +1694,611 @@ t_stat sim_spindle_show (FILE *st, SND_SPINDLE *sp)
 {
 switch (sim_spindle_state (sp)) {
     case SND_SPIN_UP:
-        fprintf (st, "spinning up, %.1f s left", snd_spindle_left_s (sp));
+        fprintf (st, "spinning up, %.1f s left", sim_sound_timer_left_s (&sp->tmr));
         break;
     case SND_SPIN_READY:
         fprintf (st, "online");
         break;
     case SND_SPIN_DOWN:
-        fprintf (st, "spinning down, %.1f s left", snd_spindle_left_s (sp));
+        fprintf (st, "spinning down, %.1f s left", sim_sound_timer_left_s (&sp->tmr));
         break;
     default:
         fprintf (st, "offline");
         break;
     }
+return SCPE_OK;
+}
+
+/* Tape transports (see sim_sound.h) */
+
+/* Reel geometry for the pitch of the reel motors: a reel holding len
+   inches of tape has the radius sqrt (hub^2 + len * thickness / pi); its
+   rotation rate at tape speed v is v / (2 pi r).  The rewind loop
+   (rewind.wav) is a reel motor recorded (synthesized) at REEL_SND_REF_RPS
+   revolutions per second; it is played at rate = rps / REEL_SND_REF_RPS. */
+
+#ifndef M_PI
+#define M_PI                3.14159265358979323846
+#endif
+#define REEL_HUB_R          1.845               /* hub radius (3.69 in hub) */
+#define REEL_TAPE_T         0.0019              /* tape thickness in the pack (1.5 mil + air) */
+#define REEL_SND_REF_RPS    8.0                 /* rotation rate of rewind.wav */
+#define REEL_POS_UNIT       10000.0             /* r->pos is in 1/10000 in */
+
+#define REEL_SMP_LOAD       0                   /* indices of the transport sounds */
+#define REEL_SMP_UNLOAD     1
+#define REEL_SMP_RSTART     2
+#define REEL_SMP_REWIND     3
+#define REEL_SMP_RSTOP      4
+#define REEL_SMP_START      5
+#define REEL_SMP_MOTION     6
+#define REEL_SMP_STOP       7
+#define REEL_H_REWIND2      8                   /* second reel's rewind voice */
+
+#define REEL_BATCH          8                   /* start/stop drive: records per sound batch */
+
+static const char *snd_reel_names[SND_REEL_NSMP] = {
+    "load", "unload", "rewind_start", "rewind", "rewind_stop", "start", "motion", "stop" };
+
+static double snd_reel_len_ft (SND_REEL *r)
+{
+int32 ft = (r->reel_ft != NULL) ? *r->reel_ft : 2400;
+
+return ((ft == 600) || (ft == 1200) || (ft == 2400)) ? (double)ft : 2400.0;
+}
+
+double sim_reel_pos_in (SND_REEL *r)
+{
+return (double)r->pos / REEL_POS_UNIT;
+}
+
+static void snd_reel_set_pos_in (SND_REEL *r, double in)
+{
+double max = (snd_reel_len_ft (r) - REEL_LEADER_FT) * 12.0;
+
+if (in < 0.0)
+    in = 0.0;
+if (in > max)
+    in = max;
+r->pos = (uint32)(in * REEL_POS_UNIT + 0.5);
+}
+
+void sim_reel_set_bot (SND_REEL *r)
+{
+r->pos = 0;
+}
+
+t_bool sim_reel_past_eot (SND_REEL *r)
+{
+return (sim_reel_pos_in (r) >= (snd_reel_len_ft (r) - REEL_LEADER_FT - REEL_EOT_FT) * 12.0);
+}
+
+t_bool sim_reel_past_end (SND_REEL *r)
+{
+return (sim_reel_pos_in (r) >= (snd_reel_len_ft (r) - REEL_LEADER_FT) * 12.0 - 0.5);
+}
+
+/* Rotation rates (rev/s) of the take-up and the supply reel at a tape
+   position and a tape speed */
+
+static double snd_reel_radius (double len_in)
+{
+return sqrt (REEL_HUB_R * REEL_HUB_R + len_in * REEL_TAPE_T / M_PI);
+}
+
+static void snd_reel_rps (SND_REEL *r, double pos_in, double ips, double *takeup, double *supply)
+{
+double total = snd_reel_len_ft (r) * 12.0;
+double on_takeup = REEL_LEADER_FT * 12.0 + pos_in;
+
+*takeup = ips / (2.0 * M_PI * snd_reel_radius (on_takeup));
+*supply = ips / (2.0 * M_PI * snd_reel_radius (total - on_takeup));
+}
+
+static double snd_reel_rate (double rps)
+{
+double rate = rps / REEL_SND_REF_RPS;
+
+return (rate < 0.25) ? 0.25 : ((rate > 4.0) ? 4.0 : rate);
+}
+
+static double snd_reel_rewind_ips (SND_REEL *r)
+{
+double ft = snd_reel_len_ft (r);
+int32 i = (ft <= 600.0) ? 0 : ((ft <= 1200.0) ? 1 : 2);
+
+return r->type->rewind_ips[i];
+}
+
+/* Sounds */
+
+static double snd_reel_dur (SND_REEL *r, int32 i)
+{
+return sim_sound_duration (r->smp[i]);
+}
+
+static void snd_reel_silence (SND_REEL *r, uint32 fade_ms)
+{
+int32 i;
+
+for (i = 0; i <= SND_REEL_NSMP; i++) {
+    sim_sound_stop (r->h[i], fade_ms);
+    r->h[i] = 0;
+    }
+}
+
+static void snd_reel_load_sounds (SND_REEL *r)
+{
+char name[CBUFSIZE];
+int32 i;
+
+if ((r->type == NULL) || !snd_enabled)
+    return;
+for (i = 0; i < SND_REEL_NSMP; i++) {
+    char dname[CBUFSIZE];
+
+    snprintf (name, sizeof (name), "%s_%s.wav", r->type->prefix, snd_reel_names[i]);
+    snprintf (dname, sizeof (dname), "%s.wav", snd_reel_names[i]);
+    r->smp[i] = snd_load_with_default (r->type->dir, name, SND_DEFAULT_TAPE, dname, "tape");
+    }
+}
+
+/* Rewind sound for a rewind of total seconds from pos_in to BOT (for an
+   unload followed by the unload sound after it) */
+
+static void snd_reel_rewind_sound (SND_REEL *r, double pos_in, double total)
+{
+double t_start = snd_reel_dur (r, REEL_SMP_RSTART);
+double t_stop = snd_reel_dur (r, REEL_SMP_RSTOP);
+double from, to, ips = snd_reel_rewind_ips (r);
+double tu0, su0, tu1, su1;
+
+if (total <= 0.0)
+    return;
+if (t_start > total / 2.0)
+    t_start = total / 2.0;
+if (t_stop > total / 2.0)
+    t_stop = total / 2.0;
+r->h[REEL_SMP_RSTART] = sim_sound_play_timed (r->smp[REEL_SMP_RSTART], r->group, r->gain, 0,
+                                              1.0, 0.0, total, 50);
+from = t_start * 0.6;                           /* the loops overlap the ramps */
+to = total - t_stop * 0.6;
+if ((to - from > 0.1) && (pos_in > 1.0)) {
+    snd_reel_rps (r, pos_in, ips, &tu0, &su0);
+    snd_reel_rps (r, 0.0, ips, &tu1, &su1);
+    r->h[REEL_SMP_REWIND] = sim_sound_play_timed (r->smp[REEL_SMP_REWIND], r->group, r->gain,
+                                                  SND_F_LOOP | SND_F_RANDPHASE, snd_reel_rate (tu0),
+                                                  from, to - from, 300);
+    sim_sound_glide (r->h[REEL_SMP_REWIND], snd_reel_rate (tu1), to - from, SND_GLIDE_REEL);
+    r->h[REEL_H_REWIND2] = sim_sound_play_timed (r->smp[REEL_SMP_REWIND], r->group, r->gain * 0.8,
+                                                 SND_F_LOOP | SND_F_RANDPHASE, snd_reel_rate (su0),
+                                                 from, to - from, 300);
+    sim_sound_glide (r->h[REEL_H_REWIND2], snd_reel_rate (su1), to - from, SND_GLIDE_REEL);
+    }
+r->h[REEL_SMP_RSTOP] = sim_sound_play_timed (r->smp[REEL_SMP_RSTOP], r->group, r->gain, 0,
+                                             1.0, total - t_stop, 0.0, 50);
+}
+
+/* Timers */
+
+static void snd_reel_finish (SND_REEL *r, int32 what)
+{
+if (r->on_done != NULL)
+    r->on_done (r->uptr, what);
+}
+
+static void snd_reel_motion_batch (SND_REEL *r);
+
+static void snd_reel_tmr_done (SND_TIMER *t)
+{
+SND_REEL *r = (SND_REEL *) t->ctx;
+
+switch (r->state) {
+    case SND_REEL_LOADING:
+        r->state = SND_REEL_READY;
+        r->pos = 0;
+        snd_reel_finish (r, SND_REEL_DONE_LOAD);
+        break;
+    case SND_REEL_REWINDING:
+        r->state = SND_REEL_READY;
+        r->pos = 0;
+        snd_reel_finish (r, SND_REEL_DONE_REWIND);
+        break;
+    case SND_REEL_UNLOADING:
+        r->state = SND_REEL_MOUNTED;
+        r->pos = 0;
+        snd_reel_finish (r, SND_REEL_DONE_UNLOAD);
+        break;
+    case SND_REEL_MOVING:
+        if (r->mot_items > 0) {                 /* start/stop drive: next batch */
+            snd_reel_motion_batch (r);
+            break;
+            }
+        r->state = SND_REEL_READY;
+        if (r->type->access_ms > 0.0) {         /* streaming: coast through the gap */
+            r->streaming = TRUE;
+            r->stream_rev = r->mot_rev;
+            sim_sound_timer_start (&r->coast, 1000000.0 * r->type->gap_in / r->type->ips);
+            }
+        snd_reel_finish (r, SND_REEL_DONE_MOTION);
+        break;
+        }
+}
+
+static void snd_reel_coast_done (SND_TIMER *t)
+{
+SND_REEL *r = (SND_REEL *) t->ctx;
+
+r->streaming = FALSE;                           /* the tape has stopped */
+}
+
+void sim_reel_init (SND_REEL *r, UNIT *uptr, int32 *load_ms, int32 *unload_ms, int32 *reel_ft,
+                    void (*on_done) (UNIT *uptr, int32 what), int32 group, double gain)
+{
+if (r->uptr != NULL)                            /* already initialized */
+    return;
+memset (r, 0, sizeof (*r));
+if (!sim_sound_timer_init (&r->tmr, "REEL", &snd_reel_tmr_done, r) ||
+    !sim_sound_timer_init (&r->coast, "REEL", &snd_reel_coast_done, r)) {
+    sim_printf ("Sound: out of memory for the tape transport of %s\n", sim_uname (uptr));
+    return;
+    }
+r->uptr = uptr;
+r->load_ms = load_ms;
+r->unload_ms = unload_ms;
+r->reel_ft = reel_ft;
+r->on_done = on_done;
+r->group = group;
+r->gain = gain;
+r->state = SND_REEL_NOREEL;
+}
+
+void sim_reel_set_type (SND_REEL *r, const SND_REEL_TYPE *type)
+{
+r->type = type;
+snd_reel_load_sounds (r);
+}
+
+void sim_reel_mount (SND_REEL *r)
+{
+if (r->uptr == NULL)
+    return;
+sim_sound_timer_cancel (&r->tmr);
+sim_sound_timer_cancel (&r->coast);
+snd_reel_load_sounds (r);
+r->pos = 0;
+r->streaming = FALSE;
+r->state = snd_enabled ? SND_REEL_MOUNTED : SND_REEL_READY;
+}
+
+void sim_reel_remove (SND_REEL *r)
+{
+if (r->uptr == NULL)
+    return;
+sim_sound_timer_cancel (&r->tmr);
+sim_sound_timer_cancel (&r->coast);
+snd_reel_silence (r, 100);
+r->pos = 0;
+r->streaming = FALSE;
+r->mot_items = 0;
+r->state = SND_REEL_NOREEL;
+}
+
+t_stat sim_reel_load (SND_REEL *r)
+{
+double ms;
+
+if ((r->uptr == NULL) || (r->type == NULL))
+    return SCPE_IERR;
+if (r->state != SND_REEL_MOUNTED)
+    return SCPE_OK;                             /* loaded or busy: nothing to do */
+r->pos = 0;
+ms = (r->load_ms != NULL) ? (double)*r->load_ms : (double)r->type->load_ms;
+if (!snd_enabled || (ms <= 0.0)) {              /* normal mode: at once */
+    r->state = SND_REEL_READY;
+    snd_reel_finish (r, SND_REEL_DONE_LOAD);
+    return SCPE_OK;
+    }
+r->state = SND_REEL_LOADING;
+r->h[REEL_SMP_LOAD] = sim_sound_play_timed (r->smp[REEL_SMP_LOAD], r->group, r->gain, 0,
+                                            1.0, 0.0, ms / 1000.0, 300);
+sim_sound_timer_start (&r->tmr, 1000.0 * ms);
+return SCPE_OK;
+}
+
+/* Rewind time from the current position (seconds) */
+
+static double snd_reel_rewind_s (SND_REEL *r)
+{
+return sim_reel_pos_in (r) / snd_reel_rewind_ips (r) + r->type->rewind_extra_ms / 1000.0;
+}
+
+static void snd_reel_start_rewind (SND_REEL *r, int32 state)
+{
+double rew = snd_reel_rewind_s (r);
+double total = rew;
+
+sim_sound_timer_cancel (&r->coast);
+r->streaming = FALSE;
+r->rew_from_in = sim_reel_pos_in (r);
+r->rew_ips = snd_reel_rewind_ips (r);
+r->rew_us = 1000000.0 * rew;
+r->state = state;
+if (state == SND_REEL_UNLOADING) {
+    double ums = (r->unload_ms != NULL) ? (double)*r->unload_ms : (double)r->type->unload_ms;
+
+    if (r->pos == 0)                            /* at BOT: only the unload */
+        rew = 0.0;
+    total = rew + ums / 1000.0;
+    r->rew_us = 1000000.0 * rew;
+    }
+if (!snd_enabled) {                             /* normal mode: at once */
+    snd_reel_tmr_done (&r->tmr);
+    return;
+    }
+if (rew > 0.0)
+    snd_reel_rewind_sound (r, r->rew_from_in, rew);
+if (state == SND_REEL_UNLOADING)
+    r->h[REEL_SMP_UNLOAD] = sim_sound_play_timed (r->smp[REEL_SMP_UNLOAD], r->group, r->gain, 0,
+                                                  1.0, rew, total - rew, 300);
+r->tot_us = 1000000.0 * total;
+sim_sound_timer_start (&r->tmr, r->tot_us);
+}
+
+t_stat sim_reel_rewind (SND_REEL *r)
+{
+if ((r->uptr == NULL) || (r->type == NULL))
+    return SCPE_IERR;
+if ((r->state != SND_REEL_READY) && (r->state != SND_REEL_MOVING))
+    return SCPE_OK;
+sim_sound_timer_cancel (&r->tmr);
+r->mot_items = 0;
+snd_reel_start_rewind (r, SND_REEL_REWINDING);
+return SCPE_OK;
+}
+
+/* Where a rewind has got to (realism mode): the rewind part of the action
+   is r->rew_us long and starts with the action (an unload follows it) */
+
+static void snd_reel_rewind_progress (SND_REEL *r)
+{
+double done_us;
+
+if ((r->state != SND_REEL_REWINDING) && (r->state != SND_REEL_UNLOADING))
+    return;
+done_us = r->tot_us - 1000000.0 * sim_sound_timer_left_s (&r->tmr);
+if (done_us > r->rew_us)
+    done_us = r->rew_us;
+if (done_us < 0.0)
+    done_us = 0.0;
+snd_reel_set_pos_in (r, r->rew_from_in - r->rew_ips * done_us / 1000000.0);
+}
+
+t_stat sim_reel_unload (SND_REEL *r)
+{
+if ((r->uptr == NULL) || (r->type == NULL))
+    return SCPE_IERR;
+if ((r->state == SND_REEL_NOREEL) || (r->state == SND_REEL_MOUNTED) ||
+    (r->state == SND_REEL_UNLOADING) || (r->state == SND_REEL_LOADING))
+    return SCPE_OK;
+if (r->state == SND_REEL_REWINDING)             /* pressed while rewinding */
+    snd_reel_rewind_progress (r);
+sim_sound_timer_cancel (&r->tmr);
+snd_reel_silence (r, 100);
+r->mot_items = 0;
+snd_reel_start_rewind (r, SND_REEL_UNLOADING);
+return SCPE_OK;
+}
+
+void sim_reel_abort (SND_REEL *r)
+{
+if (r->uptr == NULL)
+    return;
+if (r->state == SND_REEL_REWINDING) {
+    snd_reel_rewind_progress (r);
+    sim_sound_timer_cancel (&r->tmr);
+    snd_reel_silence (r, 100);
+    r->state = SND_REEL_READY;
+    }
+else if (r->state == SND_REEL_MOVING) {
+    sim_sound_timer_cancel (&r->tmr);
+    snd_reel_silence (r, 30);
+    r->mot_items = 0;
+    r->state = SND_REEL_READY;
+    }
+sim_sound_timer_cancel (&r->coast);
+r->streaming = FALSE;
+}
+
+/* Guest motion commands */
+
+void sim_reel_motion_begin (SND_REEL *r)
+{
+r->mot_us = 0.0;
+r->mot_in = 0.0;
+r->mot_items = 0;
+r->mot_rev = FALSE;
+}
+
+static void snd_reel_move (SND_REEL *r, double dist, t_bool reverse)
+{
+const SND_REEL_TYPE *ty = r->type;
+
+if (ty == NULL)
+    return;
+snd_reel_set_pos_in (r, sim_reel_pos_in (r) + (reverse ? -dist : dist));
+r->mot_in += reverse ? -dist : dist;
+if (ty->access_ms > 0.0)                        /* streaming: continuous motion */
+    r->mot_us += 1000000.0 * dist / ty->ips;
+else {                                          /* start, move, stop */
+    double run = dist - ty->ramp_in;
+
+    r->mot_us += 1000.0 * (ty->start_ms + ty->stop_ms) +
+                 ((run > 0.0) ? 1000000.0 * run / ty->ips : 0.0);
+    }
+r->mot_items = r->mot_items + 1;
+r->mot_rev = reverse;
+}
+
+void sim_reel_record (SND_REEL *r, uint32 bytes, t_bool reverse)
+{
+if ((r->uptr == NULL) || (r->type == NULL))
+    return;
+snd_reel_move (r, (double)bytes / r->type->bpi + r->type->gap_in, reverse);
+}
+
+void sim_reel_tapemark (SND_REEL *r, t_bool reverse)
+{
+if ((r->uptr == NULL) || (r->type == NULL))
+    return;
+snd_reel_move (r, r->type->tm_in, reverse);
+}
+
+void sim_reel_erase (SND_REEL *r, double inches)
+{
+if ((r->uptr == NULL) || (r->type == NULL) || (inches <= 0.0))
+    return;
+snd_reel_move (r, inches, FALSE);
+}
+
+/* Start/stop drive: play the sounds of the next batch of records (at most
+   REEL_BATCH, each with its start and stop transient) and time it */
+
+static void snd_reel_motion_batch (SND_REEL *r)
+{
+int32 k = (r->mot_items < REEL_BATCH) ? r->mot_items : REEL_BATCH;
+double each = r->mot_us / (double)r->mot_items;     /* seconds per record: */
+double es = each / 1000000.0;
+double stop_s = r->type->stop_ms / 1000.0;
+int32 i;
+
+for (i = 0; i < k; i++) {
+    double at = es * (double)i;
+
+    sim_sound_play_timed (r->smp[REEL_SMP_START], r->group, r->gain, 0, 1.0, at, es, 4);
+    sim_sound_play_timed (r->smp[REEL_SMP_MOTION], r->group, r->gain, SND_F_LOOP | SND_F_RANDPHASE,
+                          1.0, at, es, 4);
+    sim_sound_play_timed (r->smp[REEL_SMP_STOP], r->group, r->gain, 0, 1.0,
+                          at + ((es > stop_s) ? es - stop_s : 0.0), 0.0, 4);
+    }
+r->mot_items -= k;
+r->mot_us -= each * (double)k;
+sim_sound_timer_start (&r->tmr, each * (double)k);
+}
+
+double sim_reel_motion_end (SND_REEL *r)
+{
+const SND_REEL_TYPE *ty = r->type;
+double total;
+
+if ((r->uptr == NULL) || (ty == NULL) || (r->mot_items == 0) || !snd_enabled) {
+    r->mot_items = 0;
+    return 0.0;
+    }
+total = r->mot_us;
+r->state = SND_REEL_MOVING;
+if (ty->access_ms <= 0.0) {                     /* start/stop drive */
+    snd_reel_motion_batch (r);
+    return total;
+    }
+/* Streaming drive: if the tape still moves in the same direction (the
+   command came while it coasted through the gap) it goes on; otherwise it
+   starts from rest and repositions (access time).  The motion loop lasts
+   to the end of the coasting, the stop transient follows; a command in
+   time cancels the stop and extends the loop. */
+if (sim_sound_timer_busy (&r->coast) && r->streaming && (r->stream_rev == r->mot_rev)) {
+    sim_sound_timer_cancel (&r->coast);
+    sim_sound_stop (r->h[REEL_SMP_STOP], 0);
+    }
+else {
+    sim_sound_timer_cancel (&r->coast);
+    total += 1000.0 * ty->access_ms;
+    sim_sound_stop (r->h[REEL_SMP_MOTION], 20);
+    r->h[REEL_SMP_MOTION] = 0;
+    sim_sound_play (r->smp[REEL_SMP_START], r->group, r->gain, 0);
+    }
+r->streaming = FALSE;
+{
+    double coast_s = ty->gap_in / ty->ips;
+    double life = total / 1000000.0 + coast_s;
+
+    if (r->h[REEL_SMP_MOTION] != 0)
+        sim_sound_extend (r->h[REEL_SMP_MOTION], life);
+    else
+        r->h[REEL_SMP_MOTION] = sim_sound_play_timed (r->smp[REEL_SMP_MOTION], r->group, r->gain,
+                                                      SND_F_LOOP | SND_F_RANDPHASE, 1.0, 0.0, life, 20);
+    r->h[REEL_SMP_STOP] = sim_sound_play_timed (r->smp[REEL_SMP_STOP], r->group, r->gain, 0, 1.0,
+                                                life, 0.0, 4);
+    }
+r->mot_items = 0;
+sim_sound_timer_start (&r->tmr, total);
+return total;
+}
+
+/* State, waiting, display */
+
+int32 sim_reel_state (SND_REEL *r)
+{
+if (r->uptr == NULL)
+    return SND_REEL_NOREEL;
+sim_sound_timer_busy (&r->tmr);                 /* prompt: wall time passed */
+sim_sound_timer_busy (&r->coast);
+return r->state;
+}
+
+void sim_reel_wait (SND_REEL *r)
+{
+int32 st = sim_reel_state (r);
+const char *what;
+
+if (sim_is_running ||
+    ((st != SND_REEL_LOADING) && (st != SND_REEL_REWINDING) && (st != SND_REEL_UNLOADING)))
+    return;
+what = (st == SND_REEL_LOADING) ? "loading, at BOT" :
+       ((st == SND_REEL_REWINDING) ? "rewinding, at BOT" : "unloading, unloaded");
+sim_printf ("%s: %s in %.0f s ...\n", sim_uname (r->uptr), what, sim_sound_timer_left_s (&r->tmr));
+while (sim_reel_state (r) == st)
+    sim_os_ms_sleep (50);
+if (r->state == SND_REEL_READY)
+    sim_printf ("%s: at BOT\n", sim_uname (r->uptr));
+else if (r->state == SND_REEL_MOUNTED)
+    sim_printf ("%s: unloaded\n", sim_uname (r->uptr));
+}
+
+t_stat sim_reel_show (FILE *st, SND_REEL *r)
+{
+int32 s = sim_reel_state (r);
+
+if ((s == SND_REEL_REWINDING) || (s == SND_REEL_UNLOADING))
+    snd_reel_rewind_progress (r);
+switch (s) {
+    case SND_REEL_NOREEL:
+        fprintf (st, "no reel");
+        break;
+    case SND_REEL_MOUNTED:
+        fprintf (st, "reel mounted, not loaded");
+        break;
+    case SND_REEL_LOADING:
+        fprintf (st, "loading, %.1f s left", sim_sound_timer_left_s (&r->tmr));
+        break;
+    case SND_REEL_REWINDING:
+        fprintf (st, "rewinding, %.1f s left", sim_sound_timer_left_s (&r->tmr));
+        break;
+    case SND_REEL_UNLOADING:
+        fprintf (st, "unloading, %.1f s left", sim_sound_timer_left_s (&r->tmr));
+        break;
+    default:
+        if (r->pos == 0)
+            fprintf (st, "loaded, at BOT");
+        else
+            fprintf (st, "loaded, %.1f ft from BOT%s", sim_reel_pos_in (r) / 12.0,
+                     sim_reel_past_eot (r) ? " (past EOT)" : "");
+        if (s == SND_REEL_MOVING)
+            fprintf (st, ", moving");
+        break;
+    }
+if (s != SND_REEL_NOREEL)
+    fprintf (st, ", %d ft reel", (int)snd_reel_len_ft (r));
 return SCPE_OK;
 }
 
