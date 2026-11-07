@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v7, 2026-11-07 (patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v8, 2026-11-07 (patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -33,15 +33,15 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 | 2s | `opensimh_2_dmf32_v6_standalone.patch` | the same DMF32, without patch 1 | 87eb7d5, instead of 1 + 2 |
 | 3 | `opensimh_3_vax8200_uba_fix.patch` | VAX 8200 DWBUA interrupt delivery and Unibus init (2 commits) | 87eb7d5, independent |
 | 4 | `opensimh_4_dmc_ultrix_v8.patch` | DMC11/DMR11 fixes for the ULTRIX-32 V1.1 `if_dmc` driver | after 1 |
-| 6 | `opensimh_6_rb730_v1.patch` | RB730: DEC logical block order, SIMH disk library, status, seek and range fixes | 87eb7d5, independent |
-| 5 | `opensimh_5_sound_v14.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RC25/RCF25, RB02/RB80); without the Visual Studio project files | after 6 |
+| 6 | `opensimh_6_rb730_v2.patch` | RB730: DEC logical block order, SIMH disk library, status, seek and range fixes, at most one RB80 | 87eb7d5, independent |
+| 5 | `opensimh_5_sound_v15.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RC25/RCF25, RB02/RB80); without the Visual Studio project files | after 6 |
 
 Patch 6 comes before patch 5. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
 git am --keep-cr opensimh_1_dmv11_v11.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
-                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v1.patch opensimh_5_sound_v14.patch
+                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v15.patch
 ```
 
 The same work as git branches of the fork:
@@ -63,6 +63,7 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
 
 ## Device facts settled so far
 
+- **RB730 (VAX-11/730 IDC)**, from EK-RB730-TD-001 (Sep 1982): at most **one R80 and up to three RL02, or four RL02** (figure 3-2); SIMH refuses a second RB80 (patch 6 v2). Drive addresses: the 2-bit drive select (control word bits 8-9) gives addresses 0-3; each RL02 gets its address from the address plug in the drive, the R80 from the logic plug on its operator panel (reported over R80 SELECT ADDRESS 1/2, valid only with R80 PLUG VALID). No address is reserved for the R80: it may be any of 0-3. If the R80 and an RL02 have the same address the IDC selects the R80 (address compare); the RL02 status has a Drive Select Error bit for "multiple drives responding to one address". In SIMH the unit number is the address, so duplicates cannot occur.
 - **DMV11** only on Qbus (MicroVAX I, MicroVAX II, MicroVAX 3900, Qbus PDP-11): `SET DMV ENABLE`.
 - **Test CPUs (Ulli, 2026-11-07):** Qbus changes are tested on the **microvax2** (the one Ulli uses most); a change for specific CPUs (e.g. the DMV11 on the MicroVAX I) is tested on the affected CPU(s).
   **DMP11** only on Unibus (VAX-11/730/750/780, 8200, 8600, Unibus PDP-11):

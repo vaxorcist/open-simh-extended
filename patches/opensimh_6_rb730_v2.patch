@@ -1,8 +1,8 @@
-From c124cc7b94dee306376aa0dd734d42c2355cd497 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
-Date: Wed, 4 Nov 2026 17:30:09 +0100
+From 578841f24d0f1156fc761a46c492959e7d20fa4a Mon Sep 17 00:00:00 2001
+From: vaxorcist <vaxorcist@gmail.com>
+Date: Sat, 7 Nov 2026 17:30:35 +0100
 Subject: [PATCH] RB730: DEC disk layout, sim_disk, status, seek and range
- fixes
+ fixes, one RB80
 
 Fixes for the RB730 disk controller of the VAX-11/730 (RB02 = RL02,
 RB80 = R80), each tested with VMS V3.5 on the 730 and, for the RB02,
@@ -31,22 +31,27 @@ with the same cartridge on the RL11 of a VAX-11/750:
   could run another drive's command on the seeking drive).
 - Range checks: a seek stops at the last cylinder, a transfer to a
   track beyond the last head fails with header error.
+- At most one RB80, as on the IDC (one R80 and up to three RL02,
+  EK-RB730-TD-001 figure 3-2): SET RBn RB80 (also by autosize) is
+  refused while another unit is the RB80.
 - HELP RB.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Suavtg1mhGhDqgLJQVDvFR
+Claude-Session: https://claude.ai/code/session_01SuavtdQSNbdrn1UBP6mkZX
 ---
- VAX/vax730_rb.c | 236 ++++++++++++++++++++++++++++++++++++++----------
- 1 file changed, 187 insertions(+), 49 deletions(-)
+ VAX/vax730_rb.c | 251 ++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 202 insertions(+), 49 deletions(-)
 
 diff --git a/VAX/vax730_rb.c b/VAX/vax730_rb.c
-index f5cb14e..c58181c 100644
+index f5cb14e1..4818c9d2 100644
 --- a/VAX/vax730_rb.c
 +++ b/VAX/vax730_rb.c
-@@ -26,6 +26,23 @@
+@@ -26,6 +26,25 @@
  
     rb           RB730 - RB02/RB80 disk controller
  
++   07-Nov-2026  Ulli    At most one RB80 (the IDC connects one R80 and up to
++                        three RL02, EK-RB730-TD-001 figure 3-2)
 +   04-Nov-2026  Ulli    A finishing seek only raises the drive's attention (it
 +                        decoded the controller's current command, which may
 +                        belong to another drive); RB80 with 31 sectors per
@@ -67,7 +72,7 @@ index f5cb14e..c58181c 100644
     29-Mar-2011  MB      First Version
  
     The RB730 is a four drive disk subsystem consisting of up to three RL02
-@@ -43,6 +60,7 @@
+@@ -43,6 +62,7 @@
  */
  
  #include "vax_defs.h"
@@ -75,7 +80,7 @@ index f5cb14e..c58181c 100644
  
  /* Constants */
  
-@@ -53,26 +71,34 @@
+@@ -53,26 +73,34 @@
  #define RB02_SIZE       (RB02_NUMCY * RB02_NUMSF * \
                           RB02_NUMSC * RB02_NUMWD)       /* words/drive */
  #define RB80_NUMWD      256                             /* words/sector */
@@ -115,7 +120,7 @@ index f5cb14e..c58181c 100644
  #define UNIT_RB80       (1u << UNIT_V_RB80)
  
  /* Parameters in the unit descriptor */
-@@ -184,15 +210,31 @@
+@@ -184,15 +212,31 @@
  #define GET_SECT(x)     (((x) >> RBDA_V_SECT) & RBDA_M_SECT)
  #define GET_CYL(x)      (((x) >> RBDA_V_CYL) & RBDA_M_CYL)
  #define GET_TRACK(x)    (((x) >> RBDA_V_TRACK) & RBDA_M_TRACK)
@@ -151,7 +156,7 @@ index f5cb14e..c58181c 100644
  
  uint16 *rbxb = NULL;                                     /* xfer buffer */
  int32 rbcs = 0;                                         /* control/status */
-@@ -213,8 +255,12 @@ t_stat rb_reset (DEVICE *dptr);
+@@ -213,8 +257,12 @@ t_stat rb_reset (DEVICE *dptr);
  const char *rb_description (DEVICE *dptr);
  void rb_set_done (int32 error);
  t_stat rb_attach (UNIT *uptr, CONST char *cptr);
@@ -164,7 +169,7 @@ index f5cb14e..c58181c 100644
  
  /* RB730 data structures
  
-@@ -250,6 +296,7 @@ DEBTAB rb_debug[] = {
+@@ -250,6 +298,7 @@ DEBTAB rb_debug[] = {
      {"CMD", DBG_CMD},
      {"RD",  DBG_RD},
      {"WR",  DBG_WR},
@@ -172,7 +177,7 @@ index f5cb14e..c58181c 100644
      {0}
  };
  
-@@ -260,6 +307,14 @@ MTAB rb_mod[] = {
+@@ -260,6 +309,14 @@ MTAB rb_mod[] = {
          &set_writelock, NULL,   NULL, "Write lock disk drive" },
      { UNIT_DUMMY,      0, NULL,            "BADBLOCK", 
          &rb_set_bad, NULL, NULL, "write bad block table on last track" },
@@ -187,7 +192,7 @@ index f5cb14e..c58181c 100644
      { (UNIT_RB80+UNIT_ATT),             UNIT_ATT, "RB02", NULL, NULL },
      { (UNIT_RB80+UNIT_ATT), (UNIT_RB80+UNIT_ATT), "RB80", NULL, NULL },
      { (UNIT_RB80+UNIT_ATT),                    0, "RB02", NULL, NULL },
-@@ -279,9 +334,9 @@ DEVICE rb_dev = {
+@@ -279,9 +336,9 @@ DEVICE rb_dev = {
      "RB", rb_unit, rb_reg, rb_mod,
      RB_NUMDR, DEV_RDX, T_ADDR_W, 1, DEV_RDX, 16,
      NULL, NULL, &rb_reset,
@@ -200,7 +205,7 @@ index f5cb14e..c58181c 100644
      &rb_description
      };
  
-@@ -311,7 +366,8 @@ switch ((PA >> 2) & 07) {
+@@ -311,7 +368,8 @@ switch ((PA >> 2) & 07) {
          if (rbcs & RBCS_ALLERR)
              rbcs = rbcs | RBCS_ERR;
          uptr = rb_dev.units + GET_DRIVE (rbcs);
@@ -210,7 +215,7 @@ index f5cb14e..c58181c 100644
              rbcs = rbcs & ~RBCS_DRDY;
          else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
          if (uptr->flags & UNIT_RB80)
-@@ -362,7 +418,8 @@ switch ((PA >> 2) & 07) {
+@@ -362,7 +420,8 @@ switch ((PA >> 2) & 07) {
          if (rbcs & RBCS_ALLERR)
              rbcs = rbcs | RBCS_ERR;
          uptr = rb_dev.units + GET_DRIVE (data);
@@ -220,7 +225,7 @@ index f5cb14e..c58181c 100644
              rbcs = rbcs & ~RBCS_DRDY;
          else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
          if (uptr->flags & UNIT_RB80)
-@@ -439,9 +496,26 @@ t_stat rb_svc (UNIT *uptr)
+@@ -439,9 +498,26 @@ t_stat rb_svc (UNIT *uptr)
  int32 curr, newc, swait;
  int32 err, wc, maxwc, t;
  int32 i, func, da, awc;
@@ -247,7 +252,7 @@ index f5cb14e..c58181c 100644
  func = GET_FUNC (rbcs);                                 /* get function */
  if (func == RBCS_GSTA) {                                /* get status */
      sim_debug(DBG_CMD, &rb_dev, "Get Status\n");
-@@ -455,7 +529,7 @@ if (func == RBCS_GSTA) {                                /* get status */
+@@ -455,7 +531,7 @@ if (func == RBCS_GSTA) {                                /* get status */
      else {
          if (rbmp & RBMP_RST)
              uptr->STAT = uptr->STAT & ~RB02DS_ERR;
@@ -256,7 +261,7 @@ index f5cb14e..c58181c 100644
          if (uptr->flags & UNIT_WPRT)
              rbmp = rbmp | RB02DS_WLK;
          }
-@@ -466,7 +540,7 @@ if (func == RBCS_GSTA) {                                /* get status */
+@@ -466,7 +542,7 @@ if (func == RBCS_GSTA) {                                /* get status */
  
  if (func == RBCS_RHDR) {                                /* read header? */
      sim_debug(DBG_CMD, &rb_dev, "Read Header\n");
@@ -265,7 +270,7 @@ index f5cb14e..c58181c 100644
      rbmp1 = rbmp2 = 0;
      rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
      rb_set_done (0);                                    /* done */
-@@ -478,7 +552,7 @@ if ((uptr->flags & UNIT_ATT) == 0) {                    /* attached? */
+@@ -478,7 +554,7 @@ if ((uptr->flags & UNIT_ATT) == 0) {                    /* attached? */
      rbcs = rbcs | (1u << (RBCS_V_ATN + GET_DRIVE (rbcs)));
      if ((uptr->flags & UNIT_RB80) == 0)
          uptr->STAT = uptr->STAT | RB02DS_SPE;           /* spin error */
@@ -274,7 +279,7 @@ index f5cb14e..c58181c 100644
      //return IORETURN (rl_stopioe, SCPE_UNATT);
      return SCPE_OK;
      }
-@@ -498,7 +572,10 @@ if (func == RBCS_SEEK) {                                /* seek? */
+@@ -498,7 +574,10 @@ if (func == RBCS_SEEK) {                                /* seek? */
          else {
              curr = GET_CYL (uptr->TRK);                     /* current cylinder */
              newc = GET_CYL (rbda);                          /* offset */
@@ -286,7 +291,7 @@ index f5cb14e..c58181c 100644
              swait = rb_cwait * abs (newc - curr);
              if (swait < rb_mwait) swait = rb_mwait;
              }
-@@ -508,18 +585,12 @@ if (func == RBCS_SEEK) {                                /* seek? */
+@@ -508,18 +587,12 @@ if (func == RBCS_SEEK) {                                /* seek? */
          rb_set_done(0);
          return SCPE_OK;
          }
@@ -308,7 +313,7 @@ index f5cb14e..c58181c 100644
      rb_set_done (RBCS_ERR | RBCS_HDE | RBCS_INCMP);     /* wrong cylinder? */
      return SCPE_OK;
      }
-@@ -531,13 +602,16 @@ wc = ((rbbc * -1) >> 1);                                /* get true wc */
+@@ -531,13 +604,16 @@ wc = ((rbbc * -1) >> 1);                                /* get true wc */
  maxwc = (RB_NUMSC(uptr) - GET_SECT (rbda)) * RB_NUMWD(uptr);    /* max transfer */
  if (wc > maxwc)                                         /* track overrun? */
      wc = maxwc;
@@ -329,7 +334,7 @@ index f5cb14e..c58181c 100644
          rbxb[i] = 0;
      if ((t = Map_WriteW (ma, wc << 1, rbxb))) {         /* store buffer */
          rbcs = rbcs | RBCS_ERR | RBCS_NXM;              /* nxm */
-@@ -555,16 +629,17 @@ if ((func == RBCS_WRITE) && (err == 0)) {               /* write? */
+@@ -555,16 +631,17 @@ if ((func == RBCS_WRITE) && (err == 0)) {               /* write? */
          awc = (wc + (RB_NUMWD(uptr) - 1)) & ~(RB_NUMWD(uptr) - 1);  /* clr to */
          for (i = wc; i < awc; i++)                      /* end of blk */
              rbxb[i] = 0;
@@ -352,7 +357,7 @@ index f5cb14e..c58181c 100644
          rbxb[i] = 0;
      awc = wc;                                           /* save wc */
      for (wc = 0; (err == 0) && (wc < awc); wc++)  {     /* loop thru buf */
-@@ -583,12 +658,13 @@ if (rbbc != 0) {                                        /* completed? */
+@@ -583,12 +660,13 @@ if (rbbc != 0) {                                        /* completed? */
      }
  ma = ma + (wc << 1);                                    /* final byte addr */
  rbba = ma & RBBA_RW;
@@ -368,7 +373,7 @@ index f5cb14e..c58181c 100644
      return SCPE_IOERR;
      }
  return SCPE_OK;
-@@ -624,6 +700,7 @@ CLR_INT (RB);
+@@ -624,6 +702,7 @@ CLR_INT (RB);
  for (i = 0; i < RB_NUMDR; i++) {
      uptr = rb_dev.units + i;
      sim_cancel (uptr);
@@ -376,7 +381,7 @@ index f5cb14e..c58181c 100644
      uptr->STAT = 0;
      uptr->SIP = 0;
      }
-@@ -643,31 +720,42 @@ return "RB730 disk controller";
+@@ -643,31 +722,53 @@ return "RB730 disk controller";
  
  t_stat rb_attach (UNIT *uptr, CONST char *cptr)
  {
@@ -421,15 +426,26 @@ index f5cb14e..c58181c 100644
  
  t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
  {
++int32 i;
++
  if (uptr->flags & UNIT_ATT)
      return SCPE_ALATT;
 -uptr->capac = (val & UNIT_RB80)? RB80_SIZE: RB02_SIZE;
++if (val & UNIT_RB80) {                                  /* only one R80 on the IDC */
++    for (i = 0; i < RB_NUMDR; i++) {
++        UNIT *optr = rb_dev.units + i;
++
++        if ((optr != uptr) && (optr->flags & UNIT_RB80))
++            return sim_messagef (SCPE_ARG, "%s: %s is already the RB80; the RB730 connects one RB80 and up to three RB02\n",
++                                 sim_uname (uptr), sim_uname (optr));
++        }
++    }
 +uptr->capac = (val & UNIT_RB80) ?
 +    ((uptr->flags & UNIT_OLDL) ? RB80_SIZE_OLD : RB80_SIZE) : RB02_SIZE;
  return SCPE_OK;
  }
  
-@@ -675,5 +763,55 @@ return SCPE_OK;
+@@ -675,5 +776,57 @@ return SCPE_OK;
  
  t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
  {
@@ -472,7 +488,9 @@ index f5cb14e..c58181c 100644
 +fprintf (st, "RB730 Disk Controller (RB)\n\n");
 +fprintf (st, "The RB730 is the integrated disk controller of the VAX-11/730.  Unit 0 is\n");
 +fprintf (st, "an RB80 (an R80 fixed disk, the RM80's drive) by default, units 1-3 are RB02\n");
-+fprintf (st, "drives (RL02 cartridge drives); SET RBn RB02/RB80 changes the type.\n\n");
++fprintf (st, "drives (RL02 cartridge drives); SET RBn RB02/RB80 changes the type.  As on\n");
++fprintf (st, "the real IDC (one R80 and up to three RL02), at most one unit can be an\n");
++fprintf (st, "RB80: to make another unit the RB80, first SET the current one to RB02.\n\n");
 +fprint_set_help (st, dptr);
 +fprint_show_help (st, dptr);
 +fprintf (st, "\nImage layout: the disk images are in DEC logical block order (cylinder by\n");

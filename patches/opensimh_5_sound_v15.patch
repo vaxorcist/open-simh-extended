@@ -1,6 +1,6 @@
-From 87483e7e19c58f1fa98070e7d5748742bd505e0a Mon Sep 17 00:00:00 2001
+From df64a039523760a881061ad336ac786a8850b7d9 Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
-Date: Sat, 7 Nov 2026 11:59:36 +0100
+Date: Sat, 7 Nov 2026 17:30:35 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
  sound pilot
 
@@ -2830,13 +2830,13 @@ index 2cdfedf6..6a905f1f 100644
  fprint_reg_help (st, dptr);
  fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");
 diff --git a/VAX/vax730_rb.c b/VAX/vax730_rb.c
-index c58181c9..14966474 100644
+index 4818c9d2..fa97146b 100644
 --- a/VAX/vax730_rb.c
 +++ b/VAX/vax730_rb.c
-@@ -26,6 +26,13 @@
+@@ -28,6 +28,13 @@
  
-    rb           RB730 - RB02/RB80 disk controller
- 
+    07-Nov-2026  Ulli    At most one RB80 (the IDC connects one R80 and up to
+                         three RL02, EK-RB730-TD-001 figure 3-2)
 +   07-Nov-2026  Ulli    Help: seek sounds fall back to sound/default_disk
 +   04-Nov-2026  Ulli    Sound realism mode (SET SOUND ENABLED): SET RBn
 +                        ONLINE/LOAD and OFFLINE/UNLOAD are the LOAD button of
@@ -2847,7 +2847,7 @@ index c58181c9..14966474 100644
     04-Nov-2026  Ulli    A finishing seek only raises the drive's attention (it
                          decoded the controller's current command, which may
                          belong to another drive); RB80 with 31 sectors per
-@@ -61,6 +68,8 @@
+@@ -63,6 +70,8 @@
  
  #include "vax_defs.h"
  #include "sim_disk.h"
@@ -2856,7 +2856,7 @@ index c58181c9..14966474 100644
  
  /* Constants */
  
-@@ -246,6 +255,60 @@ int32 rb_swait = 150;                                   /* seek wait */
+@@ -248,6 +257,60 @@ int32 rb_swait = 150;                                   /* seek wait */
  int32 rb_mwait = 300;                                   /* seek wait */
  int32 rb_cwait = 50;                                    /* seek wait */
  
@@ -2917,7 +2917,7 @@ index c58181c9..14966474 100644
  t_stat rb_rd16 (int32 *data, int32 PA, int32 access);
  t_stat rb_wr16 (int32 data, int32 PA, int32 access);
  t_stat rb_rd32 (int32 *data, int32 PA, int32 access);
-@@ -261,6 +324,13 @@ t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+@@ -263,6 +326,13 @@ t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  t_stat rb_set_layout (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  t_stat rb_show_layout (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
  t_stat rb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
@@ -2931,7 +2931,7 @@ index c58181c9..14966474 100644
  
  /* RB730 data structures
  
-@@ -288,6 +358,12 @@ UNIT rb_unit[] = {
+@@ -290,6 +360,12 @@ UNIT rb_unit[] = {
      };
  
  REG rb_reg[] = {
@@ -2944,7 +2944,7 @@ index c58181c9..14966474 100644
      { NULL }
      };
  
-@@ -307,6 +383,16 @@ MTAB rb_mod[] = {
+@@ -309,6 +385,16 @@ MTAB rb_mod[] = {
          &set_writelock, NULL,   NULL, "Write lock disk drive" },
      { UNIT_DUMMY,      0, NULL,            "BADBLOCK", 
          &rb_set_bad, NULL, NULL, "write bad block table on last track" },
@@ -2961,7 +2961,7 @@ index c58181c9..14966474 100644
      { UNIT_NOAUTO,           0, "autosize", "AUTOSIZE",
          NULL, NULL, NULL, "Set type based on file size at attach" },
      { UNIT_NOAUTO, UNIT_NOAUTO, "noautosize", "NOAUTOSIZE",
-@@ -367,7 +453,7 @@ switch ((PA >> 2) & 07) {
+@@ -369,7 +455,7 @@ switch ((PA >> 2) & 07) {
              rbcs = rbcs | RBCS_ERR;
          uptr = rb_dev.units + GET_DRIVE (rbcs);
          if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
@@ -2970,7 +2970,7 @@ index c58181c9..14966474 100644
              rbcs = rbcs & ~RBCS_DRDY;
          else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
          if (uptr->flags & UNIT_RB80)
-@@ -419,7 +505,7 @@ switch ((PA >> 2) & 07) {
+@@ -421,7 +507,7 @@ switch ((PA >> 2) & 07) {
              rbcs = rbcs | RBCS_ERR;
          uptr = rb_dev.units + GET_DRIVE (data);
          if ((sim_is_active (uptr)) || (uptr->flags & UNIT_DIS) ||
@@ -2979,7 +2979,7 @@ index c58181c9..14966474 100644
              rbcs = rbcs & ~RBCS_DRDY;
          else rbcs = rbcs | RBCS_DRDY;                   /* see if ready */
          if (uptr->flags & UNIT_RB80)
-@@ -450,7 +536,11 @@ switch ((PA >> 2) & 07) {
+@@ -452,7 +538,11 @@ switch ((PA >> 2) & 07) {
              sim_activate (uptr, rb_swait);
              break;
          default:                                        /* data transfer */
@@ -2992,7 +2992,7 @@ index c58181c9..14966474 100644
              break;
              }                                           /* end switch func */
          break;
-@@ -526,6 +616,16 @@ if (func == RBCS_GSTA) {                                /* get status */
+@@ -528,6 +618,16 @@ if (func == RBCS_GSTA) {                                /* get status */
          if (uptr->flags & UNIT_WPRT)
              rbmp = rbmp | RB80DS_WLK;
          }
@@ -3009,7 +3009,7 @@ index c58181c9..14966474 100644
      else {
          if (rbmp & RBMP_RST)
              uptr->STAT = uptr->STAT & ~RB02DS_ERR;
-@@ -547,7 +647,7 @@ if (func == RBCS_RHDR) {                                /* read header? */
+@@ -549,7 +649,7 @@ if (func == RBCS_RHDR) {                                /* read header? */
      return SCPE_OK;
      }
  
@@ -3018,7 +3018,7 @@ index c58181c9..14966474 100644
      rbcs = rbcs & ~RBCS_DRDY;                           /* clear drive ready */
      rbcs = rbcs | (1u << (RBCS_V_ATN + GET_DRIVE (rbcs)));
      if ((uptr->flags & UNIT_RB80) == 0)
-@@ -578,8 +678,14 @@ if (func == RBCS_SEEK) {                                /* seek? */
+@@ -580,8 +680,14 @@ if (func == RBCS_SEEK) {                                /* seek? */
                  (rbda & RBDA_TRACK);                        /* (head selected) */
              swait = rb_cwait * abs (newc - curr);
              if (swait < rb_mwait) swait = rb_mwait;
@@ -3034,7 +3034,7 @@ index c58181c9..14966474 100644
          rbcs = rbcs | (1 << (RBCS_V_ATN + GET_DRIVE (rbcs)));
          rbcs = rbcs | RBCS_IRQ;
          rb_set_done(0);
-@@ -697,6 +803,7 @@ UNIT *uptr;
+@@ -699,6 +805,7 @@ UNIT *uptr;
  rbcs = CSR_DONE;
  rbda = rbba = rbbc = rbmp = 0;
  CLR_INT (RB);
@@ -3042,7 +3042,7 @@ index c58181c9..14966474 100644
  for (i = 0; i < RB_NUMDR; i++) {
      uptr = rb_dev.units + i;
      sim_cancel (uptr);
-@@ -737,6 +844,20 @@ if (uptr->flags & UNIT_OLDL)
+@@ -739,6 +846,20 @@ if (uptr->flags & UNIT_OLDL)
  uptr->TRK = 0;                                          /* cylinder 0 */
  if ((uptr->flags & UNIT_RB80) == 0)
      uptr->STAT = RB02DS_VCK;                            /* new volume */
@@ -3063,7 +3063,7 @@ index c58181c9..14966474 100644
  return SCPE_OK;
  }
  
-@@ -745,6 +866,8 @@ return SCPE_OK;
+@@ -747,6 +868,8 @@ return SCPE_OK;
  t_stat rb_detach (UNIT *uptr)
  {
  sim_cancel (uptr);
@@ -3072,7 +3072,7 @@ index c58181c9..14966474 100644
  return sim_disk_detach (uptr);
  }
  
-@@ -813,5 +936,189 @@ fprintf (st, "images can still be used with SET RBn LAYOUT=OLD before the ATTACH
+@@ -828,5 +951,189 @@ fprintf (st, "images can still be used with SET RBn LAYOUT=OLD before the ATTACH
  fprintf (st, "temporary option); converting them once is better.\n");
  fprintf (st, "The RB80 has 31 sectors per track as DEC's drivers use it (242,606 blocks,\n");
  fprintf (st, "like the RM80, which has the same R80 drive); the old layout has 32.\n");

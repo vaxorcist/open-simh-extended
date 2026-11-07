@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v16 (default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v17 (patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02. Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -677,6 +677,11 @@ Narrowed down, not fixed: it happens on plain Open SIMH with nothing attached af
 | R1 (VMS V3.5, vax730, RC25 realism) | all checks ok, as before |
 | Build `-Werror` pdp11, vax730, vax750, vax780, microvax3900; `sim_sound.c` with `-Wall -Wextra` with and without SDL2 | no warnings |
 | VAX diagnostics 730, 750 | passed |
+
+## Patch 5 v15: rebuilt on patch 6 v2 (2026-11-07)
+
+- Patch 6 v2 (RB730, at most one RB80; branch `rb730` commit 3df3769b) adds a history line at the top of `VAX/vax730_rb.c`, so patch 5 v14 no longer applied after it. **`opensimh_5_sound_v15.patch`** is the same sound work rebuilt on patch 6 v2 (no code change in the sound work). Branch `sound`: the RB80 commit cherry-picked as 2f3bbe8e; `integration`: b80a3eb1.
+- Checked: the full order 1 (v11), 2, 3, 4, 6 (v2), 5 (v15) on a fresh 87eb7d5 gives the `integration` tree (apart from the Visual Studio, CI and README files that only the branches have).
 
 ## Not done yet (after phase B)
 
