@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_OpenSIMH_handover.md  v5 (v6 TYPE=DMP status added; use opensimh_dmv11_v6.patch) -->
+<!-- open-simh-extended/docs/DMV11_OpenSIMH_handover.md  v6 (v6: DMV11 on the MicroVAX I, patch 1 v11; v5: v6 TYPE=DMP status added; use opensimh_dmv11_v6.patch) -->
 # DMV11 for Open SIMH: handover for the next session
 
 Written 2026-10-26 to continue the work in a fresh session. The cloud workspace of this session (`/home/claude/...`) does **not** survive, so everything needed is in this project:
@@ -289,3 +289,12 @@ Possible next steps:
 - a regression test `.ini` for the Open SIMH test suite;
 - tests of the never-exercised codes (010, 012, 014, 136, 140);
 - before any submission upstream: drop the first-line marker, talk to Mark and the Open SIMH maintainers.
+
+## DMV11 on the MicroVAX I (2026-11-07, patch 1 v11)
+
+- Ulli: the MicroVAX I (KA610) is restricted in some ways but supports the DMV11. Branch `dmv11-dmp11`: commit 7dd3d7b5 on top of 5c707e3e; `integration`: ec45f52e; `dmf32` and `dmc-ultrix` rebased onto it. Patch **`opensimh_1_dmv11_v11.patch`** (one commit on 87eb7d5, replaces v10); the whole series 1, 2, 3, 4, 6, 5 still applies.
+- Changes: `VAX/vax610_syslist.c` (DMV device), `VAX/vax610_defs.h` (DMCRX/DMCTX interrupt bits 24/25 at BR4, as on the KA630), `makefile` (VAX610), `VAX/CMakeLists.txt` (microvax1; edited by hand: `cmake/generate.py` fails with KeyError 'linc', an upstream problem), Visual Studio `MicroVAX1.vcproj/.vcxproj/.filters`.
+- Also fixed (known issues case 28): `pdp11_dmc.c` was missing from `MicroVAX2.vcxproj` and `VAX.vcxproj` (+ `.filters`), so Visual Studio 2010+ builds of the MicroVAX II and 3900 could not link.
+- The DMV11 uses the KA610's Qbus access routines (`Map_ReadB/W`, `Map_WriteB/W` in `vax610_io.c`: Q22 addresses are physical memory, no Qbus map) and the common auto-configuration.
+- Tests (`tests/dmv11/mc.ini`): microvax1 and microvax2 built without warnings; SHOW DMV gives the same address and vector on both (200000F0 = 17760360, vector 2E0 = 1340, BR4); a master clear from a small VAX program gives the same self-test signature on both (SEL4 0x1B, SEL6 0xC5). **Not tested with an operating system on the MicroVAX I** (no MicroVAX I VMS image here).
+- Test CPUs from now on (Ulli): Qbus changes on the microvax2; specific changes on the affected CPU(s).

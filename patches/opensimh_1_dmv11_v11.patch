@@ -1,18 +1,19 @@
-From ed19045882e546d632181fe3c82aa6bc56cbdbb9 Mon Sep 17 00:00:00 2001
+From cf00b4911d26314b6cc41e29ba90e6c7aed0941d Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
-Date: Sun, 1 Nov 2026 23:45:00 +0100
+Date: Sat, 7 Nov 2026 16:45:55 +0100
 Subject: [PATCH] DMV11/DMP11: DMP/DMV host interface, multipoint, DMP on
  Unibus VAXen
 
-The DMV11 work as one commit (version 10: the control station polls its
+The DMV11 work as one commit (version 11: the DMV11 on the MicroVAX I,
+pdp11_dmc.c in the Visual Studio .vcxproj files; version 10: the control station polls its
 tributaries; version 9: multipoint select flag discipline at the control
 station; version 8: the DMP11 is the DMP device on every Unibus
 simulator; no SET DROPS, a listening station instead; up to 32
 tributaries on the DMP11).
 
 Host interface (DMP11 on the Unibus, DMV11 on the Qbus):
-- The DMV device in the MicroVAX II and MicroVAX 3900 simulators and the
-  PDP-11, the DMP device in the Unibus VAX simulators (VAX-11/730, 750,
+- The DMV device in the MicroVAX I, MicroVAX II and MicroVAX 3900
+  simulators and the PDP-11, the DMP device in the Unibus VAX simulators (VAX-11/730, 750,
   780, VAX 8200, 8600) and the PDP-11; DMP and DMV share one DIB, sized
   per device in dmc_reset.  The DMV11 auto-configuration entry gets its
   device name.
@@ -66,6 +67,11 @@ DMV connection poll interval defaults to 2 seconds like the DMC's (it was
 only for the DMC device, multipoint only for DMP and DMV) and describes
 the listening station.
 
+MicroVAX I (KA610): DMV11 interrupts in vax610_defs.h; same address,
+vector and master-clear self-test signature as on the MicroVAX II.  Build
+files: makefile, CMake and Visual Studio (.vcproj, .vcxproj, .filters)
+for the MicroVAX I, II and 3900.
+
 Tested with VMS V4.7 (MicroVAX II DMV11, VAX-11/780 DMP11) and VMS V3.7
 (VAX-11/780 DMP11, DMP device): DECnet start-up, SET HOST, remote copy +
 DIFFERENCES = 0, circuit restart, transmit threshold recovery; three-node
@@ -81,25 +87,35 @@ tributary's hello timer at 25 s (control station 15 s, listen timer 30
 s): no adjacency loss in 10 minutes with polling, a loss without.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtdQSNbdrn1UBP6mkZX
 ---
- PDP11/pdp11_dmc.c                       | 1851 ++++++++++++++++++++++-
- PDP11/pdp11_io_lib.c                    |    2 +-
- PDP11/pdp11_sys.c                       |    4 +
- VAX/CMakeLists.txt                      |    6 +-
- VAX/vax630_syslist.c                    |    2 +
- VAX/vax730_syslist.c                    |    2 +
- VAX/vax750_syslist.c                    |    2 +
- VAX/vax780_syslist.c                    |    2 +
- VAX/vax820_syslist.c                    |    2 +
- VAX/vax860_syslist.c                    |    2 +
- VAX/vax_syslist.c                       |    2 +
- Visual Studio Projects/MicroVAX2.vcproj |  Bin 15003 -> 15073 bytes
- Visual Studio Projects/VAX.vcproj       |  Bin 15042 -> 15112 bytes
- makefile                                |    6 +-
- 14 files changed, 1801 insertions(+), 82 deletions(-)
+ PDP11/pdp11_dmc.c                             | 1851 ++++++++++++++++-
+ PDP11/pdp11_io_lib.c                          |    2 +-
+ PDP11/pdp11_sys.c                             |    4 +
+ VAX/CMakeLists.txt                            |    7 +-
+ VAX/vax610_defs.h                             |    7 +
+ VAX/vax610_syslist.c                          |    3 +
+ VAX/vax630_syslist.c                          |    2 +
+ VAX/vax730_syslist.c                          |    2 +
+ VAX/vax750_syslist.c                          |    2 +
+ VAX/vax780_syslist.c                          |    2 +
+ VAX/vax820_syslist.c                          |    2 +
+ VAX/vax860_syslist.c                          |    2 +
+ VAX/vax_syslist.c                             |    2 +
+ Visual Studio Projects/MicroVAX1.vcproj       |  Bin 14667 -> 14737 bytes
+ Visual Studio Projects/MicroVAX1.vcxproj      |    1 +
+ .../MicroVAX1.vcxproj.filters                 |    3 +
+ Visual Studio Projects/MicroVAX2.vcproj       |  Bin 15003 -> 15073 bytes
+ Visual Studio Projects/MicroVAX2.vcxproj      |    1 +
+ .../MicroVAX2.vcxproj.filters                 |    3 +
+ Visual Studio Projects/VAX.vcproj             |  Bin 15042 -> 15112 bytes
+ Visual Studio Projects/VAX.vcxproj            |    1 +
+ Visual Studio Projects/VAX.vcxproj.filters    |    3 +
+ makefile                                      |    8 +-
+ 23 files changed, 1825 insertions(+), 83 deletions(-)
 
 diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
-index a80a003..5ccad31 100644
+index a80a003b..5ccad316 100644
 --- a/PDP11/pdp11_dmc.c
 +++ b/PDP11/pdp11_dmc.c
 @@ -197,6 +197,99 @@ extern int32 tmr_poll;                                  /* instructions per tick
@@ -2398,7 +2414,7 @@ index a80a003..5ccad31 100644
  free (uptr->filename);
  uptr->filename = NULL;
 diff --git a/PDP11/pdp11_io_lib.c b/PDP11/pdp11_io_lib.c
-index 880d6a1..f3b7d85 100644
+index 880d6a1b..f3b7d850 100644
 --- a/PDP11/pdp11_io_lib.c
 +++ b/PDP11/pdp11_io_lib.c
 @@ -786,7 +786,7 @@ AUTO_CON auto_tab[] = {/*c  #v  am vm  fxa   fxv */
@@ -2411,7 +2427,7 @@ index 880d6a1..f3b7d85 100644
          {014510}, {0120} },                             /* DEUNA */
      { { "XQ", "XQB" },   1, -1,  0, 4,
 diff --git a/PDP11/pdp11_sys.c b/PDP11/pdp11_sys.c
-index b25e26d..c407467 100644
+index b25e26d9..c4074677 100644
 --- a/PDP11/pdp11_sys.c
 +++ b/PDP11/pdp11_sys.c
 @@ -119,6 +119,8 @@ extern DEVICE kg_dev;
@@ -2433,7 +2449,7 @@ index b25e26d..c407467 100644
      &ke_dev,
      &rom_dev,
 diff --git a/VAX/CMakeLists.txt b/VAX/CMakeLists.txt
-index 8bd8272..6cdc1c5 100644
+index 8bd8272e..788ecc47 100644
 --- a/VAX/CMakeLists.txt
 +++ b/VAX/CMakeLists.txt
 @@ -44,7 +44,8 @@ set(VAX
@@ -2456,8 +2472,83 @@ index 8bd8272..6cdc1c5 100644
  
  
  add_simulator(infoserver100
+@@ -225,6 +227,7 @@ add_simulator(microvax1
+         ${PDP11D}/pdp11_cr.c
+         ${PDP11D}/pdp11_td.c
+         ${PDP11D}/pdp11_io_lib.c
++        ${PDP11D}/pdp11_dmc.c
+     INCLUDES
+         ${CMAKE_CURRENT_SOURCE_DIR}
+         ${PDP11D}
+diff --git a/VAX/vax610_defs.h b/VAX/vax610_defs.h
+index 388e42b5..00b0bb87 100644
+--- a/VAX/vax610_defs.h
++++ b/VAX/vax610_defs.h
+@@ -24,6 +24,7 @@
+    used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization from the author(s).
+ 
++   07-Nov-2026  Ulli    DMV11 interrupts (DMCRX/DMCTX)
+    15-Feb-2012  MB      First Version
+ 
+    This file covers the MicroVAX I
+@@ -275,6 +276,8 @@ typedef struct {
+ #define INT_V_QVSS      21                              /* QVSS */
+ #define INT_V_TDRX      22
+ #define INT_V_TDTX      23
++#define INT_V_DMCRX     24                              /* DMV11 */
++#define INT_V_DMCTX     25
+ 
+ #define INT_CLK         (1u << INT_V_CLK)
+ #define INT_RQ          (1u << INT_V_RQ)
+@@ -301,6 +304,8 @@ typedef struct {
+ #define INT_QVSS        (1u << INT_V_QVSS)
+ #define INT_TDRX        (1u << INT_V_TDRX)
+ #define INT_TDTX        (1u << INT_V_TDTX)
++#define INT_DMCRX       (1u << INT_V_DMCRX)
++#define INT_DMCTX       (1u << INT_V_DMCTX)
+ 
+ #define IPL_CLK         (0x16 - IPL_HMIN)                       /* relative IPL */
+ #define IPL_RQ          (0x14 - IPL_HMIN)
+@@ -327,6 +332,8 @@ typedef struct {
+ #define IPL_QVSS        (0x14 - IPL_HMIN)
+ #define IPL_TDRX        (0x14 - IPL_HMIN)
+ #define IPL_TDTX        (0x14 - IPL_HMIN)
++#define IPL_DMCRX       (0x14 - IPL_HMIN)
++#define IPL_DMCTX       (0x14 - IPL_HMIN)
+ 
+ #define IPL_HMAX        0x17                            /* highest hwre level */
+ #define IPL_HMIN        0x14                            /* lowest hwre level */
+diff --git a/VAX/vax610_syslist.c b/VAX/vax610_syslist.c
+index ee6dfe51..f6f2fedb 100644
+--- a/VAX/vax610_syslist.c
++++ b/VAX/vax610_syslist.c
+@@ -24,6 +24,7 @@
+    used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization from the author(s).
+ 
++   07-Nov-2026  Ulli    Added the DMV11 (DMV device)
+    15-Feb-2012  MB      First version
+ */
+ 
+@@ -56,6 +57,7 @@ extern DEVICE vh_dev;
+ extern DEVICE vc_dev;
+ extern DEVICE lk_dev;
+ extern DEVICE vs_dev;
++extern DEVICE dmv_dev;
+ 
+ DEVICE *sim_devices[] = { 
+     &cpu_dev,
+@@ -85,6 +87,7 @@ DEVICE *sim_devices[] = {
+     &tq_dev,
+     &xq_dev,
+     &xqb_dev,
++    &dmv_dev,                                   /* DMV11 (the KA610 supports it) */
+     NULL
+     };
+ 
 diff --git a/VAX/vax630_syslist.c b/VAX/vax630_syslist.c
-index de0ba4e..bcfb7ee 100644
+index de0ba4e2..bcfb7ee5 100644
 --- a/VAX/vax630_syslist.c
 +++ b/VAX/vax630_syslist.c
 @@ -69,6 +69,7 @@ extern DEVICE vc_dev;
@@ -2477,7 +2568,7 @@ index de0ba4e..bcfb7ee 100644
      NULL
      };
 diff --git a/VAX/vax730_syslist.c b/VAX/vax730_syslist.c
-index ee9c174..bb03ae0 100644
+index ee9c174a..bb03ae05 100644
 --- a/VAX/vax730_syslist.c
 +++ b/VAX/vax730_syslist.c
 @@ -61,6 +61,7 @@ extern DEVICE dz_dev;
@@ -2497,7 +2588,7 @@ index ee9c174..bb03ae0 100644
      &ch_dev,
      &uw_dev,
 diff --git a/VAX/vax750_syslist.c b/VAX/vax750_syslist.c
-index 7564280..7eb8c60 100644
+index 75642805..7eb8c601 100644
 --- a/VAX/vax750_syslist.c
 +++ b/VAX/vax750_syslist.c
 @@ -63,6 +63,7 @@ extern DEVICE dz_dev;
@@ -2517,7 +2608,7 @@ index 7564280..7eb8c60 100644
      &ch_dev,
      &uw_dev,
 diff --git a/VAX/vax780_syslist.c b/VAX/vax780_syslist.c
-index 7bf8ec1..223c9d3 100644
+index 7bf8ec1f..223c9d39 100644
 --- a/VAX/vax780_syslist.c
 +++ b/VAX/vax780_syslist.c
 @@ -63,6 +63,7 @@ extern DEVICE dz_dev;
@@ -2537,7 +2628,7 @@ index 7bf8ec1..223c9d3 100644
      &ch_dev,
      &uw_dev,
 diff --git a/VAX/vax820_syslist.c b/VAX/vax820_syslist.c
-index 879a73b..b91cc46 100644
+index 879a73be..b91cc46b 100644
 --- a/VAX/vax820_syslist.c
 +++ b/VAX/vax820_syslist.c
 @@ -60,6 +60,7 @@ extern DEVICE dz_dev;
@@ -2557,7 +2648,7 @@ index 879a73b..b91cc46 100644
      &ch_dev,
      &uw_dev,
 diff --git a/VAX/vax860_syslist.c b/VAX/vax860_syslist.c
-index ddfa40b..088a3fc 100644
+index ddfa40ba..088a3fc3 100644
 --- a/VAX/vax860_syslist.c
 +++ b/VAX/vax860_syslist.c
 @@ -63,6 +63,7 @@ extern DEVICE dz_dev;
@@ -2577,7 +2668,7 @@ index ddfa40b..088a3fc 100644
      &ch_dev,
      &uw_dev,
 diff --git a/VAX/vax_syslist.c b/VAX/vax_syslist.c
-index 23671d1..865625c 100644
+index 23671d13..865625c0 100644
 --- a/VAX/vax_syslist.c
 +++ b/VAX/vax_syslist.c
 @@ -62,6 +62,7 @@ extern DEVICE vc_dev;
@@ -2596,6 +2687,41 @@ index 23671d1..865625c 100644
      NULL
      };
  
+diff --git a/Visual Studio Projects/MicroVAX1.vcproj b/Visual Studio Projects/MicroVAX1.vcproj
+index ad1ea15556d452303d646d22ebd14c486c9443f0..873e4fc31398e2fffaaac469021154373bba6a25 100644
+GIT binary patch
+delta 19
+bcmX?IG_iO?ha^*O^5lh5&YRmMkH`Z6SE~pt
+
+delta 12
+TcmbPOe7a~uhvepSl85C1DlP^O
+
+diff --git a/Visual Studio Projects/MicroVAX1.vcxproj b/Visual Studio Projects/MicroVAX1.vcxproj
+index 7fb3e085..5c615cb7 100755
+--- a/Visual Studio Projects/MicroVAX1.vcxproj	
++++ b/Visual Studio Projects/MicroVAX1.vcxproj	
+@@ -260,6 +260,7 @@
+       <CompileAs Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">CompileAsC</CompileAs>
+     </ClCompile>
+     <ClCompile Include="..\PDP11\pdp11_cr.c" />
++    <ClCompile Include="..\PDP11\pdp11_dmc.c" />
+     <ClCompile Include="..\PDP11\pdp11_dz.c" />
+     <ClCompile Include="..\PDP11\pdp11_io_lib.c" />
+     <ClCompile Include="..\PDP11\pdp11_lp.c" />
+diff --git a/Visual Studio Projects/MicroVAX1.vcxproj.filters b/Visual Studio Projects/MicroVAX1.vcxproj.filters
+index 77cf97e8..55315374 100755
+--- a/Visual Studio Projects/MicroVAX1.vcxproj.filters	
++++ b/Visual Studio Projects/MicroVAX1.vcxproj.filters	
+@@ -21,6 +21,9 @@
+     <ClCompile Include="..\PDP11\pdp11_cr.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
++    <ClCompile Include="..\PDP11\pdp11_dmc.c">
++      <Filter>Source Files</Filter>
++    </ClCompile>
+     <ClCompile Include="..\PDP11\pdp11_dz.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
 diff --git a/Visual Studio Projects/MicroVAX2.vcproj b/Visual Studio Projects/MicroVAX2.vcproj
 index 167aebd7763f875c91d1b427b5c9027de3bb9480..1996f97d4f29520cfa7a9b050b13c0bf0cc5fb5f 100644
 GIT binary patch
@@ -2605,6 +2731,32 @@ acmbPT`ml6Eha^*O^5jBk=gsYsB8mW3>IZZH
 delta 12
 TcmaD@I=gg3hvepSlER7rD&Yl&
 
+diff --git a/Visual Studio Projects/MicroVAX2.vcxproj b/Visual Studio Projects/MicroVAX2.vcxproj
+index 9b8547c9..6f10e7d3 100755
+--- a/Visual Studio Projects/MicroVAX2.vcxproj	
++++ b/Visual Studio Projects/MicroVAX2.vcxproj	
+@@ -260,6 +260,7 @@
+       <CompileAs Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">CompileAsC</CompileAs>
+     </ClCompile>
+     <ClCompile Include="..\PDP11\pdp11_cr.c" />
++    <ClCompile Include="..\PDP11\pdp11_dmc.c" />
+     <ClCompile Include="..\PDP11\pdp11_dup.c" />
+     <ClCompile Include="..\PDP11\pdp11_dz.c" />
+     <ClCompile Include="..\PDP11\pdp11_io_lib.c" />
+diff --git a/Visual Studio Projects/MicroVAX2.vcxproj.filters b/Visual Studio Projects/MicroVAX2.vcxproj.filters
+index a8af710f..c5fddbb8 100755
+--- a/Visual Studio Projects/MicroVAX2.vcxproj.filters	
++++ b/Visual Studio Projects/MicroVAX2.vcxproj.filters	
+@@ -21,6 +21,9 @@
+     <ClCompile Include="..\PDP11\pdp11_cr.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
++    <ClCompile Include="..\PDP11\pdp11_dmc.c">
++      <Filter>Source Files</Filter>
++    </ClCompile>
+     <ClCompile Include="..\PDP11\pdp11_dup.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
 diff --git a/Visual Studio Projects/VAX.vcproj b/Visual Studio Projects/VAX.vcproj
 index 01af0f9770073cde2b1973b68e03fe8c821f5011..008ff46581ca94b899144051290ac95d1543246b 100644
 GIT binary patch
@@ -2614,8 +2766,34 @@ WcmX?9+EKRQh!j(9^5zC9Cj|gHGX_Nf
 delta 12
 TcmeAuJ5;*ih}32->3{M7D7po?
 
+diff --git a/Visual Studio Projects/VAX.vcxproj b/Visual Studio Projects/VAX.vcxproj
+index b967f4dc..e4e59ca1 100755
+--- a/Visual Studio Projects/VAX.vcxproj	
++++ b/Visual Studio Projects/VAX.vcxproj	
+@@ -268,6 +268,7 @@ Post-Build-Event.cmd VAX "$(TargetDir)$(TargetName).exe" vax-diag_test
+       <CompileAs Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">CompileAsC</CompileAs>
+     </ClCompile>
+     <ClCompile Include="..\PDP11\pdp11_cr.c" />
++    <ClCompile Include="..\PDP11\pdp11_dmc.c" />
+     <ClCompile Include="..\PDP11\pdp11_dup.c" />
+     <ClCompile Include="..\PDP11\pdp11_dz.c" />
+     <ClCompile Include="..\PDP11\pdp11_io_lib.c" />
+diff --git a/Visual Studio Projects/VAX.vcxproj.filters b/Visual Studio Projects/VAX.vcxproj.filters
+index ff7a254a..16e6266f 100755
+--- a/Visual Studio Projects/VAX.vcxproj.filters	
++++ b/Visual Studio Projects/VAX.vcxproj.filters	
+@@ -21,6 +21,9 @@
+     <ClCompile Include="..\PDP11\pdp11_cr.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
++    <ClCompile Include="..\PDP11\pdp11_dmc.c">
++      <Filter>Source Files</Filter>
++    </ClCompile>
+     <ClCompile Include="..\PDP11\pdp11_dup.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
 diff --git a/makefile b/makefile
-index b460a38..efe8957 100644
+index b460a38b..0f210479 100644
 --- a/makefile
 +++ b/makefile
 @@ -1556,7 +1556,8 @@ VAX = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c ${VAXD}/vax_io.c \
@@ -2627,6 +2805,15 @@ index b460a38..efe8957 100644
 +	${PDP11D}/pdp11_dmc.c
  VAX_OPT = -DVM_VAX -DUSE_INT64 -DUSE_ADDR64 -DUSE_SIM_VIDEO -I ${VAXD} -I ${PDP11D} ${NETWORK_OPT} ${VIDEO_CCDEFS} ${VIDEO_LDFLAGS} ${AIO_CCDEFS}
  
+ 
+@@ -1629,7 +1630,7 @@ VAX610 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
+ 	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \
+ 	${PDP11D}/pdp11_dz.c ${PDP11D}/pdp11_lp.c ${PDP11D}/pdp11_tq.c \
+ 	${PDP11D}/pdp11_xq.c ${PDP11D}/pdp11_vh.c ${PDP11D}/pdp11_cr.c \
+-	${PDP11D}/pdp11_td.c ${PDP11D}/pdp11_io_lib.c
++	${PDP11D}/pdp11_td.c ${PDP11D}/pdp11_io_lib.c ${PDP11D}/pdp11_dmc.c
+ VAX610_OPT = -DVM_VAX -DVAX_610 -DUSE_INT64 -DUSE_ADDR64 -DUSE_SIM_VIDEO -I ${VAXD} -I ${PDP11D} ${NETWORK_OPT} ${VIDEO_CCDEFS} ${VIDEO_LDFLAGS} \
+ 	     ${AIO_CCDEFS}
  
 @@ -1644,7 +1645,8 @@ VAX630 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
  	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \

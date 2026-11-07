@@ -1,4 +1,4 @@
-<!-- open-simh-extended/README.md  v4 (branch notes, 2026-11-07; v4: patch 5 v14; v3: patch 5 v13; v2: RC25, patch 5 v12) -->
+<!-- open-simh-extended/README.md  v5 (branch notes, 2026-11-07; v5: patch 1 v11, DMV11 on the MicroVAX I; v4: patch 5 v14; v3: patch 5 v13; v2: RC25, patch 5 v12) -->
 # open-simh-extended: notes, tools and tests
 
 This is the `notes` branch of **vaxorcist/open-simh-extended**, a fork of
@@ -14,7 +14,7 @@ meant to go back to Open SIMH as separate pull requests, one per topic.
 
 | Topic | Branch | Simulators |
 |---|---|---|
-| DMV11 (Qbus) and DMP11 (Unibus) synchronous interfaces, with multipoint (control station and tributaries) | `dmv11-dmp11` | MicroVAX II, MicroVAX 3900, VAX-11/730/750/780, VAX 8200, VAX 8600, PDP-11 |
+| DMV11 (Qbus) and DMP11 (Unibus) synchronous interfaces, with multipoint (control station and tributaries) | `dmv11-dmp11` | MicroVAX I, MicroVAX II, MicroVAX 3900, VAX-11/730/750/780, VAX 8200, VAX 8600, PDP-11 |
 | DMF32 multi-function interface: 8 asynchronous lines, synchronous line, line printer, parallel interface | `dmf32` | VAX-11/730/750/780, VAX 8200, VAX 8600 |
 | DMC11/DMR11 fixes for the ULTRIX-32 V1.1 `if_dmc` driver | `dmc-ultrix` | all with the DMC device |
 | VAX 8200 DWBUA: interrupts at all BI levels, Unibus init on self-test (VMS V4.7 boots) | `vax8200-uba` | VAX 8200 |
@@ -100,7 +100,7 @@ patches with `git am --keep-cr`, in this order:
 
 ```sh
 git checkout -b mywork 87eb7d5
-git am --keep-cr patches/opensimh_1_dmv11_v10.patch \
+git am --keep-cr patches/opensimh_1_dmv11_v11.patch \
                  patches/opensimh_2_dmf32_v6.patch \
                  patches/opensimh_3_vax8200_uba_fix.patch \
                  patches/opensimh_4_dmc_ultrix_v8.patch \

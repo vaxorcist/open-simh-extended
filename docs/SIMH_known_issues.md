@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v9 (v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v10 (v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -48,6 +48,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 25 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_avl` (normal mode) | DISMOUNT/UNLOAD of an RC25 cartridge detaches it while the fixed platter on the same spindle keeps running |
 | 26 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_set_plug` | A unit number is "in use" while a disabled unit holds it: on the VAX, `SET RQ0 UNIT=8` is refused because of the disabled RQ8 |
 | 27 | DONE | Bug | `sim_sound.c` unit loops, run hooks | Fixed tables of 64 unit loops and 8 run hooks: a unit loop beyond 64 got no power-on restore |
+| 28 | DONE | Bug | Visual Studio `MicroVAX2.vcxproj`, `VAX.vcxproj` (+ `.filters`) | The DMV11 patch added `pdp11_dmc.c` only to the old `.vcproj` files: a Visual Studio 2010+ build of the MicroVAX II and 3900 could not link `dmv_dev` |
 
 ## Details
 
@@ -273,4 +274,11 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Problem:** every spindle registers a unit loop when it loads its sounds; beyond 64 the loop was silently not registered, so `SET SOUND POWER=ON` (or RUN/BOOT after a power off) did not bring its running sound back. The same pattern as case 23. The run hooks (one per device type) were far below 8, but fixed as well.
 - **Fix:** both registries are arrays of pointers that grow as needed (nothing in use moves). Sound patch v14.
 - **Found and fixed:** 2026-11-07 (default sounds work, while checking for more fixed limits after case 23).
+
+### 28 — DONE — Bug: pdp11_dmc.c missing from the Visual Studio .vcxproj files
+- **Where:** `Visual Studio Projects/MicroVAX2.vcxproj`, `VAX.vcxproj` and their `.vcxproj.filters` (Claude's own change in the DMV11 patch).
+- **Problem:** the DMV11 patch (up to v10) added `pdp11_dmc.c` to `MicroVAX2.vcproj` and `VAX.vcproj` (Visual Studio 2008 format) only. Visual Studio 2010 and later use the `.vcxproj` files, which lacked it, while `vax630_syslist.c` and `vax_syslist.c` reference `dmv_dev`.
+- **Effect:** a Visual Studio build of the MicroVAX II and MicroVAX 3900 simulators fails to link (unresolved `dmv_dev`). makefile and CMake builds were fine. Not tested on Windows (no Windows host here).
+- **Fix:** `pdp11_dmc.c` in the `.vcxproj` and `.filters` of MicroVAX2 and VAX (and MicroVAX1 with the new DMV11). DMV11 patch v11.
+- **Found and fixed:** 2026-11-07 (adding the DMV11 to the MicroVAX I).
 

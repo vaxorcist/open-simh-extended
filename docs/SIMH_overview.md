@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v6, 2026-11-07 (patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v7, 2026-11-07 (patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -28,7 +28,7 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 
 | # | Patch file | Content | Applies to |
 |---|---|---|---|
-| 1 | `opensimh_1_dmv11_v10.patch` | DMV11 (Qbus) / DMP11 (Unibus) host interface, multipoint with listening control station, DMP device on all Unibus VAXen and the PDP-11, select flag discipline and polling of tributaries | 87eb7d5 |
+| 1 | `opensimh_1_dmv11_v11.patch` | DMV11 (Qbus, also the MicroVAX I) / DMP11 (Unibus) host interface, multipoint with listening control station, DMP device on all Unibus VAXen and the PDP-11, select flag discipline and polling of tributaries | 87eb7d5 |
 | 2 | `opensimh_2_dmf32_v6.patch` | DMF32, all four functions (units DMF-ASYNC, DMF-PRINT, DMF-SYNC, DMF-PAR) | after 1 |
 | 2s | `opensimh_2_dmf32_v6_standalone.patch` | the same DMF32, without patch 1 | 87eb7d5, instead of 1 + 2 |
 | 3 | `opensimh_3_vax8200_uba_fix.patch` | VAX 8200 DWBUA interrupt delivery and Unibus init (2 commits) | 87eb7d5, independent |
@@ -40,7 +40,7 @@ Patch 6 comes before patch 5. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
-git am --keep-cr opensimh_1_dmv11_v10.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
+git am --keep-cr opensimh_1_dmv11_v11.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
                  opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v1.patch opensimh_5_sound_v14.patch
 ```
 
@@ -63,7 +63,8 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
 
 ## Device facts settled so far
 
-- **DMV11** only on Qbus (MicroVAX II, MicroVAX 3900, Qbus PDP-11): `SET DMV ENABLE`.
+- **DMV11** only on Qbus (MicroVAX I, MicroVAX II, MicroVAX 3900, Qbus PDP-11): `SET DMV ENABLE`.
+- **Test CPUs (Ulli, 2026-11-07):** Qbus changes are tested on the **microvax2** (the one Ulli uses most); a change for specific CPUs (e.g. the DMV11 on the MicroVAX I) is tested on the affected CPU(s).
   **DMP11** only on Unibus (VAX-11/730/750/780, 8200, 8600, Unibus PDP-11):
   `SET DMP ENABLE`. There is no DMP11 on Qbus VAXen. The DMC device has only
   `TYPE={DMC,DMR}`; `TYPE=DMP` was removed.
