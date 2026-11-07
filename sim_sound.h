@@ -120,6 +120,26 @@ t_stat sim_sound_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST cha
 void sim_sound_set_system (const char *dir, const char *starting,
                            const char *running, const char *stopping);
 
+/* Default sounds, used when a device or simulator has no sound of its own
+   (per file: an own file always wins).  The default directories are
+   searched like every sound directory (SET SOUND PATH, SIMH_SOUND_PATH,
+   <exe>/sound, ./sound):
+     SND_DEFAULT_DISK   seek sounds seek-s.wav, seek-m.wav, seek-l.wav
+                        (used by sim_sound_seek_load ()); no default
+                        spindle sounds
+     SND_DEFAULT_TAPE   tape sounds (still to come)
+     SND_DEFAULT_CPU    system sounds starting.wav, running.wav,
+                        stopping.wav, only for a simulator that calls
+                        sim_sound_use_default_cpu () (opt-in) during its
+                        initialization
+   SHOW SOUND lists the defaults in use. */
+
+#define SND_DEFAULT_DISK        "default_disk"
+#define SND_DEFAULT_TAPE        "default_tape"
+#define SND_DEFAULT_CPU         "default_cpu"
+
+void sim_sound_use_default_cpu (void);
+
 /* Simulator default for the realistic CPU speed in the realism mode, as a
    SET THROTTLE argument (e.g. "300K"); NULL or "" for none. */
 
@@ -288,8 +308,9 @@ int32 sim_spindle_state (SND_SPINDLE *sp);
 void sim_spindle_wait (SND_SPINDLE *sp);
 t_stat sim_spindle_show (FILE *st, SND_SPINDLE *sp);
 
-/* Seek sounds: three samples (prefix-s.wav, prefix-m.wav, prefix-l.wav)
-   for short, medium and long seeks.  sim_sound_seek () picks one by the
+/* Seek sounds: three samples (prefix-s.wav, prefix-m.wav, prefix-l.wav
+   in dir, else seek-s/m/l.wav in SND_DEFAULT_DISK) for short, medium and
+   long seeks.  sim_sound_seek () picks one by the
    distance and the device's limits (cylinders): up to s_lim short, up to
    m_lim medium, else long; distance 0 plays nothing unless forced long
    (a recalibrate).  Only in the realism mode. */

@@ -25,6 +25,7 @@
 
    hk           RK611/RK06/RK07 disk
 
+   07-Nov-26    Ulli    Help: seek sounds fall back to sound/default_disk
    03-Nov-26    Ulli    Spindle handling moved to the common sim_spindle support
                         (sim_sound); OFFLINE takes the spin-down time
    03-Nov-26    Ulli    Realism mode: SET HKn ONLINE/OFFLINE at the prompt wait
@@ -626,7 +627,8 @@ static const struct {
     };
 
 /* Sounds: seek samples (short, medium, long) and the optional spindle
-   sounds, all in the sound directory "rk07" (the RK06 uses the same) */
+   sounds, all in the sound directory "rk07" (the RK06 uses the same);
+   seek samples that are not there come from sound/default_disk */
 
 #define HK_SND_DIR      "rk07"
 #define HK_SEEK_GAIN    0.3                             /* seeks are recorded hot */
@@ -1951,10 +1953,12 @@ fprintf (st, "  - the UNLOAD function spins the drive down instead of detaching 
 fprintf (st, "  - seeks and transfers take realistic times (RK07: 6.5 ms track-to-track,\n");
 fprintf (st, "    36.5 ms average, 71 ms maximum seek; RK06: 8/38/75 ms; 2400 rpm);\n");
 fprintf (st, "  - seeks play the sounds rk07-s.wav, rk07-m.wav or rk07-l.wav (directory\n");
-fprintf (st, "    rk07) for short, medium and long seeks.  The limits are the registers\n");
-fprintf (st, "    SEEK7S/SEEK7M (RK07, default 50/300 cylinders) and SEEK6S/SEEK6M (RK06,\n");
-fprintf (st, "    default 25/150); a recalibrate is always long.  Optional spindle sounds\n");
-fprintf (st, "    rk07_spinup.wav, rk07_running.wav and rk07_spindown.wav are used if found.\n");
+fprintf (st, "    rk07; if missing, the default disk sounds seek-s/m/l.wav in the\n");
+fprintf (st, "    directory default_disk) for short, medium and long seeks.  The limits\n");
+fprintf (st, "    are the registers SEEK7S/SEEK7M (RK07, default 50/300 cylinders) and\n");
+fprintf (st, "    SEEK6S/SEEK6M (RK06, default 25/150); a recalibrate is always long.\n");
+fprintf (st, "    Optional spindle sounds rk07_spinup.wav, rk07_running.wav and\n");
+fprintf (st, "    rk07_spindown.wav are used if found (no default).\n");
 #if defined (VM_PDP11)
 fprintf (st, "The HK device supports the BOOT command.\n");
 fprintf (st, "The RK611 is disabled in a Qbus system with more than 256KB of memory.\n");
