@@ -1073,24 +1073,67 @@ sim_activate (uptr, (int32)inst);
 
 /* Spindles (see sim_sound.h) */
 
-#define SND_MAX_SPINDLES 64                     /* (pdp11: HK 8, RL 4, RP 8, RQ up to 16 per controller) */
+/* Spindle registry.  There is no fixed limit: spindles are registered in
+   chunks of SND_SPIN_CHUNK, each with its own internal timer device
+   (INT-SPINDLE, INT-SPINDLE2, ...), so a timer unit never moves while it
+   is on the event queue.  The number of drives is limited only by the
+   devices (controllers and their units).  (Up to sound patch v12 there
+   was a fixed table of 32, then 64, spindles: known issues case 23.)
+   A timer unit finds its spindle through up7. */
 
-static SND_SPINDLE *snd_spindles[SND_MAX_SPINDLES];    /* registered spindles */
-static UNIT snd_spindle_units[SND_MAX_SPINDLES];        /* their timers */
-static t_bool snd_spindle_dev_registered = FALSE;
+#define SND_SPIN_CHUNK  32
+
+typedef struct snd_spin_chunk {
+    SND_SPINDLE             *sp[SND_SPIN_CHUNK];        /* registered spindles */
+    UNIT                    units[SND_SPIN_CHUNK];      /* their timers */
+    DEVICE                  dev;                        /* internal device of the timers */
+    char                    name[24];                   /* its name */
+    struct snd_spin_chunk   *next;
+    } SND_SPIN_CHUNK_T;
+
+static SND_SPIN_CHUNK_T *snd_spin_chunks = NULL;        /* the chunks, in order */
 
 static const char *snd_spindle_description (DEVICE *dptr)
 {
 return "Disk spindle timers (sound realism mode)";
 }
 
-static DEVICE snd_spindle_dev = {
-    "INT-SPINDLE", snd_spindle_units, NULL, NULL,
-    SND_MAX_SPINDLES, 0, 0, 0, 0, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL,
-    NULL, DEV_NOSAVE, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL,
-    &snd_spindle_description};
+/* The next free slot: its chunk and index (a new chunk if all are full);
+   FALSE only if out of memory */
+
+static t_bool snd_spindle_slot (SND_SPIN_CHUNK_T **chunk, int32 *index)
+{
+SND_SPIN_CHUNK_T *c, **link = &snd_spin_chunks;
+int32 i, n = 0;
+
+for (c = snd_spin_chunks; c != NULL; c = c->next) {
+    for (i = 0; i < SND_SPIN_CHUNK; i++)
+        if (c->sp[i] == NULL) {
+            *chunk = c;
+            *index = i;
+            return TRUE;
+            }
+    link = &c->next;
+    n = n + 1;
+    }
+c = (SND_SPIN_CHUNK_T *) calloc (1, sizeof (*c));
+if (c == NULL)
+    return FALSE;
+if (n == 0)
+    snprintf (c->name, sizeof (c->name), "INT-SPINDLE");
+else
+    snprintf (c->name, sizeof (c->name), "INT-SPINDLE%d", n + 1);
+c->dev.name = c->name;
+c->dev.units = c->units;
+c->dev.numunits = SND_SPIN_CHUNK;
+c->dev.flags = DEV_NOSAVE;
+c->dev.description = &snd_spindle_description;
+*link = c;
+sim_register_internal_device (&c->dev);
+*chunk = c;
+*index = 0;
+return TRUE;
+}
 
 /* A phase (spin-up or spin-down) is over */
 
@@ -1112,7 +1155,7 @@ else if (sp->state == SND_SPIN_DOWN) {
 
 static t_stat snd_spindle_svc (UNIT *uptr)
 {
-SND_SPINDLE *sp = snd_spindles[uptr - snd_spindle_units];
+SND_SPINDLE *sp = (SND_SPINDLE *) uptr->up7;
 
 if (sp != NULL)
     snd_spindle_phase_done (sp);
@@ -1154,52 +1197,54 @@ if (sp->left_us < 1.0)
 
 /* Execution starts: schedule what is left; execution stops: keep it */
 
+static void snd_spindle_run_state (SND_SPINDLE *sp, t_bool running)
+{
+if ((sp == NULL) || ((sp->state != SND_SPIN_UP) && (sp->state != SND_SPIN_DOWN)))
+    return;
+if (running) {
+    if (sp->paused) {
+        snd_spindle_catch_up (sp);
+        if ((sp->state == SND_SPIN_UP) || (sp->state == SND_SPIN_DOWN)) {
+            sp->paused = FALSE;
+            sim_cancel (sp->timer);
+            sim_sound_activate_us (sp->timer, sp->left_us);
+            }
+        }
+    else if (!sim_is_active (sp->timer))        /* lost: finish it */
+        snd_spindle_phase_done (sp);
+    }
+else if (!sp->paused) {
+    sp->left_us = sim_is_active (sp->timer) ?
+        (double)sim_activate_time (sp->timer) / sim_sound_inst_per_us () : 0.0;
+    sim_cancel (sp->timer);
+    sp->paused = TRUE;
+    sp->ref_ms = sim_os_msec ();
+    }
+}
+
 static void snd_spindles_run_state (t_bool running)
 {
+SND_SPIN_CHUNK_T *c;
 int32 i;
 
-for (i = 0; i < SND_MAX_SPINDLES; i++) {
-    SND_SPINDLE *sp = snd_spindles[i];
-
-    if ((sp == NULL) || ((sp->state != SND_SPIN_UP) && (sp->state != SND_SPIN_DOWN)))
-        continue;
-    if (running) {
-        if (sp->paused) {
-            snd_spindle_catch_up (sp);
-            if ((sp->state == SND_SPIN_UP) || (sp->state == SND_SPIN_DOWN)) {
-                sp->paused = FALSE;
-                sim_cancel (sp->timer);
-                sim_sound_activate_us (sp->timer, sp->left_us);
-                }
-            }
-        else if (!sim_is_active (sp->timer))    /* lost: finish it */
-            snd_spindle_phase_done (sp);
-        }
-    else if (!sp->paused) {
-        sp->left_us = sim_is_active (sp->timer) ?
-            (double)sim_activate_time (sp->timer) / sim_sound_inst_per_us () : 0.0;
-        sim_cancel (sp->timer);
-        sp->paused = TRUE;
-        sp->ref_ms = sim_os_msec ();
-        }
-    }
+for (c = snd_spin_chunks; c != NULL; c = c->next)
+    for (i = 0; i < SND_SPIN_CHUNK; i++)
+        snd_spindle_run_state (c->sp[i], running);
 }
 
 void sim_spindle_init (SND_SPINDLE *sp, UNIT *uptr, int32 *spinup_ms, int32 *spindown_ms,
                        void (*on_ready) (UNIT *uptr), void (*on_stopped) (UNIT *uptr),
                        int32 group, double gain)
 {
+SND_SPIN_CHUNK_T *c;
 int32 i;
 
 if (sp->uptr != NULL)                           /* already initialized */
     return;
-for (i = 0; (i < SND_MAX_SPINDLES) && (snd_spindles[i] != NULL); i++)
-    ;
-if (i == SND_MAX_SPINDLES) {                    /* sp->uptr stays NULL: */
-    sim_printf ("Sound: no spindle slot left for %s (at most %d drives with a spindle)\n",
-                sim_uname (uptr), SND_MAX_SPINDLES);
-    return;                                     /* (RQ: the drive works without */
-    }                                           /* realism; see known issues 23) */
+if (!snd_spindle_slot (&c, &i)) {               /* out of memory: sp->uptr */
+    sim_printf ("Sound: out of memory for the spindle of %s\n", sim_uname (uptr));
+    return;                                     /* stays NULL (RQ: the drive */
+    }                                           /* works without realism) */
 memset (sp, 0, sizeof (*sp));
 sp->uptr = uptr;
 sp->spinup_ms = spinup_ms;
@@ -1209,14 +1254,11 @@ sp->on_stopped = on_stopped;
 sp->group = group;
 sp->gain = gain;
 sp->state = SND_SPIN_STOPPED;
-memset (&snd_spindle_units[i], 0, sizeof (snd_spindle_units[i]));
-snd_spindle_units[i].action = &snd_spindle_svc;
-sp->timer = &snd_spindle_units[i];
-snd_spindles[i] = sp;
-if (!snd_spindle_dev_registered) {
-    snd_spindle_dev_registered = TRUE;
-    sim_register_internal_device (&snd_spindle_dev);
-    }
+memset (&c->units[i], 0, sizeof (c->units[i]));
+c->units[i].action = &snd_spindle_svc;
+c->units[i].up7 = sp;
+sp->timer = &c->units[i];
+c->sp[i] = sp;
 }
 
 void sim_spindle_load (SND_SPINDLE *sp, const char *dir, const char *prefix)
@@ -1443,6 +1485,30 @@ sim_sound_power_off (TRUE);
 snd_audio_close ();
 }
 
+/* Configuration checks for SET SOUND ENABLED: a device registers a
+   function that returns SCPE_OK if its configuration may run in the
+   realism mode, or prints why not and returns an error.  SET SOUND
+   ENABLED is refused if one of them fails.  The list grows as needed;
+   registering the same function twice is harmless. */
+
+static t_stat (**snd_enable_checks) (void) = NULL;
+static int32 snd_n_enable_checks = 0;
+
+void sim_sound_register_enable_check (t_stat (*fn) (void))
+{
+t_stat (**n) (void);
+int32 i;
+
+for (i = 0; i < snd_n_enable_checks; i++)
+    if (snd_enable_checks[i] == fn)
+        return;
+n = (t_stat (**) (void)) realloc ((void *) snd_enable_checks, (snd_n_enable_checks + 1) * sizeof (*n));
+if (n == NULL)
+    return;
+snd_enable_checks = n;
+snd_enable_checks[snd_n_enable_checks++] = fn;
+}
+
 /* Switch the sound (and the realism mode) on or off */
 
 static t_stat snd_set_enabled (t_bool enable)
@@ -1454,6 +1520,14 @@ if (enable == snd_enabled)
 if (uptr != NULL)
     return sim_messagef (SCPE_ALATT, "SET SOUND %s is only allowed while no disk or tape is attached (%s is attached)\n",
                          enable ? "ENABLED" : "DISABLED", sim_uname (uptr));
+if (enable) {                                   /* the devices' rules */
+    int32 i;
+    t_stat r;
+
+    for (i = 0; i < snd_n_enable_checks; i++)
+        if ((r = snd_enable_checks[i] ()) != SCPE_OK)
+            return r;
+    }
 snd_enabled = enable;
 snd_apply_throttle (enable);
 if (enable) {

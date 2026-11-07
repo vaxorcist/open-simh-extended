@@ -26,6 +26,16 @@
 
    rq           MSCP disk controller
 
+   07-Nov-26    Ulli    RC25/RCF25 geometry 31 sectors x 2 surfaces x 821
+                        cylinders (was 50 x 8 x 1260; GET UNIT STATUS); sound
+                        realism mode: realistic configuration rules (RC25
+                        pairs on a KLESI only, even/odd unit numbers, a KLESI
+                        only with RC25 drives, at most 4 units), checked at
+                        SET SOUND ENABLED and kept by SET RQ <ctype>, SET RQn
+                        <type>, SET RQn UNIT=, DRIVES= and ATTACH; AVAILABLE
+                        with spin-down always stops the whole RC25 drive;
+                        KLESI controller timeout 15 s, ABORT only of queued
+                        commands
    06-Nov-26    Ulli    Sound realism mode for the RC25: the removable RC25
                         and the fixed RCF25 of one drive share one spindle and
                         one actuator (RUN button: SET RQn ONLINE/OFFLINE on
@@ -604,14 +614,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
 #define RD32_FLGS       0
 
 #define RC25_DTYPE      17                              /*  */
-#define RC25_SECT       50                              /*  */
-#define RC25_SURF       8
-#define RC25_CYL        1260                            /*  */
+#define RC25_SECT       31                              /* 31 sectors x 2 surfaces x 821 cyl */
+#define RC25_SURF       2
+#define RC25_CYL        821                             /* (RC25 User Guide, EK-ORC25-UG-002) */
 #define RC25_TPG        RC25_SURF
 #define RC25_GPC        1
 #define RC25_XBN        0                               /*  */
 #define RC25_DBN        0                               /*  */
-#define RC25_LBN        50902                           /* ? 50*8*1260 ? */
+#define RC25_LBN        50902                           /* 31*2*821, per platter */
 #define RC25_RCTS       0                               /*  */
 #define RC25_RCTC       1
 #define RC25_RBN        0                               /*  */
@@ -620,14 +630,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
 #define RC25_FLGS       RQDF_RMV
 
 #define RCF25_DTYPE     18                              /*  */
-#define RCF25_SECT      50                              /*  */
-#define RCF25_SURF      8
-#define RCF25_CYL       1260                            /*  */
+#define RCF25_SECT      31                              /* 31 sectors x 2 surfaces x 821 cyl */
+#define RCF25_SURF      2
+#define RCF25_CYL       821                             /* (RC25 User Guide, EK-ORC25-UG-002) */
 #define RCF25_TPG       RCF25_SURF
 #define RCF25_GPC       1
 #define RCF25_XBN       0                               /*  */
 #define RCF25_DBN       0                               /*  */
-#define RCF25_LBN       50902                           /* ? 50*8*1260 ? */
+#define RCF25_LBN       50902                           /* 31*2*821, per platter */
 #define RCF25_RCTS      0                               /*  */
 #define RCF25_RCTC      1
 #define RCF25_RBN       0                               /*  */
@@ -905,6 +915,8 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
 #define KLESI_CTYPE     1               // RC25 controller (UNIBUS and QBUS both)
 #define KLESI_UQPM      3
 #define KLESI_MODEL     3
+#define KLESI_MAX_UNITS 4               /* master + slave RC25 drive (realism mode) */
+#define KLESI_CTMO      15              /* RC25 controller timeout, s (realism mode) */
 
 #define RUX50_CTYPE     2               // UNIBUS RX50-only controller
 #define RUX50_UQPM      10		// this should be 10 according to the MSCP spec
@@ -1106,7 +1118,12 @@ int32 rq_xtime = RQ_XTIME;                              /* transfer time */
      ONLINE needs the RC25 unit attached, and DETACH of the cartridge stops
      the fixed platter too.  AVAILABLE with the spin-down modifier (VMS
      DISMOUNT/UNLOAD) spins the drive down instead of detaching the pack;
-     on an RC25 drive only if the other unit is not online to the host.
+     on an RC25 drive both platters stop and the other unit goes offline
+     too.  The configuration must be realistic: RC25 drives only as pairs
+     (even/odd units and unit numbers) on a KLESI controller, which only
+     connects RC25 drives (at most two: 4 units); see "configuration
+     rules" below.  A KLESI also reports the RC25's controller timeout
+     (15 s) and aborts only queued commands.
      Transfers take realistic times: seek t(d) = a + b * d^e (d cylinders)
      through the track-to-track, average (at a third of the stroke) and
      maximum seek times, plus rotational latency (0 .. one revolution) and
@@ -1294,6 +1311,14 @@ static void rq_spin_down (UNIT *uptr);
 static t_bool rq_avl_spins_down (UNIT *uptr);
 static t_bool rq_rlz_attach (UNIT *uptr);
 static void rq_rlz_detach (UNIT *uptr);
+struct rq_usnap;                                        /* (rq_snap_take) */
+static t_stat rq_rlz_rules (DEVICE *dptr, const char *prefix);
+static t_stat rq_rlz_enable_check (void);
+static t_stat rq_rlz_set_type (UNIT *uptr, struct rq_usnap *s);
+static t_stat rq_rlz_set_ctype (UNIT *uptr, int32 newtype);
+static t_stat rq_rlz_set_plug (UNIT *uptr, uint32 plug);
+static struct rq_usnap *rq_snap_take (DEVICE *dptr);
+static uint32 rq_dflt_dtype[RQ_NUMCT][RQ_NUMDR];        /* initial drive types (realism rules) */
 static double rq_rlz_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc);
 
 t_bool rq_step4 (MSC *cp);
@@ -2148,7 +2173,9 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_abo\n");
 tpkt = 0;                                               /* set no mtch */
 if ((uptr = rq_getucb (cp, lu))) {                      /* get unit */
     if (uptr->cpkt &&                                   /* curr pkt? */
-        (GETP32 (uptr->cpkt, CMD_REFL) == ref)) {       /* match ref? */
+        (GETP32 (uptr->cpkt, CMD_REFL) == ref) &&       /* match ref? */
+        !(sim_sound_enabled () &&                       /* (realism: an RC25 can */
+          (cp->ctype == KLESI_CTYPE))) {                /* only abort queued cmds) */
         tpkt = uptr->cpkt;                              /* save match */
         uptr->cpkt = 0;                                 /* gonzo */
         sim_cancel (uptr);                              /* cancel unit */
@@ -2344,7 +2371,8 @@ else {
     if ((cp->htmo = cp->pak[pkt].d[SCC_TMO]))           /* set timeout */
         cp->htmo = cp->htmo + 2;                        /* if nz, round up */
     cp->pak[pkt].d[SCC_CFL] = cp->cflgs;                /* return flags */
-    cp->pak[pkt].d[SCC_TMO] = RQ_DCTMO;                 /* ctrl timeout */
+    cp->pak[pkt].d[SCC_TMO] = (sim_sound_enabled () && (cp->ctype == KLESI_CTYPE)) ?
+        KLESI_CTMO : RQ_DCTMO;                          /* ctrl timeout (realism: RC25) */
     cp->pak[pkt].d[SCC_VER] = (RQ_HVER << SCC_VER_V_HVER) |
         (RQ_SVER << SCC_VER_V_SVER);
     cp->pak[pkt].d[SCC_CIDA] = 0;                       /* ctrl ID */
@@ -3290,6 +3318,15 @@ if (cptr) {
         return SCPE_ARG;
     drv_tab[val].lbn = cap;
     }
+if (sim_sound_enabled ()) {                             /* realism: keep to the rules */
+    struct rq_usnap *s = rq_snap_take (rq_devmap[uptr->cnum]);
+
+    if (s == NULL)
+        return SCPE_MEM;
+    uptr->flags = (uptr->flags & ~UNIT_DTYPE) | (val << UNIT_V_DTYPE);
+    uptr->capac = (t_addr)drv_tab[val].lbn;
+    return rq_rlz_set_type (uptr, s);                   /* (RC25 pairs; undone if refused) */
+    }
 uptr->flags = (uptr->flags & ~UNIT_DTYPE) | (val << UNIT_V_DTYPE);
 uptr->capac = (t_addr)drv_tab[val].lbn;
 return SCPE_OK;
@@ -3322,6 +3359,8 @@ if (uptr->unit_plug == plug)
 for (i=0; i < dptr->numunits - 2; i++)
     if (dptr->units[i].unit_plug == plug)
         return sim_messagef (SCPE_ARG, "Unit Plug %d Already In Use on %s\n", plug, sim_uname (&dptr->units[i]));
+if (sim_sound_enabled ())                               /* realism: RC25 pair numbers */
+    return rq_rlz_set_plug (uptr, (uint32) plug);
 uptr->unit_plug = plug;
 return SCPE_OK;
 }
@@ -3347,6 +3386,10 @@ if ((r != SCPE_OK) || (new_drives > RQ_MAXDR) || (new_drives < RQ_NUMDR))
     return sim_messagef (SCPE_ARG, "Invalid Number of Drives: %s\n", cptr);
 if (old_drives == new_drives)
     return SCPE_OK;                         /* Nothing to do */
+if (sim_sound_enabled () && (rq_ctxmap[uptr->cnum]->ctype == KLESI_CTYPE) &&
+    (new_drives > KLESI_MAX_UNITS))         /* realism: master + slave drive */
+    return sim_messagef (SCPE_ARG, "%s: a KLESI connects at most two RC25 drives (%d units)\n",
+                         dptr->name, KLESI_MAX_UNITS);
 for (i=new_drives; i < old_drives; i++) {
     if (dptr->units[i].flags & UNIT_ATT)
         return sim_messagef (SCPE_ALATT, "Can't change number of drives on %s with %s attached to %s.\n", 
@@ -3379,6 +3422,8 @@ MSC *cp = rq_ctxmap[uptr->cnum];
 
 if (val < 0)
     return SCPE_ARG;
+if (sim_sound_enabled ())                               /* realism: units follow */
+    return rq_rlz_set_ctype (uptr, val);
 cp->ctype = val;
 return SCPE_OK;
 }
@@ -3400,6 +3445,9 @@ MSC *cp = rq_ctxmap[uptr->cnum];
 t_stat r;
 t_bool dontchangecapac = (uptr->flags & UNIT_NOAUTO);
 
+if (sim_sound_enabled () &&                             /* realism: the rules */
+    ((r = rq_rlz_rules (rq_devmap[uptr->cnum], "ATTACH: ")) != SCPE_OK))
+    return r;
 if (drv_tab[GET_DTYPE (uptr->flags)].flgs & RQDF_RO) {
     sim_switches |= SWMASK ('R');
     dontchangecapac = FALSE;
@@ -3456,6 +3504,7 @@ if (cp->ctype == DEFAULT_CTYPE)
     cp->ctype = (UNIBUS    ? UDA50A_CTYPE :
                  MICROVAX1 ? RQDX1_CTYPE : RQDX3_CTYPE);
 
+sim_sound_register_enable_check (&rq_rlz_enable_check);/* SET SOUND ENABLED rules */
 if (!plugs_inited ) {
 #if !defined (VM_VAX)
     uint32 u = 0;
@@ -3483,6 +3532,8 @@ if (!plugs_inited ) {
                 rq_devmap[i]->units[d].flags |= UNIT_DIS;
                 rq_devmap[i]->units[d].flags &= ~UNIT_DISABLE;
                 }
+            if (d < RQ_NUMDR)                           /* initial types (realism rules) */
+                rq_dflt_dtype[i][d] = GET_DTYPE (rq_devmap[i]->units[d].flags);
             rq_devmap[i]->units[d].unit_plug = 
 #if defined (VM_VAX)
                 d;          /* VAX default units */
@@ -3986,21 +4037,14 @@ sim_spindle_stop (&rz->sp);
 }
 
 /* AVAILABLE with the spin-down modifier in the realism mode: does it spin
-   the drive down?  An RA60 always; an RC25 drive only if the other unit
-   on the spindle is not online to the host (its platter turns on the same
-   spindle). */
+   the drive down?  Always for a unit with a RUN/STOP button: on an RC25
+   drive this stops both platters, and the other unit goes offline too,
+   as on the real drive (decided 2026-11-07; up to sound patch v12 only if
+   the other unit was not online). */
 
 static t_bool rq_avl_spins_down (UNIT *uptr)
 {
-UNIT *optr = rq_spindle_owner (uptr);
-UNIT *other;
-
-if (optr == NULL)
-    return FALSE;
-if (GET_DTYPE (optr->flags) != RC25_DTYPE)
-    return TRUE;
-other = (optr == uptr) ? rq_rcf25_of (optr) : optr;
-return (other == NULL) || !(other->flags & UNIT_ONL);
+return (rq_spindle_owner (uptr) != NULL);
 }
 
 /* SET RQn ONLINE / OFFLINE: the RUN/STOP button of the RA60, the Run
@@ -4196,6 +4240,350 @@ sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: %s LBN %u, %u blocks: from cylin
 return us;
 }
 
+/* Sound realism mode: configuration rules ("as realistic as possible")
+
+   With SET SOUND ENABLED the RQ controllers must look like real ones:
+   - RC25 drives only on a KLESI controller (the RC25's bus adapter), and a
+     KLESI only connects RC25 drives: a master and at most one slave, i.e.
+     at most 4 enabled units, all RC25 or RCF25;
+   - an RC25 drive is always a pair: the RC25 (cartridge) at an even unit,
+     its RCF25 (fixed platter) at the next unit;
+   - the unit select plug of the drive numbers the pair: the RC25 has an
+     even unit number (PLUG, SET RQn UNIT=), the RCF25 that number + 1.
+   SET SOUND ENABLED refuses a configuration that breaks a rule
+   (rq_rlz_enable_check, registered with sim_sound).  While sound is
+   enabled, SET RQ <controller type>, SET RQn <drive type>, SET RQn UNIT=,
+   SET RQ DRIVES= and ATTACH keep to the rules:
+   - SET RQ KLESI sets units 0/1 and 2/3 to RC25/RCF25 (unit numbers as
+     pairs) and disables the units from 4 on;
+   - SET RQ <other type> on a KLESI sets the RC25/RCF25 units back to the
+     unit's initial drive type;
+   - SET RQn RC25 also sets the next unit to RCF25 (SET RQn RCF25: the unit
+     before it to RC25), SET RQn UNIT=m also renumbers the other unit of
+     the pair;
+   - anything else that breaks a rule is refused, with the unit's settings
+     unchanged.
+   Without the realism mode none of this applies (quick setups as before). */
+
+static t_bool rq_unit_enabled (UNIT *uptr)
+{
+return ((uptr->flags & UNIT_DIS) == 0);
+}
+
+static t_bool rq_is_rc25_type (uint32 dt)
+{
+return ((dt == RC25_DTYPE) || (dt == RCF25_DTYPE));
+}
+
+/* Check the rules for one controller.  Returns SCPE_OK, or prints the
+   first rule broken (with the prefix) and returns SCPE_ARG. */
+
+static t_stat rq_rlz_rules (DEVICE *dptr, const char *prefix)
+{
+MSC *cp = rq_ctxmap[dptr->units[0].cnum];
+t_bool klesi = (cp->ctype == KLESI_CTYPE);
+int32 n = (int32) dptr->numunits - 2;
+int32 u, n_en = 0;
+
+if (dptr->flags & DEV_DIS)
+    return SCPE_OK;
+for (u = 0; u < n; u++) {
+    UNIT *uptr = &dptr->units[u];
+    uint32 dt = GET_DTYPE (uptr->flags);
+
+    if (!rq_unit_enabled (uptr))
+        continue;
+    n_en = n_en + 1;
+    if (klesi && !rq_is_rc25_type (dt))
+        return sim_messagef (SCPE_ARG, "%s%s: a KLESI only connects RC25 drives, %s is an %s\n",
+                             prefix, dptr->name, sim_uname (uptr), drv_tab[dt].name);
+    if (!klesi && rq_is_rc25_type (dt))
+        return sim_messagef (SCPE_ARG, "%s%s: an %s needs a KLESI controller (SET %s KLESI)\n",
+                             prefix, sim_uname (uptr), drv_tab[dt].name, dptr->name);
+    }
+for (u = 0; u < n; u++) {                               /* (types first, then the pairs) */
+    UNIT *uptr = &dptr->units[u];
+    uint32 dt = GET_DTYPE (uptr->flags);
+    UNIT *pptr;
+
+    if (!rq_unit_enabled (uptr))
+        continue;
+    if (dt == RC25_DTYPE) {
+        if (u & 1)
+            return sim_messagef (SCPE_ARG, "%s%s: the RC25 (cartridge) must be at an even unit\n",
+                                 prefix, sim_uname (uptr));
+        pptr = ((u + 1) < n) ? &dptr->units[u + 1] : NULL;
+        if ((pptr == NULL) || !rq_unit_enabled (pptr) || (GET_DTYPE (pptr->flags) != RCF25_DTYPE))
+            return sim_messagef (SCPE_ARG, "%s%s: an RC25 drive is a pair: the RCF25 (fixed platter) must follow at %s%d\n",
+                                 prefix, sim_uname (uptr), dptr->name, u + 1);
+        if ((uptr->unit_plug & 1) || (pptr->unit_plug != (uptr->unit_plug + 1)))
+            return sim_messagef (SCPE_ARG, "%s%s/%s: an RC25 drive has an even/odd pair of unit numbers (UNIT=%d/%d)\n",
+                                 prefix, sim_uname (uptr), sim_uname (pptr), uptr->unit_plug, pptr->unit_plug);
+        }
+    if (dt == RCF25_DTYPE) {
+        pptr = (u > 0) ? &dptr->units[u - 1] : NULL;
+        if (((u & 1) == 0) || (pptr == NULL) || !rq_unit_enabled (pptr) ||
+            (GET_DTYPE (pptr->flags) != RC25_DTYPE))
+            return sim_messagef (SCPE_ARG, "%s%s: an RC25 drive is a pair: the RCF25 (fixed platter) must follow its RC25 (cartridge) at an even unit\n",
+                                 prefix, sim_uname (uptr));
+        }
+    }
+if (klesi && (n_en > KLESI_MAX_UNITS))
+    return sim_messagef (SCPE_ARG, "%s%s: a KLESI connects at most two RC25 drives (%d units), %d units are enabled\n",
+                         prefix, dptr->name, KLESI_MAX_UNITS, n_en);
+return SCPE_OK;
+}
+
+/* SET SOUND ENABLED: every RQ controller must keep to the rules */
+
+static t_stat rq_rlz_enable_check (void)
+{
+int32 i;
+t_stat r;
+
+for (i = 0; i < RQ_NUMCT; i++)
+    if ((r = rq_rlz_rules (rq_devmap[i], "SET SOUND ENABLED: ")) != SCPE_OK)
+        return r;
+return SCPE_OK;
+}
+
+/* A snapshot of a controller's unit settings (flags, capacity, unit
+   number), so that a SET that would break a rule can be undone */
+
+typedef struct rq_usnap {
+    uint32      flags;
+    t_addr      capac;
+    uint32      plug;
+    } RQ_USNAP;
+
+static RQ_USNAP *rq_snap_take (DEVICE *dptr)
+{
+int32 n = (int32) dptr->numunits - 2;
+RQ_USNAP *s = (RQ_USNAP *) calloc ((size_t) n, sizeof (*s));
+int32 u;
+
+if (s != NULL)
+    for (u = 0; u < n; u++) {
+        s[u].flags = dptr->units[u].flags;
+        s[u].capac = dptr->units[u].capac;
+        s[u].plug = dptr->units[u].unit_plug;
+        }
+return s;
+}
+
+static void rq_snap_restore (DEVICE *dptr, RQ_USNAP *s)
+{
+int32 n = (int32) dptr->numunits - 2;
+int32 u;
+
+for (u = 0; u < n; u++) {
+    dptr->units[u].flags = s[u].flags;
+    dptr->units[u].capac = s[u].capac;
+    dptr->units[u].unit_plug = s[u].plug;
+    }
+}
+
+/* After a change made with a snapshot: keep it if the rules hold, else
+   undo it.  Frees the snapshot. */
+
+static t_stat rq_snap_check (DEVICE *dptr, RQ_USNAP *s)
+{
+t_stat r = rq_rlz_rules (dptr, "");
+
+if (r != SCPE_OK)
+    rq_snap_restore (dptr, s);
+free (s);
+return r;
+}
+
+/* Set a unit's drive type (not attached) */
+
+static void rq_put_dtype (UNIT *uptr, uint32 dt)
+{
+uptr->flags = (uptr->flags & ~UNIT_DTYPE) | (dt << UNIT_V_DTYPE);
+uptr->capac = (t_addr) drv_tab[dt].lbn;
+}
+
+/* Is a unit number free on the controller (apart from the units given)? */
+
+static t_bool rq_plug_free (DEVICE *dptr, uint32 plug, UNIT *a, UNIT *b)
+{
+int32 n = (int32) dptr->numunits - 2;
+int32 u;
+
+for (u = 0; u < n; u++)
+    if ((&dptr->units[u] != a) && (&dptr->units[u] != b) &&
+        (dptr->units[u].unit_plug == plug))
+        return FALSE;
+return TRUE;
+}
+
+/* Give a pair the unit numbers p (even) and p + 1, if they are free */
+
+static t_stat rq_pair_plugs (DEVICE *dptr, UNIT *rptr, UNIT *fptr, uint32 p)
+{
+if ((p & 1) || (p >= 65534) || !rq_plug_free (dptr, p, rptr, fptr) || !rq_plug_free (dptr, p + 1, rptr, fptr))
+    return sim_messagef (SCPE_ARG, "%s/%s: unit numbers %u/%u for the RC25 drive are not free\n",
+                         sim_uname (rptr), sim_uname (fptr), p, p + 1);
+rptr->unit_plug = p;
+fptr->unit_plug = p + 1;
+return SCPE_OK;
+}
+
+/* SET RQn <drive type> in the realism mode: an RC25 or RCF25 brings its
+   other half along (unless that unit is attached).  Called by
+   rq_set_type after the type of uptr was set; s is the snapshot from
+   before. */
+
+static t_stat rq_rlz_set_type (UNIT *uptr, RQ_USNAP *s)
+{
+DEVICE *dptr = rq_devmap[uptr->cnum];
+int32 u = rq_unit_index (uptr);
+int32 n = (int32) dptr->numunits - 2;
+uint32 dt = GET_DTYPE (uptr->flags);
+UNIT *rptr = NULL, *fptr = NULL;
+t_stat r;
+
+if ((dt == RC25_DTYPE) && ((u & 1) == 0) && ((u + 1) < n)) {
+    rptr = uptr;
+    fptr = &dptr->units[u + 1];
+    }
+else if ((dt == RCF25_DTYPE) && (u & 1)) {
+    rptr = &dptr->units[u - 1];
+    fptr = uptr;
+    }
+if (rptr != NULL) {
+    UNIT *other = (rptr == uptr) ? fptr : rptr;
+    uint32 odt = (other == fptr) ? RCF25_DTYPE : RC25_DTYPE;
+
+    if (GET_DTYPE (other->flags) != odt) {
+        if (other->flags & UNIT_ATT) {
+            rq_snap_restore (dptr, s);
+            free (s);
+            return sim_messagef (SCPE_ALATT, "%s: the other half of the RC25 drive, %s, is attached as an %s\n",
+                                 sim_uname (uptr), sim_uname (other), drv_tab[GET_DTYPE (other->flags)].name);
+            }
+        rq_put_dtype (other, odt);
+        }
+    other->flags = other->flags & ~UNIT_DIS;
+    if (((rptr->unit_plug & 1) || (fptr->unit_plug != rptr->unit_plug + 1)) &&
+        ((r = rq_pair_plugs (dptr, rptr, fptr, rptr->unit_plug & ~1)) != SCPE_OK) &&
+        ((r = rq_pair_plugs (dptr, rptr, fptr, (uint32) u & ~1)) != SCPE_OK)) {
+        rq_snap_restore (dptr, s);
+        free (s);
+        return r;
+        }
+    }
+return rq_snap_check (dptr, s);
+}
+
+/* SET RQ <controller type> in the realism mode (rq_set_ctype, before the
+   type is changed): to a KLESI, units 0-3 become two RC25 drives and the
+   units from 4 on are disabled; from a KLESI to another type, the RC25
+   and RCF25 units get their initial drive types back.  Refused while a
+   unit that would change is attached. */
+
+static t_stat rq_rlz_set_ctype (UNIT *uptr, int32 newtype)
+{
+MSC *cp = rq_ctxmap[uptr->cnum];
+DEVICE *dptr = rq_devmap[uptr->cnum];
+int32 n = (int32) dptr->numunits - 2;
+int32 u, oldtype = cp->ctype;
+RQ_USNAP *s;
+t_stat r;
+
+if (newtype == cp->ctype)
+    return SCPE_OK;
+for (u = 0; u < n; u++) {                               /* nothing attached that changes */
+    UNIT *xptr = &dptr->units[u];
+    t_bool changes = (newtype == KLESI_CTYPE) ?
+        ((u >= KLESI_MAX_UNITS) || !rq_is_rc25_type (GET_DTYPE (xptr->flags))) :
+        rq_is_rc25_type (GET_DTYPE (xptr->flags));
+
+    if ((xptr->flags & UNIT_ATT) && changes)
+        return sim_messagef (SCPE_ALATT, "%s: %s is attached and would have to change\n",
+                             dptr->name, sim_uname (xptr));
+    }
+if ((s = rq_snap_take (dptr)) == NULL)
+    return SCPE_MEM;
+if (newtype == KLESI_CTYPE) {
+    for (u = 0; u < n; u++) {
+        UNIT *xptr = &dptr->units[u];
+
+        if (u >= KLESI_MAX_UNITS) {
+            if (xptr->flags & UNIT_DISABLE)
+                xptr->flags = xptr->flags | UNIT_DIS;
+            continue;
+            }
+        xptr->flags = xptr->flags & ~UNIT_DIS;
+        if (!(xptr->flags & UNIT_ATT))
+            rq_put_dtype (xptr, (u & 1) ? RCF25_DTYPE : RC25_DTYPE);
+        }
+    for (u = 0; u + 1 < KLESI_MAX_UNITS; u += 2) {
+        UNIT *rptr = &dptr->units[u], *fptr = &dptr->units[u + 1];
+
+        if (((rptr->unit_plug & 1) == 0) && (fptr->unit_plug == rptr->unit_plug + 1))
+            continue;                                   /* already a pair */
+        if (((r = rq_pair_plugs (dptr, rptr, fptr, rptr->unit_plug & ~1)) != SCPE_OK) &&
+            ((r = rq_pair_plugs (dptr, rptr, fptr, (uint32) u)) != SCPE_OK)) {
+            rq_snap_restore (dptr, s);
+            free (s);
+            return r;
+            }
+        }
+    }
+else
+    for (u = 0; u < n; u++) {
+        UNIT *xptr = &dptr->units[u];
+
+        if (rq_is_rc25_type (GET_DTYPE (xptr->flags)))
+            rq_put_dtype (xptr, (u < RQ_NUMDR) ? rq_dflt_dtype[uptr->cnum][u] : rq_dflt_dtype[uptr->cnum][0]);
+        }
+cp->ctype = newtype;
+r = rq_rlz_rules (dptr, "");
+if (r != SCPE_OK) {
+    rq_snap_restore (dptr, s);
+    cp->ctype = oldtype;
+    }
+free (s);
+return r;
+}
+
+/* SET RQn UNIT=m in the realism mode (rq_set_plug, uniqueness already
+   checked): the other half of an RC25 drive gets m + 1 or m - 1 */
+
+static t_stat rq_rlz_set_plug (UNIT *uptr, uint32 plug)
+{
+DEVICE *dptr = rq_devmap[uptr->cnum];
+uint32 dt = GET_DTYPE (uptr->flags);
+int32 u = rq_unit_index (uptr);
+RQ_USNAP *s;
+t_stat r;
+
+if (!rq_is_rc25_type (dt)) {
+    uptr->unit_plug = plug;
+    return SCPE_OK;
+    }
+if ((plug & 1) != (uint32) (dt == RCF25_DTYPE))
+    return sim_messagef (SCPE_ARG, "%s: the %s needs an %s unit number\n", sim_uname (uptr),
+                         drv_tab[dt].name, (dt == RC25_DTYPE) ? "even" : "odd");
+if ((s = rq_snap_take (dptr)) == NULL)
+    return SCPE_MEM;
+if ((dt == RC25_DTYPE) && ((u + 1) < (int32) dptr->numunits - 2))
+    r = rq_pair_plugs (dptr, uptr, &dptr->units[u + 1], plug);
+else if ((dt == RCF25_DTYPE) && (u > 0))
+    r = rq_pair_plugs (dptr, &dptr->units[u - 1], uptr, plug - 1);
+else {
+    uptr->unit_plug = plug;
+    r = SCPE_OK;
+    }
+if (r != SCPE_OK) {
+    free (s);
+    return r;
+    }
+return rq_snap_check (dptr, s);
+}
+
 t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 fprintf (st, "UDA50A MSCP Disk Controller (%s)\n\n", dptr->name);
@@ -4240,8 +4628,20 @@ fprintf (st, "  - an RC25 drive does not start without a cartridge: its RCF25 st
 fprintf (st, "    offline until the RC25 unit is attached and the drive is spun up, and\n");
 fprintf (st, "    DETACH of the cartridge stops the fixed platter too;\n");
 fprintf (st, "  - an AVAILABLE command with spin-down (e.g. VMS DISMOUNT/UNLOAD) spins\n");
-fprintf (st, "    the drive down instead of detaching the pack; on an RC25 drive only if\n");
-fprintf (st, "    the other unit is not online to the host;\n");
+fprintf (st, "    the drive down instead of detaching the pack; on an RC25 drive both\n");
+fprintf (st, "    platters stop, so the other unit goes offline too;\n");
+fprintf (st, "  - the configuration must be realistic: RC25 drives only on a KLESI\n");
+fprintf (st, "    controller, which only connects RC25 drives (a master and at most one\n");
+fprintf (st, "    slave: 4 units); an RC25 drive is a pair, the RC25 at an even unit with\n");
+fprintf (st, "    an even unit number (SET RQn UNIT=), its RCF25 at the next unit with the\n");
+fprintf (st, "    next number.  SET SOUND ENABLED refuses other configurations.  While\n");
+fprintf (st, "    sound is enabled, SET RQ KLESI sets units 0/1 and 2/3 to RC25/RCF25 and\n");
+fprintf (st, "    disables the others, SET RQ <other type> gives them their initial types\n");
+fprintf (st, "    back, SET RQn RC25 (or RCF25) also sets the other half of the pair, SET\n");
+fprintf (st, "    RQn UNIT=m also renumbers it, and settings or an ATTACH that would break\n");
+fprintf (st, "    a rule are refused;\n");
+fprintf (st, "  - a KLESI reports the RC25's controller timeout (15 s) and aborts only\n");
+fprintf (st, "    queued commands, never the active one;\n");
 fprintf (st, "  - RA60 and RC25 transfers take realistic times (RA60: 3600 rpm, seek 7 ms\n");
 fprintf (st, "    track-to-track, 42 ms average, 70 ms maximum; RC25: 2850 rpm, seek 10 ms\n");
 fprintf (st, "    one track, 35 ms average, 55 ms maximum, 31 ms per track spiral read;\n");
@@ -4255,7 +4655,7 @@ fprintf (st, "    if found;\n");
 fprintf (st, "  - the other drive types keep the QTIME/XTIME timing.\n");
 fprintf (st, "Without the realism mode an RA60 or RC25 spins up at ATTACH, ONLINE and\n");
 fprintf (st, "OFFLINE take effect at once, an RCF25 works without a cartridge in its RC25,\n");
-fprintf (st, "and the timing is unchanged.\n\n");
+fprintf (st, "the timing is unchanged, and any configuration is accepted, as before.\n\n");
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
 fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");
