@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v14 (RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v15 (RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02. Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -561,19 +561,82 @@ Note: VMS `DISMOUNT` unloads by default (`/NOUNLOAD` keeps the volume loaded); t
 - `docs/SIMH_Sound_devices.ods` table **v4**: rows RC25 and RCF25 (generator `tools/make_sound_devices_ods.py` v5).
 - New tool `tools/make_vmb_seek_disk.py` v2: a raw disk image with a MicroVAX VMB boot block that loads N blocks at a given LBN, to drive realistic transfers from the console.
 
-### Open questions (RC25)
+### Open questions (RC25): answered by Ulli 2026-11-07
 
-1. **Host spin-down while the other platter is online:** the guide only says the host can spin the drive down. Implemented: AVAILABLE with spin-down spins down only if the other unit is not online. Should it spin down anyway (and take the other unit offline)?
-2. **Run-up within the 60 s start time** (for the spin-up sound only): assumed 25 s to speed, then purge and self-test at speed. Do you know (or can you hear on a real RC25) how long the motor itself takes?
-3. **Transfer rate:** the guide gives both "spiral read 31 ms per track" (0.51 MB/s, used) and "average long transfer rate 0.57 MB/s typical". The model follows the spiral read; fine?
-4. **Lone RC25 / RCF25:** real drives are always pairs. Keep allowing a lone RC25 (own spindle) and a lone RCF25 (fixed disk), or enforce pairs?
-5. **Pairing by unit index** (RQ0/RQ1, ...), not by the PLUG register; on the VAX they are the same by default.
-6. ~~Your RC25 VMS V3.5 image~~: settled 2026-11-06, the system disk is the fixed platter DUA1 (VAX-11/730, default UDA50 controller type).
+1. Host spin-down while the other platter is online: **the whole drive stops** and the other unit goes offline (realistic) — done in v13.
+2. Motor run-up 25 s within the 60 s start: **a good guess**, kept.
+3. Spiral read 31 ms per track (0.51 MB/s) instead of 0.57 MB/s: **ok**, kept.
+4. Lone RC25/RCF25: **refused by SET SOUND ENABLED**, allowed without sound — done in v13.
+5. Pairing: by unit index **and** by unit number (even/odd, the drive's unit select plug); SET RQ0 UNIT=m also renumbers RQ1 — done in v13.
+6. Image: the system disk is the fixed platter DUA1 (settled 2026-11-06).
+
+## Phase C, step 5b: RC25 realism rules, KLESI, geometry, unlimited spindles (2026-11-07)
+
+### Where things are
+
+- Branch `sound`: commit f5a394af on top of 76d3fd07; branch `integration`: the same change as dcdeceec.
+- Patch **`opensimh_5_sound_v13.patch`** (cumulative, replaces v1–v12, applies on top of `opensimh_6_rb730_v1.patch`, without the Visual Studio project files). Checked by `git am --keep-cr` on a fresh 87eb7d5: patches 6 + 5 give exactly the tree of the work branch; the full order 1, 2, 3, 4, 6, 5 applies.
+- Changed files: `PDP11/pdp11_rq.c`, `sim_sound.c`, `sim_sound.h`.
+
+### Decisions (Ulli, 2026-11-07)
+
+- SET SOUND ENABLED means **"as realistic as possible"** in general; without sound the old behavior stays for quick setups.
+- A KLESI connects only RC25 drives (TU81 and RV20: later; the TU81 is the separate TQ device for now).
+
+### Behavior
+
+- **Geometry (both modes, known issues 18):** RC25/RCF25 31 sectors × 2 surfaces × 821 cylinders in GET UNIT STATUS. VMS V3.5 `F$GETDVI` on DUA1: 31/2/821 (upstream: 50/8/128); MAXBLOCK 50902 unchanged.
+- **Configuration rules (realism mode only):**
+  - RC25 drives only on a **KLESI**, and a KLESI only connects RC25 drives: a master and at most one slave, i.e. **at most 4 enabled units**, all RC25/RCF25.
+  - An RC25 drive is a **pair**: the RC25 at an even unit with an **even unit number** (PLUG, `SET RQn UNIT=`), the RCF25 at the next unit with the next number.
+  - `SET SOUND ENABLED` refuses a configuration that breaks a rule (new `sim_sound_register_enable_check()`; the message names the unit and the rule).
+  - While sound is enabled:
+    - `SET RQ KLESI` sets units 0/1 and 2/3 to RC25/RCF25 (unit numbers as pairs) and disables the units from 4 on; refused if an attached unit would have to change;
+    - `SET RQ <other type>` on a KLESI gives the RC25/RCF25 units their initial drive types back;
+    - `SET RQn RC25` also sets the next unit to RCF25 (`SET RQn RCF25`: the unit before to RC25);
+    - `SET RQn UNIT=m` also renumbers the other half (m must be even for the RC25, odd for the RCF25);
+    - `SET RQ DRIVES=n` above 4 on a KLESI, other drive types on a KLESI, and an ATTACH in a configuration that breaks a rule are refused; a refused SET leaves every unit as it was.
+  - Without sound: any configuration as before, and `SET RQ0 RC25` does not touch RQ1.
+- **AVAILABLE with spin-down** (VMS `DISMOUNT/UNLOAD`, also plain `DISMOUNT`) on either unit of an RC25 drive **always stops the whole drive**; the other unit goes offline (with the system disk on DUA1: mount verification until `SET RQ0 ONLINE`).
+- **KLESI details (realism mode):** controller timeout 15 s in SET CONTROLLER CHARACTERISTICS (was 120); ABORT aborts only queued commands, never the active one. Already as the RC25 without a change: step 1 without NV, with DI (and QB on the Q-bus), 15 command credits (= 14 + 1 immediate), DETERMINE ACCESS PATHS / COMPARE CONTROLLER DATA / FLUSH as NOPs, CSR 172150.
+- **Spindles (known issues 23):** no fixed limit; chunks of 32 with their own internal timer device (INT-SPINDLE, INT-SPINDLE2, ...).
+
+### Tests
+
+| Test | Result |
+|---|---|
+| c10 (vax730, commands only): SET SOUND ENABLED with the default configuration | accepted |
+| c10: `SET RQ0 RC25` on a UDA50 | refused: "an RC25 needs a KLESI controller (SET RQ KLESI)" |
+| c10: `SET RQ KLESI` | units 0–3 RC25/RCF25/RC25/RCF25 with UNIT=0–3, "KLESI, 4 units" |
+| c10: `SET RQ0 UNIT=300` / `SET RQ1 UNIT=303` | the other half becomes 301 / 302 |
+| c10: odd number on the RC25, even on the RCF25 | refused ("needs an even/odd unit number") |
+| c10: `SET RQ1 RD54` on the KLESI, `SET RQ DRIVES=6` | refused, unit unchanged |
+| c10: `SET RQ UDA50` | units back to RD54, RD54, RD54, RX50 |
+| c10: without sound a lone RC25 on a UDA50; then `SET SOUND ENABLED` | accepted / refused |
+| c10: KLESI set without sound with the default RD54 units; `SET SOUND ENABLED` | refused: "a KLESI only connects RC25 drives, RQ0 is an RD54" |
+| c10: without sound `SET RQ0 RC25` | RQ1 stays RD54 |
+| c1 v2, c2 v4, c4 v5 (MicroVAX 3900, realism with `SET RQ KLESI`) | as before: Run button, no start without cartridge, `?4D DEVOFFLINE` with the drive stopped, transfer times identical (156,823 µs, shared actuator 646 cylinders back) |
+| c5 (RA60), c6 (normal mode) | unchanged |
+| N1 (VMS V3.5, vax730, normal mode) | all ok, as before |
+| R1 v3 (realism, `SET RQ KLESI`): boot, DCL work on DUA0 | ok |
+| R1: `DISMOUNT/UNLOAD DUA0:` | the drive stops, "_DUA1: is offline. Mount verification in progress."; `SET RQ0 ONLINE` (5 s) → "has completed mount verification" |
+| R1: Run button OFFLINE/ONLINE afterwards | mount verification again, completed; no VMS warnings or errors; 76 s in total |
+| g1: geometry via F$GETDVI | 31/2/821/50902 (upstream 50/8/128/50902) |
+| pdp11: `SET RQ KLESI`, `SET RQB KLESI` | RQB units numbered 4/5, 6/7 (pairs); spin-up on RQB1 via the fixed unit |
+| pdp11: 120 spindles (HK 8, RL 4, RP 8, 100 RA60 on RQ/RQB) | the last one spins up |
+| Build `-Werror` (microvax1/2/3900, rtvax1000, pdp11, vax730/750/780/8200/8600); `pdp11_rq.c`, `sim_sound.c` with `-Wall -Wextra` (VAX and PDP-11) | no warnings |
+| VAX diagnostics 730/750/780/8600, MicroVAX 3900 core test | passed |
+
+Not tested: the KLESI ABORT and timeout paths (VMS issued neither in the tests).
+
+### Case 22 (`?53` self-test error)
+
+Narrowed down, not fixed: it happens on plain Open SIMH with nothing attached after a failed VMB boot, and the failing test number varies; it looks like a timing problem of the KA655 self-test after BOOT CPU, not an RQ problem (known issues case 22). Proposal: a separate investigation.
 
 ## Not done yet (after phase B)
 
 - RX and TU58 later without spin-up/spin-down; tapes afterwards. (The RA60 and the RC25 are done, see phase C steps 3 and 5.)
-- RC25: the open questions above (VMS V3.5 tests done, 2026-11-06).
+- RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.
 - Installing the `sound/` directory with `make install`/CMake packaging.

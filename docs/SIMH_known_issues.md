@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v7 (v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v8 (v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -38,14 +38,15 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 15 | DONE | Bug | `PDP11/pdp11_rl.c` `rl_show_spindle` | SHOW RLn SPINDLE printed no line end |
 | 16 | DONE | Bug | `sim_timer.c` `sim_throt_svc` | Throttle started with a stale start time when THROT_DELAY is 0 |
 | 17 | OPEN | Suspicious | `sim_timer.c` `sim_activate_after` | During a throttled boot, events can be tied to a much later timer tick |
-| 18 | OPEN | Bug | `PDP11/pdp11_rq.c` RC25/RCF25 definitions | Geometry 50 sectors × 8 surfaces × 1260 cylinders does not match the 50,902 LBNs (31 × 2 × 821) |
+| 18 | DONE | Bug | `PDP11/pdp11_rq.c` RC25/RCF25 definitions | Geometry 50 sectors × 8 surfaces × 1260 cylinders did not match the 50,902 LBNs (31 × 2 × 821) |
 | 19 | DONE | Suspicious | `VAX/vax730_rb.c` `rb_svc` | RB02 without a cartridge ends commands with INCMP only, which VMS reports as "parity error" or "fatal controller error" instead of "medium offline" |
 | 20 | DONE | Bug | `VAX/vax730_rb.c` RB80 geometry | SIMH's RB80 has 32 sectors per track, VMS uses 31: the image is not in logical block order even in the standard layout |
 | 21 | DONE | Bug | `VAX/vax730_rb.c` `rb_svc` (seek done) | A finishing seek re-reads the controller's current command: overlapped seeks can execute another drive's command on the wrong drive |
-| 22 | OPEN | Suspicious | `PDP11/pdp11_rq.c` / MicroVAX 3900 console | Self-test error `?53 2 xx` at BOOT CPU after a failed VMB boot when a unit becomes available meanwhile |
-| 23 | DONE | Bug | `sim_sound.c` `sim_spindle_init` | More than 32 spindles failed silently; the drive then never became ready |
-| 24 | OPEN | Minor | `PDP11/pdp11_rq.c` RC25 | RC25/RCF25 accepted on every MSCP controller type; KLESI specifics not simulated |
+| 22 | OPEN | Suspicious | MicroVAX 3900 (KA655) console / SIMH timing, **not the RQ** | Self-test error `?53 2 xx` at BOOT CPU after a failed VMB boot (also on plain Open SIMH with nothing attached) |
+| 23 | DONE | Bug | `sim_sound.c` `sim_spindle_init` | More than 32 spindles failed silently; the drive then never became ready (now no fixed limit) |
+| 24 | DONE (realism mode) | Minor | `PDP11/pdp11_rq.c` RC25 | RC25/RCF25 accepted on every MSCP controller type; KLESI specifics not simulated |
 | 25 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_avl` (normal mode) | DISMOUNT/UNLOAD of an RC25 cartridge detaches it while the fixed platter on the same spindle keeps running |
+| 26 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_set_plug` | A unit number is "in use" while a disabled unit holds it: on the VAX, `SET RQ0 UNIT=8` is refused because of the disabled RQ8 |
 
 ## Details
 
@@ -181,12 +182,14 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Effect:** in the sound project, realistic device times are converted to instructions by the devices themselves (`sim_sound_activate_us`), so the sound devices avoid it. Other devices may still see long delays.
 - **Found:** 2026-11-02 (VMS mount verification on the RK07).
 
-### 18 — OPEN — Bug: RC25/RCF25 geometry does not match the capacity
+### 18 — DONE — Bug: RC25/RCF25 geometry does not match the capacity
 - **Where:** `PDP11/pdp11_rq.c`, `RC25_SECT 50`, `RC25_SURF 8`, `RC25_CYL 1260` (the same for RCF25). These are reported to the host in GET UNIT STATUS (track, group, cylinder sizes).
 - **Problem:** 50 × 8 × 1260 = 504,000 blocks, while `RC25_LBN` is 50,902. The comment table in the same file, and the Computer History Wiki, give 31 sectors × 2 surfaces × 821 cylinders = 50,902, matching the LBN count. The define's own comment says `/* ? 50*8*1260 ? */`.
 - **Effect:** wrong geometry in GET UNIT STATUS, which the host may use for layout or bad block handling. The realism timing for the RC25 (next step) uses the real geometry.
 - **Found:** 2026-11-04 (RC25 realism preparation).
 - **Confirmed 2026-11-06** by the RC25 Disk Subsystem User Guide (EK-ORC25-UG-002): 26,061,824 bytes per platter = 50,902 blocks of 512 bytes; spiral read 50 s per platter = 1642 tracks (821 × 2) × 31 ms. (The guide writes "50,902 1Kb blocks" for both platters together; that is a slip, it is 50,902 blocks of 512 bytes per platter.) The RC25 realism timing (sound patch v12) uses 31 × 2 × 821; the geometry reported to the host is still unchanged.
+
+- **Fixed:** 2026-11-07, decided by Ulli: `RC25_SECT`/`RCF25_SECT` 31, `_SURF` 2, `_CYL` 821 (sound patch v13; both modes, since it describes the drive). VMS V3.5 `F$GETDVI` on the RCF25: before 50/8/128 sectors/tracks/cylinders, now 31/2/821 (MAXBLOCK 50902 both times); the VMS tests N1 and R1 still pass.
 
 ### 19 — DONE — Suspicious: RB02 without a cartridge reports a parity or controller error
 - **Where:** `VAX/vax730_rb.c`, `rb_svc`, not attached: `rb_set_done (RBCS_ERR | RBCS_INCMP)`; drive ready stays on (case 3).
@@ -220,7 +223,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Fixed:** branch `rb730` (RB730 patch `opensimh_6_rb730_v1.patch`), commit c2304ad, 2026-11-04. A finishing seek raises its own drive's attention. It executes the current command only if that command is for the same drive, and signals done only if the controller is idle.
 - **Tested:** regression set passed; in the RB realism test (sound branch rebased on the fix) the "Invalid cylinder" errors went from 3 to 0.
 
-### 22 — OPEN — Suspicious: console self-test error after a failed VMB boot
+### 22 — OPEN — Suspicious: console self-test error after a failed VMB boot (not the RQ)
 - **Where:** MicroVAX 3900 (KA655) console with an MSCP controller (`PDP11/pdp11_rq.c`).
 - **Observed:** a VMB boot fails (`?4D DEVOFFLINE`), the controller stays initialized. Then a unit becomes available (ATTACH, or SET RQn ONLINE of an RA60/RC25), and BOOT CPU runs the self-test again: `?53 2 05 FF 00 0000` (also test 07 or 0A seen). The next VMB boot works.
 - **Seen with:** the RA60 in normal mode with ATTACH (no RUN/STOP button, no sound: test `tests/rc25/c9b.ini`), so the code path is the one of plain Open SIMH; with SET RQ0 ONLINE (`c9.ini`) the same.
@@ -228,22 +231,39 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Also:** SET DEBUG output during the self-test causes `?53` errors by itself (timing); the RC25 tests switch debugging on after the self-test.
 - **Found:** 2026-11-06 (RC25 tests).
 
+- **Narrowed down 2026-11-07 (tests e1–e3, `tests/rc25/README.txt`):**
+  - Reproduced with **plain Open SIMH 87eb7d5** (no patches) and **nothing attached**: BOOT DUA0 fails (`?4D DEVOFFLINE`), BOOT CPU → `?53 2 07`. So it has nothing to do with the RQ, ATTACH, the RUN/STOP button or the sound work.
+  - The "available" attention theory is wrong: `rq_reset` clears UNIT_ATP on every unit.
+  - The failing test number changes from run to run (05, 07, 0A), and the error also came on a *first* self-test when the host was busy (a build running at the same time) or with SET DEBUG output: it looks timing dependent, e.g. the KA655 self-test measuring the clock or SSC timers against SIMH's calibrated timer after the long VMB wait. `sysd_reset` does reset the SSC timers; the memory controller registers are only reset at power-up. Not proven.
+  - Proposal: a separate investigation of the KA655 self-test timing (sim_timer calibration after BOOT CPU), outside the sound work. The console continues after the error and the next boot works.
 ### 23 — DONE — Bug: more than 32 spindles failed silently
 - **Where:** `sim_sound.c`, `sim_spindle_init`: at most 32 spindles (`SND_MAX_SPINDLES`); for the next one `sp->uptr` stayed NULL without a message.
 - **Effect:** such a drive's spindle state is always "stopped": an RA60 or RC25 would report offline even in the normal mode. A PDP-11 uses 20 at reset (HK 8, RL 4, RP 8), each RQ unit with a RUN/STOP button one more.
 - **Fix (Claude's own code):** limit 64 and a message naming the unit; the RQ treats a drive without a spindle slot as one without realism (ready when attached). HK, RL, RP and RB set up their spindles at reset and stay below the limit. Sound patch v12.
 - **Found and fixed:** 2026-11-06.
 
-### 24 — OPEN — Minor: RC25 on any MSCP controller type
+- **Final fix 2026-11-07 (decided by Ulli: "limits are given by the controller"):** spindles are registered in chunks of 32, each chunk with its own internal timer device (INT-SPINDLE, INT-SPINDLE2, ...), so a timer unit never moves while it is on the event queue; the timer finds its spindle through `up7`. Tested with 120 spindles on the PDP-11 (HK 8, RL 4, RP 8, 100 RA60 on RQ and RQB): the last one spins up. Sound patch v13.
+### 24 — DONE (realism mode) — Minor: RC25 on any MSCP controller type
 - **Where:** `PDP11/pdp11_rq.c`. The header (29-Jan-11, HUH) says the KLESI controller and port types are "not yet implemented"; `SET RQ KLESI` only sets the name and type.
 - **Effect:** RC25/RCF25 units can be set on an RQDX3, UDA50, etc.; a real RC25 only works with its KLESI adapter. The KLESI specifics in Appendix A of the RC25 User Guide (command limit 14, vector 154, controller timeout 15 s, no NV bit in step 1, ...) are not simulated. VMS does not seem to care; untested.
 - **Found:** 2026-11-06 (RC25 realism work).
 
+- **Fixed for the realism mode 2026-11-07 (decided by Ulli: SET SOUND ENABLED means "as realistic as possible"; normal mode unchanged):**
+  - RC25 drives only on a KLESI, which only connects RC25 drives, at most 4 units; RC25 pairs at even/odd units with even/odd unit numbers. SET SOUND ENABLED refuses other configurations; while sound is enabled SET RQ <ctype>, SET RQn <type>, SET RQn UNIT=, DRIVES= and ATTACH keep to the rules (details in the handover).
+  - KLESI: controller timeout 15 s (SET CONTROLLER CHARACTERISTICS), ABORT only of queued commands.
+  - Already as the RC25 before (no change needed): step 1 without NV, with DI and (Q-bus) QB; 15 command credits (= 14 + 1 immediate); DETERMINE ACCESS PATHS, COMPARE CONTROLLER DATA and FLUSH are NOPs; CSR 172150.
+  - Not simulated (no effect in SIMH): error log format and limits, multi-host, the burst field, host bus error handling.
+  - Sound patch v13.
 ### 25 — OPEN — Suspicious: RC25 cartridge unloaded while its fixed platter runs (normal mode)
 - **Where:** `PDP11/pdp11_rq.c`, `rq_avl`: AVAILABLE with spin-down on a removable unit calls `sim_disk_unload` (detach). The RC25 is a removable type (`RQDF_RMV`), the RCF25 is not.
 - **Observed (VMS V3.5 on the VAX-11/730, test N1):** with the system disk on the fixed platter DUA1, `DISMOUNT/UNLOAD DUA0:` (and plain `DISMOUNT`, which unloads by default) detaches the cartridge image while DUA1 keeps working.
 - **Real drive:** the cartridge can only be ejected with the spindle stopped, and that would stop the fixed platter too; with the system disk on it, the drive would rather stay running (see the realism mode).
-- **Realism mode (Claude's code, sound patch v12):** the drive spins down only if the other unit is not online, so in this case nothing stops and the cartridge stays attached (test R1).
+- **Realism mode (Claude's code):** sound patch v12 spun the drive down only if the other unit was not online (nothing stopped here); since sound patch v13 (decided by Ulli 2026-11-07) the whole drive stops as on the real one, the system disk DUA1 goes into mount verification until SET RQ0 ONLINE, and the cartridge stays attached (test R1 v3).
 - **Effect:** none harmful; the old normal-mode behavior (an RC25 is unloaded like an RX50) is kept on purpose.
 - **Found:** 2026-11-06 (RC25 VMS tests).
+
+### 26 — OPEN — Suspicious: unit numbers held by disabled units
+- **Where:** `PDP11/pdp11_rq.c`, `rq_set_plug`: the uniqueness check looks at all units of the controller, including the disabled ones (units 4–253). On the VAX their unit numbers equal their index, so `SET RQ0 UNIT=8` is refused with "Unit Plug 8 Already In Use on RQ8" although RQ8 is disabled.
+- **Effect:** small unit numbers above 3 cannot be used on the VAX without first renumbering the disabled unit that holds them (on the PDP-11 the disabled units have numbers from 4 × 4 on, so it is less visible). For an RC25 drive numbered 8/9 (realism mode) the same applies; Ulli: hardly anyone would want that.
+- **Found:** 2026-11-07 (RC25 realism rules, test c10).
 

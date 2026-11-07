@@ -1,4 +1,4 @@
-open-simh-extended/tests/rc25/README.txt  v2 (2026-11-06; v2: rc25test.py)
+open-simh-extended/tests/rc25/README.txt  v3 (2026-11-07; v3: realism rules c10, g1, e3; v2: rc25test.py)
 
 RC25 sound realism tests on the MicroVAX 3900 simulator (console and VMB
 only, no operating system).  Run them from the directory that holds the
@@ -14,7 +14,8 @@ blocks are zero = HALT):
     python3 -I tools/make_vmb_seek_disk.py rcr.img 50902 3000 10
     python3 -I tools/make_vmb_seek_disk.py ra60.img 400176 300000 50
 
-c1, c2 and c6 create their own empty images (ATTACH -N).
+c1, c2 and c6 create their own empty images (ATTACH -N).  The realism
+tests set SET RQ KLESI (sound patch v13: RC25 drives only on a KLESI).
 
 Test   What                                                  Expected
 -----  ----------------------------------------------------  ---------------------------------
@@ -30,6 +31,9 @@ c6     normal mode: RCF25 without cartridge, Run button      boots; OFFLINE -> ?
 c9     ?53 self-test error after a failed VMB boot and       see known issues case 22
        SET RQ0 ONLINE (RA60, normal mode)
 c9b    the same with DETACH/ATTACH instead of the button     ?53 too: not related to the sound work
+e3     failed VMB boot with nothing attached, BOOT CPU       ?53 also on plain Open SIMH (case 22)
+c10    vax730, commands only: realism configuration rules    messages in the echo lines
+       (KLESI, RC25 pairs, unit numbers)
 
 Set SET DEBUG only after the console self-test (the expect lines do
 this): debug output during the self-test causes ?53 errors by itself.
@@ -41,3 +45,6 @@ VMS035.RC25; the image is copied, not changed):
 
 N1 normal mode, R1 realism mode; see the header of rc25test.py and the
 handover (section "Tests with VMS V3.5 on the VAX-11/730").
+
+g1.ini (vax730) prints the geometry VMS sees (F$GETDVI) for a copy of the
+system disk named g1.rcf25: expected GEOM 31/2/821/50902.

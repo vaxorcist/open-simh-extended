@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v4, 2026-11-06 (RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v5, 2026-11-07 (patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -34,14 +34,14 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 | 3 | `opensimh_3_vax8200_uba_fix.patch` | VAX 8200 DWBUA interrupt delivery and Unibus init (2 commits) | 87eb7d5, independent |
 | 4 | `opensimh_4_dmc_ultrix_v8.patch` | DMC11/DMR11 fixes for the ULTRIX-32 V1.1 `if_dmc` driver | after 1 |
 | 6 | `opensimh_6_rb730_v1.patch` | RB730: DEC logical block order, SIMH disk library, status, seek and range fixes | 87eb7d5, independent |
-| 5 | `opensimh_5_sound_v12.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RC25/RCF25, RB02/RB80); without the Visual Studio project files | after 6 |
+| 5 | `opensimh_5_sound_v13.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RC25/RCF25, RB02/RB80); without the Visual Studio project files | after 6 |
 
 Patch 6 comes before patch 5. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
 git am --keep-cr opensimh_1_dmv11_v10.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
-                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v1.patch opensimh_5_sound_v12.patch
+                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v1.patch opensimh_5_sound_v13.patch
 ```
 
 The same work as git branches of the fork:

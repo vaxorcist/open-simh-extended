@@ -1,4 +1,4 @@
-<!-- open-simh-extended/README.md  v2 (branch notes, 2026-11-06; v2: RC25, patch 5 v12) -->
+<!-- open-simh-extended/README.md  v3 (branch notes, 2026-11-07; v3: patch 5 v13; v2: RC25, patch 5 v12) -->
 # open-simh-extended: notes, tools and tests
 
 This is the `notes` branch of **vaxorcist/open-simh-extended**, a fork of
@@ -105,14 +105,14 @@ git am --keep-cr patches/opensimh_1_dmv11_v10.patch \
                  patches/opensimh_3_vax8200_uba_fix.patch \
                  patches/opensimh_4_dmc_ultrix_v8.patch \
                  patches/opensimh_6_rb730_v1.patch \
-                 patches/opensimh_5_sound_v12.patch
+                 patches/opensimh_5_sound_v13.patch
 ```
 
 - Patch 6 must come before patch 5.
 - Patch 3 and patch 6 also apply on their own; patches 2 and 4 need patch 1.
 - `opensimh_2_dmf32_v6_standalone.patch` is the DMF32 without the
   DMV11/DMP11; use it instead of patches 1 and 2, not together with them.
-- Patch 5 (v12) leaves out the Visual Studio project files, so a Visual
+- Patch 5 (v13) leaves out the Visual Studio project files, so a Visual
   Studio build does not compile `sim_sound.c` yet. The makefile, CMake and
   `descrip.mms` builds are complete. The `sound` branch still has the
   Visual Studio changes.
