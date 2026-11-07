@@ -227,6 +227,7 @@ add_simulator(microvax1
         ${PDP11D}/pdp11_cr.c
         ${PDP11D}/pdp11_td.c
         ${PDP11D}/pdp11_io_lib.c
+        ${PDP11D}/pdp11_dmc.c
     INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${PDP11D}
