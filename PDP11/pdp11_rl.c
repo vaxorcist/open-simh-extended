@@ -25,6 +25,7 @@
 
    rl           RL11(RLV12)/RL01/RL02 cartridge disk
 
+   07-Nov-26    Ulli    Help: seek sounds fall back to sound/default_disk
    03-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): SET RLn ONLINE
                         and LOAD spin the drive up, OFFLINE and UNLOAD spin it
                         down (40 s / 30 s, registers SPINUP and SPINDOWN, the
@@ -1514,8 +1515,9 @@ fprintf (st, "ATTACH only loads the cartridge.  At the sim> prompt the commands 
 fprintf (st, "the drive is ready or at rest; SET -N RLn ... returns at once.  SHOW RLn\n");
 fprintf (st, "SPINDLE shows the spindle state.  Seeks and transfers take realistic times\n");
 fprintf (st, "(15 ms track-to-track, 55 ms average, 100 ms maximum seek, 2400 rpm), and\n");
-fprintf (st, "seeks play rl02-s.wav, rl02-m.wav or rl02-l.wav (sound directory rl02)\n");
-fprintf (st, "for short, medium and long seeks; the limits are the registers SEEK1S/SEEK1M\n");
+fprintf (st, "seeks play rl02-s.wav, rl02-m.wav or rl02-l.wav (sound directory rl02; if\n");
+fprintf (st, "missing, the default disk sounds seek-s/m/l.wav in default_disk) for\n");
+fprintf (st, "short, medium and long seeks; the limits are the registers SEEK1S/SEEK1M\n");
 fprintf (st, "(RL01, default 15/95 cylinders) and SEEK2S/SEEK2M (RL02, default 30/190).\n");
 fprintf (st, "Optional spindle sounds: rl02_spinup.wav, rl02_running.wav, rl02_spindown.wav.\n");
 fprintf (st, "Without the sound realism mode ONLINE/OFFLINE only switch the drive select.\n\n");

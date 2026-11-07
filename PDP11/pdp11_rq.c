@@ -26,6 +26,7 @@
 
    rq           MSCP disk controller
 
+   07-Nov-26    Ulli    Help: seek sounds fall back to sound/default_disk
    07-Nov-26    Ulli    RC25/RCF25 geometry 31 sectors x 2 surfaces x 821
                         cylinders (was 50 x 8 x 1260; GET UNIT STATUS); sound
                         realism mode: realistic configuration rules (RC25
@@ -1130,7 +1131,8 @@ int32 rq_xtime = RQ_XTIME;                              /* transfer time */
      one sector slot per block, plus the time to go on to the next track
      (RA60: a track-to-track seek per cylinder crossed; RC25: per track
      crossed, from the spiral read time).  Seeks play <prefix>-s.wav,
-     -m.wav or -l.wav from the drive's sound directory (ra60, rc25) for
+     -m.wav or -l.wav from the drive's sound directory (ra60, rc25; if
+     missing, seek-s/m/l.wav from default_disk) for
      short, medium and long seeks (registers SEEKRA60S/M, SEEKRC25S/M, in
      cylinders).  Optional spindle sounds <prefix>_spinup.wav,
      _running.wav and _spindown.wav play if found.
@@ -4647,11 +4649,12 @@ fprintf (st, "    track-to-track, 42 ms average, 70 ms maximum; RC25: 2850 rpm, 
 fprintf (st, "    one track, 35 ms average, 55 ms maximum, 31 ms per track spiral read;\n");
 fprintf (st, "    the two units of an RC25 drive share the head actuator);\n");
 fprintf (st, "  - seeks play <type>-s.wav, <type>-m.wav or <type>-l.wav from the sound\n");
-fprintf (st, "    directory ra60 or rc25 for short, medium and long seeks (limits in the\n");
-fprintf (st, "    registers SEEKRA60S/SEEKRA60M, default 100/600 cylinders, and\n");
-fprintf (st, "    SEEKRC25S/SEEKRC25M, default 50/300); optional spindle sounds\n");
-fprintf (st, "    <type>_spinup.wav, <type>_running.wav and <type>_spindown.wav are used\n");
-fprintf (st, "    if found;\n");
+fprintf (st, "    directory ra60 or rc25 (if missing, the default disk sounds\n");
+fprintf (st, "    seek-s/m/l.wav in default_disk) for short, medium and long seeks\n");
+fprintf (st, "    (limits in the registers SEEKRA60S/SEEKRA60M, default 100/600\n");
+fprintf (st, "    cylinders, and SEEKRC25S/SEEKRC25M, default 50/300); optional spindle\n");
+fprintf (st, "    sounds <type>_spinup.wav, <type>_running.wav and <type>_spindown.wav\n");
+fprintf (st, "    are used if found (no default);\n");
 fprintf (st, "  - the other drive types keep the QTIME/XTIME timing.\n");
 fprintf (st, "Without the realism mode an RA60 or RC25 spins up at ATTACH, ONLINE and\n");
 fprintf (st, "OFFLINE take effect at once, an RCF25 works without a cartridge in its RC25,\n");

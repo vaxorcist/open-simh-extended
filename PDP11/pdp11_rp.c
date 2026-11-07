@@ -25,6 +25,7 @@
 
    rp           RH/RP/RM moving head disks
 
+   07-Nov-26    Ulli    Help: seek sounds fall back to sound/default_disk
    03-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): SET RPn ONLINE
                         and OFFLINE are the RUN/STOP button of the removable-
                         pack drives (RM02/03, RP04/05/06, RM05), the UNLOAD
@@ -1829,7 +1830,8 @@ fprintf (st, "  - seeks and transfers take realistic times per drive type (3600 
 fprintf (st, "    3633 rpm; RM03 6/30/55 ms, RP04/05 7/28/50 ms, RP06 10/30/55 ms, RM05\n");
 fprintf (st, "    6/23 ms, RM80 6/25/50 ms, RP07 5/23 ms track-to-track/average/maximum);\n");
 fprintf (st, "  - seeks play <type>-s.wav, -m.wav or -l.wav from the sound directory of the\n");
-fprintf (st, "    drive type (rm03, rp04, rp05, rm80, rp06, rm05, rp07) for short, medium\n");
+fprintf (st, "    drive type (rm03, rp04, rp05, rm80, rp06, rm05, rp07; if missing, the\n");
+fprintf (st, "    default disk sounds seek-s/m/l.wav in default_disk) for short, medium\n");
 fprintf (st, "    and long seeks, with the limits in the registers SEEK<type>S and\n");
 fprintf (st, "    SEEK<type>M (e.g. SEEKRP06S/SEEKRP06M, default 50/300 cylinders); a\n");
 fprintf (st, "    recalibrate is always long.  Optional spindle sounds <type>_spinup.wav,\n");

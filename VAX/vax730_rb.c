@@ -26,6 +26,7 @@
 
    rb           RB730 - RB02/RB80 disk controller
 
+   07-Nov-2026  Ulli    Help: seek sounds fall back to sound/default_disk
    04-Nov-2026  Ulli    Sound realism mode (SET SOUND ENABLED): SET RBn
                         ONLINE/LOAD and OFFLINE/UNLOAD are the LOAD button of
                         the RB02 (an RL02), ATTACH waits for ONLINE, spin-up/
@@ -948,10 +949,12 @@ fprintf (st, "  - seeks and transfers take realistic times (RB02 as the RL02: 24
 fprintf (st, "    seek 15 ms track-to-track, 100 ms maximum; RB80 as the RM80: 3600 rpm,\n");
 fprintf (st, "    6/25/50 ms track-to-track/average/maximum);\n");
 fprintf (st, "  - seeks play rl02-s/m/l.wav (RB02) or rm80-s/m/l.wav (RB80) from the sound\n");
-fprintf (st, "    directories rl02 and rm80 for short, medium and long seeks (limits in the\n");
-fprintf (st, "    registers SEEK02S/SEEK02M, default 30/190, and SEEK80S/SEEK80M, default\n");
-fprintf (st, "    35/205 cylinders); optional spindle sounds rl02_spinup.wav,\n");
-fprintf (st, "    rl02_running.wav and rl02_spindown.wav are used if found.\n");
+fprintf (st, "    directories rl02 and rm80 (if missing, the default disk sounds\n");
+fprintf (st, "    seek-s/m/l.wav in default_disk) for short, medium and long seeks\n");
+fprintf (st, "    (limits in the registers SEEK02S/SEEK02M, default 30/190, and\n");
+fprintf (st, "    SEEK80S/SEEK80M, default 35/205 cylinders); optional spindle sounds\n");
+fprintf (st, "    rl02_spinup.wav, rl02_running.wav and rl02_spindown.wav are used if\n");
+fprintf (st, "    found (no default).\n");
 fprintf (st, "Without the realism mode an RB02 spins up at ATTACH, ONLINE and OFFLINE take\n");
 fprintf (st, "effect at once, and the timing is unchanged.\n");
 fprint_reg_help (st, dptr);

@@ -102,11 +102,34 @@ static char snd_sys_default[SND_SYS_COUNT][CBUFSIZE];/* simulator default system
 static char snd_sys_user[SND_SYS_COUNT][CBUFSIZE];   /* SET SOUND STARTING/RUNNING/STOPPING */
 static SND_SAMPLE *snd_sys_smp[SND_SYS_COUNT];  /* loaded system sounds (may be NULL) */
 static SND_HANDLE snd_sys_handle = 0;           /* voice of the starting/running chain */
-#define SND_MAX_UNITLOOPS 64                     /* registered unit loops */
-#define SND_MAX_RUNHOOKS  8                      /* registered run hooks */
+/* Registries without a fixed limit (up to sound patch v13: 64 unit loops
+   and 8 run hooks; a unit loop beyond 64 was not restored at power on,
+   known issues case 27): arrays that grow as needed.  They hold pointers,
+   so growing them moves nothing that is in use. */
 
-static SND_UNITLOOP *snd_unitloops[SND_MAX_UNITLOOPS];/* every unit loop ever loaded */
-static void (*snd_runhooks[SND_MAX_RUNHOOKS])(t_bool running);
+static SND_UNITLOOP **snd_unitloops = NULL;     /* every unit loop ever loaded */
+static int32 snd_n_unitloops = 0;
+static void (**snd_runhooks) (t_bool running) = NULL;
+static int32 snd_n_runhooks = 0;
+
+/* Default sounds, used when a device or simulator has no sound of its
+   own (2026-11-07, Ulli: "DRY"):
+   - disks: seek sounds sound/default_disk/seek-s.wav, seek-m.wav,
+     seek-l.wav (the former synthetic RK07 seek sounds); there are no
+     default spindle sounds (they must match the drive's speed and times);
+   - tapes: sound/default_tape/ (the first tape sounds, still to come);
+   - CPUs: sound/default_cpu/starting.wav, running.wav, stopping.wav (the
+     recordings of a real VAX-11/750), only for simulators that opt in with
+     sim_sound_use_default_cpu ().
+   The fallback is per file: a device's own file wins.  Defaults are found
+   through the same search order as every sound file.  SHOW SOUND lists
+   which defaults are in use. */
+
+static t_bool snd_sys_use_default = FALSE;      /* the simulator opted in to default_cpu */
+static char *snd_default_uses = NULL;           /* "dir (what), ..." for SHOW SOUND */
+
+static const char *snd_sys_default_file[SND_SYS_COUNT] = {
+    "starting.wav", "running.wav", "stopping.wav" };
 static char snd_throttle[CBUFSIZE] = "";        /* simulator default throttle (realism mode) */
 static t_bool snd_throttle_set = FALSE;         /* the throttle was set by sim_sound */
 static uint32 snd_throttle_delay = 0;           /* THROT_DELAY before sim_sound set it */
@@ -919,6 +942,53 @@ SND_SAMPLE *sim_sound_load_optional (const char *dir, const char *file)
 return snd_load (dir, file, TRUE);
 }
 
+/* Remember for SHOW SOUND that "dir (what)" uses a default (once each) */
+
+static void snd_note_default (const char *dir, const char *what, const char *ddir)
+{
+char entry[CBUFSIZE];
+size_t len;
+char *n;
+
+snprintf (entry, sizeof (entry), "%s (%s) -> %s", (dir && *dir) ? dir : "?", what, ddir);
+if ((snd_default_uses != NULL) && (strstr (snd_default_uses, entry) != NULL))
+    return;
+len = (snd_default_uses ? strlen (snd_default_uses) + 2 : 0) + strlen (entry) + 1;
+n = (char *) realloc (snd_default_uses, len);
+if (n == NULL)
+    return;
+if (snd_default_uses == NULL)
+    n[0] = '\0';
+else
+    strlcat (n, ", ", len);
+strlcat (n, entry, len);
+snd_default_uses = n;
+}
+
+/* A sound with a default: the device's own file dir/file if it exists
+   (no message if not), otherwise the default ddir/dfile (reported once if
+   that is missing too).  ddir == NULL: no default, dir/file is reported
+   if missing. */
+
+static SND_SAMPLE *snd_load_with_default (const char *dir, const char *file,
+                                          const char *ddir, const char *dfile, const char *what)
+{
+SND_SAMPLE *smp;
+
+if (ddir == NULL)
+    return sim_sound_load (dir, file);
+if ((smp = sim_sound_load_optional (dir, file)) != NULL)
+    return smp;
+if ((smp = sim_sound_load (ddir, dfile)) != NULL)
+    snd_note_default (dir, what, ddir);
+return smp;
+}
+
+void sim_sound_use_default_cpu (void)
+{
+snd_sys_use_default = TRUE;
+}
+
 /* Forget cached entries of a file, so that SET SOUND PATH changes and newly
    added files are picked up on the next load. */
 
@@ -946,21 +1016,22 @@ return snd_play_ex (smp, NULL, 0, group, gain, flags, 0);
 void sim_sound_unit_load (SND_UNITLOOP *ul, const char *dir, const char *start,
                           const char *run, const char *stop)
 {
-int32 i, free_slot = -1;
+int32 i;
+SND_UNITLOOP **n;
 
 ul->start = sim_sound_load_optional (dir, start);
 ul->run = sim_sound_load_optional (dir, run);
 ul->stop = sim_sound_load_optional (dir, stop);
 ul->handle = 0;
 ul->active = ul->silenced = FALSE;
-for (i = 0; i < SND_MAX_UNITLOOPS; i++) {       /* register it (once) for */
+for (i = 0; i < snd_n_unitloops; i++)           /* register it (once) for */
     if (snd_unitloops[i] == ul)                 /* power off/on */
         return;
-    if ((snd_unitloops[i] == NULL) && (free_slot < 0))
-        free_slot = i;
-    }
-if (free_slot >= 0)
-    snd_unitloops[free_slot] = ul;
+n = (SND_UNITLOOP **) realloc ((void *) snd_unitloops, (snd_n_unitloops + 1) * sizeof (*n));
+if (n == NULL)
+    return;
+snd_unitloops = n;
+snd_unitloops[snd_n_unitloops++] = ul;
 }
 
 void sim_sound_unit_start (SND_UNITLOOP *ul, int32 group, double gain)
@@ -993,7 +1064,7 @@ static void snd_unitloops_restore (void)
 {
 int32 i;
 
-for (i = 0; i < SND_MAX_UNITLOOPS; i++) {
+for (i = 0; i < snd_n_unitloops; i++) {
     SND_UNITLOOP *ul = snd_unitloops[i];
 
     if ((ul != NULL) && ul->active && ul->silenced) {
@@ -1010,7 +1081,7 @@ static void snd_unitloops_silence (void)
 {
 int32 i;
 
-for (i = 0; i < SND_MAX_UNITLOOPS; i++) {
+for (i = 0; i < snd_n_unitloops; i++) {
     SND_UNITLOOP *ul = snd_unitloops[i];
 
     if ((ul != NULL) && ul->active) {
@@ -1025,15 +1096,16 @@ for (i = 0; i < SND_MAX_UNITLOOPS; i++) {
 void sim_sound_register_run_hook (void (*fn)(t_bool running))
 {
 int32 i;
+void (**n) (t_bool running);
 
-for (i = 0; i < SND_MAX_RUNHOOKS; i++) {
+for (i = 0; i < snd_n_runhooks; i++)
     if (snd_runhooks[i] == fn)
         return;
-    if (snd_runhooks[i] == NULL) {
-        snd_runhooks[i] = fn;
-        return;
-        }
-    }
+n = (void (**) (t_bool)) realloc ((void *) snd_runhooks, (snd_n_runhooks + 1) * sizeof (*n));
+if (n == NULL)
+    return;
+snd_runhooks = n;
+snd_runhooks[snd_n_runhooks++] = fn;
 }
 
 static void snd_spindles_run_state (t_bool running);
@@ -1043,10 +1115,8 @@ void sim_sound_run_state (t_bool running)
 int32 i;
 
 snd_spindles_run_state (running);
-for (i = 0; i < SND_MAX_RUNHOOKS; i++) {
-    if (snd_runhooks[i] != NULL)
-        snd_runhooks[i] (running);
-    }
+for (i = 0; i < snd_n_runhooks; i++)
+    snd_runhooks[i] (running);
 }
 
 /* Realistic durations (see sim_sound.h) */
@@ -1378,11 +1448,14 @@ void sim_sound_seek_load (SND_SAMPLE *smp[3], const char *dir, const char *prefi
 {
 static const char *cls[3] = { "s", "m", "l" };
 char name[CBUFSIZE];
+char dname[CBUFSIZE];
 int32 i;
 
-for (i = 0; i < 3; i++) {
+
+for (i = 0; i < 3; i++) {                       /* own file, else the default */
     snprintf (name, sizeof (name), "%s-%s.wav", prefix, cls[i]);
-    smp[i] = sim_sound_load (dir, name);
+    snprintf (dname, sizeof (dname), "seek-%s.wav", cls[i]);
+    smp[i] = snd_load_with_default (dir, name, SND_DEFAULT_DISK, dname, "seek");
     }
 }
 
@@ -1424,8 +1497,22 @@ static void snd_sys_load (void)
 {
 int32 i;
 
-for (i = 0; i < SND_SYS_COUNT; i++)
-    snd_sys_smp[i] = sim_sound_load (snd_sys_dir, snd_sys_file (i));
+for (i = 0; i < SND_SYS_COUNT; i++) {
+    const char *file = snd_sys_file (i);
+
+    if (snd_sys_user[i][0] != '\0')              /* the user's file: no default */
+        snd_sys_smp[i] = sim_sound_load (snd_sys_dir, file);
+    else if (!snd_sys_use_default)              /* no default for this simulator */
+        snd_sys_smp[i] = (file[0] != '\0') ? sim_sound_load (snd_sys_dir, file) : NULL;
+    else if (file[0] == '\0') {                  /* no own name: the default */
+        snd_sys_smp[i] = sim_sound_load (SND_DEFAULT_CPU, snd_sys_default_file[i]);
+        if (snd_sys_smp[i] != NULL)
+            snd_note_default (snd_sys_dir, "system", SND_DEFAULT_CPU);
+        }
+    else
+        snd_sys_smp[i] = snd_load_with_default (snd_sys_dir, file, SND_DEFAULT_CPU,
+                                                snd_sys_default_file[i], "system");
+    }
 }
 
 /* Start the system sound.  With direct == FALSE the starting one-shot is
@@ -1790,6 +1877,7 @@ for (i = 0; i < SND_SYS_COUNT; i++) {
 #endif
     fprintf (st, "\n");
     }
+fprintf (st, "Defaults: %s\n", snd_default_uses ? snd_default_uses : "(none used yet)");
 if (sim_sound_available ())
     fprintf (st, "Voices:  %d playing\n", (int)snd_active_voices ());
 return SCPE_OK;
