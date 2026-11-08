@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v19 (v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v20 (v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02 (last update 2026-11-07). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-08). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -784,9 +784,71 @@ Notes from testing:
 - Question from Ulli, could the unthrottled MicroVAX II cause timing problems: not here (the normal mode fails the same way). Tape times are converted with the measured instruction rate, so the guest sees the real durations without a throttle (Q1: BACKUP 77 s VMS time, model about 69 s plus accesses). A realistic MicroVAX II THROTTLE default is still open (only the vax750 has one).
 - Tests: vax750 and microvax2 realism console checks of SHOW TS / SHOW TS REEL / SET TS0 CAPACITY / SET TS REEL; broken_saveset.py normal and realism (realism: OPI after 25.7 ft); build `-Werror` of the ten TS simulators: no warnings, all diagnostics passed.
 
+## Phase D, step 2: TK50 (TQ) and the MicroVAX II THROTTLE (2026-11-08)
+
+### Where things are
+
+- Branch `sound`: commit 20b55167 on top of 24b94ab6; `integration`: 0d08d711. (The work branch `tk50-wip` is still on GitHub: the remote refused deleting it. It is squashed into these commits and can be deleted.)
+- Patch **`opensimh_5_sound_v18.patch`** replaces v17 (same base, about 6.1 MB with the new WAV files). Checked by `git am --keep-cr` on 87eb7d5: 6 + 5 v18 give exactly the `sound` tree (without the Visual Studio project files); the full order 1–4, 6, 5 gives the `integration` tree apart from CI/README.
+- Changed files: `sim_sound.c`, `sim_sound.h` (SND_STREAMER), `PDP11/pdp11_tq.c`, `VAX/vax630_syslist.c` (THROTTLE 450K).
+- New files: `sound/tk50/` (`tk50_load.wav`, `tk50_calibrate.wav`, `tk50_unload.wav`, `tk50_start.wav`, `tk50_forward.wav`, `tk50_stop.wav`, `tk50_rstart.wav`, `tk50_reverse.wav`, `tk50_rstop.wav`, `README.txt`).
+- Notes branch: `tools/make_tape_sounds.py` v2 (TK50 synthesis), `tools/make_sound_devices_ods.py` v8 and `docs/SIMH_Sound_devices.ods` table v7 (new sheet **Streamers**, MicroVAX II row), `tests/tk50/tktest.py` v2 and `README.txt`, `docs/SIMH_known_issues.md` v12 (case 37).
+- Sources: EK-OTK50-TM-002 (TK50 technical manual), EK-TUK50-OM-001, and Ulli's TZ30 recording (pitches, levels, durations, the 3 s stream/reposition cycle).
+
+### Decisions (Ulli, 2026-11-08)
+
+1. TK50 sounds are synthesized after the measured values of the TZ30 recording. The click at 13.57 s of the recording may be a signal beep; the TK50 manuals describe none, so it is left out.
+2. Buffer 32 KB; repositioning as in the recording (back up about 60 in).
+3. Load 10–15 s, a random value per load; calibration about 2 min for a new cartridge (an empty file); rewind about 80 in/s, up to 90 s; unload 9 s.
+4. TK50 only for now; the model is prepared for the TK70 (an `SND_STRM_TYPE` entry); the TU81 later.
+5. MicroVAX II THROTTLE 450K, provisional. Calibrating by boot time is meaningless (Ulli).
+
+### Model (`SND_STREAMER` in sim_sound)
+
+- Modes idle / start / stream / repos / move; per type (`SND_STRM_TYPE`): speed 75 in/s, rewind 80 in/s, 45 KB/s, track length and count (22 serpentine tracks of 600 ft), start/stop times, block size, buffer, back-up length, reposition time (1.42 s), load/calibration/unload times.
+- Reading: the drive reads ahead until the buffer is full, stops, backs up and waits; it starts again (running up over the backed-up tape) when the host has emptied half the buffer. Writing: a write ends at once while there is room; the drive writes the buffer out and repositions when it runs empty. A host that keeps up hears continuous streaming; a slow one the stream – stop – reverse – start cycle.
+- Rewind along the serpentine tape at 80 in/s with the reel glide; EOT at the end of the 22nd track (`TEST_EOT` uses the model in the realism mode).
+- Load, calibration and unload run on realtime timers (simulated time while the CPU runs, wall time at the prompt).
+
+### TQ device (realism mode, TK50 only)
+
+- `ATTACH` inserts the cartridge (`-N`/empty file: a new cartridge, calibrated on the first load); the unit has no volume until **`SET TQn LOAD`** (Load/Unload button). `SET TQn UNLOAD` rewinds and unloads; the file stays attached. At the prompt both wait with messages; `SET -N` returns at once. `SHOW TQn TRANSPORT` shows state, track, position and the lights.
+- Registers BUFFER, BACKUP, REPOS, LOADMIN, LOADMAX, CALTIME, UNLOADTIME.
+- Guest side: every motion command (read, write, tape mark, erase, position, rewind) takes the model's time; the host's AVAILABLE with UNLOAD rewinds and unloads (file stays attached); a rewind with the immediate modifier ends at once while the tape rewinds.
+- On the **Unibus VAXen the TQ is a TU81 by default**: `SET TQ TK50` (no unit attached) makes it a TUK50. LOAD/UNLOAD and SHOW TRANSPORT say so when sound is enabled on another type.
+- TK70, TU81, TKUSER and the normal mode: unchanged.
+- `SET TQ DEBUG=REQ` shows a line per command: opcode, modifiers, bytes moved, time.
+
+### Bug found and fixed: realistic delays ignored with asynchronous tape I/O
+
+SCP activates a unit before calling its asynchronous I/O completion callback (AIO migration), so the `sim_activate` in `sim_sound_activate_us`, called from `tq_io_complete`, was a no-op: every TK50 command ended at once (no rewind time, the model's clock ran ahead). Found with `SET TQ DEBUG=TRACE` (the bottom half ran at the same instruction count). Fix: `sim_activate_abs`. The disk callers (RL, RP, RQ, HK, RB) call it in service or command-start paths, so nothing changes for them. Known issues case 37.
+
+### Tests (`tests/tk50/tktest.py` v2; VMS V4.7, SYSTEM/MANAGER)
+
+| Test | Result |
+|---|---|
+| K1 normal mode, MicroVAX II (TQK50), on `sound` and on `integration` | BACKUP 2.4 s, BACKUP/LIST 2.5 s (as before); DISMOUNT detaches as before |
+| K2 realism mode, MicroVAX II, THROTTLE 450K, new cartridge | load about 10 s + calibration 2 min; BACKUP 69.5 s guest time: the tape **streams for 64 s without a stop** (the host keeps up with 45 KB/s); BACKUP/LIST 128 s (rewind 52 s from 345 ft, the reel whine glides 456 → 680 Hz; reading 63 s); DISMOUNT "rewinding and unloading, 59.0 s left"; SET TQ0 LOAD reloads (about 15 s, no calibration), BACKUP/LIST: 24 files, 4324 blocks |
+| K2 with THROTTLE 150K (a slow host) | BACKUP 189 s, BACKUP/LIST 237 s; the audio shows **2 s of streaming, then a reposition, every 3.5 s** during both (the TZ30 recording: about 3 s) |
+| K3 realism mode, VAX-11/750 (TUK50, `SET TQ TK50`), THROTTLE 300K, the K2 tape | load without calibration; BACKUP/LIST from BOT 73 s, reads 0.178 s per 8 KB on average (45 KB/s), no repositions; DISMOUNT 58.4 s left; reload, LIST ok |
+| Trace after the fix | first LIST 73 s, second (after 345 ft) 125 s; 8200-byte reads every 0.181 s |
+| Build `-Werror` of the ten TQ/TS simulators on the work branch; vax750, microvax2, pdp11 on `integration` | no warnings |
+
+Notes from testing:
+- VMS V4.7 starts the TMSCP port PTA0 only at the end of the startup; MUA0 appears about 30 s after the login (the unmodified build does the same). The script waits 40 s.
+- VMS V4.7 BACKUP/LIST has no `/OUTPUT`; use `/LIST=file`.
+- Short positioning near BOT after a read takes about 4.4 s (the read-ahead moved the tape; the drive stops, backs up and repositions): plausible for a TK50, to be compared with a real drive.
+- In the first K3 run VMS printed once `ERRFMT - ERROR ACCESSING ERROR LOG FILE, %RMS-F-RSZ`. Not reproduced in a rerun with TQ debug (no error log packet was sent) nor in the normal mode; probably the guest's error log file, but watch for it.
+
+### Open
+
+- BUFFER and BACKUP are provisional (from the TZ30 recording); a real TK50 recording would settle them and the sounds.
+- TK70 (prepared), TU81 and the other tapes (TM11/TU10, TU16/45/77) later.
+- MicroVAX II THROTTLE 450K and VAX-11/750 300K: calibrate by benchmark rather than boot time.
+
 ## Not done yet (after phase B)
 
-- RX and TU58 later without spin-up/spin-down. (The RA60 and the RC25 are done, see phase C steps 3 and 5; the TS11/TSV05 tapes in phase D step 1; other tapes later.)
+- RX and TU58 later without spin-up/spin-down. (The RA60 and the RC25 are done, see phase C steps 3 and 5; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
 - RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.

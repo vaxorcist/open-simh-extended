@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v10, 2026-11-08 (v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v11, 2026-11-08 (v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -34,14 +34,14 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 | 3 | `opensimh_3_vax8200_uba_fix.patch` | VAX 8200 DWBUA interrupt delivery and Unibus init (2 commits) | 87eb7d5, independent |
 | 4 | `opensimh_4_dmc_ultrix_v8.patch` | DMC11/DMR11 fixes for the ULTRIX-32 V1.1 `if_dmc` driver | after 1 |
 | 6 | `opensimh_6_rb730_v2.patch` | RB730: DEC logical block order, SIMH disk library, status, seek and range fixes, at most one RB80 | 87eb7d5, independent |
-| 5 | `opensimh_5_sound_v17.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RC25/RCF25, RB02/RB80; tapes: TS11/TSV05); without the Visual Studio project files | after 6 |
+| 5 | `opensimh_5_sound_v18.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RC25/RCF25, RB02/RB80; tapes: TS11/TSV05, TK50 cartridge streamer; MicroVAX II THROTTLE 450K); without the Visual Studio project files | after 6 |
 
 Patch 6 comes before patch 5. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
 git am --keep-cr opensimh_1_dmv11_v11.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
-                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v17.patch
+                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v18.patch
 ```
 
 The same work as git branches of the fork:
@@ -54,7 +54,7 @@ The same work as git branches of the fork:
 | `dmc-ultrix` | patch 4 | `dmv11-dmp11` |
 | `vax8200-uba` | patch 3 | `master` |
 | `rb730` | patch 6, as 5 separate commits | `master` |
-| `sound` | patch 5, as 11 separate commits (with the Visual Studio project changes) | `rb730` |
+| `sound` | patch 5 (with the Visual Studio project changes): a root snapshot commit 2f3bbe8 (the `rb730` tree plus sound up to patch 5 v15), then one commit each for the TS tapes, the TS fixes and the TK50; its tree is `rb730` + patch 5 | `rb730` (tree, not history) |
 | `integration` | patches 1, 2, 3, 4, 6, 5 | `master` |
 | `notes` | these docs, tools, tests and patch files (no SIMH code) | |
 
@@ -65,6 +65,7 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
 
 - **RB730 (VAX-11/730 IDC)**, from EK-RB730-TD-001 (Sep 1982): at most **one R80 and up to three RL02, or four RL02** (figure 3-2); SIMH refuses a second RB80 (patch 6 v2). Drive addresses: the 2-bit drive select (control word bits 8-9) gives addresses 0-3; each RL02 gets its address from the address plug in the drive, the R80 from the logic plug on its operator panel (reported over R80 SELECT ADDRESS 1/2, valid only with R80 PLUG VALID). No address is reserved for the R80: it may be any of 0-3. If the R80 and an RL02 have the same address the IDC selects the R80 (address compare); the RL02 status has a Drive Select Error bit for "multiple drives responding to one address". In SIMH the unit number is the address, so duplicates cannot occur.
 - **TS device (sound realism mode):** on the Unibus a TS11 (TS04 transport, EK-OTS11-TM-003: 45 in/s, start/stop for every record, rewind 150 in/s), on the Qbus a TSV05 (TS05 transport, EK-TSV05-UG-003: 25 in/s streaming, rewind 130–180 in/s, load 30 s, unload 15 s). VMS V4.7 names it MSA0 on both. A subsystem initialize with the ON-LINE switch on rewinds the tape (TS11 manual). The TS11 manual's scan lacks pages 4-4/4-5 (loading); TS11 load/unload 8 s each are provisional.
+- **TK50 (TQ device, sound realism mode):** TQK50 on the Qbus, TUK50 on the Unibus (EK-OTK50-TM-002, EK-TUK50-OM-001): 75 in/s, 45 KB/s, 22 serpentine tracks on 600 ft, rewind about 80 in/s (up to 90 s), load 10–15 s, calibration of a new cartridge about 2 min, unload 9 s; 32 KB buffer and 60 in back-up after Ulli's TZ30 recording (provisional). In SIMH the Unibus VAXen default to the TU81: `SET TQ TK50` selects the TUK50. VMS V4.7 starts the TMSCP port only at the end of the startup (MUA0 about 30 s after the login).
 - **DMV11** only on Qbus (MicroVAX I, MicroVAX II, MicroVAX 3900, Qbus PDP-11): `SET DMV ENABLE`.
 - **Test CPUs (Ulli, 2026-11-07):** Qbus changes are tested on the **microvax2** (the one Ulli uses most); a change for specific CPUs (e.g. the DMV11 on the MicroVAX I) is tested on the affected CPU(s).
   **DMP11** only on Unibus (VAX-11/730/750/780, 8200, 8600, Unibus PDP-11):
