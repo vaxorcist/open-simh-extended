@@ -1,4 +1,4 @@
-# open-simh-extended/tools/make_sound_devices_ods.py  v7 (v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
+# open-simh-extended/tools/make_sound_devices_ods.py  v8 (v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
 #
 # Builds SIMH_Sound_devices.ods: the devices prepared for SIMH sound (realism
 # mode, SET SOUND ENABLED) with rotation speed, access times and spin times.
@@ -25,8 +25,8 @@ from odf.table import Table, TableColumn, TableRow, TableCell
 from odf.text import P
 from odf.dc import Title
 
-TABLE_VERSION = "v6"
-TABLE_DATE = "2026-11-07"
+TABLE_VERSION = "v7"
+TABLE_DATE = "2026-11-08"
 
 # ---------------------------------------------------------------- data
 # fit: "fixed" (exponent given, curve through t2t and max), "fit" (exponent
@@ -146,10 +146,27 @@ TAPES = [
              "command, a command in that time continues streaming"),
 ]
 
+# Cartridge streamers (pdp11_tq.c tq_tk50, sim_sound.c SND_STREAMER)
+STREAMERS = [
+  dict(dev="TQ (TQK50 Qbus, TUK50 Unibus)", drive="TK50 (also TZ30)", ips=75.0, rate=45.0, tracks=22,
+       track_in=7092.0, tape_ft=600, cap="94.5 MB formatted (131 MB unformatted)", buffer=32768, backup=60,
+       repos=1.42, start="5 in (0.133 s) / 3.5 in (0.093 s)", rew_ips=80.0, load="10-15 (random per load)",
+       cal=120, unload=9,
+       regs="BUFFER, BACKUP, REPOS, LOADMIN, LOADMAX, CALTIME, UNLOADTIME; SET TQn LOAD/UNLOAD, SHOW TQn TRANSPORT",
+       snd="tk50 (own: load, calibrate, unload, start, forward, stop, rstart, reverse, rstop)",
+       src="TK50 Tape Drive Subsystem Technical Manual EK-OTK50-TM-002, TUK50 Owner's Manual EK-TUK50-OM-001, "
+           "TK50 User's Guide; reposition cycle and sounds measured on a TZ30 recording (about 3 s per cycle)",
+       notes="buffer 32 KB and backup 60 in provisional (the manuals do not give them); TK70, TU81 and TKUSER "
+             "keep the old behaviour; EOT at the end of the 22nd track"),
+]
+
 SYSTEMS = [
   dict(sim="vax750 (VAX-11/750)", snd="vax750 (own: none) -> default_cpu (opt-in)",
        files="default_cpu: starting.wav, running.wav (4.27 s seamless loop), stopping.wav",
        throttle="300K (provisional)", src="recordings of a real VAX-11/750", notes="calibration of the THROTTLE still open"),
+  dict(sim="microvax2 (MicroVAX II)", snd="none (no system sounds yet)", files="-",
+       throttle="450K (provisional)", src="0.9 times an 11/780 (about 0.5 MIPS at THROTTLE 500K)",
+       notes="calibration by a CPU benchmark still open (the boot time is no measure); rtVAX1000 unchanged"),
 ]
 
 # ---------------------------------------------------------------- model
@@ -291,6 +308,26 @@ add_table("Tapes", ["3.2cm", "3.2cm", "3.2cm", "1.8cm", "1.6cm", "1.4cm", "1.6cm
           "SIMH sound: tape transports with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
           thdr, trows)
 
+# ---------------------------------------------------------------- sheet: streamers
+srows = []
+for t in STREAMERS:
+    pass_s = t["track_in"] / t["ips"]
+    srows.append([t["dev"], t["drive"], t["ips"], t["rate"], t["tracks"], round(t["track_in"] / 12.0),
+                  t["tape_ft"], t["cap"], t["buffer"], t["backup"], t["repos"],
+                  round(t["buffer"] / (t["rate"] * 1000.0) + t["repos"] + 0.13, 2), t["start"],
+                  round(pass_s, 1), round(t["tracks"] * pass_s / 60.0, 1), t["rew_ips"],
+                  round(t["track_in"] / t["rew_ips"], 0), t["load"], t["cal"], t["unload"], t["regs"],
+                  "sound/" + t["snd"], t["src"], t["notes"]])
+add_table("Streamers", ["3.4cm", "2.6cm", "1.6cm", "1.8cm", "1.4cm", "1.8cm", "1.6cm", "3.4cm", "1.8cm",
+                        "1.8cm", "1.8cm", "2.4cm", "3.4cm", "1.8cm", "2.2cm", "1.8cm", "2.0cm", "2.4cm", "2.0cm",
+                        "1.6cm", "6.0cm", "6.0cm", "7.0cm", "7.0cm"],
+          "SIMH sound: cartridge streamers with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          ["Device", "Drive", "Speed (in/s)", "Data rate (KB/s)", "Tracks", "Track (ft)", "Tape (ft)", "Capacity",
+           "Buffer (bytes)", "Backup (in)", "Reposition (s)", "Cycle of a slow host (s)", "Start / stop distance",
+           "One track pass (s)", "Worst access (min)", "Rewind (in/s)", "Longest rewind (s)", "Load (s)",
+           "Calibration of a new cartridge (s)", "Unload (s)", "Registers / commands", "Sound directory",
+           "Source", "Notes"], srows)
+
 # ---------------------------------------------------------------- sheet: systems
 add_table("Systems", ["4.2cm", "2.6cm", "9.0cm", "3.2cm", "5.0cm", "6.0cm"],
           "SIMH sound: system (CPU cabinet) sounds, table %s, %s" % (TABLE_VERSION, TABLE_DATE),
@@ -325,9 +362,17 @@ notes = [
   ["Tape sounds", "load, unload, rewind_start, rewind (reel motor loop at 8 rev/s, played per reel with a pitch "
                   "glide that follows the reel radius), rewind_stop, start, motion (loop), stop; "
                   "<dir>/<prefix>_<name>.wav, else default_tape/<name>.wav. Made by tools/make_tape_sounds.py."],
-  ["Not yet", "RX01/RX02, RX50/RX33 and TU58 (no spin-up/spin-down); tapes other than the TS device (TM, TU, TQ)."],
+  ["Streamer model", "TK50: the host's data goes through the drive's buffer. Reading, the drive reads ahead until "
+                     "the buffer is full, stops and repositions (stop, back up, stop: REPOS), and starts again "
+                     "over the backed-up tape when the host has taken half of the buffer; writing, the drive writes "
+                     "the buffer out and repositions when it runs empty. A host slower than 45 KB/s gives the cycle "
+                     "stream - stop - reverse - start (a slow host: buffer / rate + reposition + start). Serpentine "
+                     "tracks: positions and spacing follow the tape (track turns cost a pass), rewind along the tape. "
+                     "Load: a random time between LOADMIN and LOADMAX, plus CALTIME for a new (empty) cartridge."],
+  ["Not yet", "RX01/RX02, RX50/RX33 and TU58 (no spin-up/spin-down); tapes other than the TS device and the "
+              "TK50 (TM, TU, TK70, TU81)."],
   ["Update", "Generated by tools/make_sound_devices_ods.py (open-simh-extended, branch notes); add new devices there."],
-  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device)."],
+  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device). v7 2026-11-08: sheet Streamers: TK50 (TQ device); MicroVAX II THROTTLE 450K."],
 ]
 add_table("Notes", ["4.0cm", "22cm"], "SIMH sound devices: notes, table %s" % TABLE_VERSION,
           ["Topic", "Explanation"], notes)
