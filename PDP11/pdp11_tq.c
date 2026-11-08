@@ -25,6 +25,9 @@
 
    tq           TQK50 tape controller
 
+   08-Nov-26    Ulli    Position: spacing beyond the recorded data (end of
+                        medium) ends with a data error instead of stopping
+                        the simulator with an I/O error
    08-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED) for the TK50:
                         cartridge streamer model (load, calibration,
                         streaming and repositioning with a 32 KB buffer,
@@ -1703,7 +1706,14 @@ switch (cmd) {                                          /* case on command */
             return SCPE_OK;
             }
         res->sts = tq_map_status (uptr, res->io_status);
-        if ((res->io_status != MTSE_OK) && (res->io_status != MTSE_TMK) && (res->io_status != MTSE_BOT) && (res->io_status != MTSE_LEOT))
+        /* Spacing beyond the recorded data (MTSE_EOM, e.g. an interrupted
+           BACKUP left no closing tape marks) ends the command with a data
+           error and position lost, as a read there does; it used to go to
+           tq_mot_err, whose SCPE_IOERR stopped the simulator ("Unexpected
+           internal error ... returned 66") on a VMS DIRECTORY of such a tape.
+           (08-Nov-26, known issues 38) */
+        if ((res->io_status != MTSE_OK) && (res->io_status != MTSE_TMK) && (res->io_status != MTSE_BOT) && (res->io_status != MTSE_LEOT) &&
+            (res->io_status != MTSE_EOM))
             return tq_mot_err (uptr, 0);                /* log, end */
         sim_debug (DBG_REQ, &tq_dev, "Position Done: mdf=0x%04X, nrec=%d, ntmk=%d, skrec=%d, sktmk=%d, skobj=%d\n", 
                             mdf, nrec, ntmk, res->skrec, res->sktmk, res->objupd);
