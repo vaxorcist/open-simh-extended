@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v21 (v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v22 (v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02 (last update 2026-11-08). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -852,6 +852,34 @@ Notes from testing:
 - Reproduced in the **normal mode as well** (plain Open SIMH code): a BACKUP to the TK50 interrupted with Ctrl/Y leaves no closing tape marks; DIRECTORY skips 2 files, the skip runs beyond the last record (`MTSE_EOM`), and the OP_POS bottom half sends that to `tq_mot_err` (SCPE_IOERR). A COPY to a labelled tape, an empty initialized tape and a complete BACKUP tape list fine in both modes.
 - Fix: MTSE_EOM ends the position command with the mapped status (data error, position lost), as a read there does. VMS: `%DIRECT-E-OPENIN … -SYSTEM-F-TAPEPOSLOST`, then `TEST.BCK;1, Total of 1 file`; the simulator keeps running (normal and realism mode). Known issues case 38.
 - Branch `sound`: 7fa1aab; `integration`: 248b0cc. Patch **`opensimh_5_sound_v19.patch`** replaces v18 (checked: 6 + 5 v19 give the `sound` tree, the full order 1–4, 6, 5 the `integration` tree apart from CI/README).
+
+## Phase D, step 2b: smooth TK50 sounds (2026-11-08)
+
+- Ulli: "The artificial sounds on the TS11 are very good; those on the TK50 are not—they are very choppy (lacking smooth transitions). Furthermore, there is too much background noise in streaming mode."
+- Causes:
+  - The forward loop was mostly noise (the 457 Hz tone about 10 % of the power).
+  - The start was a whoosh 8 dB over streaming that died away before the loop began.
+  - The stop started 10 dB over streaming, with a hard 50 ms dip and a knock.
+  - The engine faded the loops in and out over 15 ms only, and played them at a random phase.
+  - The TS11 reel engine, by contrast, uses 300 ms overlaps.
+- Engine (`strm_timeline` / `strm_sounds` in sim_sound.c):
+  - The start, loop and stop sounds crossfade over 0.4 of the start or stop sound.
+  - A loop begins at 0.6 of its start, from its first frame (no random phase), and fades in; the start sound ends with the loop's own first 0.4 D fading out, so both add up to the loop.
+  - A loop ends where its stop begins and fades out while the stop fades in.
+  - The reverse start follows the stop at 0.6 (was 0.7).
+  - A loop that starts while the drive is already streaming keeps the random phase and a 30 ms fade.
+- Sounds (`tools/make_tape_sounds.py` v3):
+  - Forward: the 457 Hz tone with harmonics 914/1371/1828 Hz (the loud 800–1600 Hz octave of the recording is tonal), a slight wow (3 and 7 Hz), the tape noise 17 dB under the tones with the highs cut; −22 dBFS RMS.
+  - Reverse: 457/501 Hz beating, 6 dB quieter.
+  - Start 0.35 s: a run-up from half speed with a soft air swell.
+  - Stop 0.45 s: braking from the loop with the tone gliding down, smooth decay, a soft settle at −20 dB.
+  - Reverse start 0.35 s, reverse stop 0.40 s.
+- Check: K2 with THROTTLE 150K, with audio, 10 ms RMS envelope of a reposition cycle:
+  - Streaming holds ±1 dB for 2.1 s.
+  - The stop goes into the reverse without a gap; the reverse ends in a 150 ms fade.
+  - About 0.25 s of silence while the drive waits for the host (as on the real drive), then a 0.1 s rise into streaming.
+  - BACKUP and LIST results unchanged.
+- Branch `sound`: 582b4ad; `integration`: 0e8335b. Patch **`opensimh_5_sound_v20.patch`** replaces v19 (checked as before).
 
 ## Not done yet (after phase B)
 

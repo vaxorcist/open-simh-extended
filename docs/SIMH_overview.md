@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v12, 2026-11-08 (v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v13, 2026-11-08 (v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -34,14 +34,14 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 | 3 | `opensimh_3_vax8200_uba_fix.patch` | VAX 8200 DWBUA interrupt delivery and Unibus init (2 commits) | 87eb7d5, independent |
 | 4 | `opensimh_4_dmc_ultrix_v8.patch` | DMC11/DMR11 fixes for the ULTRIX-32 V1.1 `if_dmc` driver | after 1 |
 | 6 | `opensimh_6_rb730_v2.patch` | RB730: DEC logical block order, SIMH disk library, status, seek and range fixes, at most one RB80 | 87eb7d5, independent |
-| 5 | `opensimh_5_sound_v19.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RC25/RCF25, RB02/RB80; tapes: TS11/TSV05, TK50 cartridge streamer; MicroVAX II THROTTLE 450K); without the Visual Studio project files | after 6 |
+| 5 | `opensimh_5_sound_v20.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RC25/RCF25, RB02/RB80; tapes: TS11/TSV05, TK50 cartridge streamer; MicroVAX II THROTTLE 450K); without the Visual Studio project files | after 6 |
 
 Patch 6 comes before patch 5. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
 git am --keep-cr opensimh_1_dmv11_v11.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
-                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v19.patch
+                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v20.patch
 ```
 
 The same work as git branches of the fork:
@@ -54,7 +54,7 @@ The same work as git branches of the fork:
 | `dmc-ultrix` | patch 4 | `dmv11-dmp11` |
 | `vax8200-uba` | patch 3 | `master` |
 | `rb730` | patch 6, as 5 separate commits | `master` |
-| `sound` | patch 5 (with the Visual Studio project changes): a root snapshot commit 2f3bbe8 (the `rb730` tree plus sound up to patch 5 v15), then one commit each for the TS tapes, the TS fixes, the TK50 and the TQ position fix; its tree is `rb730` + patch 5 | `rb730` (tree, not history) |
+| `sound` | patch 5 (with the Visual Studio project changes): a root snapshot commit 2f3bbe8 (the `rb730` tree plus sound up to patch 5 v15), then one commit each for the TS tapes, the TS fixes, the TK50, the TQ position fix and the smooth TK50 sounds; its tree is `rb730` + patch 5 | `rb730` (tree, not history) |
 | `integration` | patches 1, 2, 3, 4, 6, 5 | `master` |
 | `notes` | these docs, tools, tests and patch files (no SIMH code) | |
 
