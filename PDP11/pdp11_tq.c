@@ -1508,6 +1508,8 @@ if (tq_real ()) {                                       /* realism: the tape's t
         default:
             break;
         }
+    sim_debug (DBG_REQ, &tq_dev, "Realism: opc=%d mdf=0x%04X moved=%.0f bytes, done in %.3f s\n",
+               cmd, mdf, moved, us / 1000000.0);
     if (us > 0.0) {
         sim_sound_activate_us (uptr, us);
         return;

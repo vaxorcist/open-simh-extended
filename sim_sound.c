@@ -1355,7 +1355,9 @@ if (inst < 1.0)
     inst = 1.0;
 if (inst > 2000000000.0)
     inst = 2000000000.0;
-sim_activate (uptr, (int32)inst);
+sim_activate_abs (uptr, (int32)inst);                  /* (an asynchronous I/O completion
+                                                           has activated the unit already:
+                                                           the realistic delay replaces it) */
 }
 
 /* Realtime timers (see sim_sound.h)
