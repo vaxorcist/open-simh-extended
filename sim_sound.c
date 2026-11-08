@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   08-Nov-26    Ulli    Streamers: crossfaded start/loop/stop sounds
    08-Nov-26    Ulli    Cartridge streamers (SND_STREAMER, TK50), realtime
                         clock
    07-Nov-26    Ulli    Tape transports (SND_REEL); realtime timers shared by
@@ -2553,7 +2554,15 @@ switch (s->mode) {
 /* Sounds: the predicted timeline of the model, as queued segments.  A
    segment that is already queued is kept (a loop gets its new end), a
    queued future one that is no longer in the timeline is dropped, a
-   playing one is faded out. */
+   playing one is faded out.
+
+   Crossfades (D = length of the start or stop sound): a loop begins at
+   0.6 D of its start sound, from its first frame (no random phase), and
+   fades in over 0.4 D; the start sound ends with the loop's own first
+   0.4 D fading out, so both add up to the loop.  A loop ends where its
+   stop sound begins and fades out over 0.4 D of the stop, which fades in
+   over the same time.  The reverse start follows the stop at 0.6 D.  (The
+   TK50 sounds of tools/make_tape_sounds.py v3 are made for this.) */
 
 typedef struct { int32 kind; double at; double end; double rate; double rate2; } STRM_PSEG;
 
@@ -2602,11 +2611,11 @@ for (guard = 0; guard < 12; guard++) {
         }
     b = c.pend;
     if (c.mode == STRM_REPOS) {                 /* stop, back up, stop */
-        double r0 = a + 0.7 * 1000000.0 * d_sp;
+        double r0 = a + 0.6 * 1000000.0 * d_sp;
 
         PSEG (STRM_S_STOP, a, a, 1.0, 1.0);
         PSEG (STRM_S_RSTART, r0, r0, 1.0, 1.0);
-        PSEG (STRM_S_REV, r0 + 0.6 * 1000000.0 * d_rst, b - 0.6 * 1000000.0 * d_rsp, 1.0, 1.0);
+        PSEG (STRM_S_REV, r0 + 0.6 * 1000000.0 * d_rst, b - 1000000.0 * d_rsp, 1.0, 1.0);
         PSEG (STRM_S_RSTOP, b - 1000000.0 * d_rsp, b, 1.0, 1.0);
         }
     else {                                      /* move: space or rewind */
@@ -2621,7 +2630,7 @@ for (guard = 0; guard < 12; guard++) {
             r2 = strm_rate (s, 0.0, c.type->rewind_ips);
             }
         PSEG (ks, a, a, 1.0, 1.0);
-        PSEG (kl, a + 0.6 * 1000000.0 * ds, b - 0.6 * 1000000.0 * dp, r1, r2);
+        PSEG (kl, a + 0.6 * 1000000.0 * ds, b - 1000000.0 * dp, r1, r2);
         PSEG (kp, b - 1000000.0 * dp, b, 1.0, 1.0);
         }
     strm_advance (&c, b);
@@ -2670,7 +2679,7 @@ for (j = 0; j < SND_STRM_NSEG; j++) {           /* old segments */
     }
 for (i = 0; i < n; i++) {                       /* new segments */
     double at, end, life = 0.0;
-    uint32 flags = 0;
+    uint32 flags = 0, fade_in = 0, fade_out = 0;
 
     if (used[i])
         continue;
@@ -2684,11 +2693,20 @@ for (i = 0; i < n; i++) {                       /* new segments */
     if ((ps[i].kind == STRM_S_FWD) || (ps[i].kind == STRM_S_REV)) {
         if (end <= at)
             continue;
-        flags = SND_F_LOOP | SND_F_RANDPHASE;
+        int32 ks = (ps[i].kind == STRM_S_FWD) ? STRM_S_START : STRM_S_RSTART;
+        int32 kp = (ps[i].kind == STRM_S_FWD) ? STRM_S_STOP : STRM_S_RSTOP;
+
+        flags = SND_F_LOOP;                     /* from its beginning: the start sound ends
+                                                   with the loop's own first 0.4 D */
         if (end < now)
             continue;
-        if (at < now)
+        fade_in = (uint32)(400.0 * sim_sound_duration (s->smp[ks]));   /* crossfades: */
+        fade_out = (uint32)(400.0 * sim_sound_duration (s->smp[kp]));  /* 0.4 D */
+        if (at < now) {                         /* streaming already, or late */
             at = now;
+            flags |= SND_F_RANDPHASE;
+            fade_in = 30;
+            }
         life = (end - at) / 1000000.0;
         }
     else if (at < now - 20000.0)                /* a transient that is past */
@@ -2696,9 +2714,9 @@ for (i = 0; i < n; i++) {                       /* new segments */
     s->seg[j].kind = ps[i].kind;
     s->seg[j].at = ps[i].at;
     s->seg[j].end = end;
-    s->seg[j].h = sim_sound_play_timed (s->smp[ps[i].kind], s->group, s->gain, flags,
-                                        ps[i].rate, (at > now) ? (at - now) / 1000000.0 : 0.0,
-                                        life, flags ? 15 : 0);
+    s->seg[j].h = snd_play_full (s->smp[ps[i].kind], NULL, 0, s->group, s->gain, flags, fade_in,
+                                 ps[i].rate, (at > now) ? (at - now) / 1000000.0 : 0.0,
+                                 life, fade_out);
     if (ps[i].rate2 != ps[i].rate)
         sim_sound_glide (s->seg[j].h, ps[i].rate2, life, SND_GLIDE_REEL);
     }
