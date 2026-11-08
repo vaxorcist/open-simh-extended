@@ -1,6 +1,6 @@
-From 695a01fa2d9b53f2110f0a39eda1adc26d6b5d34 Mon Sep 17 00:00:00 2001
+From ab78819f60d968946735de7accf15b172341aa9e Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
-Date: Sun, 8 Nov 2026 17:13:13 +0100
+Date: Sun, 8 Nov 2026 19:43:06 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
  sound pilot
 
@@ -113,6 +113,10 @@ realism mode (provisional).  sim_sound_activate_us replaces an existing
 activation (an asynchronous I/O completion has activated the unit
 already).
 
+TQ: a position command that runs beyond the recorded data (end of
+medium, e.g. a DIRECTORY of a tape with an interrupted BACKUP) ends
+with a data error instead of stopping the simulator with an I/O error.
+
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
 
@@ -125,7 +129,7 @@ Claude-Session: https://claude.ai/code/session_01Suavte5DWJqGABWycdsWEP
  PDP11/pdp11_rl.c                    |  284 ++-
  PDP11/pdp11_rp.c                    |  346 ++-
  PDP11/pdp11_rq.c                    | 1075 +++++++-
- PDP11/pdp11_tq.c                    |  268 +-
+ PDP11/pdp11_tq.c                    |  280 ++-
  PDP11/pdp11_ts.c                    |  605 ++++-
  VAX/vax630_syslist.c                |   10 +
  VAX/vax730_rb.c                     |  317 ++-
@@ -173,7 +177,7 @@ Claude-Session: https://claude.ai/code/session_01Suavte5DWJqGABWycdsWEP
  sound/tsv05/tsv05_start.wav         |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_stop.wav          |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_unload.wav        |  Bin 0 -> 661544 bytes
- 54 files changed, 8004 insertions(+), 104 deletions(-)
+ 54 files changed, 8015 insertions(+), 105 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -2911,13 +2915,16 @@ index 2cdfedf..6a905f1 100644
  fprint_reg_help (st, dptr);
  fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");
 diff --git a/PDP11/pdp11_tq.c b/PDP11/pdp11_tq.c
-index e8ebdfe..ff43e9f 100644
+index e8ebdfe..a34a17f 100644
 --- a/PDP11/pdp11_tq.c
 +++ b/PDP11/pdp11_tq.c
-@@ -25,6 +25,11 @@
+@@ -25,6 +25,14 @@
  
     tq           TQK50 tape controller
  
++   08-Nov-26    Ulli    Position: spacing beyond the recorded data (end of
++                        medium) ends with a data error instead of stopping
++                        the simulator with an I/O error
 +   08-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED) for the TK50:
 +                        cartridge streamer model (load, calibration,
 +                        streaming and repositioning with a 32 KB buffer,
@@ -2926,7 +2933,7 @@ index e8ebdfe..ff43e9f 100644
     26-Mar-22    RMS     Added extra case points for new MTSE definitions
     23-Oct-13    RMS     Revised for new boot setup routine
     23-Jan-12    MP      Added missing support for Logical EOT detection while
-@@ -90,6 +95,35 @@
+@@ -90,6 +98,35 @@
  #include "pdp11_uqssp.h"
  #include "pdp11_mscp.h"
  #include "sim_tape.h"
@@ -2962,7 +2969,7 @@ index e8ebdfe..ff43e9f 100644
  
  #define UF_MSK          (UF_SCH|UF_VSS|UF_CMR|UF_CMW)   /* settable flags */
  
-@@ -222,7 +256,8 @@ struct tqpkt {
+@@ -222,7 +259,8 @@ struct tqpkt {
      d##_CMOD, d##_MED,  d##_FMT,  d##_CAP, \
      d##_UMOD, d##_CREV, d##_FREV, d##_UREV
  
@@ -2972,7 +2979,7 @@ index e8ebdfe..ff43e9f 100644
  
  struct drvtyp {
      uint32      uqpm;                                   /* UQ port model */
-@@ -269,6 +304,23 @@ int32 tq_itime4 = 10;                                   /* stage 4 */
+@@ -269,6 +307,23 @@ int32 tq_itime4 = 10;                                   /* stage 4 */
  int32 tq_qtime = 200;                                   /* queue time */
  int32 tq_xtime = 500;                                   /* transfer time */
  int32 tq_rwtime = 2000000;                              /* rewind time 2 sec (adjusted later) */
@@ -2996,7 +3003,7 @@ index e8ebdfe..ff43e9f 100644
  int32 tq_typ = INIT_TYPE;                               /* device type */
  
  /* Command table - legal modifiers (low 16b) and flags (high 16b) */
-@@ -393,6 +445,11 @@ t_bool tq_putpkt (uint16 pkt, t_bool qt);
+@@ -393,6 +448,11 @@ t_bool tq_putpkt (uint16 pkt, t_bool qt);
  t_bool tq_getdesc (struct uq_ring *ring, uint32 *desc);
  t_bool tq_putdesc (struct uq_ring *ring, uint32 desc);
  uint16 tq_mot_valid (UNIT *uptr, uint32 cmd);
@@ -3008,7 +3015,7 @@ index e8ebdfe..ff43e9f 100644
  t_stat tq_mot_err (UNIT *uptr, uint32 rsiz);
  t_bool tq_mot_end (UNIT *uptr, uint32 flg, uint16 sts, uint32 rsiz);
  void tq_putr (int32 pkt, uint32 cmd, uint32 flg, uint16 sts, uint16 lnt, uint16 typ);
-@@ -465,6 +522,13 @@ REG tq_reg[] = {
+@@ -465,6 +525,13 @@ REG tq_reg[] = {
      { DRDATAD (QTIME,               tq_qtime, 24,             "response time for 'immediate' packets"), PV_LEFT + REG_NZ },
      { DRDATAD (XTIME,               tq_xtime, 24,             "response time for data transfers"), PV_LEFT + REG_NZ },
      { DRDATAD (RWTIME,             tq_rwtime, 32,             "rewind time 2 sec (adjusted later)"), PV_LEFT + REG_NZ },
@@ -3022,7 +3029,7 @@ index e8ebdfe..ff43e9f 100644
      { VBRDATAD (PKTS,                 tq_pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
      { URDATAD (PLUG,    tq_unit[0].unit_plug, 10, 32, 0, TQ_NUMDR, PV_LEFT | REG_RO, "unit plug value, units 0 to 3") },
      { DRDATA  (DEVTYPE,               tq_typ, 2), REG_HRO },
-@@ -503,6 +567,12 @@ MTAB tq_mod[] = {
+@@ -503,6 +570,12 @@ MTAB tq_mod[] = {
          NULL, &tq_show_ctrl, NULL, "Display complete controller state" },
      { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "UNITQ", NULL,
          NULL, &tq_show_unitq, NULL, "Display unit queue" },
@@ -3035,7 +3042,7 @@ index e8ebdfe..ff43e9f 100644
      { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
          &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
      { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
-@@ -972,9 +1042,18 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
+@@ -972,9 +1045,18 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
          sts = ST_SXC;
      else {
          uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_TMK | UNIT_POL);
@@ -3055,7 +3062,7 @@ index e8ebdfe..ff43e9f 100644
              sts = ST_SUC;                               /* success */
              if (mdf & MD_UNL)                           /* unload? */
                  tq_detach (uptr);
-@@ -1027,7 +1106,7 @@ if (tq_pkt[pkt].d[CMD_MOD] & MD_NXU) {                  /* next unit? */
+@@ -1027,7 +1109,7 @@ if (tq_pkt[pkt].d[CMD_MOD] & MD_NXU) {                  /* next unit? */
          }
      }
  if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
@@ -3064,7 +3071,7 @@ index e8ebdfe..ff43e9f 100644
              sts = ST_OFL | SB_OFL_NV;                   /* offl no vol */
      else if (uptr->flags & UNIT_ONL)                    /* online */
          sts = ST_SUC;
-@@ -1054,12 +1133,14 @@ UNIT *uptr;
+@@ -1054,12 +1136,14 @@ UNIT *uptr;
  sim_debug(DBG_TRC, &tq_dev, "tq_onl\n");
  
  if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
@@ -3080,7 +3087,7 @@ index e8ebdfe..ff43e9f 100644
          sim_tape_rewind (uptr);                         /* rewind */
          uptr->objp = 0;                                 /* clear flags */
          uptr->flags = (uptr->flags | UNIT_ONL) &
-@@ -1210,7 +1291,8 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
+@@ -1210,7 +1294,8 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
      if (sts == ST_SUC) {                                /* ok? */
          uptr->cpkt = pkt;                               /* op in progress */
          if ((tq_pkt[pkt].d[CMD_MOD] & MD_RWD) &&        /* rewind? */
@@ -3090,7 +3097,7 @@ index e8ebdfe..ff43e9f 100644
              double walltime = (tq_rwtime - 100);
  
              if (uptr->hwmark)
-@@ -1271,13 +1353,108 @@ return tq_putpkt (pkt, TRUE);
+@@ -1271,13 +1356,108 @@ return tq_putpkt (pkt, TRUE);
  
  /* Validity checks */
  
@@ -3200,7 +3207,7 @@ index e8ebdfe..ff43e9f 100644
      return (ST_OFL | SB_OFL_NV);                        /* offl no vol */
  if ((uptr->flags & UNIT_ONL) == 0)                      /* not online? */
      return ST_AVL;                                      /* only avail */
-@@ -1306,6 +1483,49 @@ sim_debug(DBG_TRC, &tq_dev, "tq_io_complete(status=%d)\n", status);
+@@ -1306,6 +1486,49 @@ sim_debug(DBG_TRC, &tq_dev, "tq_io_complete(status=%d)\n", status);
  
  res->io_status = status;
  res->io_complete = 1;
@@ -3250,7 +3257,7 @@ index e8ebdfe..ff43e9f 100644
  /* Reschedule for the appropriate delay */
  sim_activate_notbefore (uptr, uptr->iostarttime+tq_xtime);
  }
-@@ -1332,7 +1552,7 @@ sim_debug (DBG_TRC, &tq_dev, "tq_svc(unit=%d, pkt=%d, cmd=%s, mdf=0x%0X, bc=0x%0
+@@ -1332,7 +1555,7 @@ sim_debug (DBG_TRC, &tq_dev, "tq_svc(unit=%d, pkt=%d, cmd=%s, mdf=0x%0X, bc=0x%0
  res->io_complete = 0;
  if (pkt == 0)                                           /* what??? */
      return SCPE_IERR;
@@ -3259,7 +3266,7 @@ index e8ebdfe..ff43e9f 100644
      tq_mot_end (uptr, 0, ST_OFL | SB_OFL_NV, 0);        /* offl no vol */
      return SCPE_OK;
      }
-@@ -1352,6 +1572,7 @@ if (tq_cmf[cmd] & CMF_WR) {                             /* write op? */
+@@ -1352,6 +1575,7 @@ if (tq_cmf[cmd] & CMF_WR) {                             /* write op? */
  if (!io_complete) {
      res->sts = ST_SUC;                                  /* assume success */
      res->tbc = 0;                                       /* assume zero rec */
@@ -3267,7 +3274,23 @@ index e8ebdfe..ff43e9f 100644
      }
  switch (cmd) {                                          /* case on command */
  
-@@ -2050,6 +2271,12 @@ t_stat r;
+@@ -1482,7 +1706,14 @@ switch (cmd) {                                          /* case on command */
+             return SCPE_OK;
+             }
+         res->sts = tq_map_status (uptr, res->io_status);
+-        if ((res->io_status != MTSE_OK) && (res->io_status != MTSE_TMK) && (res->io_status != MTSE_BOT) && (res->io_status != MTSE_LEOT))
++        /* Spacing beyond the recorded data (MTSE_EOM, e.g. an interrupted
++           BACKUP left no closing tape marks) ends the command with a data
++           error and position lost, as a read there does; it used to go to
++           tq_mot_err, whose SCPE_IOERR stopped the simulator ("Unexpected
++           internal error ... returned 66") on a VMS DIRECTORY of such a tape.
++           (08-Nov-26, known issues 38) */
++        if ((res->io_status != MTSE_OK) && (res->io_status != MTSE_TMK) && (res->io_status != MTSE_BOT) && (res->io_status != MTSE_LEOT) &&
++            (res->io_status != MTSE_EOM))
+             return tq_mot_err (uptr, 0);                /* log, end */
+         sim_debug (DBG_REQ, &tq_dev, "Position Done: mdf=0x%04X, nrec=%d, ntmk=%d, skrec=%d, sktmk=%d, skobj=%d\n", 
+                             mdf, nrec, ntmk, res->skrec, res->sktmk, res->objupd);
+@@ -2050,6 +2281,12 @@ t_stat r;
  r = sim_tape_attach_ex (uptr, cptr, DBG_TAP, 0);
  if (r != SCPE_OK)
      return r;
@@ -3280,7 +3303,7 @@ index e8ebdfe..ff43e9f 100644
  if (tq_csta == CST_UP)
      uptr->flags = (uptr->flags | UNIT_ATP) & ~(UNIT_SXC | UNIT_POL | UNIT_TMK);
  return SCPE_OK;
-@@ -2064,6 +2291,8 @@ t_stat r;
+@@ -2064,6 +2301,8 @@ t_stat r;
  r = sim_tape_detach (uptr);                             /* detach unit */
  if (r != SCPE_OK)
      return r;
@@ -3289,7 +3312,7 @@ index e8ebdfe..ff43e9f 100644
  uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP | UNIT_SXC | UNIT_POL | UNIT_TMK);
  uptr->uf = 0;                                           /* clr unit flgs */
  return SCPE_OK;
-@@ -2093,6 +2322,15 @@ if (!plugs_inited ) {
+@@ -2093,6 +2332,15 @@ if (!plugs_inited ) {
          tq_unit[d].unit_plug = d;
      }
  
@@ -3305,7 +3328,7 @@ index e8ebdfe..ff43e9f 100644
  tq_csta = CST_S1;                                       /* init stage 1 */
  tq_s1dat = 0;                                           /* no S1 data */
  tq_dib.vec = 0;                                         /* no vector */
-@@ -2464,6 +2702,22 @@ fprintf (st, "include the ability to set units write enabled or write locked, an
+@@ -2464,6 +2712,22 @@ fprintf (st, "include the ability to set units write enabled or write locked, an
  fprintf (st, "specify the controller type and tape length:\n");
  fprint_set_help (st, dptr);
  fprintf (st, "\nThe %s device supports the BOOT command.\n", devtype);

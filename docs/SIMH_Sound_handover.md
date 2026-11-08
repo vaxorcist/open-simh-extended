@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v20 (v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v21 (v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02 (last update 2026-11-08). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -845,6 +845,13 @@ Notes from testing:
 - BUFFER and BACKUP are provisional (from the TZ30 recording); a real TK50 recording would settle them and the sounds.
 - TK70 (prepared), TU81 and the other tapes (TM11/TU10, TU16/45/77) later.
 - MicroVAX II THROTTLE 450K and VAX-11/750 300K: calibrate by benchmark rather than boot time.
+
+## Phase D, step 2a: TQ stop on DIRECTORY of an interrupted save set (2026-11-08)
+
+- Ulli (MicroVAX II, VMS V4.7): `MOUNT/OVERRIDE=IDENTIFICATION MUA0:`, `DIRECTORY MUA0:` → "%SIM-ERROR: Unexpected internal error while processing event for TQ0 which returned 66 - I/O error", the simulator stopped.
+- Reproduced in the **normal mode as well** (plain Open SIMH code): a BACKUP to the TK50 interrupted with Ctrl/Y leaves no closing tape marks; DIRECTORY skips 2 files, the skip runs beyond the last record (`MTSE_EOM`), and the OP_POS bottom half sends that to `tq_mot_err` (SCPE_IOERR). A COPY to a labelled tape, an empty initialized tape and a complete BACKUP tape list fine in both modes.
+- Fix: MTSE_EOM ends the position command with the mapped status (data error, position lost), as a read there does. VMS: `%DIRECT-E-OPENIN … -SYSTEM-F-TAPEPOSLOST`, then `TEST.BCK;1, Total of 1 file`; the simulator keeps running (normal and realism mode). Known issues case 38.
+- Branch `sound`: 7fa1aab; `integration`: 248b0cc. Patch **`opensimh_5_sound_v19.patch`** replaces v18 (checked: 6 + 5 v19 give the `sound` tree, the full order 1–4, 6, 5 the `integration` tree apart from CI/README).
 
 ## Not done yet (after phase B)
 
