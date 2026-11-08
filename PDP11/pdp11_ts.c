@@ -152,6 +152,10 @@
      on-line tape that is not at BOT in real time; SSR comes back at BOT;
    - EOT comes from the physical position on the reel (REEL); writing or
      reading beyond the physical end of the tape fails (OPI);
+   - a read, space or skip forward beyond the recorded data moves 25 ft of
+     blank tape before it ends with OPI (TS11 manual, XSTAT3 OPI: "moved 25
+     feet of tape without detecting any data"; SIMH reports OPI in both
+     modes, the realism mode adds the time and the motion);
    - going on-line or off-line sets volume check and sends an attention
      message (if enabled). */
 
@@ -390,7 +394,10 @@ static void ts_check_online (void);
 static t_stat ts_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 static t_stat ts_set_reel (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 static t_stat ts_show_reel (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat ts_show_reel_cmd (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 static t_stat ts_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat ts_set_capac (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+static t_stat ts_show_capac (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
 #define TS_PNL_LOAD     0                               /* ts_set_panel functions */
 #define TS_PNL_ONLINE   1
@@ -462,15 +469,15 @@ MTAB ts_mod[] = {
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
         &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
-        &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set/Display capacity" },
+        &ts_set_capac, &ts_show_capac, NULL, "Set/Display capacity (realism mode: from the reel)" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004,     "ADDRESS", "ADDRESS",
         &set_addr, &show_addr, NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0,       "VECTOR", "VECTOR",
         &set_vec, &show_vec, NULL, "Interrupt vector" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0,       NULL, "REEL",
         &ts_set_reel, NULL, NULL, "Reel length in feet: 600, 1200 or 2400" },
-    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "REEL", "REEL",
-        &ts_set_reel, &ts_show_reel, NULL, "Reel length in feet: 600, 1200 or 2400" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "REEL", "REEL",
+        &ts_set_reel, &ts_show_reel_cmd, NULL, "Reel length in feet: 600, 1200 or 2400" },
     { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_NMO, 0, "TRANSPORT", NULL,
         NULL, &ts_show_transport, NULL, "Display the transport state and tape position" },
     { MTAB_XTD|MTAB_VDV|MTAB_VUN, TS_PNL_LOAD,    NULL, "LOAD",
@@ -635,12 +642,16 @@ return 0;
    counted on the physical tape (position, time).  A forward motion at the
    physical end of the tape fails (realism mode only). */
 
+#define TS_BLANK_IN     300.0                           /* OPI after 25 ft without data */
+
 static void ts_acct (t_stat st, t_mtrlnt tbc, t_bool rev)
 {
 if (st == MTSE_OK)
     sim_reel_record (&ts_reel, tbc, rev);
 else if (st == MTSE_TMK)
     sim_reel_tapemark (&ts_reel, rev);
+else if ((st == MTSE_EOM) && !rev && TS_REAL)           /* beyond the recorded data: */
+    sim_reel_erase (&ts_reel, TS_BLANK_IN);             /* 25 ft of blank tape, then OPI */
 if (rev && sim_tape_bot (&ts_unit))                     /* back at BOT */
     sim_reel_set_bot (&ts_reel);
 }
@@ -1580,7 +1591,35 @@ return SCPE_OK;
 static t_stat ts_show_reel (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 fprintf (st, "%d ft reel", ts_reel_ft);
+if (TS_REAL)
+    fprintf (st, ", EOT at %d ft", ts_reel_ft - REEL_LEADER_FT - REEL_EOT_FT);
+else fprintf (st, " (realism mode only; EOT from CAPACITY)");
 return SCPE_OK;
+}
+
+static t_stat ts_show_reel_cmd (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+ts_show_reel (st, uptr, val, desc);                     /* SHOW TS REEL: own line */
+fprintf (st, "\n");
+return SCPE_OK;
+}
+
+/* Capacity: in the realism mode the reel decides (EOT marker); otherwise
+   SIMH's CAPACITY, as before */
+
+static t_stat ts_set_capac (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+if (TS_REAL)
+    return sim_messagef (SCPE_ARG, "%s: in the realism mode the reel decides the capacity (SET %s REEL=600|1200|2400)\n",
+                         sim_uname (uptr), sim_uname (uptr));
+return sim_tape_set_capac (uptr, val, cptr, desc);
+}
+
+static t_stat ts_show_capac (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+if (TS_REAL)
+    return ts_show_reel (st, uptr, val, desc);
+return sim_tape_show_capac (st, uptr, val, desc);
 }
 
 static t_stat ts_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
@@ -1685,6 +1724,7 @@ fprintf (st, "   SET TS REWIND               rewind to BOT (off-line only)\n");
 fprintf (st, "   SET TS UNLOAD               rewind and unload (off-line only); the file\n");
 fprintf (st, "                               stays attached, SET TS ONLINE loads it again\n");
 fprintf (st, "   SET TS REEL=600|1200|2400   reel length in feet (default 2400)\n");
+fprintf (st, "                               (realism mode: decides EOT; CAPACITY is not used)\n");
 fprintf (st, "   SHOW TS TRANSPORT           transport state and tape position\n\n");
 fprintf (st, "At the prompt these wait until the transport is done; SET -N returns at once.\n");
 fprintf (st, "The times are the registers LOADTIME and UNLOADTIME (ms; TS11 8000/8000,\n");

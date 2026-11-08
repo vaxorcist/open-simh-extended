@@ -418,6 +418,9 @@ t_stat sim_spindle_show (FILE *st, SND_SPINDLE *sp);
                           tape got to.
    sim_reel_motion_begin (), sim_reel_record (), sim_reel_tapemark (),
    sim_reel_erase (), sim_reel_motion_end ():
+                          (sim_reel_erase: a length of tape moved without
+                          records, e.g. an erase or blank tape; negative:
+                          in reverse)
                           a guest motion command: count the records the
                           device moves over, then start the motion;
                           motion_end returns the time in microseconds

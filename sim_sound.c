@@ -2156,9 +2156,9 @@ snd_reel_move (r, r->type->tm_in, reverse);
 
 void sim_reel_erase (SND_REEL *r, double inches)
 {
-if ((r->uptr == NULL) || (r->type == NULL) || (inches <= 0.0))
+if ((r->uptr == NULL) || (r->type == NULL) || (inches == 0.0))
     return;
-snd_reel_move (r, inches, FALSE);
+snd_reel_move (r, fabs (inches), inches < 0.0);         /* < 0: reverse */
 }
 
 /* Start/stop drive: play the sounds of the next batch of records (at most
