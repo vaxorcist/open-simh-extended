@@ -1,4 +1,4 @@
-From 0cb447d703551f13f44f8dacc651b9c96ec7426b Mon Sep 17 00:00:00 2001
+From cf62a01584a1b1cc0998d64fe7cfecd57ad94a3b Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
 Date: Sat, 7 Nov 2026 17:30:35 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
@@ -94,7 +94,9 @@ a subsystem initialize rewinds in real time, EOT comes from the physical
 position on the reel.  sim_sound: tape transports (SND_REEL), realtime
 timers shared with the spindles, voices with playback rate glides,
 delays and lifetimes; synthetic default tape sounds (default_tape) and
-TSV05 sounds (tsv05).
+TSV05 sounds (tsv05).  In the realism mode SHOW TS shows the reel
+instead of CAPACITY, and a forward motion beyond the recorded data moves
+25 ft of blank tape before OPI.
 
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
@@ -108,7 +110,7 @@ Claude-Session: https://claude.ai/code/session_01Suavte5DWJqGABWycdsWEP
  PDP11/pdp11_rl.c                    |  284 ++-
  PDP11/pdp11_rp.c                    |  346 +++-
  PDP11/pdp11_rq.c                    | 1075 ++++++++++-
- PDP11/pdp11_ts.c                    |  563 +++++-
+ PDP11/pdp11_ts.c                    |  605 +++++-
  VAX/vax730_rb.c                     |  317 +++-
  VAX/vax750_syslist.c                |   15 +
  cmake/add_simulator.cmake           |    2 +
@@ -118,7 +120,7 @@ Claude-Session: https://claude.ai/code/session_01Suavte5DWJqGABWycdsWEP
  makefile                            |   43 +-
  scp.c                               |   71 +
  sim_sound.c                         | 2744 +++++++++++++++++++++++++++
- sim_sound.h                         |  535 ++++++
+ sim_sound.h                         |  538 ++++++
  sim_timer.c                         |   51 +
  sim_timer.h                         |    3 +
  sound/default_cpu/README.txt        |   56 +
@@ -144,7 +146,7 @@ Claude-Session: https://claude.ai/code/session_01Suavte5DWJqGABWycdsWEP
  sound/tsv05/tsv05_start.wav         |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_stop.wav          |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_unload.wav        |  Bin 0 -> 661544 bytes
- 42 files changed, 6595 insertions(+), 96 deletions(-)
+ 42 files changed, 6639 insertions(+), 97 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -2872,7 +2874,7 @@ index 2cdfedf..6a905f1 100644
  fprint_reg_help (st, dptr);
  fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");
 diff --git a/PDP11/pdp11_ts.c b/PDP11/pdp11_ts.c
-index 23e89f3..f9e415a 100644
+index 23e89f3..b7acd36 100644
 --- a/PDP11/pdp11_ts.c
 +++ b/PDP11/pdp11_ts.c
 @@ -25,6 +25,10 @@
@@ -2886,7 +2888,7 @@ index 23e89f3..f9e415a 100644
     26-Mar-22    RMS     Added extra case points for new MTSE definitions
     27-Oct-14    RMS     Fixed bug in read forward with byte swap
     23-Oct-13    RMS     Revised for new boot setup routine
-@@ -103,8 +107,54 @@
+@@ -103,8 +107,58 @@
  #endif
  
  #include "sim_tape.h"
@@ -2935,13 +2937,17 @@ index 23e89f3..f9e415a 100644
 +     on-line tape that is not at BOT in real time; SSR comes back at BOT;
 +   - EOT comes from the physical position on the reel (REEL); writing or
 +     reading beyond the physical end of the tape fails (OPI);
++   - a read, space or skip forward beyond the recorded data moves 25 ft of
++     blank tape before it ends with OPI (TS11 manual, XSTAT3 OPI: "moved 25
++     feet of tape without detecting any data"; SIMH reports OPI in both
++     modes, the realism mode adds the time and the motion);
 +   - going on-line or off-line sets volume check and sends an attention
 +     message (if enabled). */
 +
  /* TSBA/TSDB - 17772520: base address/data buffer register
  
     read:        most recent memory address
-@@ -282,6 +332,43 @@ int32 ts_bcmd = 0;                                      /* boot cmd */
+@@ -282,6 +336,43 @@ int32 ts_bcmd = 0;                                      /* boot cmd */
  int32 ts_time = 2000;                                   /* record latency */
  static uint16 cpy_buf[MAX_PLNT];                        /* copy buffer */
  
@@ -2985,7 +2991,7 @@ index 23e89f3..f9e415a 100644
  t_stat ts_rd (int32 *data, int32 PA, int32 access);
  t_stat ts_wr (int32 data, int32 PA, int32 access);
  t_stat ts_svc (UNIT *uptr);
-@@ -296,6 +383,20 @@ void ts_endcmd (int32 ssf, int32 xs0f, int32 msg);
+@@ -296,6 +387,23 @@ void ts_endcmd (int32 ssf, int32 xs0f, int32 msg);
  int32 ts_map_status (t_stat st);
  t_stat ts_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
  const char *ts_description (DEVICE *dptr);
@@ -2996,7 +3002,10 @@ index 23e89f3..f9e415a 100644
 +static t_stat ts_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 +static t_stat ts_set_reel (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 +static t_stat ts_show_reel (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static t_stat ts_show_reel_cmd (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 +static t_stat ts_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static t_stat ts_set_capac (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++static t_stat ts_show_capac (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 +
 +#define TS_PNL_LOAD     0                               /* ts_set_panel functions */
 +#define TS_PNL_ONLINE   1
@@ -3006,7 +3015,7 @@ index 23e89f3..f9e415a 100644
  
  /* TS data structures
  
-@@ -343,6 +444,13 @@ REG ts_reg[] = {
+@@ -343,6 +451,13 @@ REG ts_reg[] = {
      { DRDATAD (POS,   ts_unit.pos, T_ADDR_W,       "position"), PV_LEFT + REG_RO },
      { GRDATA  (DEVADDR, ts_dib.ba, DEV_RDX, 32, 0), REG_HRO },
      { GRDATA  (DEVVEC, ts_dib.vec, DEV_RDX, 16, 0), REG_HRO },
@@ -3020,14 +3029,20 @@ index 23e89f3..f9e415a 100644
      { NULL }
      };
  
-@@ -359,6 +467,22 @@ MTAB ts_mod[] = {
+@@ -354,11 +469,27 @@ MTAB ts_mod[] = {
+     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
+         &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
+     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
+-        &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set/Display capacity" },
++        &ts_set_capac, &ts_show_capac, NULL, "Set/Display capacity (realism mode: from the reel)" },
+     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004,     "ADDRESS", "ADDRESS",
          &set_addr, &show_addr, NULL, "Bus address" },
      { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0,       "VECTOR", "VECTOR",
          &set_vec, &show_vec, NULL, "Interrupt vector" },
 +    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0,       NULL, "REEL",
 +        &ts_set_reel, NULL, NULL, "Reel length in feet: 600, 1200 or 2400" },
-+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "REEL", "REEL",
-+        &ts_set_reel, &ts_show_reel, NULL, "Reel length in feet: 600, 1200 or 2400" },
++    { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "REEL", "REEL",
++        &ts_set_reel, &ts_show_reel_cmd, NULL, "Reel length in feet: 600, 1200 or 2400" },
 +    { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_NMO, 0, "TRANSPORT", NULL,
 +        NULL, &ts_show_transport, NULL, "Display the transport state and tape position" },
 +    { MTAB_XTD|MTAB_VDV|MTAB_VUN, TS_PNL_LOAD,    NULL, "LOAD",
@@ -3043,7 +3058,7 @@ index 23e89f3..f9e415a 100644
      { 0 }
      };
  
-@@ -507,6 +631,34 @@ switch (st) {
+@@ -507,6 +638,38 @@ switch (st) {
  return 0;
  }
  
@@ -3051,12 +3066,16 @@ index 23e89f3..f9e415a 100644
 +   counted on the physical tape (position, time).  A forward motion at the
 +   physical end of the tape fails (realism mode only). */
 +
++#define TS_BLANK_IN     300.0                           /* OPI after 25 ft without data */
++
 +static void ts_acct (t_stat st, t_mtrlnt tbc, t_bool rev)
 +{
 +if (st == MTSE_OK)
 +    sim_reel_record (&ts_reel, tbc, rev);
 +else if (st == MTSE_TMK)
 +    sim_reel_tapemark (&ts_reel, rev);
++else if ((st == MTSE_EOM) && !rev && TS_REAL)           /* beyond the recorded data: */
++    sim_reel_erase (&ts_reel, TS_BLANK_IN);             /* 25 ft of blank tape, then OPI */
 +if (rev && sim_tape_bot (&ts_unit))                     /* back at BOT */
 +    sim_reel_set_bot (&ts_reel);
 +}
@@ -3078,7 +3097,7 @@ index 23e89f3..f9e415a 100644
  int32 ts_spacef (UNIT *uptr, int32 fc, t_bool upd)
  {
  t_stat st;
-@@ -516,7 +668,11 @@ do {
+@@ -516,7 +679,11 @@ do {
      fc = (fc - 1) & DMASK;                              /* decr wc */
      if (upd)
          msgrfc = fc;
@@ -3091,7 +3110,7 @@ index 23e89f3..f9e415a 100644
          return ts_map_status (st);                      /* map status */
      msgxs0 = msgxs0 | XS0_MOT;                          /* tape has moved */
      } while (fc != 0);
-@@ -533,7 +689,10 @@ msgrfc = fc;
+@@ -533,7 +700,10 @@ msgrfc = fc;
  if (sim_tape_bot (uptr) && (wchopt & WCH_ENB))
      tmkprv = TRUE;
  do {
@@ -3102,7 +3121,7 @@ index 23e89f3..f9e415a 100644
      if (st == MTSE_TMK) {                               /* tape mark? */
          msgrfc = (msgrfc - 1) & DMASK;                  /* decr count */
          msgxs0 = msgxs0 | XS0_MOT;                      /* tape has moved */
-@@ -559,7 +718,9 @@ do {
+@@ -559,7 +729,9 @@ do {
      fc = (fc - 1) & DMASK;                              /* decr wc */
      if (upd)
          msgrfc = fc;
@@ -3113,7 +3132,7 @@ index 23e89f3..f9e415a 100644
          return ts_map_status (st);                      /* map status */
      msgxs0 = msgxs0 | XS0_MOT;                          /* tape has moved */
      } while (fc != 0);
-@@ -575,6 +736,7 @@ t_bool tmkprv = FALSE;
+@@ -575,6 +747,7 @@ t_bool tmkprv = FALSE;
  msgrfc = fc;
  do {
      st = sim_tape_sprecr (uptr, &tbc);                  /* space rec rev */
@@ -3121,7 +3140,7 @@ index 23e89f3..f9e415a 100644
      if (st == MTSE_TMK) {                               /* tape mark? */
          msgrfc = (msgrfc - 1) & DMASK;                  /* decr count */
          msgxs0 = msgxs0 | XS0_MOT;                      /* tape has moved */
-@@ -598,7 +760,10 @@ t_mtrlnt i, t, tbc, wbc;
+@@ -598,7 +771,10 @@ t_mtrlnt i, t, tbc, wbc;
  int32 wa;
  
  msgrfc = fc;
@@ -3132,7 +3151,7 @@ index 23e89f3..f9e415a 100644
  if (st != MTSE_OK)                                      /* error? */
      return ts_map_status (st);
  if (fc == 0)                                            /* byte count */
-@@ -641,6 +806,7 @@ int32 wa;
+@@ -641,6 +817,7 @@ int32 wa;
  
  msgrfc = fc;
  st = sim_tape_rdrecr (uptr, tsxb, &tbc, MT_MAXFR);      /* read rec rev */
@@ -3140,7 +3159,7 @@ index 23e89f3..f9e415a 100644
  if (st != MTSE_OK)                                      /* error? */
      return ts_map_status (st);
  if (fc == 0)                                            /* byte count */
-@@ -692,11 +858,16 @@ else {
+@@ -692,11 +869,16 @@ else {
          return TC5;
          }
      }
@@ -3159,7 +3178,7 @@ index 23e89f3..f9e415a 100644
      return XTC (XS0_EOT, TC2);
  return 0;
  }
-@@ -705,18 +876,47 @@ int32 ts_wtmk (UNIT *uptr)
+@@ -705,18 +887,47 @@ int32 ts_wtmk (UNIT *uptr)
  {
  t_stat st;
  
@@ -3209,7 +3228,7 @@ index 23e89f3..f9e415a 100644
  int32 i, t, bc, fnc, mod, st0, st1;
  
  static const int32 fnc_mod[CMD_N_FNC] = {               /* max mod+1 0 ill */
-@@ -774,14 +974,20 @@ if (ts_qatn && (wchopt & WCH_EAI)) {                    /* attn pending? */
+@@ -774,14 +985,20 @@ if (ts_qatn && (wchopt & WCH_EAI)) {                    /* attn pending? */
      ts_qatn = 0;                                        /* not pending */
      return SCPE_OK;
      }
@@ -3232,7 +3251,7 @@ index 23e89f3..f9e415a 100644
      ts_endcmd (TC3, XS0_NEF, MSG_ACK | MSG_MNEF | MSG_CFAIL);
      return SCPE_OK;
      }
-@@ -802,12 +1008,21 @@ if ((fnc_flg[fnc] & FLG_AD) && (cmdadh & ADDRTEST)) {   /* buf addr > 22b? */
+@@ -802,12 +1019,21 @@ if ((fnc_flg[fnc] & FLG_AD) && (cmdadh & ADDRTEST)) {   /* buf addr > 22b? */
      }
  
  st0 = st1 = 0;
@@ -3255,7 +3274,7 @@ index 23e89f3..f9e415a 100644
      case FNC_WSSM:                                      /* write mem */
      case FNC_GSTA:                                      /* get status */
          ts_endcmd (TC0, 0, MSG_ACK | MSG_CEND);         /* send end packet */
-@@ -850,11 +1065,23 @@ switch (fnc) {                                          /* case on func */
+@@ -850,11 +1076,23 @@ switch (fnc) {                                          /* case on func */
          case 01:                                        /* rewind and unload */
              if (!sim_tape_bot (uptr))                   /* if tape moves */
                  msgxs0 = msgxs0 | XS0_MOT;
@@ -3279,7 +3298,7 @@ index 23e89f3..f9e415a 100644
              ts_endcmd (TC0, 0, MSG_ACK | MSG_CEND);     /* nop */
              break;
  
-@@ -865,6 +1092,12 @@ switch (fnc) {                                          /* case on func */
+@@ -865,6 +1103,12 @@ switch (fnc) {                                          /* case on func */
          case 04:                                        /* rewind */
              if (!sim_tape_bot (uptr))                   /* if tape moves */
                  msgxs0 = msgxs0 | XS0_MOT;
@@ -3292,7 +3311,7 @@ index 23e89f3..f9e415a 100644
              sim_tape_rewind (uptr);
              ts_endcmd (TC0, XS0_BOT, MSG_ACK | MSG_CEND);
              break;
-@@ -930,6 +1163,7 @@ switch (fnc) {                                          /* case on func */
+@@ -930,6 +1174,7 @@ switch (fnc) {                                          /* case on func */
              break;
  
          case 01:                                        /* erase */
@@ -3300,7 +3319,7 @@ index 23e89f3..f9e415a 100644
              break;
  
          case 02:                                        /* retry tmk */
-@@ -962,7 +1196,11 @@ switch (fnc) {                                          /* case on func */
+@@ -962,7 +1207,11 @@ switch (fnc) {                                          /* case on func */
          case 04:                                        /* rewind */
              if (!sim_tape_bot (uptr))                   /* if tape moves */
                  msgxs0 = msgxs0 | XS0_MOT;
@@ -3313,7 +3332,7 @@ index 23e89f3..f9e415a 100644
              break;
              }
          ts_cmpendcmd (st0, 0);
-@@ -972,12 +1210,97 @@ switch (fnc) {                                          /* case on func */
+@@ -972,12 +1221,97 @@ switch (fnc) {                                          /* case on func */
  return SCPE_OK;
  }
  
@@ -3412,7 +3431,7 @@ index 23e89f3..f9e415a 100644
      t = t & ~TSSR_OFL;
  else t = t | TSSR_OFL;
  return (t & ~TSSR_MBZ);
-@@ -986,14 +1309,17 @@ return (t & ~TSSR_MBZ);
+@@ -986,14 +1320,17 @@ return (t & ~TSSR_MBZ);
  int32 ts_updxs0 (int32 t)
  {
  t = (t & ~(XS0_ONL | XS0_WLK | XS0_BOT | XS0_IE)) | XS0_PET;
@@ -3433,7 +3452,7 @@ index 23e89f3..f9e415a 100644
      }
  else t = t & ~XS0_EOT;
  if (cmdhdr & CMD_IE)
-@@ -1020,8 +1346,23 @@ ts_endcmd (ssr | (tc << TSSR_V_TC), xs0, msg[tc]);      /* end cmd */
+@@ -1020,8 +1357,23 @@ ts_endcmd (ssr | (tc << TSSR_V_TC), xs0, msg[tc]);      /* end cmd */
  return;
  }
  
@@ -3457,7 +3476,7 @@ index 23e89f3..f9e415a 100644
  int32 i, t;
  
  msgxs0 = ts_updxs0 (msgxs0 | xs0);                      /* update XS0 */
-@@ -1054,8 +1395,33 @@ return;
+@@ -1054,8 +1406,33 @@ return;
  t_stat ts_reset (DEVICE *dptr)
  {
  int32 i;
@@ -3493,7 +3512,7 @@ index 23e89f3..f9e415a 100644
  tsba = tsdbx = 0;
  ts_ownc = ts_ownm = 0;
  ts_bcmd = 0;
-@@ -1068,6 +1434,9 @@ for (i = 0; i < WCH_PLNT; i++)
+@@ -1068,6 +1445,9 @@ for (i = 0; i < WCH_PLNT; i++)
  for (i = 0; i < MSG_PLNT; i++)
      tsmsgp[i] = 0;
  msgxs0 = ts_updxs0 (XS0_VCK);
@@ -3503,7 +3522,7 @@ index 23e89f3..f9e415a 100644
  CLR_INT (TS);
  if (tsxb == NULL)
      tsxb = (uint8 *) calloc (MT_MAXFR, sizeof (uint8));
-@@ -1076,7 +1445,9 @@ if (tsxb == NULL)
+@@ -1076,7 +1456,9 @@ if (tsxb == NULL)
  return auto_config (0, 0);
  }
  
@@ -3514,7 +3533,7 @@ index 23e89f3..f9e415a 100644
  
  t_stat ts_attach (UNIT *uptr, CONST char *cptr)
  {
-@@ -1085,19 +1456,19 @@ t_stat r;
+@@ -1085,19 +1467,19 @@ t_stat r;
  r = sim_tape_attach_ex (uptr, cptr, DBG_TAP, 0);        /* attach unit */
  if (r != SCPE_OK)                                       /* error? */
      return r;
@@ -3543,7 +3562,7 @@ index 23e89f3..f9e415a 100644
  
  t_stat ts_detach (UNIT* uptr)
  {
-@@ -1108,18 +1479,118 @@ if (!(uptr->flags & UNIT_ATT))                          /* attached? */
+@@ -1108,18 +1490,146 @@ if (!(uptr->flags & UNIT_ATT))                          /* attached? */
  r = sim_tape_detach (uptr);                             /* detach unit */
  if (r != SCPE_OK)
      return r;                                           /* error? */
@@ -3656,7 +3675,35 @@ index 23e89f3..f9e415a 100644
 +static t_stat ts_show_reel (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 +{
 +fprintf (st, "%d ft reel", ts_reel_ft);
++if (TS_REAL)
++    fprintf (st, ", EOT at %d ft", ts_reel_ft - REEL_LEADER_FT - REEL_EOT_FT);
++else fprintf (st, " (realism mode only; EOT from CAPACITY)");
 +return SCPE_OK;
++}
++
++static t_stat ts_show_reel_cmd (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++ts_show_reel (st, uptr, val, desc);                     /* SHOW TS REEL: own line */
++fprintf (st, "\n");
++return SCPE_OK;
++}
++
++/* Capacity: in the realism mode the reel decides (EOT marker); otherwise
++   SIMH's CAPACITY, as before */
++
++static t_stat ts_set_capac (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++if (TS_REAL)
++    return sim_messagef (SCPE_ARG, "%s: in the realism mode the reel decides the capacity (SET %s REEL=600|1200|2400)\n",
++                         sim_uname (uptr), sim_uname (uptr));
++return sim_tape_set_capac (uptr, val, cptr, desc);
++}
++
++static t_stat ts_show_capac (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++if (TS_REAL)
++    return ts_show_reel (st, uptr, val, desc);
++return sim_tape_show_capac (st, uptr, val, desc);
 +}
 +
 +static t_stat ts_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
@@ -3670,7 +3717,7 @@ index 23e89f3..f9e415a 100644
  /* Boot */
  
  #if defined (VM_PDP11)
-@@ -1200,6 +1671,30 @@ fprintf (st, "The TS11 device supports the BOOT command.\n");
+@@ -1200,6 +1710,31 @@ fprintf (st, "The TS11 device supports the BOOT command.\n");
  fprintf (st, "The TS11 does not support the BOOT command.\n");
  #endif
  fprint_reg_help (st, dptr);
@@ -3688,6 +3735,7 @@ index 23e89f3..f9e415a 100644
 +fprintf (st, "   SET TS UNLOAD               rewind and unload (off-line only); the file\n");
 +fprintf (st, "                               stays attached, SET TS ONLINE loads it again\n");
 +fprintf (st, "   SET TS REEL=600|1200|2400   reel length in feet (default 2400)\n");
++fprintf (st, "                               (realism mode: decides EOT; CAPACITY is not used)\n");
 +fprintf (st, "   SHOW TS TRANSPORT           transport state and tape position\n\n");
 +fprintf (st, "At the prompt these wait until the transport is done; SET -N returns at once.\n");
 +fprintf (st, "The times are the registers LOADTIME and UNLOADTIME (ms; TS11 8000/8000,\n");
@@ -4522,7 +4570,7 @@ index 9f2eced..af88ef3 100644
  sim_brk_clrall (BRK_TYP_DYN_STEPOVER);                  /* cancel any step/over subroutine breakpoints */
 diff --git a/sim_sound.c b/sim_sound.c
 new file mode 100644
-index 0000000..986f8b5
+index 0000000..ae8892a
 --- /dev/null
 +++ b/sim_sound.c
 @@ -0,0 +1,2744 @@
@@ -6684,9 +6732,9 @@ index 0000000..986f8b5
 +
 +void sim_reel_erase (SND_REEL *r, double inches)
 +{
-+if ((r->uptr == NULL) || (r->type == NULL) || (inches <= 0.0))
++if ((r->uptr == NULL) || (r->type == NULL) || (inches == 0.0))
 +    return;
-+snd_reel_move (r, inches, FALSE);
++snd_reel_move (r, fabs (inches), inches < 0.0);         /* < 0: reverse */
 +}
 +
 +/* Start/stop drive: play the sounds of the next batch of records (at most
@@ -7272,10 +7320,10 @@ index 0000000..986f8b5
 +}
 diff --git a/sim_sound.h b/sim_sound.h
 new file mode 100644
-index 0000000..0d25597
+index 0000000..8f05d9e
 --- /dev/null
 +++ b/sim_sound.h
-@@ -0,0 +1,535 @@
+@@ -0,0 +1,538 @@
 +/* sim_sound.h: common sound support for all simulators
 +
 +   Copyright (c) 2026, Ulli (vaxorcist)
@@ -7696,6 +7744,9 @@ index 0000000..0d25597
 +                          tape got to.
 +   sim_reel_motion_begin (), sim_reel_record (), sim_reel_tapemark (),
 +   sim_reel_erase (), sim_reel_motion_end ():
++                          (sim_reel_erase: a length of tape moved without
++                          records, e.g. an erase or blank tape; negative:
++                          in reverse)
 +                          a guest motion command: count the records the
 +                          device moves over, then start the motion;
 +                          motion_end returns the time in microseconds

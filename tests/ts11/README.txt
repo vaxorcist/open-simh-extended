@@ -1,4 +1,4 @@
-open-simh-extended/tests/ts11/README.txt  v1
+open-simh-extended/tests/ts11/README.txt  v2
 
 TS11/TSV05 tests of the sound realism mode (2026-11-07), see
 docs/SIMH_Sound_handover.md, "Phase D, step 1".
@@ -19,3 +19,5 @@ tstest.py v1    VMS V4.7 tests with Ulli's image VMS047-1.R81 (RA81, VHD,
 s1.ini v1       panel commands, vax750, realism mode (no OS)
 p2.ini v1       panel commands, pdp11 (11/70, TS11), normal and realism mode
 sp1.ini v1      spindle regression after the SND_TIMER refactoring (vax750)
+broken_saveset.py v1  interrupted BACKUP, then BACKUP without /REWIND
+                (MicroVAX II): POSITERR/DRVERR in both modes (OPI)
