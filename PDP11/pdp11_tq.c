@@ -121,7 +121,9 @@
      and unload (UNLOADTIME 9 s); the file stays attached, SET TQn LOAD
      loads it again; DETACH takes the cartridge out.
    - EOT at the end of the 22nd track.
-   TK70, TU81 and TKUSER keep the old behavior also with sound enabled. */
+   TK70, TU81 and TKUSER keep the old behavior also with sound enabled.
+   On the Unibus VAXen INIT_TYPE is the TU81: SET TQ TK50 selects the
+   TUK50 (the messages of LOAD/UNLOAD and SHOW TRANSPORT say so). */
 
 #define UF_MSK          (UF_SCH|UF_VSS|UF_CMR|UF_CMW)   /* settable flags */
 
@@ -1358,6 +1360,15 @@ static t_bool tq_real (void)
 return sim_sound_enabled () && (tq_typ == TQ5_TYPE);
 }
 
+/* Hint for the messages when sound is enabled but the controller type is
+   not the TK50 (e.g. the TU81 default of the Unibus VAXen) */
+
+static const char *tq_hint (void)
+{
+return (sim_sound_enabled () && (tq_typ != TQ5_TYPE)) ?
+    "; SET TQ TK50 selects it" : "";
+}
+
 /* A volume: attached, and in the realism mode loaded */
 
 static t_bool tq_hasvol (UNIT *uptr)
@@ -1395,8 +1406,8 @@ int32 st;
 if (cptr != NULL)
     return SCPE_ARG;
 if (!tq_real ())
-    return sim_messagef (SCPE_ARG, "%s: the Load/Unload button exists in the sound realism mode of the TK50 only\n",
-                         sim_uname (uptr));
+    return sim_messagef (SCPE_ARG, "%s: the Load/Unload button exists in the sound realism mode of the TK50 only%s\n",
+                         sim_uname (uptr), tq_hint ());
 if (!(uptr->flags & UNIT_ATT))
     return sim_messagef (SCPE_UNATT, "%s: no cartridge (ATTACH one first)\n", sim_uname (uptr));
 sp = &tq_strm[uptr - tq_dev.units];
@@ -1428,7 +1439,7 @@ return SCPE_OK;
 static t_stat tq_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 if (!tq_real ()) {
-    fprintf (st, "no transport model (sound realism mode of the TK50 only)\n");
+    fprintf (st, "no transport model (sound realism mode of the TK50 only%s)\n", tq_hint ());
     return SCPE_OK;
     }
 fprintf (st, "TK50: ");
@@ -2705,6 +2716,8 @@ fprintf (st, "SHOW TQn TRANSPORT displays the drive state.  Registers BUFFER, BA
 fprintf (st, "LOADMIN, LOADMAX, CALTIME, UNLOADTIME.  The sounds are in the sound directory\n");
 fprintf (st, "tk50 (tk50_<name>.wav: load, calibrate, unload, start, forward, stop, rstart,\n");
 fprintf (st, "reverse, rstop).  The TK70, TU81 and TKUSER keep the old behavior.\n");
+fprintf (st, "On the Unibus VAXen the controller is a TU81 by default: SET %s TK50 (while\n", dptr->name);
+fprintf (st, "no unit is attached) makes it a TUK50.\n");
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
 fprintf (st, "\nError handling is as follows:\n\n");
