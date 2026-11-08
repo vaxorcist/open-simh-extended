@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v11 (v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v12 (v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -57,6 +57,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 34 | OPEN | Minor | `PDP11/pdp11_ts.c` `ts_help` | HELP TS mentions "type options" and a "bad block option" that the TS device does not have (copied from a disk driver) |
 | 35 | OPEN | Suspicious | `scp.c` SET (and help listing) | For a single-unit device, HELP lists unit-only modifiers as `SET dev ...` (e.g. `set TS LOCKED`), but SET at device level refuses them ("Invalid argument"); `SET TS0 LOCKED` works |
 | 36 | OPEN | Minor | `PDP11/pdp11_ts.c` `ts_rd`, `ts_wr` debug | The REG debug lines name the registers the wrong way round (the base address, TSBA/TSDB, is shown as TSSR and vice versa) |
+| 37 | FIXED (patch 5) | Pitfall | `scp.c` AIO migration, `sim_sound_activate_us` | SCP activates a unit before calling its asynchronous I/O completion callback, so `sim_activate` in the callback is ignored; `sim_activate_abs` replaces the activation |
 
 ## Details
 
@@ -330,3 +331,9 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Where:** `PDP11/pdp11_ts.c`, `ts_rd` and `ts_wr`: `((PA >> 1) & 01) ? "TSBA" : "TSSR"` (and `"TSDB" : "TSSR"`), while the code below decodes PA<1> = 0 as TSBA/TSDB and PA<1> = 1 as TSSR.
 - **Effect:** `SET TS DEBUG=REG` shows a write of the command pointer (TSDB, base address) as "TSSR" and a read of TSSR as "TSBA"; misleading when tracing a driver. Behaviour is not affected.
 - **Found:** 2026-11-07 (TS realism debugging under VMS V4.7).
+
+### 37 — FIXED IN PATCH 5 (sim_sound) — Pitfall: sim_activate from an asynchronous I/O completion callback is ignored
+- **Where:** `scp.c` / `sim_defs.h`, the AIO migration (`AIO_UPDATE_QUEUE`): for a completed asynchronous `sim_tape`/`sim_disk` operation SCP first activates the unit (`a_activate_call`, usually with delay 0) and only then calls the device's completion callback (e.g. `tq_io_complete`). A plain `sim_activate` inside the callback finds the unit already queued and does nothing.
+- **Effect:** a device cannot replace the completion delay from its callback with `sim_activate`; the bottom half runs at once. In the sound realism mode of the TK50 every tape command ended immediately (rewinds took no time, the guest did not wait for the tape), while the transport model's clock ran ahead.
+- **Fix (patch 5):** `sim_sound_activate_us` uses `sim_activate_abs`, which replaces an existing activation. The other callers (RL, RP, RQ, HK, RB) call it in their service or command-start paths, where the unit is not queued, so nothing changes for them. Plain SIMH is not affected (its devices do not reschedule from the callback); worth knowing for any future device that does.
+- **Found:** 2026-11-08 (TK50 realism mode under VMS V4.7, with `SET TQ DEBUG=TRACE`).
