@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   08-Nov-26    Ulli    Cartridge streamers (SND_STREAMER, TK50), realtime
+                        clock
    07-Nov-26    Ulli    Tape transports (SND_REEL); realtime timers shared by
                         spindles and transports; playback rate with glides,
                         delayed and time-limited voices; default tape sounds
@@ -1322,10 +1324,13 @@ snd_runhooks[snd_n_runhooks++] = fn;
 
 static void snd_timers_run_state (t_bool running);
 
+static void snd_rt_run_state (t_bool running);
+
 void sim_sound_run_state (t_bool running)
 {
 int32 i;
 
+snd_rt_run_state (running);                     /* the realtime clock first */
 snd_timers_run_state (running);
 for (i = 0; i < snd_n_runhooks; i++)
     snd_runhooks[i] (running);
@@ -1350,7 +1355,9 @@ if (inst < 1.0)
     inst = 1.0;
 if (inst > 2000000000.0)
     inst = 2000000000.0;
-sim_activate (uptr, (int32)inst);
+sim_activate_abs (uptr, (int32)inst);                  /* (an asynchronous I/O completion
+                                                           has activated the unit already:
+                                                           the realistic delay replaces it) */
 }
 
 /* Realtime timers (see sim_sound.h)
@@ -2299,6 +2306,871 @@ switch (s) {
     }
 if (s != SND_REEL_NOREEL)
     fprintf (st, ", %d ft reel", (int)snd_reel_len_ft (r));
+return SCPE_OK;
+}
+
+/* Realtime clock (see sim_sound.h): simulated time while running, wall
+   time at the prompt; continuous across the switches */
+
+static t_bool snd_rt_inited = FALSE;
+static t_bool snd_rt_running = FALSE;
+static double snd_rt_base_us = 0.0;             /* running: rt at snd_rt_gbase */
+static double snd_rt_gbase = 0.0;               /*  ... sim_gtime () then */
+static double snd_rt_stop_us = 0.0;             /* stopped: rt at snd_rt_wall_ms */
+static uint32 snd_rt_wall_ms = 0;
+
+double sim_sound_rt_us (void)
+{
+if (!snd_rt_inited) {
+    snd_rt_inited = TRUE;
+    snd_rt_wall_ms = sim_os_msec ();
+    snd_rt_stop_us = 0.0;
+    }
+if (snd_rt_running)
+    return snd_rt_base_us + (sim_gtime () - snd_rt_gbase) / sim_sound_inst_per_us ();
+return snd_rt_stop_us + 1000.0 * (double)(sim_os_msec () - snd_rt_wall_ms);
+}
+
+static void snd_rt_run_state (t_bool running)
+{
+double now = sim_sound_rt_us ();
+
+if (running == snd_rt_running)
+    return;
+if (running) {
+    snd_rt_base_us = now;
+    snd_rt_gbase = sim_gtime ();
+    }
+else {
+    snd_rt_stop_us = now;
+    snd_rt_wall_ms = sim_os_msec ();
+    }
+snd_rt_running = running;
+}
+
+/* Cartridge streamers (see sim_sound.h) */
+
+#define STRM_IDLE       0                       /* motion modes */
+#define STRM_START      1
+#define STRM_STREAM     2
+#define STRM_REPOS      3
+#define STRM_MOVE       4
+
+#define STRM_DIR_NONE   0                       /* buffer directions */
+#define STRM_DIR_READ   1
+#define STRM_DIR_WRITE  2
+
+#define STRM_S_LOAD     0                       /* sound indices */
+#define STRM_S_CAL      1
+#define STRM_S_UNLOAD   2
+#define STRM_S_START    3
+#define STRM_S_FWD      4
+#define STRM_S_STOP     5
+#define STRM_S_RSTART   6
+#define STRM_S_REV      7
+#define STRM_S_RSTOP    8
+
+#define STRM_INF        1e300
+
+static const char *snd_strm_names[SND_STRM_NSMP] = {
+    "load", "calibrate", "unload", "start", "forward", "stop", "rstart", "reverse", "rstop" };
+static const char *snd_strm_defaults[SND_STRM_NSMP] = {         /* in default_tape */
+    "load.wav", NULL, "unload.wav", "start.wav", "motion.wav", "stop.wav",
+    "start.wav", "motion.wav", "stop.wav" };
+
+void sim_strm_set_defaults (SND_STRM_REGS *regs, const SND_STRM_TYPE *type)
+{
+regs->buffer = type->buffer;
+regs->backup_in = type->backup_in;
+regs->repos_ms = type->repos_ms;
+regs->load_min_ms = type->load_min_ms;
+regs->load_max_ms = type->load_max_ms;
+regs->cal_ms = type->cal_ms;
+regs->unload_ms = type->unload_ms;
+}
+
+static double strm_buf (SND_STREAMER *s)
+{
+return (s->regs->buffer > 0) ? (double)s->regs->buffer : 32768.0;
+}
+
+static double strm_cap_in (SND_STREAMER *s)
+{
+return s->type->track_in * (double)s->type->tracks;
+}
+
+static void strm_set_lpos (SND_STREAMER *s, double in)
+{
+double max = strm_cap_in (s) + s->type->track_in;       /* a little beyond EOT */
+
+s->lpos = (in < 0.0) ? 0.0 : ((in > max) ? max : in);
+s->pos_mil = (uint32)(s->lpos * 1000.0 + 0.5);
+}
+
+/* Physical distance from BOT of a logical position (serpentine: even
+   tracks run forward, odd ones in reverse) */
+
+static double strm_phys (SND_STREAMER *s, double lpos)
+{
+double tl = s->type->track_in;
+int32 k = (int32)(lpos / tl);
+double w = lpos - (double)k * tl;
+
+if (k >= s->type->tracks) {
+    k = s->type->tracks - 1;
+    w = tl;
+    }
+return (k & 1) ? tl - w : w;
+}
+
+/* Rotation rate of the take-up reel relative to the loops' reference */
+
+static double strm_rate (SND_STREAMER *s, double phys_in, double ips)
+{
+const SND_STRM_TYPE *ty = s->type;
+double r = sqrt (ty->hub_r * ty->hub_r + phys_in * ty->tape_t / M_PI);
+double rate = (ips / ty->ips) * (ty->ref_r / r);
+
+return (rate < 0.4) ? 0.4 : ((rate > 2.5) ? 2.5 : rate);
+}
+
+static void strm_start (SND_STREAMER *s, double at)
+{
+const SND_STRM_TYPE *ty = s->type;
+double run = ty->start_s;
+
+if (s->backed)                                  /* run up over the backed-up tape */
+    run += ((double)s->regs->backup_in - ty->stop_in) / ty->ips;
+s->mode = STRM_START;
+s->t = at;
+s->pend = at + 1000000.0 * run;
+s->backed = FALSE;
+}
+
+static void strm_repos (SND_STREAMER *s)
+{
+s->mode = STRM_REPOS;
+s->pend = s->t + 1000.0 * (double)s->regs->repos_ms;
+s->backed = TRUE;
+}
+
+/* Bring the model up to time now (nothing happens before s->t) */
+
+static void strm_advance (SND_STREAMER *s, double now)
+{
+double B = strm_buf (s), rate = s->type->rate / 1000000.0;  /* bytes per us */
+int32 guard;
+
+for (guard = 0; guard < 100; guard++) {
+    switch (s->mode) {
+
+        case STRM_IDLE:
+            if ((s->dir == STRM_DIR_WRITE) && (s->bufc > 0.0) &&
+                (s->flush || (s->need > 0.0) || (s->bufc >= B / 2.0))) {
+                strm_start (s, s->t);           /* write the buffer out */
+                continue;
+                }
+            if ((s->dir == STRM_DIR_READ) &&
+                ((s->need > s->bufc) || (s->bufc <= B / 2.0))) {
+                strm_start (s, s->t);           /* read ahead */
+                continue;
+                }
+            return;
+
+        case STRM_START:
+        case STRM_REPOS:
+        case STRM_MOVE:
+            if (now < s->pend)
+                return;
+            s->t = s->pend;
+            if (s->mode == STRM_START)
+                s->mode = STRM_STREAM;
+            else {
+                s->mode = STRM_IDLE;
+                s->mv_rewind = FALSE;
+                }
+            continue;
+
+        case STRM_STREAM:
+            if (now <= s->t)
+                return;
+            if (s->dir == STRM_DIR_WRITE) {     /* buffer -> tape */
+                double dt = s->bufc / rate;
+
+                if (s->t + dt <= now) {
+                    s->t += dt;
+                    s->bufc = 0.0;
+                    s->flush = FALSE;
+                    strm_repos (s);             /* empty: stop, back up */
+                    continue;
+                    }
+                s->bufc -= (now - s->t) * rate;
+                s->t = now;
+                return;
+                }
+            else {                              /* tape -> buffer */
+                double cap = (s->need > B) ? s->need : B;
+                double dt = (cap - s->bufc) / rate;
+
+                if (dt < 0.0)
+                    dt = 0.0;
+                if (s->t + dt <= now) {
+                    s->t += dt;
+                    s->bufc = cap;
+                    strm_repos (s);             /* full: stop, back up */
+                    continue;
+                    }
+                s->bufc += (now - s->t) * rate;
+                s->t = now;
+                return;
+                }
+        }
+    }
+}
+
+/* Time of the next transition of the model (STRM_INF: none) */
+
+static double strm_next (SND_STREAMER *s)
+{
+double B = strm_buf (s), rate = s->type->rate / 1000000.0;
+
+switch (s->mode) {
+    case STRM_START: case STRM_REPOS: case STRM_MOVE:
+        return s->pend;
+    case STRM_STREAM:
+        if (s->dir == STRM_DIR_WRITE)
+            return s->t + s->bufc / rate;
+        return s->t + ((((s->need > B) ? s->need : B) - s->bufc) / rate);
+    default: {
+        SND_STREAMER c = *s;
+
+        strm_advance (&c, c.t);                 /* would it start? */
+        return (c.mode != STRM_IDLE) ? s->t : STRM_INF;
+        }
+    }
+}
+
+/* Sounds: the predicted timeline of the model, as queued segments.  A
+   segment that is already queued is kept (a loop gets its new end), a
+   queued future one that is no longer in the timeline is dropped, a
+   playing one is faded out. */
+
+typedef struct { int32 kind; double at; double end; double rate; double rate2; } STRM_PSEG;
+
+static int32 strm_timeline (SND_STREAMER *s, STRM_PSEG *ps, int32 max)
+{
+SND_STREAMER c = *s;
+int32 n = 0, guard;
+double d_st = sim_sound_duration (s->smp[STRM_S_START]);
+double d_sp = sim_sound_duration (s->smp[STRM_S_STOP]);
+double d_rst = sim_sound_duration (s->smp[STRM_S_RSTART]);
+double d_rsp = sim_sound_duration (s->smp[STRM_S_RSTOP]);
+
+#define PSEG(k,a,e,r,r2) if (n < max) { ps[n].kind = (k); ps[n].at = (a); ps[n].end = (e); \
+                                        ps[n].rate = (r); ps[n].rate2 = (r2); n++; }
+for (guard = 0; guard < 12; guard++) {
+    double a, b, e;
+
+    if (c.mode == STRM_IDLE) {
+        double nx = strm_next (&c);
+
+        if (nx >= STRM_INF)
+            break;
+        strm_advance (&c, nx);
+        if (c.mode == STRM_IDLE)
+            break;
+        continue;
+        }
+    a = (c.mode == STRM_STREAM) ? c.t : c.t;
+    if (c.mode == STRM_START) {                 /* start, then stream: one loop */
+        double st = c.t;
+
+        strm_advance (&c, c.pend);              /* now streaming */
+        e = strm_next (&c);
+        if (e >= STRM_INF)
+            e = c.t;
+        PSEG (STRM_S_START, st, st, 1.0, 1.0);
+        PSEG (STRM_S_FWD, st + 0.6 * 1000000.0 * d_st, e, 1.0, 1.0);
+        strm_advance (&c, e);                   /* -> repos */
+        continue;
+        }
+    if (c.mode == STRM_STREAM) {                /* streaming already */
+        e = strm_next (&c);
+        PSEG (STRM_S_FWD, -1.0, e, 1.0, 1.0);   /* (-1: the playing loop) */
+        strm_advance (&c, e);
+        continue;
+        }
+    b = c.pend;
+    if (c.mode == STRM_REPOS) {                 /* stop, back up, stop */
+        double r0 = a + 0.7 * 1000000.0 * d_sp;
+
+        PSEG (STRM_S_STOP, a, a, 1.0, 1.0);
+        PSEG (STRM_S_RSTART, r0, r0, 1.0, 1.0);
+        PSEG (STRM_S_REV, r0 + 0.6 * 1000000.0 * d_rst, b - 0.6 * 1000000.0 * d_rsp, 1.0, 1.0);
+        PSEG (STRM_S_RSTOP, b - 1000000.0 * d_rsp, b, 1.0, 1.0);
+        }
+    else {                                      /* move: space or rewind */
+        int32 ks = c.mv_rev ? STRM_S_RSTART : STRM_S_START;
+        int32 kl = c.mv_rev ? STRM_S_REV : STRM_S_FWD;
+        int32 kp = c.mv_rev ? STRM_S_RSTOP : STRM_S_STOP;
+        double ds = c.mv_rev ? d_rst : d_st, dp = c.mv_rev ? d_rsp : d_sp;
+        double r1 = 1.0, r2 = 1.0;
+
+        if (c.mv_rewind) {                      /* reel glide */
+            r1 = strm_rate (s, c.mv_from, c.type->rewind_ips);
+            r2 = strm_rate (s, 0.0, c.type->rewind_ips);
+            }
+        PSEG (ks, a, a, 1.0, 1.0);
+        PSEG (kl, a + 0.6 * 1000000.0 * ds, b - 0.6 * 1000000.0 * dp, r1, r2);
+        PSEG (kp, b - 1000000.0 * dp, b, 1.0, 1.0);
+        }
+    strm_advance (&c, b);
+    }
+#undef PSEG
+return n;
+}
+
+static void strm_sounds (SND_STREAMER *s)
+{
+STRM_PSEG ps[SND_STRM_NSEG];
+t_bool used[SND_STRM_NSEG];
+int32 n, i, j;
+double now;
+
+if (!snd_enabled || (s->type == NULL))
+    return;
+now = sim_sound_rt_us ();
+n = strm_timeline (s, ps, SND_STRM_NSEG);
+memset (used, 0, sizeof (used));
+for (j = 0; j < SND_STRM_NSEG; j++) {           /* old segments */
+    SND_STRM_SEG *g = &s->seg[j];
+    t_bool keep = FALSE;
+
+    if (g->kind < 0)
+        continue;
+    for (i = 0; i < n; i++) {
+        if (used[i] || (ps[i].kind != g->kind))
+            continue;
+        if ((ps[i].at < 0.0) ? ((g->at <= now) && (g->end >= now - 50000.0))
+                             : (fabs (ps[i].at - g->at) < 2000.0)) {
+            keep = TRUE;                        /* the same segment */
+            used[i] = TRUE;
+            if ((ps[i].end != g->end) && (g->kind == STRM_S_FWD || g->kind == STRM_S_REV)) {
+                g->end = ps[i].end;             /* new end of a loop */
+                sim_sound_extend (g->h, (g->end - now) / 1000000.0);
+                }
+            break;
+            }
+        }
+    if (!keep) {
+        if ((g->at > now) || ((g->end > now) && (g->kind == STRM_S_FWD || g->kind == STRM_S_REV)))
+            sim_sound_stop (g->h, 30);          /* drop or fade */
+        g->kind = -1;
+        }
+    }
+for (i = 0; i < n; i++) {                       /* new segments */
+    double at, end, life = 0.0;
+    uint32 flags = 0;
+
+    if (used[i])
+        continue;
+    if (ps[i].at < 0.0)                         /* streaming, no loop yet */
+        ps[i].at = now;
+    for (j = 0; (j < SND_STRM_NSEG) && (s->seg[j].kind >= 0); j++) ;
+    if (j >= SND_STRM_NSEG)
+        break;
+    at = ps[i].at;
+    end = ps[i].end;
+    if ((ps[i].kind == STRM_S_FWD) || (ps[i].kind == STRM_S_REV)) {
+        if (end <= at)
+            continue;
+        flags = SND_F_LOOP | SND_F_RANDPHASE;
+        if (end < now)
+            continue;
+        if (at < now)
+            at = now;
+        life = (end - at) / 1000000.0;
+        }
+    else if (at < now - 20000.0)                /* a transient that is past */
+        continue;
+    s->seg[j].kind = ps[i].kind;
+    s->seg[j].at = ps[i].at;
+    s->seg[j].end = end;
+    s->seg[j].h = sim_sound_play_timed (s->smp[ps[i].kind], s->group, s->gain, flags,
+                                        ps[i].rate, (at > now) ? (at - now) / 1000000.0 : 0.0,
+                                        life, flags ? 15 : 0);
+    if (ps[i].rate2 != ps[i].rate)
+        sim_sound_glide (s->seg[j].h, ps[i].rate2, life, SND_GLIDE_REEL);
+    }
+}
+
+static void strm_silence (SND_STREAMER *s, uint32 fade_ms)
+{
+int32 j;
+
+for (j = 0; j < SND_STRM_NSEG; j++) {
+    if (s->seg[j].kind >= 0)
+        sim_sound_stop (s->seg[j].h, fade_ms);
+    s->seg[j].kind = -1;
+    }
+sim_sound_stop (s->hact, fade_ms);
+sim_sound_stop (s->hcal, fade_ms);
+s->hact = s->hcal = 0;
+}
+
+static void strm_reset_motion (SND_STREAMER *s, double at)
+{
+s->mode = STRM_IDLE;
+s->dir = STRM_DIR_NONE;
+s->bufc = s->need = 0.0;
+s->flush = s->backed = s->mv_rev = s->mv_rewind = FALSE;
+s->t = s->pend = at;
+}
+
+static void strm_tmr_done (SND_TIMER *t)
+{
+SND_STREAMER *s = (SND_STREAMER *) t->ctx;
+
+if (s->state == SND_STRM_LOADING) {
+    s->state = SND_STRM_READY;
+    strm_reset_motion (s, sim_sound_rt_us ());
+    strm_set_lpos (s, 0.0);
+    s->newcart = FALSE;
+    if (s->on_done != NULL)
+        s->on_done (s->uptr, SND_STRM_DONE_LOAD);
+    }
+else if (s->state == SND_STRM_UNLOADING) {
+    s->state = SND_STRM_INSERTED;
+    strm_reset_motion (s, sim_sound_rt_us ());
+    strm_set_lpos (s, 0.0);
+    if (s->on_done != NULL)
+        s->on_done (s->uptr, SND_STRM_DONE_UNLOAD);
+    }
+}
+
+void sim_strm_init (SND_STREAMER *s, UNIT *uptr, SND_STRM_REGS *regs,
+                    void (*on_done) (UNIT *uptr, int32 what), int32 group, double gain)
+{
+int32 j;
+
+if (s->uptr != NULL)
+    return;
+memset (s, 0, sizeof (*s));
+if (!sim_sound_timer_init (&s->tmr, "STREAMER", &strm_tmr_done, s)) {
+    sim_printf ("Sound: out of memory for the tape drive %s\n", sim_uname (uptr));
+    return;
+    }
+s->uptr = uptr;
+s->regs = regs;
+s->on_done = on_done;
+s->group = group;
+s->gain = gain;
+s->state = SND_STRM_NOCART;
+for (j = 0; j < SND_STRM_NSEG; j++)
+    s->seg[j].kind = -1;
+}
+
+static void strm_load_sounds (SND_STREAMER *s)
+{
+char name[CBUFSIZE];
+int32 i;
+
+if ((s->type == NULL) || !snd_enabled)
+    return;
+for (i = 0; i < SND_STRM_NSMP; i++) {
+    snprintf (name, sizeof (name), "%s_%s.wav", s->type->prefix, snd_strm_names[i]);
+    if (snd_strm_defaults[i] != NULL)
+        s->smp[i] = snd_load_with_default (s->type->dir, name, SND_DEFAULT_TAPE,
+                                           snd_strm_defaults[i], "tape");
+    else s->smp[i] = sim_sound_load_optional (s->type->dir, name);
+    }
+}
+
+void sim_strm_set_type (SND_STREAMER *s, const SND_STRM_TYPE *type)
+{
+s->type = type;
+strm_load_sounds (s);
+}
+
+void sim_strm_insert (SND_STREAMER *s, t_bool newcart)
+{
+if ((s->uptr == NULL) || (s->type == NULL))
+    return;
+sim_sound_timer_cancel (&s->tmr);
+strm_silence (s, 50);
+strm_load_sounds (s);
+strm_reset_motion (s, sim_sound_rt_us ());
+strm_set_lpos (s, 0.0);
+s->newcart = newcart;
+s->state = snd_enabled ? SND_STRM_INSERTED : SND_STRM_READY;
+}
+
+void sim_strm_remove (SND_STREAMER *s)
+{
+if (s->uptr == NULL)
+    return;
+sim_sound_timer_cancel (&s->tmr);
+strm_silence (s, 100);
+strm_reset_motion (s, sim_sound_rt_us ());
+strm_set_lpos (s, 0.0);
+s->state = SND_STRM_NOCART;
+}
+
+t_stat sim_strm_load (SND_STREAMER *s)
+{
+double ms, now;
+int32 lo, hi;
+
+if ((s->uptr == NULL) || (s->type == NULL))
+    return SCPE_IERR;
+if (s->state != SND_STRM_INSERTED)
+    return SCPE_OK;
+if (!snd_enabled) {
+    s->state = SND_STRM_LOADING;
+    strm_tmr_done (&s->tmr);
+    return SCPE_OK;
+    }
+lo = s->regs->load_min_ms;                      /* a random load time: the head */
+hi = s->regs->load_max_ms;                      /* finds the tape's tracks */
+if (hi < lo)
+    hi = lo;
+ms = (double)lo + (double)(hi - lo) * ((double)(rand () & 0x7FFF) / 32767.0);
+now = sim_sound_rt_us ();
+s->hact = sim_sound_play_timed (s->smp[STRM_S_LOAD], s->group, s->gain, 0, 1.0, 0.0,
+                                ms / 1000.0, 300);
+if (s->newcart && (s->regs->cal_ms > 0)) {      /* a new cartridge: calibration */
+    s->hcal = sim_sound_play_timed (s->smp[STRM_S_CAL], s->group, s->gain,
+                                    SND_F_LOOP, 1.0, ms / 1000.0,
+                                    (double)s->regs->cal_ms / 1000.0, 300);
+    ms += (double)s->regs->cal_ms;
+    }
+s->state = SND_STRM_LOADING;
+s->act_end = now + 1000.0 * ms;
+sim_sound_timer_start (&s->tmr, 1000.0 * ms);
+return SCPE_OK;
+}
+
+/* Common start of a host motion: the time base and pending writes */
+
+static double strm_begin (SND_STREAMER *s)
+{
+double now = sim_sound_rt_us ();
+
+strm_advance (s, now);
+if ((s->mode == STRM_IDLE) && (s->t < now))     /* at rest: a restart is now */
+    s->t = now;
+return now;
+}
+
+/* Settle the buffer: write it out (write) or drop the read-ahead (read);
+   the model is then idle (possibly in the future) */
+
+static void strm_settle (SND_STREAMER *s, double now)
+{
+if (s->dir == STRM_DIR_WRITE) {
+    if (s->bufc > 0.0) {
+        s->flush = TRUE;
+        strm_advance (s, STRM_INF);             /* written out, stopped */
+        }
+    }
+else if (s->dir == STRM_DIR_READ) {
+    s->need = 0.0;
+    if ((s->mode == STRM_START) || (s->mode == STRM_STREAM)) {
+        if (s->t < now)
+            s->t = now;
+        strm_repos (s);                         /* stop and back up */
+        }
+    strm_advance (s, STRM_INF);
+    s->bufc = 0.0;
+    }
+else strm_advance (s, STRM_INF);
+s->dir = STRM_DIR_NONE;
+s->bufc = 0.0;
+s->flush = FALSE;
+if (s->t < now)
+    s->t = now;
+}
+
+static double strm_done (SND_STREAMER *s, double now, double ready)
+{
+strm_sounds (s);
+return (ready > now) ? ready - now : 0.0;
+}
+
+double sim_strm_read (SND_STREAMER *s, double bytes)
+{
+double now, ready, rate;
+int32 guard;
+
+if ((s->uptr == NULL) || (s->type == NULL) || !snd_enabled || (s->state != SND_STRM_READY)) {
+    if ((s->type != NULL) && (s->uptr != NULL))
+        strm_set_lpos (s, s->lpos + bytes / s->type->bytes_per_in);
+    return 0.0;
+    }
+now = strm_begin (s);
+if (s->dir != STRM_DIR_READ) {
+    strm_settle (s, now);
+    s->dir = STRM_DIR_READ;
+    }
+rate = s->type->rate / 1000000.0;
+if (s->bufc + 0.5 >= bytes) {                   /* in the buffer */
+    ready = (s->t > now) ? s->t : now;
+    }
+else {                                          /* wait for the tape */
+    s->need = bytes;
+    for (guard = 0; guard < 20; guard++) {
+        double nx;
+
+        if (s->mode == STRM_STREAM) {           /* the data arrives */
+            strm_advance (s, s->t + (bytes - s->bufc) / rate);
+            break;
+            }
+        nx = strm_next (s);
+        if (nx >= STRM_INF)
+            break;
+        strm_advance (s, (nx > now) ? nx : now);
+        }
+    ready = (s->t > now) ? s->t : now;
+    s->need = 0.0;
+    }
+s->bufc -= bytes;
+if (s->bufc < 0.0)
+    s->bufc = 0.0;
+strm_set_lpos (s, s->lpos + bytes / s->type->bytes_per_in);
+strm_advance (s, (s->t > now) ? s->t : now);    /* restart the read-ahead? */
+return strm_done (s, now, ready);
+}
+
+double sim_strm_write (SND_STREAMER *s, double bytes)
+{
+double now, ready, B, rate;
+int32 guard;
+
+if ((s->uptr == NULL) || (s->type == NULL) || !snd_enabled || (s->state != SND_STRM_READY)) {
+    if ((s->type != NULL) && (s->uptr != NULL))
+        strm_set_lpos (s, s->lpos + bytes / s->type->bytes_per_in);
+    return 0.0;
+    }
+now = strm_begin (s);
+if (s->dir != STRM_DIR_WRITE) {
+    strm_settle (s, now);
+    s->dir = STRM_DIR_WRITE;
+    }
+B = strm_buf (s);
+if (bytes > B)
+    B = bytes;
+rate = s->type->rate / 1000000.0;
+if (B - s->bufc + 0.5 < bytes) {                /* wait for room */
+    s->need = bytes;
+    for (guard = 0; guard < 20; guard++) {
+        double nx;
+
+        if (s->mode == STRM_STREAM) {           /* room appears */
+            strm_advance (s, s->t + (s->bufc - (B - bytes)) / rate);
+            break;
+            }
+        nx = strm_next (s);
+        if (nx >= STRM_INF)
+            break;
+        strm_advance (s, (nx > now) ? nx : now);
+        }
+    s->need = 0.0;
+    }
+ready = (s->t > now) ? s->t : now;
+s->bufc += bytes;
+strm_set_lpos (s, s->lpos + bytes / s->type->bytes_per_in);
+strm_advance (s, ready);                        /* start writing? */
+return strm_done (s, now, ready);
+}
+
+double sim_strm_tapemark (SND_STREAMER *s)
+{
+if (s->type == NULL)
+    return 0.0;
+return sim_strm_write (s, s->type->tm_bytes);
+}
+
+double sim_strm_flush (SND_STREAMER *s)
+{
+double now;
+
+if ((s->uptr == NULL) || (s->type == NULL) || !snd_enabled || (s->state != SND_STRM_READY))
+    return 0.0;
+now = strm_begin (s);
+if (s->dir == STRM_DIR_WRITE)
+    strm_settle (s, now);
+return strm_done (s, now, s->t);
+}
+
+/* A move along the tape (space, reverse read, rewind) from the settled
+   model; crossing a track end costs a stop and a start */
+
+static double strm_move (SND_STREAMER *s, double to_lpos, t_bool rewind)
+{
+const SND_STRM_TYPE *ty = s->type;
+double now = strm_begin (s);
+double from = s->lpos, p0, p1, secs;
+int32 k0, k1;
+
+strm_settle (s, now);
+if (to_lpos < 0.0)
+    to_lpos = 0.0;
+p0 = strm_phys (s, from);
+p1 = strm_phys (s, to_lpos);
+k0 = (int32)(from / ty->track_in);
+k1 = (int32)(to_lpos / ty->track_in);
+if (rewind)
+    secs = ty->start_s + p0 / ty->rewind_ips + ty->stop_s;
+else {
+    secs = ty->start_s + fabs (to_lpos - from) / ty->ips + ty->stop_s +
+           (double)abs (k1 - k0) * (ty->start_s + ty->stop_s);
+    }
+if (fabs (to_lpos - from) < 0.01 && !rewind)
+    secs = 0.0;
+strm_set_lpos (s, to_lpos);
+if (secs > 0.0) {
+    s->mode = STRM_MOVE;
+    s->pend = s->t + 1000000.0 * secs;
+    s->mv_rewind = rewind;
+    s->mv_from = p0;
+    s->mv_rev = rewind ? TRUE : ((k0 & 1) ? (to_lpos > from) : (to_lpos < from));
+    if (!rewind && (k0 != k1))                  /* sound: direction at the start */
+        s->mv_rev = (k0 & 1) ? (to_lpos > from) : (to_lpos < from);
+    (void)p1;
+    }
+s->backed = FALSE;
+return strm_done (s, now, (s->mode == STRM_MOVE) ? s->pend : s->t);
+}
+
+double sim_strm_space (SND_STREAMER *s, double bytes)
+{
+if ((s->uptr == NULL) || (s->type == NULL))
+    return 0.0;
+if (!snd_enabled || (s->state != SND_STRM_READY)) {
+    strm_set_lpos (s, s->lpos + bytes / s->type->bytes_per_in);
+    return 0.0;
+    }
+return strm_move (s, s->lpos + bytes / s->type->bytes_per_in, FALSE);
+}
+
+double sim_strm_rewind (SND_STREAMER *s)
+{
+if ((s->uptr == NULL) || (s->type == NULL))
+    return 0.0;
+if (!snd_enabled || (s->state != SND_STRM_READY)) {
+    strm_set_lpos (s, 0.0);
+    return 0.0;
+    }
+return strm_move (s, 0.0, TRUE);
+}
+
+t_stat sim_strm_unload (SND_STREAMER *s)
+{
+double now, rew_end, ums;
+
+if ((s->uptr == NULL) || (s->type == NULL))
+    return SCPE_IERR;
+if (s->state != SND_STRM_READY)
+    return SCPE_OK;
+if (!snd_enabled) {
+    s->state = SND_STRM_UNLOADING;
+    strm_tmr_done (&s->tmr);
+    return SCPE_OK;
+    }
+now = sim_sound_rt_us ();
+sim_strm_rewind (s);                            /* write out, rewind */
+rew_end = (s->mode == STRM_MOVE) ? s->pend : s->t;
+if (rew_end < now)
+    rew_end = now;
+ums = (double)s->regs->unload_ms;
+s->hact = sim_sound_play_timed (s->smp[STRM_S_UNLOAD], s->group, s->gain, 0, 1.0,
+                                (rew_end - now) / 1000000.0, ums / 1000.0, 300);
+s->state = SND_STRM_UNLOADING;
+s->act_end = rew_end + 1000.0 * ums;
+sim_sound_timer_start (&s->tmr, s->act_end - now);
+return SCPE_OK;
+}
+
+t_bool sim_strm_loaded (SND_STREAMER *s)
+{
+return (s->uptr != NULL) && (sim_strm_state (s) == SND_STRM_READY);
+}
+
+t_bool sim_strm_past_eot (SND_STREAMER *s)
+{
+return (s->type != NULL) && (s->lpos >= strm_cap_in (s));
+}
+
+int32 sim_strm_state (SND_STREAMER *s)
+{
+if (s->uptr == NULL)
+    return SND_STRM_NOCART;
+sim_sound_timer_busy (&s->tmr);                 /* prompt: wall time passed */
+return s->state;
+}
+
+void sim_strm_wait (SND_STREAMER *s)
+{
+int32 st = sim_strm_state (s);
+
+if (sim_is_running || ((st != SND_STRM_LOADING) && (st != SND_STRM_UNLOADING)))
+    return;
+sim_printf ("%s: %s in %.0f s ...\n", sim_uname (s->uptr),
+            (st == SND_STRM_LOADING) ? (s->newcart ? "loading and calibrating a new cartridge, at BOT"
+                                                   : "loading, at BOT")
+                                     : "rewinding and unloading, unloaded",
+            sim_sound_timer_left_s (&s->tmr));
+while (sim_strm_state (s) == st)
+    sim_os_ms_sleep (50);
+if (s->state == SND_STRM_READY)
+    sim_printf ("%s: at BOT\n", sim_uname (s->uptr));
+else if (s->state == SND_STRM_INSERTED)
+    sim_printf ("%s: unloaded, the handle can be lifted\n", sim_uname (s->uptr));
+}
+
+t_stat sim_strm_show (FILE *st, SND_STREAMER *s)
+{
+int32 state = sim_strm_state (s);
+const char *lights = "";
+
+switch (state) {
+    case SND_STRM_NOCART:
+        fprintf (st, "no cartridge");
+        lights = "green on";
+        break;
+    case SND_STRM_INSERTED:
+        fprintf (st, "cartridge inserted, not loaded%s", s->newcart ? " (new)" : "");
+        lights = "green on (the handle can be lifted)";
+        break;
+    case SND_STRM_LOADING:
+        fprintf (st, "loading, %.1f s left", sim_sound_timer_left_s (&s->tmr));
+        lights = "green blinking";
+        break;
+    case SND_STRM_UNLOADING:
+        fprintf (st, "rewinding and unloading, %.1f s left", sim_sound_timer_left_s (&s->tmr));
+        lights = "red blinking, then red on";
+        break;
+    default: {
+        double now = sim_sound_rt_us ();
+        SND_STREAMER c = *s;
+        int32 k = (int32)(s->lpos / s->type->track_in);
+        static const char *mname[] = { "at rest", "starting", "streaming", "repositioning", "moving" };
+
+        strm_advance (&c, now);
+        if (s->lpos < 0.01)
+            fprintf (st, "loaded, at BOT");
+        else fprintf (st, "loaded, track %d of %d, %.0f ft from BOT%s", k + 1, s->type->tracks,
+                      strm_phys (s, s->lpos) / 12.0, sim_strm_past_eot (s) ? " (past EOT)" : "");
+        fprintf (st, ", %s", (c.mode == STRM_MOVE && c.mv_rewind) ? "rewinding" : mname[c.mode]);
+        if (c.dir != STRM_DIR_NONE)
+            fprintf (st, ", buffer %.0f KB %s", c.bufc / 1024.0,
+                     (c.dir == STRM_DIR_READ) ? "read ahead" : "to write");
+        lights = (c.mode == STRM_IDLE) ? "green and red on" :
+                 ((c.mode == STRM_MOVE && c.mv_rewind) ? "both blinking" : "green blinking, red on");
+        break;
+        }
+    }
+fprintf (st, "; lights: %s", lights);
 return SCPE_OK;
 }
 
