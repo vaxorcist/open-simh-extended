@@ -3,7 +3,7 @@ TK50 tape sounds (sound/tk50)
 
 Synthetic sounds of the TK50 cartridge streamer (also the TZ30): 75 in/s,
 22 serpentine tracks, a 32 KB buffer, start/stop with repositioning.  Made
-by tools/make_tape_sounds.py v2 (open-simh-extended, branch notes), shaped
+by tools/make_tape_sounds.py v3 (open-simh-extended, branch notes), shaped
 after measurements of a TZ30 recording (pitch 457 Hz with harmonics,
 octave band levels, durations of the 3 s reposition cycle); the recording
 itself is not included.  Used by the TK50 in the sound realism mode
@@ -18,14 +18,19 @@ tk50_calibrate.wav  forward and reverse calibration runs,        new cartridge,
                     8 s loop                                     2 min
 tk50_unload.wav     leader wound in, unbuckling, solenoid, 9 s   unload after
                                                                  the rewind
-tk50_start.wav      start whoosh, 0.32 s                         streaming start
-tk50_forward.wav    streaming forward, 457 Hz tone, 1 s loop     read/write/space
-tk50_stop.wav       braking, dip, settling knock, 0.4 s          stop
-tk50_rstart.wav     reverse start, 0.32 s                        reposition,
+tk50_start.wav      run-up into the loop, 0.35 s                 streaming start
+tk50_forward.wav    streaming forward, 457 Hz tone and its       read/write/space
+                    harmonics, little noise, 1 s loop
+tk50_stop.wav       braking out of the loop, 0.45 s              stop
+tk50_rstart.wav     reverse run-up, 0.35 s                       reposition,
                                                                  space reverse
 tk50_reverse.wav    reverse, 457/501 Hz beating, 1 s loop        reposition,
                                                                  rewind (glided)
-tk50_rstop.wav      reverse stop, 0.3 s                          reposition end
+tk50_rstop.wav      reverse braking, 0.4 s                       reposition end
+
+The start, stop and loop sounds are made for the crossfades of
+sim_sound.c (a start ends with the loop's own beginning; a stop fades in
+while the loop fades out), so the motion has no gaps or bumps.
 
 load, calibrate and unload are mono, 16 bit, 22050 Hz WAV; the others
 44100 Hz.
