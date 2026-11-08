@@ -25,6 +25,11 @@
 
    tq           TQK50 tape controller
 
+   08-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED) for the TK50:
+                        cartridge streamer model (load, calibration,
+                        streaming and repositioning with a 32 KB buffer,
+                        serpentine tracks, rewind, unload), operator panel
+                        (SET TQn LOAD/UNLOAD, SHOW TQn TRANSPORT), sounds
    26-Mar-22    RMS     Added extra case points for new MTSE definitions
    23-Oct-13    RMS     Revised for new boot setup routine
    23-Jan-12    MP      Added missing support for Logical EOT detection while
@@ -90,6 +95,33 @@
 #include "pdp11_uqssp.h"
 #include "pdp11_mscp.h"
 #include "sim_tape.h"
+#include "sim_sound.h"
+
+/* Sound realism mode (SET SOUND ENABLED; 2026-11-08, Ulli), TK50 only
+
+   The TK50 (TQK50 on the Qbus, TUK50 on the Unibus) becomes a cartridge
+   streamer (SND_STREAMER in sim_sound; EK-OTK50-TM-002, EK-TUK50-OM-001):
+   75 in/s, 45 KB/s, 22 serpentine tracks of a 600 ft tape, rewind at about
+   80 in/s along the tape (up to 90 s), no fast search.
+
+   - ATTACH inserts the cartridge and lowers the handle; the unit has no
+     volume (offline) until SET TQn LOAD (the Load/Unload button) has
+     loaded it: a random time between LOADMIN and LOADMAX (10-15 s: the
+     head finds the tracks), plus CALTIME (2 min) for a new cartridge (an
+     empty file).  Then the host sees the unit available (attention).
+   - Streaming with a BUFFER (32 KB): reading, the drive reads ahead until
+     the buffer is full, stops and repositions (REPOS 1.42 s: stop, back up
+     BACKUP 60 in, stop; measured on a TZ30 recording), and starts again
+     (running up over the backed-up tape) when the host has emptied half
+     of the buffer; writing, a write ends at once while there is room, the
+     drive writes the buffer out and repositions when it runs empty.  A
+     slow host gives the typical stream - stop - reverse - start cycle.
+   - Positioning moves along the tape at 75 in/s; rewinds at 80 in/s.
+   - The host's unload (AVAILABLE with UNLOAD) and SET TQn UNLOAD rewind
+     and unload (UNLOADTIME 9 s); the file stays attached, SET TQn LOAD
+     loads it again; DETACH takes the cartridge out.
+   - EOT at the end of the 22nd track.
+   TK70, TU81 and TKUSER keep the old behavior also with sound enabled. */
 
 #define UF_MSK          (UF_SCH|UF_VSS|UF_CMR|UF_CMW)   /* settable flags */
 
@@ -222,7 +254,8 @@ struct tqpkt {
     d##_CMOD, d##_MED,  d##_FMT,  d##_CAP, \
     d##_UMOD, d##_CREV, d##_FREV, d##_UREV
 
-#define TEST_EOT(u)     (sim_tape_eot (u))
+#define TEST_EOT(u)     (tq_real () ? sim_strm_past_eot (&tq_strm[(u) - tq_dev.units]) \
+                                    : sim_tape_eot (u))
 
 struct drvtyp {
     uint32      uqpm;                                   /* UQ port model */
@@ -269,6 +302,23 @@ int32 tq_itime4 = 10;                                   /* stage 4 */
 int32 tq_qtime = 200;                                   /* queue time */
 int32 tq_xtime = 500;                                   /* transfer time */
 int32 tq_rwtime = 2000000;                              /* rewind time 2 sec (adjusted later) */
+
+/* TK50 cartridge streamer (sound realism mode, see above) */
+
+static const SND_STRM_TYPE tq_tk50 = {
+    "TK50", "tk50", "tk50",
+    75.0, 80.0, 45000.0,                                /* speed, rewind, data rate */
+    631.7, 22, 7092.0, 7200.0,                          /* bytes/in, tracks, track, tape */
+    0.133, 0.093, 3.5,                                  /* start 5 in, stop 3.5 in */
+    1024.0,                                             /* tape mark (provisional) */
+    1.0, 0.00095, 1.4,                                  /* take-up reel geometry */
+    10000, 15000, 120000, 9000,                         /* load, calibrate, unload */
+    32768, 60, 1420                                     /* buffer, backup, reposition */
+    };
+SND_STREAMER tq_strm[TQ_NUMDR];                         /* the drives */
+SND_STRM_REGS tq_sregs;                                 /* their registers */
+static t_bool tq_sregs_set = FALSE;
+static t_addr tq_pos0[TQ_NUMDR];                        /* position at a command's start */
 int32 tq_typ = INIT_TYPE;                               /* device type */
 
 /* Command table - legal modifiers (low 16b) and flags (high 16b) */
@@ -393,6 +443,11 @@ t_bool tq_putpkt (uint16 pkt, t_bool qt);
 t_bool tq_getdesc (struct uq_ring *ring, uint32 *desc);
 t_bool tq_putdesc (struct uq_ring *ring, uint32 desc);
 uint16 tq_mot_valid (UNIT *uptr, uint32 cmd);
+static t_bool tq_real (void);
+static t_bool tq_hasvol (UNIT *uptr);
+static void tq_strm_done (UNIT *uptr, int32 what);
+static t_stat tq_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+static t_stat tq_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat tq_mot_err (UNIT *uptr, uint32 rsiz);
 t_bool tq_mot_end (UNIT *uptr, uint32 flg, uint16 sts, uint32 rsiz);
 void tq_putr (int32 pkt, uint32 cmd, uint32 flg, uint16 sts, uint16 lnt, uint16 typ);
@@ -465,6 +520,13 @@ REG tq_reg[] = {
     { DRDATAD (QTIME,               tq_qtime, 24,             "response time for 'immediate' packets"), PV_LEFT + REG_NZ },
     { DRDATAD (XTIME,               tq_xtime, 24,             "response time for data transfers"), PV_LEFT + REG_NZ },
     { DRDATAD (RWTIME,             tq_rwtime, 32,             "rewind time 2 sec (adjusted later)"), PV_LEFT + REG_NZ },
+    { DRDATAD (BUFFER,      tq_sregs.buffer, 24,          "realism mode: TK50 buffer (bytes)"), PV_LEFT },
+    { DRDATAD (BACKUP,   tq_sregs.backup_in, 16,          "realism mode: reposition distance (in)"), PV_LEFT },
+    { DRDATAD (REPOS,     tq_sregs.repos_ms, 24,          "realism mode: reposition time (ms)"), PV_LEFT },
+    { DRDATAD (LOADMIN, tq_sregs.load_min_ms, 24,         "realism mode: shortest load (ms)"), PV_LEFT },
+    { DRDATAD (LOADMAX, tq_sregs.load_max_ms, 24,         "realism mode: longest load (ms)"), PV_LEFT },
+    { DRDATAD (CALTIME,     tq_sregs.cal_ms, 24,          "realism mode: calibration of a new cartridge (ms)"), PV_LEFT },
+    { DRDATAD (UNLOADTIME, tq_sregs.unload_ms, 24,        "realism mode: unload after the rewind (ms)"), PV_LEFT },
     { VBRDATAD (PKTS,                 tq_pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
     { URDATAD (PLUG,    tq_unit[0].unit_plug, 10, 32, 0, TQ_NUMDR, PV_LEFT | REG_RO, "unit plug value, units 0 to 3") },
     { DRDATA  (DEVTYPE,               tq_typ, 2), REG_HRO },
@@ -503,6 +565,12 @@ MTAB tq_mod[] = {
         NULL, &tq_show_ctrl, NULL, "Display complete controller state" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "UNITQ", NULL,
         NULL, &tq_show_unitq, NULL, "Display unit queue" },
+    { MTAB_XTD|MTAB_VUN, 1,                 NULL, "LOAD",
+        &tq_set_panel, NULL, NULL, "Realism mode: Load/Unload button in (load the cartridge)" },
+    { MTAB_XTD|MTAB_VUN, 0,                 NULL, "UNLOAD",
+        &tq_set_panel, NULL, NULL, "Realism mode: Load/Unload button out (rewind and unload)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "TRANSPORT", NULL,
+        NULL, &tq_show_transport, NULL, "Display the TK50 drive state (realism mode)" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
         &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
@@ -972,9 +1040,18 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
         sts = ST_SXC;
     else {
         uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_TMK | UNIT_POL);
+        if (tq_real () && tq_hasvol (uptr)) {           /* realism: the drive */
+            SND_STREAMER *sp = &tq_strm[uptr - tq_dev.units];
+
+            if (mdf & MD_UNL)                           /* rewinds and unloads */
+                sim_strm_unload (sp);                   /* (the file stays */
+            else sim_strm_rewind (sp);                  /* attached), or rewinds */
+            }
         sim_tape_rewind (uptr);                         /* rewind */
         uptr->uf = uptr->objp = 0;                      /* clr flags */
-        if (uptr->flags & UNIT_ATT) {                   /* attached? */
+        if (tq_real () && (uptr->flags & UNIT_ATT))     /* realism: (unloading) */
+            sts = ST_SUC;
+        else if (uptr->flags & UNIT_ATT) {              /* attached? */
             sts = ST_SUC;                               /* success */
             if (mdf & MD_UNL)                           /* unload? */
                 tq_detach (uptr);
@@ -1027,7 +1104,7 @@ if (tq_pkt[pkt].d[CMD_MOD] & MD_NXU) {                  /* next unit? */
         }
     }
 if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
-    if ((uptr->flags & UNIT_ATT) == 0)                  /* not attached? */
+    if (!tq_hasvol (uptr))                              /* not attached/loaded? */
             sts = ST_OFL | SB_OFL_NV;                   /* offl no vol */
     else if (uptr->flags & UNIT_ONL)                    /* online */
         sts = ST_SUC;
@@ -1054,12 +1131,14 @@ UNIT *uptr;
 sim_debug(DBG_TRC, &tq_dev, "tq_onl\n");
 
 if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
-    if ((uptr->flags & UNIT_ATT) == 0)                  /* not attached? */
+    if (!tq_hasvol (uptr))                              /* not attached/loaded? */
         sts = ST_OFL | SB_OFL_NV;                       /* offl no vol */
     else if (uptr->flags & UNIT_ONL)                    /* already online? */
         sts = ST_SUC | SB_SUC_ON;
     else {
         sts = ST_SUC;                                   /* mark online */
+        if (tq_real ())                                 /* realism: the drive */
+            sim_strm_rewind (&tq_strm[uptr - tq_dev.units]);    /* rewinds */
         sim_tape_rewind (uptr);                         /* rewind */
         uptr->objp = 0;                                 /* clear flags */
         uptr->flags = (uptr->flags | UNIT_ONL) &
@@ -1210,7 +1289,8 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
     if (sts == ST_SUC) {                                /* ok? */
         uptr->cpkt = pkt;                               /* op in progress */
         if ((tq_pkt[pkt].d[CMD_MOD] & MD_RWD) &&        /* rewind? */
-            (!(tq_pkt[pkt].d[CMD_MOD] & MD_IMM))) {     /* !immediate? */
+            (!(tq_pkt[pkt].d[CMD_MOD] & MD_IMM)) &&     /* !immediate? */
+            !tq_real ()) {                              /* (realism: timed below) */
             double walltime = (tq_rwtime - 100);
 
             if (uptr->hwmark)
@@ -1271,13 +1351,99 @@ return tq_putpkt (pkt, TRUE);
 
 /* Validity checks */
 
+/* Realism mode for this controller type (TK50 only) */
+
+static t_bool tq_real (void)
+{
+return sim_sound_enabled () && (tq_typ == TQ5_TYPE);
+}
+
+/* A volume: attached, and in the realism mode loaded */
+
+static t_bool tq_hasvol (UNIT *uptr)
+{
+if (!(uptr->flags & UNIT_ATT))
+    return FALSE;
+if (tq_real () && (uptr - tq_dev.units < TQ_NUMDR))
+    return sim_strm_loaded (&tq_strm[uptr - tq_dev.units]);
+return TRUE;
+}
+
+/* The drive has loaded (the host sees the unit available) or unloaded */
+
+static void tq_strm_done (UNIT *uptr, int32 what)
+{
+if (what == SND_STRM_DONE_LOAD) {
+    sim_tape_rewind (uptr);
+    uptr->objp = 0;
+    if (tq_csta == CST_UP)                              /* attention: available */
+        uptr->flags = (uptr->flags | UNIT_ATP) & ~(UNIT_SXC | UNIT_POL | UNIT_TMK);
+    }
+else if (what == SND_STRM_DONE_UNLOAD) {
+    sim_tape_rewind (uptr);
+    uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_TMK | UNIT_POL);
+    }
+}
+
+/* Operator panel: the Load/Unload button (realism mode) */
+
+static t_stat tq_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+SND_STREAMER *sp;
+int32 st;
+
+if (cptr != NULL)
+    return SCPE_ARG;
+if (!tq_real ())
+    return sim_messagef (SCPE_ARG, "%s: the Load/Unload button exists in the sound realism mode of the TK50 only\n",
+                         sim_uname (uptr));
+if (!(uptr->flags & UNIT_ATT))
+    return sim_messagef (SCPE_UNATT, "%s: no cartridge (ATTACH one first)\n", sim_uname (uptr));
+sp = &tq_strm[uptr - tq_dev.units];
+st = sim_strm_state (sp);
+if (val) {                                              /* button in: load */
+    if (st == SND_STRM_UNLOADING) {                     /* wait for the unload */
+        if (sim_switches & SWMASK ('N'))
+            return sim_messagef (SCPE_ARG, "%s: unloading, load it when it is unloaded\n", sim_uname (uptr));
+        sim_strm_wait (sp);
+        st = sim_strm_state (sp);
+        }
+    if (st == SND_STRM_READY)
+        return sim_messagef (SCPE_OK, "%s: the cartridge is loaded already\n", sim_uname (uptr));
+    sim_strm_load (sp);
+    }
+else {                                                  /* button out: unload */
+    if ((st == SND_STRM_INSERTED) || (st == SND_STRM_NOCART))
+        return sim_messagef (SCPE_OK, "%s: the cartridge is not loaded\n", sim_uname (uptr));
+    if (st == SND_STRM_READY) {
+        uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_TMK | UNIT_POL);  /* host: offline */
+        sim_strm_unload (sp);
+        }
+    }
+if (!(sim_switches & SWMASK ('N')))                     /* at the prompt: wait */
+    sim_strm_wait (sp);
+return SCPE_OK;
+}
+
+static t_stat tq_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+if (!tq_real ()) {
+    fprintf (st, "no transport model (sound realism mode of the TK50 only)\n");
+    return SCPE_OK;
+    }
+fprintf (st, "TK50: ");
+sim_strm_show (st, &tq_strm[uptr - tq_dev.units]);
+fprintf (st, "\n");
+return SCPE_OK;
+}
+
 uint16 tq_mot_valid (UNIT *uptr, uint32 cmd)
 {
 sim_debug(DBG_TRC, &tq_dev, "tq_mot_valid\n");
 
 if (uptr->flags & UNIT_SXC)                             /* ser exc pend? */
     return ST_SXC;
-if ((uptr->flags & UNIT_ATT) == 0)                      /* not attached? */
+if (!tq_hasvol (uptr))                                  /* not attached/loaded? */
     return (ST_OFL | SB_OFL_NV);                        /* offl no vol */
 if ((uptr->flags & UNIT_ONL) == 0)                      /* not online? */
     return ST_AVL;                                      /* only avail */
@@ -1306,6 +1472,47 @@ sim_debug(DBG_TRC, &tq_dev, "tq_io_complete(status=%d)\n", status);
 
 res->io_status = status;
 res->io_complete = 1;
+if (tq_real ()) {                                       /* realism: the tape's time */
+    SND_STREAMER *sp = &tq_strm[uptr - tq_dev.units];
+    int32 pkt = uptr->cpkt;
+    uint32 cmd = GETP (pkt, CMD_OPC, OPC);
+    uint32 mdf = tq_pkt[pkt].d[CMD_MOD];
+    double moved = (double)uptr->pos - (double)tq_pos0[uptr - tq_dev.units];
+    double us = 0.0;
+
+    switch (cmd) {
+        case OP_RD: case OP_ACC: case OP_CMP:           /* read: through the buffer */
+            if (mdf & MD_REV)
+                us = sim_strm_space (sp, moved);
+            else us = sim_strm_read (sp, (moved > 0.0) ? moved : 0.0);
+            break;
+        case OP_WR:                                     /* write: into the buffer */
+            us = sim_strm_write (sp, (double)GETP32 (pkt, RW_BCL));
+            break;
+        case OP_WTM:
+            us = sim_strm_tapemark (sp);
+            break;
+        case OP_ERS:                                    /* erase: EOM, rewind */
+            us = sim_strm_rewind (sp);
+            break;
+        case OP_POS:                                    /* rewind, then space */
+            if (mdf & MD_RWD) {
+                us = sim_strm_rewind (sp);
+                if (uptr->pos > 0)
+                    us = sim_strm_space (sp, (double)uptr->pos);
+                }
+            else us = sim_strm_space (sp, moved);
+            if (mdf & MD_IMM)                           /* immediate: ends now, */
+                us = 0.0;                               /* the drive stays busy */
+            break;
+        default:
+            break;
+        }
+    if (us > 0.0) {
+        sim_sound_activate_us (uptr, us);
+        return;
+        }
+    }
 /* Reschedule for the appropriate delay */
 sim_activate_notbefore (uptr, uptr->iostarttime+tq_xtime);
 }
@@ -1332,7 +1539,7 @@ sim_debug (DBG_TRC, &tq_dev, "tq_svc(unit=%d, pkt=%d, cmd=%s, mdf=0x%0X, bc=0x%0
 res->io_complete = 0;
 if (pkt == 0)                                           /* what??? */
     return SCPE_IERR;
-if ((uptr->flags & UNIT_ATT) == 0) {                    /* not attached? */
+if (!tq_hasvol (uptr)) {                                 /* not attached/loaded? */
     tq_mot_end (uptr, 0, ST_OFL | SB_OFL_NV, 0);        /* offl no vol */
     return SCPE_OK;
     }
@@ -1352,6 +1559,7 @@ if (tq_cmf[cmd] & CMF_WR) {                             /* write op? */
 if (!io_complete) {
     res->sts = ST_SUC;                                  /* assume success */
     res->tbc = 0;                                       /* assume zero rec */
+    tq_pos0[uptr - tq_dev.units] = uptr->pos;           /* (realism: distance) */
     }
 switch (cmd) {                                          /* case on command */
 
@@ -2050,6 +2258,12 @@ t_stat r;
 r = sim_tape_attach_ex (uptr, cptr, DBG_TAP, 0);
 if (r != SCPE_OK)
     return r;
+if (tq_real ()) {                                       /* realism: inserted, */
+    sim_strm_insert (&tq_strm[uptr - tq_dev.units],    /* not loaded */
+                     (sim_fsize (uptr->fileref) == 0));
+    uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_SXC | UNIT_POL | UNIT_TMK);
+    return SCPE_OK;
+    }
 if (tq_csta == CST_UP)
     uptr->flags = (uptr->flags | UNIT_ATP) & ~(UNIT_SXC | UNIT_POL | UNIT_TMK);
 return SCPE_OK;
@@ -2064,6 +2278,8 @@ t_stat r;
 r = sim_tape_detach (uptr);                             /* detach unit */
 if (r != SCPE_OK)
     return r;
+if (uptr - tq_dev.units < TQ_NUMDR)                     /* the cartridge is out */
+    sim_strm_remove (&tq_strm[uptr - tq_dev.units]);
 uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP | UNIT_SXC | UNIT_POL | UNIT_TMK);
 uptr->uf = 0;                                           /* clr unit flgs */
 return SCPE_OK;
@@ -2093,6 +2309,15 @@ if (!plugs_inited ) {
         tq_unit[d].unit_plug = d;
     }
 
+if (!tq_sregs_set) {                                    /* realism: TK50 drives */
+    sim_strm_set_defaults (&tq_sregs, &tq_tk50);
+    tq_sregs_set = TRUE;
+    }
+for (i = 0; i < TQ_NUMDR; i++) {
+    sim_strm_init (&tq_strm[i], &tq_unit[i], &tq_sregs, &tq_strm_done, SND_GRP_TAPE, 1.0);
+    if (tq_strm[i].type == NULL)
+        sim_strm_set_type (&tq_strm[i], &tq_tk50);
+    }
 tq_csta = CST_S1;                                       /* init stage 1 */
 tq_s1dat = 0;                                           /* no S1 data */
 tq_dib.vec = 0;                                         /* no vector */
@@ -2464,6 +2689,20 @@ fprintf (st, "include the ability to set units write enabled or write locked, an
 fprintf (st, "specify the controller type and tape length:\n");
 fprint_set_help (st, dptr);
 fprintf (st, "\nThe %s device supports the BOOT command.\n", devtype);
+fprintf (st, "\nSound realism mode (SET SOUND ENABLED), TK50 only:\n\n");
+fprintf (st, "The TK50 is simulated as a cartridge streamer: 75 in/s, 45 KB/s, 22 serpentine\n");
+fprintf (st, "tracks on 600 ft of tape, a 32 KB buffer between host and tape.  A host that\n");
+fprintf (st, "keeps up keeps the tape streaming; a slower one gives the typical cycle of\n");
+fprintf (st, "streaming, stopping, backing up and starting again, which is heard.\n");
+fprintf (st, "ATTACH inserts the cartridge; the unit has no volume until\n\n");
+fprintf (st, "   sim> SET TQn LOAD        (Load/Unload button in: 10 to 15 s, plus 2 min\n");
+fprintf (st, "                             of calibration for a new, empty cartridge)\n\n");
+fprintf (st, "SET TQn UNLOAD (button out) rewinds (up to 90 s) and unloads (9 s); the file\n");
+fprintf (st, "stays attached.  At the prompt both wait until done; SET -N returns at once.\n");
+fprintf (st, "SHOW TQn TRANSPORT displays the drive state.  Registers BUFFER, BACKUP, REPOS,\n");
+fprintf (st, "LOADMIN, LOADMAX, CALTIME, UNLOADTIME.  The sounds are in the sound directory\n");
+fprintf (st, "tk50 (tk50_<name>.wav: load, calibrate, unload, start, forward, stop, rstart,\n");
+fprintf (st, "reverse, rstop).  The TK70, TU81 and TKUSER keep the old behavior.\n");
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
 fprintf (st, "\nError handling is as follows:\n\n");

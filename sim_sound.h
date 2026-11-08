@@ -23,6 +23,9 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   08-Nov-26    Ulli    Cartridge streamers (SND_STREAMER, TK50): buffer,
+                        streaming and repositioning, serpentine tracks;
+                        realtime clock sim_sound_rt_us ()
    07-Nov-26    Ulli    Tape transports (SND_REEL), realtime timers shared
                         with the spindles, playback rate with glides,
                         delayed and time-limited voices
@@ -304,6 +307,12 @@ typedef struct SND_TIMER {
     uint32 ref_ms;                              /* ... at this wall clock time */
     } SND_TIMER;
 
+/* Realtime clock: microseconds that advance with the simulated time while
+   the CPU runs and with the wall time while the simulator is stopped at
+   the sim> prompt (the time base of the cartridge streamers). */
+
+double sim_sound_rt_us (void);
+
 t_bool sim_sound_timer_init (SND_TIMER *t, const char *kind, void (*done) (SND_TIMER *t), void *ctx);
 void sim_sound_timer_start (SND_TIMER *t, double usecs);
 void sim_sound_timer_cancel (SND_TIMER *t);
@@ -519,6 +528,162 @@ t_bool sim_reel_past_end (SND_REEL *r);
 int32 sim_reel_state (SND_REEL *r);
 void sim_reel_wait (SND_REEL *r);
 t_stat sim_reel_show (FILE *st, SND_REEL *r);
+
+/* Cartridge streamers (TK50; prepared for the TK70): a single-reel
+   cartridge whose tape is threaded onto a take-up reel in the drive,
+   recorded serpentine (track after track, alternately forward and in
+   reverse), streaming at one speed with a buffer between the host and the
+   tape.
+
+   Streaming and repositioning: reading, the drive reads ahead into the
+   buffer at the tape's data rate until the buffer is full, then stops and
+   repositions (backs up behind the last block); it starts again (and
+   first runs up to speed over the backed-up distance) when the host has
+   emptied half of the buffer, or at once when the host waits for data.
+   Writing, the host fills the buffer (a write ends at once while there is
+   room); the drive starts when the buffer is half full (or on a flush),
+   streams it onto the tape and stops and repositions when it runs empty.
+   A host that keeps up keeps the tape streaming; a slower one gives the
+   typical stream - stop - reverse - start cycle (one cycle of a full 32 KB
+   buffer: about 3 s on a TK50).
+
+   Time base: sim_sound_rt_us ().  The model is evaluated lazily when the
+   host acts; it may be dated into the future (e.g. a write that has to
+   wait for a flush); the sounds of the predicted timeline are queued with
+   delays and lifetimes and requeued when the host changes the timeline.
+
+   Positions: the logical position is the amount of tape (in inches along
+   all tracks) behind the host's data; the physical position (distance
+   from BOT on the tape) follows from the serpentine layout.  EOT is at the
+   end of the last track.  Spacing and rewinding move along the physical
+   tape (no fast search: a far file may take minutes).
+
+   States: no cartridge (not attached) -> inserted (handle down, not
+   loaded) -> loading (Load/Unload button in; a random time between the
+   load limits, plus the calibration of a new cartridge) -> ready ->
+   unloading (button out or the host's unload: rewind, then unload) ->
+   inserted.  Normal mode (sound disabled): loaded at once, no timing.
+
+   Sounds: <dir>/<prefix>_<name>.wav, names load, calibrate (loop),
+   unload, start, forward (loop), stop, rstart, reverse (loop), rstop;
+   missing ones from default_tape (start, motion, stop, load, unload).
+
+   sim_strm_init () ... sim_strm_set_type (): once; the type loads sounds.
+   sim_strm_insert ()      ATTACH (new: the file was empty).
+   sim_strm_remove ()      DETACH.
+   sim_strm_load ()        Load/Unload button in.
+   sim_strm_unload ()      button out, or the host's unload.
+   sim_strm_read (), sim_strm_write (), sim_strm_tapemark ():
+                           a record of n bytes; return the microseconds
+                           until the command can end (0: at once).
+   sim_strm_space ()       move by n bytes (negative: reverse; a position
+                           command, a reverse read); microseconds.
+   sim_strm_rewind ()      rewind to BOT; microseconds.
+   sim_strm_flush ()       write the buffer out; microseconds.
+   sim_strm_loaded (), sim_strm_past_eot (), sim_strm_state (),
+   sim_strm_wait (), sim_strm_show (): queries, prompt waiting, display. */
+
+#define SND_STRM_NOCART     0                   /* states */
+#define SND_STRM_INSERTED   1
+#define SND_STRM_LOADING    2
+#define SND_STRM_READY      3
+#define SND_STRM_UNLOADING  4
+
+#define SND_STRM_DONE_LOAD   1                  /* on_done (): what is over */
+#define SND_STRM_DONE_UNLOAD 2
+
+#define SND_STRM_NSMP       9                   /* number of sounds */
+#define SND_STRM_NSEG       24                  /* queued sound segments */
+
+typedef struct {
+    const char *name;                           /* "TK50" */
+    const char *dir;                            /* sound directory "tk50" */
+    const char *prefix;                         /* sound file prefix "tk50" */
+    double ips;                                 /* tape speed (in/s) */
+    double rewind_ips;                          /* rewind speed */
+    double rate;                                /* data rate (bytes/s) */
+    double bytes_per_in;                        /* formatted bytes per inch of a track */
+    int32 tracks;                               /* serpentine tracks */
+    double track_in;                            /* usable length of a track (in) */
+    double tape_in;                             /* tape length (in) */
+    double start_s;                             /* start (to speed) */
+    double stop_s;                              /* stop */
+    double stop_in;                             /* stop distance */
+    double tm_bytes;                            /* a tape mark, as data */
+    double hub_r;                               /* take-up reel: hub radius (in) */
+    double tape_t;                              /*  tape thickness in the pack (in) */
+    double ref_r;                               /*  radius at which the loops were made */
+    int32 load_min_ms, load_max_ms;             /* default registers */
+    int32 cal_ms, unload_ms;
+    int32 buffer, backup_in, repos_ms;
+    } SND_STRM_TYPE;
+
+typedef struct {                                /* device registers (int32 each) */
+    int32 buffer;                               /* BUFFER: bytes */
+    int32 backup_in;                            /* BACKUP: reposition distance (in) */
+    int32 repos_ms;                             /* REPOS: stop, reverse, stop (ms) */
+    int32 load_min_ms;                          /* LOADMIN, LOADMAX: load time limits */
+    int32 load_max_ms;
+    int32 cal_ms;                               /* CALTIME: calibration of a new cartridge */
+    int32 unload_ms;                            /* UNLOADTIME: unload after the rewind */
+    } SND_STRM_REGS;
+
+typedef struct {                                /* a queued sound segment */
+    int32 kind;                                 /* sound index, -1: free */
+    double at;                                  /* start (rt us) */
+    double end;                                 /* end of a loop (rt us) */
+    SND_HANDLE h;
+    } SND_STRM_SEG;
+
+typedef struct SND_STREAMER {
+    UNIT *uptr;                                 /* unit (NULL: not initialized) */
+    const SND_STRM_TYPE *type;
+    SND_STRM_REGS *regs;
+    void (*on_done) (UNIT *uptr, int32 what);
+    int32 group;
+    double gain;
+    int32 state;                                /* SND_STRM_xxx */
+    t_bool newcart;                             /* the cartridge is new (empty file) */
+    double act_end;                             /* load/unload: end (rt us) */
+    int32 mode;                                 /* motion: idle, start, stream, repos, move */
+    int32 dir;                                  /* buffer: 0 none, 1 read-ahead, 2 write */
+    t_bool backed;                              /* repositioned: run up before data */
+    t_bool flush;                               /* write the buffer out */
+    t_bool mv_rev;                              /* move: in reverse */
+    t_bool mv_rewind;                           /* move: a rewind */
+    double mv_from;                             /* move: physical start (in) */
+    double lpos;                                /* logical position (in along the tracks) */
+    double bufc;                                /* bytes in the buffer */
+    double need;                                /* bytes a waiting command needs */
+    double t;                                   /* the model is computed up to t (rt us) */
+    double pend;                                /* end of a start/repos/move phase */
+    uint32 pos_mil;                             /* lpos in 1/1000 in (register, SAVE) */
+    SND_TIMER tmr;                              /* load/unload */
+    SND_SAMPLE *smp[SND_STRM_NSMP];
+    SND_HANDLE hact;                            /* load/unload/calibrate voices */
+    SND_HANDLE hcal;
+    SND_STRM_SEG seg[SND_STRM_NSEG];            /* queued motion sounds */
+    } SND_STREAMER;
+
+void sim_strm_init (SND_STREAMER *s, UNIT *uptr, SND_STRM_REGS *regs,
+                    void (*on_done) (UNIT *uptr, int32 what), int32 group, double gain);
+void sim_strm_set_type (SND_STREAMER *s, const SND_STRM_TYPE *type);
+void sim_strm_set_defaults (SND_STRM_REGS *regs, const SND_STRM_TYPE *type);
+void sim_strm_insert (SND_STREAMER *s, t_bool newcart);
+void sim_strm_remove (SND_STREAMER *s);
+t_stat sim_strm_load (SND_STREAMER *s);
+t_stat sim_strm_unload (SND_STREAMER *s);
+double sim_strm_read (SND_STREAMER *s, double bytes);
+double sim_strm_write (SND_STREAMER *s, double bytes);
+double sim_strm_tapemark (SND_STREAMER *s);
+double sim_strm_space (SND_STREAMER *s, double bytes);
+double sim_strm_rewind (SND_STREAMER *s);
+double sim_strm_flush (SND_STREAMER *s);
+t_bool sim_strm_loaded (SND_STREAMER *s);
+t_bool sim_strm_past_eot (SND_STREAMER *s);
+int32 sim_strm_state (SND_STREAMER *s);
+void sim_strm_wait (SND_STREAMER *s);
+t_stat sim_strm_show (FILE *st, SND_STREAMER *s);
 
 /* Seek sounds: three samples (prefix-s.wav, prefix-m.wav, prefix-l.wav
    in dir, else seek-s/m/l.wav in SND_DEFAULT_DISK) for short, medium and
