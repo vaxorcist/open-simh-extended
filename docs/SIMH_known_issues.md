@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v12 (v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v13 (v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -58,6 +58,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 35 | OPEN | Suspicious | `scp.c` SET (and help listing) | For a single-unit device, HELP lists unit-only modifiers as `SET dev ...` (e.g. `set TS LOCKED`), but SET at device level refuses them ("Invalid argument"); `SET TS0 LOCKED` works |
 | 36 | OPEN | Minor | `PDP11/pdp11_ts.c` `ts_rd`, `ts_wr` debug | The REG debug lines name the registers the wrong way round (the base address, TSBA/TSDB, is shown as TSSR and vice versa) |
 | 37 | FIXED (patch 5) | Pitfall | `scp.c` AIO migration, `sim_sound_activate_us` | SCP activates a unit before calling its asynchronous I/O completion callback, so `sim_activate` in the callback is ignored; `sim_activate_abs` replaces the activation |
+| 38 | FIXED (patch 5) | Bug | `PDP11/pdp11_tq.c` `tq_svc`, OP_POS | Spacing beyond the last record (end of medium) returns SCPE_IOERR and stops the simulator, e.g. a VMS DIRECTORY of a tape with an interrupted BACKUP |
 
 ## Details
 
@@ -337,3 +338,9 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Effect:** a device cannot replace the completion delay from its callback with `sim_activate`; the bottom half runs at once. In the sound realism mode of the TK50 every tape command ended immediately (rewinds took no time, the guest did not wait for the tape), while the transport model's clock ran ahead.
 - **Fix (patch 5):** `sim_sound_activate_us` uses `sim_activate_abs`, which replaces an existing activation. The other callers (RL, RP, RQ, HK, RB) call it in their service or command-start paths, where the unit is not queued, so nothing changes for them. Plain SIMH is not affected (its devices do not reschedule from the callback); worth knowing for any future device that does.
 - **Found:** 2026-11-08 (TK50 realism mode under VMS V4.7, with `SET TQ DEBUG=TRACE`).
+
+### 38 — FIXED IN PATCH 5 — Bug: a TQ position beyond the recorded data stops the simulator
+- **Where:** `PDP11/pdp11_tq.c`, `tq_svc`, OP_POS bottom half: every `sim_tape_position` status other than OK, TMK, BOT and LEOT goes to `tq_mot_err`, which returns `SCPE_IOERR`. `MTSE_EOM` (spacing ran off the last record) is one of them.
+- **Effect:** "%SIM-ERROR: Unexpected internal error while processing event for TQ0 which returned 66 - I/O error"; the simulator stops. Seen by Ulli on the MicroVAX II (VMS V4.7): MOUNT/OVERRIDE=IDENTIFICATION, then DIRECTORY of a TK50 whose BACKUP had been interrupted with Ctrl/Y (no closing tape marks: DIRECTORY skips 2 files and runs beyond the data). Plain Open SIMH 87eb7d5 has the same code; the normal mode fails the same way.
+- **Fix (patch 5):** MTSE_EOM ends the command normally with the mapped status (ST_DAT, serious exception, position lost), as a read there does. VMS then reports `-SYSTEM-F-TAPEPOSLOST, magnetic tape position lost` and lists the save set; the simulator keeps running.
+- **Found:** 2026-11-08 (Ulli, TK50 tests).
