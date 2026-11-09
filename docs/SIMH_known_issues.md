@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v13 (v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v14 (v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -58,7 +58,9 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 35 | OPEN | Suspicious | `scp.c` SET (and help listing) | For a single-unit device, HELP lists unit-only modifiers as `SET dev ...` (e.g. `set TS LOCKED`), but SET at device level refuses them ("Invalid argument"); `SET TS0 LOCKED` works |
 | 36 | OPEN | Minor | `PDP11/pdp11_ts.c` `ts_rd`, `ts_wr` debug | The REG debug lines name the registers the wrong way round (the base address, TSBA/TSDB, is shown as TSSR and vice versa) |
 | 37 | FIXED (patch 5) | Pitfall | `scp.c` AIO migration, `sim_sound_activate_us` | SCP activates a unit before calling its asynchronous I/O completion callback, so `sim_activate` in the callback is ignored; `sim_activate_abs` replaces the activation |
-| 38 | FIXED (patch 5) | Bug | `PDP11/pdp11_tq.c` `tq_svc`, OP_POS | Spacing beyond the last record (end of medium) returns SCPE_IOERR and stops the simulator, e.g. a VMS DIRECTORY of a tape with an interrupted BACKUP |
+| 38 | FIXED (patch 5) | Bug | `PDP11/pdp11_tq.c` `tq_svc`, OP_POS | Spacing beyond the last record (end of medium) or into an invalid record (invalid record length, format error) returns SCPE_IOERR and stops the simulator, e.g. a VMS DIRECTORY of a tape with an interrupted BACKUP |
+| 39 | FIXED (patch 5) | Bug | `sim_tape.c` `sim_tape_rdlntf` | After an invalid record length the position is set 2 GB too far back when the bad record marker has bit 31 set; the attach scan reports "2149429608 bytes of unexamined data" for a 2 MB image |
+| 40 | FIXED (patch 5) | Bug | `sim_timer.c` `sim_throt_svc` | Throttle without warm-up (THROT_DELAY 0, set by the sound realism mode): a 10 ms measurement while idling or starting up disables the throttle ("Host CPU is too slow"); the too-fast recalibration loops forever without a measured peak rate |
 
 ## Details
 
@@ -342,5 +344,18 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 ### 38 — FIXED IN PATCH 5 — Bug: a TQ position beyond the recorded data stops the simulator
 - **Where:** `PDP11/pdp11_tq.c`, `tq_svc`, OP_POS bottom half: every `sim_tape_position` status other than OK, TMK, BOT and LEOT goes to `tq_mot_err`, which returns `SCPE_IOERR`. `MTSE_EOM` (spacing ran off the last record) is one of them.
 - **Effect:** "%SIM-ERROR: Unexpected internal error while processing event for TQ0 which returned 66 - I/O error"; the simulator stops. Seen by Ulli on the MicroVAX II (VMS V4.7): MOUNT/OVERRIDE=IDENTIFICATION, then DIRECTORY of a TK50 whose BACKUP had been interrupted with Ctrl/Y (no closing tape marks: DIRECTORY skips 2 files and runs beyond the data). Plain Open SIMH 87eb7d5 has the same code; the normal mode fails the same way.
-- **Fix (patch 5):** MTSE_EOM ends the command normally with the mapped status (ST_DAT, serious exception, position lost), as a read there does. VMS then reports `-SYSTEM-F-TAPEPOSLOST, magnetic tape position lost` and lists the save set; the simulator keeps running.
+- **Fix (patch 5):** MTSE_EOM ends the command normally with the mapped status (ST_DAT, serious exception, position lost), as a read there does. 2026-11-09: widened to MTSE_INVRL and MTSE_FMT (spacing into the remains of an older, longer recording behind the data, which SIMH does not erase; Ulli's `test-interrupt.tap`); only MTSE_IOERR and MTSE_RECE (as in the read path) still go to `tq_mot_err`. VMS then reports `-SYSTEM-F-TAPEPOSLOST, magnetic tape position lost` and lists the save set; the simulator keeps running.
 - **Found:** 2026-11-08 (Ulli, TK50 tests).
+
+### 39 — FIXED IN PATCH 5 — Bug: sim_tape position 2 GB off after an invalid record length
+- **Where:** `sim_tape.c`, forward record read, SIMH format: the position is advanced by the masked, padded record length (`MTR_L`, without the error flag bit 31); on a mismatch of the trailing length (MTSE_INVRL) it was set back by the unmasked marker value without the padding (`pos -= 4 + *bc + 4`).
+- **Effect:** for a garbage marker with bit 31 set (MTR_ERF) the position ends 2^31 bytes before the record. The attach scan prints e.g. "After processing 184400 bytes of tape data … invalid record length … 2149429608 bytes of unexamined data remain" for a 2,130,360 byte image (2^31 + the true 1,945,960 bytes). The guest's next command after such an error starts from that position as well. Plain Open SIMH 87eb7d5 has the same code.
+- **Fix (patch 5):** back to the leading record marker, `pos = saved_pos - sizeof (t_mtrlnt)` (position not updated, as the PNU flag says). Checked with a synthetic image (an interrupted BACKUP and a marker 0x80001000 behind it): old build "2147995652 bytes … remain", fixed "512004"; VMS MOUNT/OVERRIDE=IDENTIFICATION + DIRECTORY: TAPEPOSLOST, then the save set listed, in the normal and the realism mode.
+- **Found:** 2026-11-09 (Ulli: "the tap file is 2 MB only").
+
+### 40 — FIXED IN PATCH 5 — Bug: throttle without warm-up disabled or looping
+- **Where:** `sim_timer.c`, `sim_throt_svc`. The sound realism mode sets THROT_DELAY 0 (realistic speed from power-on; patch 5 already took a fresh start reading in that case).
+- **Effect 1:** the only measurement covered about 10 ms. When the CPU idled in it (console ROM at `>>>`) or the host was busy starting (SDL, threads), the rate came out low: "Host CPU is too slow to simulate 450,000 instructions per second … Throttling disabled." on fast hosts (Ulli's MicroVAX II, 2026-11-09; also sporadically in our tests with several simulators).
+- **Effect 2:** when a later 10 s recalibration found the CPU much too fast, the restart loop computed the wait from `sim_throt_peak_cps`, which no warm-up ever set (0): the wait stays 0 and the loop never ends (a test run wrote 20 GB of debug output).
+- **Fix (patch 5):** without a warm-up the measurement lasts at least 100 ms; one that idled, was below the wanted rate or below 1.25 times it is repeated with a longer window (at most 10 s of the wanted rate); a warning only after 30 repetitions without idling, and the throttle keeps trying. The measured rate feeds the peak; the restart loop uses the current rate when no peak above the wanted one exists. Checked: four MicroVAX II boots in parallel, measurements of 244K and 286K repeated, throttle 450K reached, no warning.
+- **Found:** 2026-11-09.
