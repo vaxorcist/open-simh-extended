@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   09-Nov-26    Ulli    Streamers: SHOW TRANSPORT shows where the tape is
+                        during a rewind or move (was "at BOT, rewinding")
    08-Nov-26    Ulli    Streamers: crossfaded start/loop/stop sounds
    08-Nov-26    Ulli    Cartridge streamers (SND_STREAMER, TK50), realtime
                         clock
@@ -3051,6 +3053,8 @@ if (secs > 0.0) {
     s->pend = s->t + 1000000.0 * secs;
     s->mv_rewind = rewind;
     s->mv_from = p0;
+    s->mv_lfrom = from;                         /* (SHOW TRANSPORT: where it is now) */
+    s->mv_t0 = s->t;
     s->mv_rev = rewind ? TRUE : ((k0 & 1) ? (to_lpos > from) : (to_lpos < from));
     if (!rewind && (k0 != k1))                  /* sound: direction at the start */
         s->mv_rev = (k0 & 1) ? (to_lpos > from) : (to_lpos < from);
@@ -3175,11 +3179,27 @@ switch (state) {
         static const char *mname[] = { "at rest", "starting", "streaming", "repositioning", "moving" };
 
         strm_advance (&c, now);
-        if (s->lpos < 0.01)
-            fprintf (st, "loaded, at BOT");
-        else fprintf (st, "loaded, track %d of %d, %.0f ft from BOT%s", k + 1, s->type->tracks,
-                      strm_phys (s, s->lpos) / 12.0, sim_strm_past_eot (s) ? " (past EOT)" : "");
-        fprintf (st, ", %s", (c.mode == STRM_MOVE && c.mv_rewind) ? "rewinding" : mname[c.mode]);
+        if ((c.mode == STRM_MOVE) && (c.pend > c.mv_t0)) {  /* lpos is the target already: */
+            double f = (now - c.mv_t0) / (c.pend - c.mv_t0);  /* show where the tape is now */
+
+            f = (f < 0.0) ? 0.0 : ((f > 1.0) ? 1.0 : f);
+            if (c.mv_rewind) {
+                fprintf (st, "loaded, rewinding, %.0f ft from BOT", c.mv_from * (1.0 - f) / 12.0);
+                }
+            else {
+                double l = c.mv_lfrom + (s->lpos - c.mv_lfrom) * f;
+
+                fprintf (st, "loaded, track %d of %d, %.0f ft from BOT, moving",
+                         (int32)(l / s->type->track_in) + 1, s->type->tracks, strm_phys (s, l) / 12.0);
+                }
+            }
+        else {
+            if (s->lpos < 0.01)
+                fprintf (st, "loaded, at BOT");
+            else fprintf (st, "loaded, track %d of %d, %.0f ft from BOT%s", k + 1, s->type->tracks,
+                          strm_phys (s, s->lpos) / 12.0, sim_strm_past_eot (s) ? " (past EOT)" : "");
+            fprintf (st, ", %s", mname[c.mode]);
+            }
         if (c.dir != STRM_DIR_NONE)
             fprintf (st, ", buffer %.0f KB %s", c.bufc / 1024.0,
                      (c.dir == STRM_DIR_READ) ? "read ahead" : "to write");

@@ -652,6 +652,8 @@ typedef struct SND_STREAMER {
     t_bool mv_rev;                              /* move: in reverse */
     t_bool mv_rewind;                           /* move: a rewind */
     double mv_from;                             /* move: physical start (in) */
+    double mv_lfrom;                            /* move: logical start (in) */
+    double mv_t0;                               /* move: start (rt us) */
     double lpos;                                /* logical position (in along the tracks) */
     double bufc;                                /* bytes in the buffer */
     double need;                                /* bytes a waiting command needs */
