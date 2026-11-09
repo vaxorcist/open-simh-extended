@@ -1,6 +1,6 @@
-From 7af666485157460b6612a391ffabdd7cc066b3d7 Mon Sep 17 00:00:00 2001
+From f4b1a562136c7e7cc99a7dfb32000346ddcc1386 Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
-Date: Sun, 8 Nov 2026 22:35:33 +0100
+Date: Mon, 9 Nov 2026 09:39:12 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
  sound pilot
 
@@ -121,6 +121,15 @@ Streamer sounds crossfade: a start ends with the loop's own beginning,
 a stop fades in while the loop fades out; the TK50 motion sounds are
 tonal (457 Hz with harmonics, little noise).
 
+TQ: a position command into an invalid record or a format error ends
+with the tape error instead of stopping the simulator.  Realism mode: a
+new cartridge gets an end-of-medium marker after its calibration.
+sim_tape: after an invalid record length the position is the record's
+start again (was 2 GB off for a marker with bit 31 set).
+sim_timer: the throttle without warm-up (realism mode) repeats an
+unusable measurement instead of disabling the throttle, and its
+recalibration no longer loops forever without a peak rate.
+
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
 
@@ -133,7 +142,7 @@ Claude-Session: https://claude.ai/code/session_01Suavte5DWJqGABWycdsWEP
  PDP11/pdp11_rl.c                    |  284 ++-
  PDP11/pdp11_rp.c                    |  346 ++-
  PDP11/pdp11_rq.c                    | 1075 +++++++-
- PDP11/pdp11_tq.c                    |  280 ++-
+ PDP11/pdp11_tq.c                    |  303 ++-
  PDP11/pdp11_ts.c                    |  605 ++++-
  VAX/vax630_syslist.c                |   10 +
  VAX/vax730_rb.c                     |  317 ++-
@@ -146,7 +155,8 @@ Claude-Session: https://claude.ai/code/session_01Suavte5DWJqGABWycdsWEP
  scp.c                               |   71 +
  sim_sound.c                         | 3634 +++++++++++++++++++++++++++
  sim_sound.h                         |  703 ++++++
- sim_timer.c                         |   51 +
+ sim_tape.c                          |   12 +-
+ sim_timer.c                         |  107 +-
  sim_timer.h                         |    3 +
  sound/default_cpu/README.txt        |   56 +
  sound/default_cpu/running.wav       |  Bin 0 -> 376374 bytes
@@ -181,7 +191,7 @@ Claude-Session: https://claude.ai/code/session_01Suavte5DWJqGABWycdsWEP
  sound/tsv05/tsv05_start.wav         |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_stop.wav          |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_unload.wav        |  Bin 0 -> 661544 bytes
- 54 files changed, 8038 insertions(+), 105 deletions(-)
+ 55 files changed, 8127 insertions(+), 107 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -2919,13 +2929,19 @@ index 2cdfedf..6a905f1 100644
  fprint_reg_help (st, dptr);
  fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");
 diff --git a/PDP11/pdp11_tq.c b/PDP11/pdp11_tq.c
-index e8ebdfe..a34a17f 100644
+index e8ebdfe..85121ff 100644
 --- a/PDP11/pdp11_tq.c
 +++ b/PDP11/pdp11_tq.c
-@@ -25,6 +25,14 @@
+@@ -25,6 +25,20 @@
  
     tq           TQK50 tape controller
  
++   09-Nov-26    Ulli    Realism mode: a calibrated new cartridge gets an
++                        end-of-medium marker (no calibration after the next
++                        ATTACH)
++   09-Nov-26    Ulli    Position: also an invalid record length or format
++                        error ends the command instead of stopping the
++                        simulator
 +   08-Nov-26    Ulli    Position: spacing beyond the recorded data (end of
 +                        medium) ends with a data error instead of stopping
 +                        the simulator with an I/O error
@@ -2937,7 +2953,7 @@ index e8ebdfe..a34a17f 100644
     26-Mar-22    RMS     Added extra case points for new MTSE definitions
     23-Oct-13    RMS     Revised for new boot setup routine
     23-Jan-12    MP      Added missing support for Logical EOT detection while
-@@ -90,6 +98,35 @@
+@@ -90,6 +104,35 @@
  #include "pdp11_uqssp.h"
  #include "pdp11_mscp.h"
  #include "sim_tape.h"
@@ -2973,7 +2989,7 @@ index e8ebdfe..a34a17f 100644
  
  #define UF_MSK          (UF_SCH|UF_VSS|UF_CMR|UF_CMW)   /* settable flags */
  
-@@ -222,7 +259,8 @@ struct tqpkt {
+@@ -222,7 +265,8 @@ struct tqpkt {
      d##_CMOD, d##_MED,  d##_FMT,  d##_CAP, \
      d##_UMOD, d##_CREV, d##_FREV, d##_UREV
  
@@ -2983,7 +2999,7 @@ index e8ebdfe..a34a17f 100644
  
  struct drvtyp {
      uint32      uqpm;                                   /* UQ port model */
-@@ -269,6 +307,23 @@ int32 tq_itime4 = 10;                                   /* stage 4 */
+@@ -269,6 +313,23 @@ int32 tq_itime4 = 10;                                   /* stage 4 */
  int32 tq_qtime = 200;                                   /* queue time */
  int32 tq_xtime = 500;                                   /* transfer time */
  int32 tq_rwtime = 2000000;                              /* rewind time 2 sec (adjusted later) */
@@ -3007,7 +3023,7 @@ index e8ebdfe..a34a17f 100644
  int32 tq_typ = INIT_TYPE;                               /* device type */
  
  /* Command table - legal modifiers (low 16b) and flags (high 16b) */
-@@ -393,6 +448,11 @@ t_bool tq_putpkt (uint16 pkt, t_bool qt);
+@@ -393,6 +454,11 @@ t_bool tq_putpkt (uint16 pkt, t_bool qt);
  t_bool tq_getdesc (struct uq_ring *ring, uint32 *desc);
  t_bool tq_putdesc (struct uq_ring *ring, uint32 desc);
  uint16 tq_mot_valid (UNIT *uptr, uint32 cmd);
@@ -3019,7 +3035,7 @@ index e8ebdfe..a34a17f 100644
  t_stat tq_mot_err (UNIT *uptr, uint32 rsiz);
  t_bool tq_mot_end (UNIT *uptr, uint32 flg, uint16 sts, uint32 rsiz);
  void tq_putr (int32 pkt, uint32 cmd, uint32 flg, uint16 sts, uint16 lnt, uint16 typ);
-@@ -465,6 +525,13 @@ REG tq_reg[] = {
+@@ -465,6 +531,13 @@ REG tq_reg[] = {
      { DRDATAD (QTIME,               tq_qtime, 24,             "response time for 'immediate' packets"), PV_LEFT + REG_NZ },
      { DRDATAD (XTIME,               tq_xtime, 24,             "response time for data transfers"), PV_LEFT + REG_NZ },
      { DRDATAD (RWTIME,             tq_rwtime, 32,             "rewind time 2 sec (adjusted later)"), PV_LEFT + REG_NZ },
@@ -3033,7 +3049,7 @@ index e8ebdfe..a34a17f 100644
      { VBRDATAD (PKTS,                 tq_pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
      { URDATAD (PLUG,    tq_unit[0].unit_plug, 10, 32, 0, TQ_NUMDR, PV_LEFT | REG_RO, "unit plug value, units 0 to 3") },
      { DRDATA  (DEVTYPE,               tq_typ, 2), REG_HRO },
-@@ -503,6 +570,12 @@ MTAB tq_mod[] = {
+@@ -503,6 +576,12 @@ MTAB tq_mod[] = {
          NULL, &tq_show_ctrl, NULL, "Display complete controller state" },
      { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "UNITQ", NULL,
          NULL, &tq_show_unitq, NULL, "Display unit queue" },
@@ -3046,7 +3062,7 @@ index e8ebdfe..a34a17f 100644
      { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
          &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
      { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
-@@ -972,9 +1045,18 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
+@@ -972,9 +1051,18 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
          sts = ST_SXC;
      else {
          uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_TMK | UNIT_POL);
@@ -3066,7 +3082,7 @@ index e8ebdfe..a34a17f 100644
              sts = ST_SUC;                               /* success */
              if (mdf & MD_UNL)                           /* unload? */
                  tq_detach (uptr);
-@@ -1027,7 +1109,7 @@ if (tq_pkt[pkt].d[CMD_MOD] & MD_NXU) {                  /* next unit? */
+@@ -1027,7 +1115,7 @@ if (tq_pkt[pkt].d[CMD_MOD] & MD_NXU) {                  /* next unit? */
          }
      }
  if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
@@ -3075,7 +3091,7 @@ index e8ebdfe..a34a17f 100644
              sts = ST_OFL | SB_OFL_NV;                   /* offl no vol */
      else if (uptr->flags & UNIT_ONL)                    /* online */
          sts = ST_SUC;
-@@ -1054,12 +1136,14 @@ UNIT *uptr;
+@@ -1054,12 +1142,14 @@ UNIT *uptr;
  sim_debug(DBG_TRC, &tq_dev, "tq_onl\n");
  
  if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
@@ -3091,7 +3107,7 @@ index e8ebdfe..a34a17f 100644
          sim_tape_rewind (uptr);                         /* rewind */
          uptr->objp = 0;                                 /* clear flags */
          uptr->flags = (uptr->flags | UNIT_ONL) &
-@@ -1210,7 +1294,8 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
+@@ -1210,7 +1300,8 @@ if ((uptr = tq_getucb (lu))) {                          /* unit exist? */
      if (sts == ST_SUC) {                                /* ok? */
          uptr->cpkt = pkt;                               /* op in progress */
          if ((tq_pkt[pkt].d[CMD_MOD] & MD_RWD) &&        /* rewind? */
@@ -3101,7 +3117,7 @@ index e8ebdfe..a34a17f 100644
              double walltime = (tq_rwtime - 100);
  
              if (uptr->hwmark)
-@@ -1271,13 +1356,108 @@ return tq_putpkt (pkt, TRUE);
+@@ -1271,13 +1362,119 @@ return tq_putpkt (pkt, TRUE);
  
  /* Validity checks */
  
@@ -3138,6 +3154,17 @@ index e8ebdfe..a34a17f 100644
 +{
 +if (what == SND_STRM_DONE_LOAD) {
 +    sim_tape_rewind (uptr);
++    /* A new cartridge (an empty file) is calibrated now.  Mark it: an
++       end-of-medium marker at BOT (4 bytes) reads exactly like an empty
++       file (no data, in both modes; the guest's first write replaces it),
++       but the file is no longer empty, so the next ATTACH does not take it
++       for a new cartridge and calibrate it again.  (A tape mark would
++       change what the guest reads.)  Not for a write-protected file: that
++       one is calibrated on every load. */
++    if ((sim_fsize (uptr->fileref) == 0) && !sim_tape_wrp (uptr)) {
++        sim_tape_wreom (uptr);
++        sim_tape_rewind (uptr);
++        }
 +    uptr->objp = 0;
 +    if (tq_csta == CST_UP)                              /* attention: available */
 +        uptr->flags = (uptr->flags | UNIT_ATP) & ~(UNIT_SXC | UNIT_POL | UNIT_TMK);
@@ -3211,7 +3238,7 @@ index e8ebdfe..a34a17f 100644
      return (ST_OFL | SB_OFL_NV);                        /* offl no vol */
  if ((uptr->flags & UNIT_ONL) == 0)                      /* not online? */
      return ST_AVL;                                      /* only avail */
-@@ -1306,6 +1486,49 @@ sim_debug(DBG_TRC, &tq_dev, "tq_io_complete(status=%d)\n", status);
+@@ -1306,6 +1503,49 @@ sim_debug(DBG_TRC, &tq_dev, "tq_io_complete(status=%d)\n", status);
  
  res->io_status = status;
  res->io_complete = 1;
@@ -3261,7 +3288,7 @@ index e8ebdfe..a34a17f 100644
  /* Reschedule for the appropriate delay */
  sim_activate_notbefore (uptr, uptr->iostarttime+tq_xtime);
  }
-@@ -1332,7 +1555,7 @@ sim_debug (DBG_TRC, &tq_dev, "tq_svc(unit=%d, pkt=%d, cmd=%s, mdf=0x%0X, bc=0x%0
+@@ -1332,7 +1572,7 @@ sim_debug (DBG_TRC, &tq_dev, "tq_svc(unit=%d, pkt=%d, cmd=%s, mdf=0x%0X, bc=0x%0
  res->io_complete = 0;
  if (pkt == 0)                                           /* what??? */
      return SCPE_IERR;
@@ -3270,7 +3297,7 @@ index e8ebdfe..a34a17f 100644
      tq_mot_end (uptr, 0, ST_OFL | SB_OFL_NV, 0);        /* offl no vol */
      return SCPE_OK;
      }
-@@ -1352,6 +1575,7 @@ if (tq_cmf[cmd] & CMF_WR) {                             /* write op? */
+@@ -1352,6 +1592,7 @@ if (tq_cmf[cmd] & CMF_WR) {                             /* write op? */
  if (!io_complete) {
      res->sts = ST_SUC;                                  /* assume success */
      res->tbc = 0;                                       /* assume zero rec */
@@ -3278,23 +3305,26 @@ index e8ebdfe..a34a17f 100644
      }
  switch (cmd) {                                          /* case on command */
  
-@@ -1482,7 +1706,14 @@ switch (cmd) {                                          /* case on command */
+@@ -1482,7 +1723,17 @@ switch (cmd) {                                          /* case on command */
              return SCPE_OK;
              }
          res->sts = tq_map_status (uptr, res->io_status);
 -        if ((res->io_status != MTSE_OK) && (res->io_status != MTSE_TMK) && (res->io_status != MTSE_BOT) && (res->io_status != MTSE_LEOT))
 +        /* Spacing beyond the recorded data (MTSE_EOM, e.g. an interrupted
-+           BACKUP left no closing tape marks) ends the command with a data
-+           error and position lost, as a read there does; it used to go to
-+           tq_mot_err, whose SCPE_IOERR stopped the simulator ("Unexpected
-+           internal error ... returned 66") on a VMS DIRECTORY of such a tape.
-+           (08-Nov-26, known issues 38) */
-+        if ((res->io_status != MTSE_OK) && (res->io_status != MTSE_TMK) && (res->io_status != MTSE_BOT) && (res->io_status != MTSE_LEOT) &&
-+            (res->io_status != MTSE_EOM))
++           BACKUP left no closing tape marks) or into data that is no valid
++           record (MTSE_INVRL, MTSE_FMT: e.g. the rest of an older, longer
++           recording behind it, which SIMH does not erase) ends the command
++           with the mapped status (data or format error, position lost), as
++           a read there does.  It used to go to tq_mot_err, whose SCPE_IOERR
++           stopped the simulator ("Unexpected internal error ... returned
++           66") on a VMS DIRECTORY of such a tape.  Only a host I/O error or
++           a bad record marker (as in the read path) still goes there.
++           (08/09-Nov-26, known issues 38) */
++        if ((res->io_status == MTSE_IOERR) || (res->io_status == MTSE_RECE))
              return tq_mot_err (uptr, 0);                /* log, end */
          sim_debug (DBG_REQ, &tq_dev, "Position Done: mdf=0x%04X, nrec=%d, ntmk=%d, skrec=%d, sktmk=%d, skobj=%d\n", 
                              mdf, nrec, ntmk, res->skrec, res->sktmk, res->objupd);
-@@ -2050,6 +2281,12 @@ t_stat r;
+@@ -2050,6 +2301,12 @@ t_stat r;
  r = sim_tape_attach_ex (uptr, cptr, DBG_TAP, 0);
  if (r != SCPE_OK)
      return r;
@@ -3307,7 +3337,7 @@ index e8ebdfe..a34a17f 100644
  if (tq_csta == CST_UP)
      uptr->flags = (uptr->flags | UNIT_ATP) & ~(UNIT_SXC | UNIT_POL | UNIT_TMK);
  return SCPE_OK;
-@@ -2064,6 +2301,8 @@ t_stat r;
+@@ -2064,6 +2321,8 @@ t_stat r;
  r = sim_tape_detach (uptr);                             /* detach unit */
  if (r != SCPE_OK)
      return r;
@@ -3316,7 +3346,7 @@ index e8ebdfe..a34a17f 100644
  uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP | UNIT_SXC | UNIT_POL | UNIT_TMK);
  uptr->uf = 0;                                           /* clr unit flgs */
  return SCPE_OK;
-@@ -2093,6 +2332,15 @@ if (!plugs_inited ) {
+@@ -2093,6 +2352,15 @@ if (!plugs_inited ) {
          tq_unit[d].unit_plug = d;
      }
  
@@ -3332,7 +3362,7 @@ index e8ebdfe..a34a17f 100644
  tq_csta = CST_S1;                                       /* init stage 1 */
  tq_s1dat = 0;                                           /* no S1 data */
  tq_dib.vec = 0;                                         /* no vector */
-@@ -2464,6 +2712,22 @@ fprintf (st, "include the ability to set units write enabled or write locked, an
+@@ -2464,6 +2732,25 @@ fprintf (st, "include the ability to set units write enabled or write locked, an
  fprintf (st, "specify the controller type and tape length:\n");
  fprint_set_help (st, dptr);
  fprintf (st, "\nThe %s device supports the BOOT command.\n", devtype);
@@ -3343,7 +3373,10 @@ index e8ebdfe..a34a17f 100644
 +fprintf (st, "streaming, stopping, backing up and starting again, which is heard.\n");
 +fprintf (st, "ATTACH inserts the cartridge; the unit has no volume until\n\n");
 +fprintf (st, "   sim> SET TQn LOAD        (Load/Unload button in: 10 to 15 s, plus 2 min\n");
-+fprintf (st, "                             of calibration for a new, empty cartridge)\n\n");
++fprintf (st, "                             of calibration for a new, empty cartridge)\n");
++fprintf (st, "A calibrated new cartridge gets an end-of-medium marker (the file is 4 bytes\n");
++fprintf (st, "long and still reads as empty), so it is not calibrated again after the next\n");
++fprintf (st, "ATTACH.\n\n");
 +fprintf (st, "SET TQn UNLOAD (button out) rewinds (up to 90 s) and unloads (9 s); the file\n");
 +fprintf (st, "stays attached.  At the prompt both wait until done; SET -N returns at once.\n");
 +fprintf (st, "SHOW TQn TRANSPORT displays the drive state.  Registers BUFFER, BACKUP, REPOS,\n");
@@ -9431,11 +9464,74 @@ index 0000000..bd29248
 +#endif
 +
 +#endif /* SIM_SOUND_H_ */
+diff --git a/sim_tape.c b/sim_tape.c
+index 450b98a..d4f87a6 100644
+--- a/sim_tape.c
++++ b/sim_tape.c
+@@ -26,6 +26,9 @@
+    Ultimately, this will be a place to hide processing of various tape formats,
+    as well as OS-specific direct hardware access.
+ 
++   09-Nov-26    Ulli    Read forward: after an invalid record length the
++                        position is the record's start again (was 2 GB off
++                        for a marker with bit 31 set)
+    23-Jan-12    MP      Added support for Logical EOT detection while positioning
+    05-Feb-11    MP      Refactored to prepare for SIM_ASYNC_IO support
+                         Added higher level routines:
+@@ -1383,7 +1386,14 @@ switch (f) {                                       /* otherwise the read method
+                 }
+             if (rev_lnt != *bc) {           /* size mismatch? */
+                 status = MTSE_INVRL;
+-                uptr->pos -= (sizeof (t_mtrlnt) + *bc + sizeof (t_mtrlnt));
++                /* back to the leading record marker (position not updated).
++                   It used to subtract the unmasked marker value (with the
++                   MTR_ERF bit and without the padding) from a position that
++                   was advanced by the masked, padded length: for a garbage
++                   marker with bit 31 set the position ended 2 GB before the
++                   record, and the attach scan reported about 2 GB of
++                   "unexamined data" in a 2 MB image. */
++                uptr->pos = saved_pos - sizeof (t_mtrlnt);
+                 MT_SET_PNU (uptr);                      /* pos not upd */
+                 break;
+                 }
 diff --git a/sim_timer.c b/sim_timer.c
-index 333d26a..b27c0b8 100644
+index 333d26a..a4a8a40 100644
 --- a/sim_timer.c
 +++ b/sim_timer.c
-@@ -1762,6 +1762,44 @@ if (sim_throt_type == SIM_THROT_SPC) {  /* Set initial value while correct one i
+@@ -23,6 +23,12 @@
+    used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization from Robert M Supnik.
+ 
++   09-Nov-26    Ulli    Throttle without warm-up (sound realism mode): a
++                        measurement that the CPU spent idling, or that is
++                        below the wanted rate, is repeated instead of
++                        disabling the throttle; at least 100 ms; the
++                        too-fast recalibration no longer loops forever
++                        without a measured peak rate
+    27-Sep-22    RMS     Removed OS/2 and Mac "Classic" support
+    01-Feb-21    JDB     Added cast for down-conversion
+    22-May-17    RMS     Hacked for V4.0 CONST compatibility
+@@ -188,6 +194,11 @@ static double sim_throt_inst_start;
+ static uint32 sim_throt_sleep_time = 0;
+ static int32 sim_throt_wait = 0;
+ static uint32 sim_throt_delay = 3;
++static uint32 sim_idle_ms_total = 0;                    /* ms idled, all timers */
++static uint32 sim_throt_idle_start = 0;                 /* sim_idle_ms_total at the measurement start */
++static uint32 sim_throt_retries = 0;                    /* repeated measurements (no warm-up) */
++#define SIM_THROT_RETRY_WARN 30                         /* warn once after this many */
++#define SIM_THROT_MSMIN_NODELAY 100                     /* measurement without warm-up (ms) */
+ #define CLK_TPS 100
+ #define CLK_INIT (sim_precalibrate_ips/CLK_TPS)
+ static int32 sim_int_clk_tps;
+@@ -1637,6 +1648,7 @@ else
+ cyc_since_idle = sim_gtime() - sim_idle_end_time;       /* time since prior idle */
+ act_ms = sim_idle_ms_sleep (w_ms);                      /* wait */
+ rtc->clock_time_idled += act_ms;
++sim_idle_ms_total += act_ms;                            /* (throttle measurement) */
+ act_cyc = act_ms * sim_idle_cyc_ms;
+ if (cyc_since_idle > sim_idle_cyc_sleep)
+     act_cyc -= sim_idle_cyc_sleep / 2;                  /* account for half an interval's worth of cycles */
+@@ -1762,6 +1774,44 @@ if (sim_throt_type == SIM_THROT_SPC) {  /* Set initial value while correct one i
  return SCPE_OK;
  }
  
@@ -9480,7 +9576,7 @@ index 333d26a..b27c0b8 100644
  t_stat sim_show_throt (FILE *st, DEVICE *dnotused, UNIT *unotused, int32 flag, CONST char *cptr)
  {
  if (sim_idle_rate_ms == 0)
-@@ -1857,6 +1895,19 @@ switch (sim_throt_state) {
+@@ -1857,6 +1907,20 @@ switch (sim_throt_state) {
                  sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) Deferring until stable (%d more seconds)\n", (int)(sim_throt_delay - rtc->calibrations));
                  return sim_activate (uptr, rtc->hz * rtc->currd);
                  }
@@ -9493,6 +9589,7 @@ index 333d26a..b27c0b8 100644
 +                   repeats the measurement until it covers SIM_THROT_MSMIN ms. */
 +                sim_throt_ms_start = sim_os_msec ();
 +                sim_throt_inst_start = sim_gtime ();
++                sim_throt_idle_start = sim_idle_ms_total;
 +                sim_throt_state = SIM_THROT_STATE_TIME;
 +                sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) No delay, measuring the execution rate now\n");
 +                return sim_activate (uptr, SIM_THROT_WST);
@@ -9500,6 +9597,72 @@ index 333d26a..b27c0b8 100644
              sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) Computing Throttling values based on the last second's execution rate\n");
              sim_throt_state = SIM_THROT_STATE_TIME;
              if (sim_throt_peak_cps < (double)(rtc->hz * rtc->currd))
+@@ -1894,7 +1958,7 @@ switch (sim_throt_state) {
+         sim_throt_ms_stop = sim_os_msec ();
+         delta_ms = sim_throt_ms_stop - sim_throt_ms_start;
+         delta_inst = sim_gtime () - sim_throt_inst_start;
+-        if (delta_ms < SIM_THROT_MSMIN) {               /* not enough time? */
++        if (delta_ms < ((sim_throt_delay == 0) ? SIM_THROT_MSMIN_NODELAY : SIM_THROT_MSMIN)) {/* not enough time? */
+             if (delta_inst >= 100000000.0) {            /* too many inst? */
+                 sim_throt_state = SIM_THROT_STATE_INIT; /* fails in 32b! */
+                 sim_printf ("Can't throttle.  Host CPU is too fast with a minimum sleep time of %d ms\n", sim_idle_rate_ms);
+@@ -1907,8 +1971,47 @@ switch (sim_throt_state) {
+             sim_throt_inst_start = sim_gtime();
+             sim_idle_ms_sleep (sim_idle_rate_ms);       /* start on a tick boundary to calibrate */
+             sim_throt_ms_start = sim_os_msec ();
++            sim_throt_idle_start = sim_idle_ms_total;
+             }
+         else {                                          /* long enough */
++            /* Without a warm-up (sim_throt_delay == 0, the sound realism
++               mode) this short measurement is the only one.  If the CPU
++               idled in it (e.g. the console ROM waiting at >>>), the idle
++               time skipped instructions at the clock's rate, not the host's;
++               and a busy host (threads starting) can make it too slow.  Both
++               gave "Host CPU is too slow ... Throttling disabled." on fast
++               hosts.  Measure again instead (a 4 times longer window, at most
++               10 s of the wanted rate); warn once after SIM_THROT_RETRY_WARN
++               tries without idling, but keep trying.  A rate less than 1.25
++               times the wanted one is doubtful as well (the first tens of ms
++               of a run are slow): measured again, until SIM_THROT_RETRY_WARN.
++               The window is at least SIM_THROT_MSMIN_NODELAY ms. */
++            if ((sim_throt_delay == 0) && (sim_throt_type == SIM_THROT_KCYC || sim_throt_type == SIM_THROT_MCYC)) {
++                double want = (double)sim_throt_val * ((sim_throt_type == SIM_THROT_MCYC) ? 1000000.0 : 1000.0);
++                double rate = (((double) delta_inst) * 1000.0) / (double) delta_ms;
++                uint32 idled = sim_idle_ms_total - sim_throt_idle_start;
++
++                if (rate > sim_throt_peak_cps)          /* the recalibration needs a peak */
++                    sim_throt_peak_cps = rate;
++                if ((idled > 0) || (rate <= want) ||    /* idled, too slow, or doubtful */
++                    ((rate < 1.25 * want) && (sim_throt_retries < SIM_THROT_RETRY_WARN))) {
++                    if (idled == 0)                     /* idling is no sign of a slow host */
++                        ++sim_throt_retries;
++                    sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc() Measurement %u not usable: %d ms, %d ms idled, %.f %s per second (want %.f), measuring again\n",
++                                        sim_throt_retries, (int)delta_ms, (int)idled, rate, sim_vm_interval_units, want);
++                    if (sim_throt_retries == SIM_THROT_RETRY_WARN) {
++                        sim_printf ("*********** WARNING ***********\n");
++                        sim_printf ("Host CPU could be too slow to simulate %s %s per second\n", sim_fmt_numeric(want), sim_vm_interval_units);
++                        sim_printf ("Host CPU did only simulate %s %s per second; still measuring\n", sim_fmt_numeric(rate), sim_vm_interval_units);
++                        }
++                    sim_throt_wait = (int32)MIN(delta_inst * 4.0 + SIM_THROT_WST, 10.0 * want);
++                    sim_throt_ms_start = sim_os_msec ();
++                    sim_throt_inst_start = sim_gtime ();
++                    sim_throt_idle_start = sim_idle_ms_total;
++                    return sim_activate (uptr, sim_throt_wait);
++                    }
++                sim_throt_retries = 0;
++                }
+             a_cps = (((double) delta_inst) * 1000.0) / (double) delta_ms;
+             if (sim_throt_type == SIM_THROT_MCYC)       /* calc desired cps */
+                 d_cps = (double) sim_throt_val * 1000000.0;
+@@ -1987,6 +2090,8 @@ switch (sim_throt_state) {
+                         ((100.0 * (a_cps - d_cps) / d_cps) > (100 - sim_throt_drift_pct))) {
+                         sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc() Restarting calibrating throttle going too fast: a_cps = %f, d_cps = %f deviating by %.2f%% from the desired value\n",
+                                                             a_cps, d_cps, fabs(100.0 * (d_cps - a_cps) / d_cps));
++                        if (sim_throt_peak_cps <= d_cps)        /* no peak measured (no warm-up): */
++                            sim_throt_peak_cps = a_cps;         /* the loop below would never end */
+                         while (1) {
+                             sim_throt_wait = (int32)            /* cycles between sleeps */
+                                 ((sim_throt_peak_cps * d_cps * ((double) sim_throt_sleep_time)) /
 diff --git a/sim_timer.h b/sim_timer.h
 index 8e30491..f113f46 100644
 --- a/sim_timer.h

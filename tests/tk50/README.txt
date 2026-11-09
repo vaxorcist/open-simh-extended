@@ -1,4 +1,4 @@
-open-simh-extended/tests/tk50/README.txt  v1
+open-simh-extended/tests/tk50/README.txt  v2
 
 TK50 tests of the sound realism mode (TQ device, TQK50 on the Qbus,
 TUK50 on the Unibus; 2026-11-08), see docs/SIMH_Sound_handover.md,
@@ -27,3 +27,24 @@ tktest.py v2    VMS V4.7 tests with Ulli's image VMS047-1.R81 (RA81, VHD,
                 After the login the script waits 40 s: VMS V4.7 starts
                 the TMSCP port PTA0 only at the end of the startup, MUA0
                 appears about 30 s later.
+
+Recording SIMH's sound (v2)
+
+Only SIMH, silent, exact levels (SDL disk driver, float32 mono 44100 Hz):
+
+    SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILE=simh.raw ./microvax2 microvax2.ini
+    sox -t raw -r 44100 -e floating-point -b 32 -c 1 simh.raw simh.wav
+
+or
+
+    ffmpeg -f f32le -ar 44100 -ac 1 -i simh.raw simh.wav
+
+While listening (PipeWire or PulseAudio), terminal 1:
+
+    parecord --device=@DEFAULT_MONITOR@ --file-format=wav simh.wav
+
+terminal 2:
+
+    ./microvax2 microvax2.ini
+
+then Ctrl/C in terminal 1.
