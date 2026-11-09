@@ -25,6 +25,8 @@
 
    cpu          VAX central processor
 
+   09-Nov-26    Ulli    Register STRSHIFT: string instructions count one
+                        instruction time per 2^STRSHIFT bytes (5, as before)
    23-Apr-19    RMS     Added hook for unpredictable indexed immediate .aw
    14-Apr-19    RMS     Added hook for non-standard MxPR CC's
    31-Mar-17    RMS     Fixed uninitialized variable on FPD path (COVERITY)
@@ -276,6 +278,8 @@ uint32 cpu_idle_type = 2;                               /* default INFOSERVER */
 uint32 cpu_idle_type = 1;                               /* default VMS */
 #endif
 int32 extra_bytes;                                      /* bytes referenced by current string instruction */
+int32 cpu_str_shift = 5;                                /* string instructions: one instruction time
+                                                           per 2^cpu_str_shift bytes (register STRSHIFT) */
 jmp_buf save_env;
 REG *pcq_r = NULL;                                      /* PC queue reg ptr */
 int32 pcq[PCQ_SIZE] = { 0 };                            /* PC queue */
@@ -375,6 +379,7 @@ BITFIELD cpu_psl_bits[] = {
 
 REG cpu_reg[] = {
     { HRDATAD (PC,      R[nPC], 32, "program counter") },
+    { DRDATAD (STRSHIFT, cpu_str_shift, 5, "string instructions: one instruction time per 2^n bytes (5: 32 bytes)") },
     { HRDATAD (R0,        R[0], 32, "General Purpose Register 0") },
     { HRDATAD (R1,        R[1], 32, "General Purpose Register 1") },
     { HRDATAD (R2,        R[2], 32, "General Purpose Register 2") },
@@ -726,7 +731,7 @@ for ( ;; ) {
         ABORT (STOP_IBKPT);                             /* stop simulation */
         }
 
-    sim_interval = sim_interval - (1 + (extra_bytes>>5));/* count instr */
+    sim_interval = sim_interval - (1 + (extra_bytes>>cpu_str_shift));/* count instr */
     extra_bytes = 0;                                    /* digest string count */
     GET_ISTR (opc, L_BYTE);                             /* get opcode */
     if (opc == 0xFD) {                                  /* 2 byte op? */
