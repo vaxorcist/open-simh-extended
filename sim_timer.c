@@ -23,6 +23,12 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   09-Nov-26    Ulli    Throttle without warm-up (sound realism mode): a
+                        measurement that the CPU spent idling, or that is
+                        below the wanted rate, is repeated instead of
+                        disabling the throttle; at least 100 ms; the
+                        too-fast recalibration no longer loops forever
+                        without a measured peak rate
    27-Sep-22    RMS     Removed OS/2 and Mac "Classic" support
    01-Feb-21    JDB     Added cast for down-conversion
    22-May-17    RMS     Hacked for V4.0 CONST compatibility
@@ -188,6 +194,11 @@ static double sim_throt_inst_start;
 static uint32 sim_throt_sleep_time = 0;
 static int32 sim_throt_wait = 0;
 static uint32 sim_throt_delay = 3;
+static uint32 sim_idle_ms_total = 0;                    /* ms idled, all timers */
+static uint32 sim_throt_idle_start = 0;                 /* sim_idle_ms_total at the measurement start */
+static uint32 sim_throt_retries = 0;                    /* repeated measurements (no warm-up) */
+#define SIM_THROT_RETRY_WARN 30                         /* warn once after this many */
+#define SIM_THROT_MSMIN_NODELAY 100                     /* measurement without warm-up (ms) */
 #define CLK_TPS 100
 #define CLK_INIT (sim_precalibrate_ips/CLK_TPS)
 static int32 sim_int_clk_tps;
@@ -1637,6 +1648,7 @@ else
 cyc_since_idle = sim_gtime() - sim_idle_end_time;       /* time since prior idle */
 act_ms = sim_idle_ms_sleep (w_ms);                      /* wait */
 rtc->clock_time_idled += act_ms;
+sim_idle_ms_total += act_ms;                            /* (throttle measurement) */
 act_cyc = act_ms * sim_idle_cyc_ms;
 if (cyc_since_idle > sim_idle_cyc_sleep)
     act_cyc -= sim_idle_cyc_sleep / 2;                  /* account for half an interval's worth of cycles */
@@ -1904,6 +1916,7 @@ switch (sim_throt_state) {
                    repeats the measurement until it covers SIM_THROT_MSMIN ms. */
                 sim_throt_ms_start = sim_os_msec ();
                 sim_throt_inst_start = sim_gtime ();
+                sim_throt_idle_start = sim_idle_ms_total;
                 sim_throt_state = SIM_THROT_STATE_TIME;
                 sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) No delay, measuring the execution rate now\n");
                 return sim_activate (uptr, SIM_THROT_WST);
@@ -1945,7 +1958,7 @@ switch (sim_throt_state) {
         sim_throt_ms_stop = sim_os_msec ();
         delta_ms = sim_throt_ms_stop - sim_throt_ms_start;
         delta_inst = sim_gtime () - sim_throt_inst_start;
-        if (delta_ms < SIM_THROT_MSMIN) {               /* not enough time? */
+        if (delta_ms < ((sim_throt_delay == 0) ? SIM_THROT_MSMIN_NODELAY : SIM_THROT_MSMIN)) {/* not enough time? */
             if (delta_inst >= 100000000.0) {            /* too many inst? */
                 sim_throt_state = SIM_THROT_STATE_INIT; /* fails in 32b! */
                 sim_printf ("Can't throttle.  Host CPU is too fast with a minimum sleep time of %d ms\n", sim_idle_rate_ms);
@@ -1958,8 +1971,47 @@ switch (sim_throt_state) {
             sim_throt_inst_start = sim_gtime();
             sim_idle_ms_sleep (sim_idle_rate_ms);       /* start on a tick boundary to calibrate */
             sim_throt_ms_start = sim_os_msec ();
+            sim_throt_idle_start = sim_idle_ms_total;
             }
         else {                                          /* long enough */
+            /* Without a warm-up (sim_throt_delay == 0, the sound realism
+               mode) this short measurement is the only one.  If the CPU
+               idled in it (e.g. the console ROM waiting at >>>), the idle
+               time skipped instructions at the clock's rate, not the host's;
+               and a busy host (threads starting) can make it too slow.  Both
+               gave "Host CPU is too slow ... Throttling disabled." on fast
+               hosts.  Measure again instead (a 4 times longer window, at most
+               10 s of the wanted rate); warn once after SIM_THROT_RETRY_WARN
+               tries without idling, but keep trying.  A rate less than 1.25
+               times the wanted one is doubtful as well (the first tens of ms
+               of a run are slow): measured again, until SIM_THROT_RETRY_WARN.
+               The window is at least SIM_THROT_MSMIN_NODELAY ms. */
+            if ((sim_throt_delay == 0) && (sim_throt_type == SIM_THROT_KCYC || sim_throt_type == SIM_THROT_MCYC)) {
+                double want = (double)sim_throt_val * ((sim_throt_type == SIM_THROT_MCYC) ? 1000000.0 : 1000.0);
+                double rate = (((double) delta_inst) * 1000.0) / (double) delta_ms;
+                uint32 idled = sim_idle_ms_total - sim_throt_idle_start;
+
+                if (rate > sim_throt_peak_cps)          /* the recalibration needs a peak */
+                    sim_throt_peak_cps = rate;
+                if ((idled > 0) || (rate <= want) ||    /* idled, too slow, or doubtful */
+                    ((rate < 1.25 * want) && (sim_throt_retries < SIM_THROT_RETRY_WARN))) {
+                    if (idled == 0)                     /* idling is no sign of a slow host */
+                        ++sim_throt_retries;
+                    sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc() Measurement %u not usable: %d ms, %d ms idled, %.f %s per second (want %.f), measuring again\n",
+                                        sim_throt_retries, (int)delta_ms, (int)idled, rate, sim_vm_interval_units, want);
+                    if (sim_throt_retries == SIM_THROT_RETRY_WARN) {
+                        sim_printf ("*********** WARNING ***********\n");
+                        sim_printf ("Host CPU could be too slow to simulate %s %s per second\n", sim_fmt_numeric(want), sim_vm_interval_units);
+                        sim_printf ("Host CPU did only simulate %s %s per second; still measuring\n", sim_fmt_numeric(rate), sim_vm_interval_units);
+                        }
+                    sim_throt_wait = (int32)MIN(delta_inst * 4.0 + SIM_THROT_WST, 10.0 * want);
+                    sim_throt_ms_start = sim_os_msec ();
+                    sim_throt_inst_start = sim_gtime ();
+                    sim_throt_idle_start = sim_idle_ms_total;
+                    return sim_activate (uptr, sim_throt_wait);
+                    }
+                sim_throt_retries = 0;
+                }
             a_cps = (((double) delta_inst) * 1000.0) / (double) delta_ms;
             if (sim_throt_type == SIM_THROT_MCYC)       /* calc desired cps */
                 d_cps = (double) sim_throt_val * 1000000.0;
@@ -2038,6 +2090,8 @@ switch (sim_throt_state) {
                         ((100.0 * (a_cps - d_cps) / d_cps) > (100 - sim_throt_drift_pct))) {
                         sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc() Restarting calibrating throttle going too fast: a_cps = %f, d_cps = %f deviating by %.2f%% from the desired value\n",
                                                             a_cps, d_cps, fabs(100.0 * (d_cps - a_cps) / d_cps));
+                        if (sim_throt_peak_cps <= d_cps)        /* no peak measured (no warm-up): */
+                            sim_throt_peak_cps = a_cps;         /* the loop below would never end */
                         while (1) {
                             sim_throt_wait = (int32)            /* cycles between sleeps */
                                 ((sim_throt_peak_cps * d_cps * ((double) sim_throt_sleep_time)) /

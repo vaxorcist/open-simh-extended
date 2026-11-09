@@ -25,6 +25,12 @@
 
    tq           TQK50 tape controller
 
+   09-Nov-26    Ulli    Realism mode: a calibrated new cartridge gets an
+                        end-of-medium marker (no calibration after the next
+                        ATTACH)
+   09-Nov-26    Ulli    Position: also an invalid record length or format
+                        error ends the command instead of stopping the
+                        simulator
    08-Nov-26    Ulli    Position: spacing beyond the recorded data (end of
                         medium) ends with a data error instead of stopping
                         the simulator with an I/O error
@@ -1389,6 +1395,17 @@ static void tq_strm_done (UNIT *uptr, int32 what)
 {
 if (what == SND_STRM_DONE_LOAD) {
     sim_tape_rewind (uptr);
+    /* A new cartridge (an empty file) is calibrated now.  Mark it: an
+       end-of-medium marker at BOT (4 bytes) reads exactly like an empty
+       file (no data, in both modes; the guest's first write replaces it),
+       but the file is no longer empty, so the next ATTACH does not take it
+       for a new cartridge and calibrate it again.  (A tape mark would
+       change what the guest reads.)  Not for a write-protected file: that
+       one is calibrated on every load. */
+    if ((sim_fsize (uptr->fileref) == 0) && !sim_tape_wrp (uptr)) {
+        sim_tape_wreom (uptr);
+        sim_tape_rewind (uptr);
+        }
     uptr->objp = 0;
     if (tq_csta == CST_UP)                              /* attention: available */
         uptr->flags = (uptr->flags | UNIT_ATP) & ~(UNIT_SXC | UNIT_POL | UNIT_TMK);
@@ -1707,13 +1724,16 @@ switch (cmd) {                                          /* case on command */
             }
         res->sts = tq_map_status (uptr, res->io_status);
         /* Spacing beyond the recorded data (MTSE_EOM, e.g. an interrupted
-           BACKUP left no closing tape marks) ends the command with a data
-           error and position lost, as a read there does; it used to go to
-           tq_mot_err, whose SCPE_IOERR stopped the simulator ("Unexpected
-           internal error ... returned 66") on a VMS DIRECTORY of such a tape.
-           (08-Nov-26, known issues 38) */
-        if ((res->io_status != MTSE_OK) && (res->io_status != MTSE_TMK) && (res->io_status != MTSE_BOT) && (res->io_status != MTSE_LEOT) &&
-            (res->io_status != MTSE_EOM))
+           BACKUP left no closing tape marks) or into data that is no valid
+           record (MTSE_INVRL, MTSE_FMT: e.g. the rest of an older, longer
+           recording behind it, which SIMH does not erase) ends the command
+           with the mapped status (data or format error, position lost), as
+           a read there does.  It used to go to tq_mot_err, whose SCPE_IOERR
+           stopped the simulator ("Unexpected internal error ... returned
+           66") on a VMS DIRECTORY of such a tape.  Only a host I/O error or
+           a bad record marker (as in the read path) still goes there.
+           (08/09-Nov-26, known issues 38) */
+        if ((res->io_status == MTSE_IOERR) || (res->io_status == MTSE_RECE))
             return tq_mot_err (uptr, 0);                /* log, end */
         sim_debug (DBG_REQ, &tq_dev, "Position Done: mdf=0x%04X, nrec=%d, ntmk=%d, skrec=%d, sktmk=%d, skobj=%d\n", 
                             mdf, nrec, ntmk, res->skrec, res->sktmk, res->objupd);
@@ -2719,7 +2739,10 @@ fprintf (st, "keeps up keeps the tape streaming; a slower one gives the typical 
 fprintf (st, "streaming, stopping, backing up and starting again, which is heard.\n");
 fprintf (st, "ATTACH inserts the cartridge; the unit has no volume until\n\n");
 fprintf (st, "   sim> SET TQn LOAD        (Load/Unload button in: 10 to 15 s, plus 2 min\n");
-fprintf (st, "                             of calibration for a new, empty cartridge)\n\n");
+fprintf (st, "                             of calibration for a new, empty cartridge)\n");
+fprintf (st, "A calibrated new cartridge gets an end-of-medium marker (the file is 4 bytes\n");
+fprintf (st, "long and still reads as empty), so it is not calibrated again after the next\n");
+fprintf (st, "ATTACH.\n\n");
 fprintf (st, "SET TQn UNLOAD (button out) rewinds (up to 90 s) and unloads (9 s); the file\n");
 fprintf (st, "stays attached.  At the prompt both wait until done; SET -N returns at once.\n");
 fprintf (st, "SHOW TQn TRANSPORT displays the drive state.  Registers BUFFER, BACKUP, REPOS,\n");
