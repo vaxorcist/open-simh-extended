@@ -1,5 +1,9 @@
-# open-simh-extended/tools/make_tape_sounds.py  v3
+# open-simh-extended/tools/make_tape_sounds.py  v4
 #
+# v4 (2026-11-09): TK50 reverse audible and distinct (Ulli: "I cannot hear
+#                  the short reposition"): 501 Hz leading, a 600 Hz whine,
+#                  the hiss of the recording's reverse bands, 2.5 dB under
+#                  forward (was 6 dB, and a near copy of forward)
 # v3 (2026-11-08): TK50 motion sounds tonal and made for crossfades
 #                  (smooth transitions, less noise while streaming)
 # v2 (2026-11-08): TK50 cartridge streamer set (sound/tk50, SND_STREAMER),
@@ -402,10 +406,14 @@ def tone_set(t, f0, amps, phase0=0.0):
 #               0.4 D while the stop fades in over its first 0.4 D, its
 #               tone already gliding down (no fixed phase to the loop)
 #   the reverse sounds the same; no gaps, dips or knocks in between.
+#   v4: the reverse start follows the stop when it has died away (a short
+#   real standstill at the direction change), so the reposition is heard
+#   as stop - reverse - stop.
 
 TK50_HARM = (0.45, 1.0, 0.6, 0.3, 0.15, 0.08)   # 457, 914, 1371, 1828 ... Hz
 TK50_NOISE_FWD = (-35, -25, -18, -12, -8, -16, -30, -34)  # bands, highs cut
-TK50_NOISE_REV = (-27, -17, -12, -6, -8, -14, -26, -32)
+TK50_NOISE_REV = TK50_REV_BANDS  # reverse: the hiss of the recording (v4)
+TK50_REV_WHINE = 600.0          # reverse start/run whine (recording: 580-620 Hz)
 TK50_NOISE_DB = -17.0           # noise under the tones (dB)
 TK50_START_D = 0.35             # durations (s)
 TK50_STOP_D = 0.45
@@ -438,14 +446,22 @@ def tk50_forward(rng, secs=1.0):
     return rms_to(x, TK50_FWD_DB - 1.5)
 
 
+def tk50_rev_tones(ph457, ph501, ph600):
+    # reverse: 501 Hz leads, 457 Hz beats with it (44 Hz), a 600 Hz whine
+    return (0.6 * harmonics(ph457, (1.0, 0.5, 0.2)) +
+            harmonics(ph501, (1.0, 0.6, 0.3, 0.15)) +
+            0.35 * np.sin(2 * np.pi * ph600))
+
+
 def tk50_reverse(rng, secs=1.0):
-    # 457 and 501 Hz beating at 44 Hz, a little more noise; 6 dB quieter
+    # clearly another sound than forward: higher (501/600 Hz) and hissier
+    # (the recording's reverse bands), 2.5 dB quieter; seamless 1 s loop
     n = int(secs * RATE)
     t = np.arange(n) / RATE
-    tone = (harmonics(tk50_phase(t, TK50_TONE), (0.8, 1.0, 0.4, 0.15)) +
-            0.8 * harmonics(tk50_phase(t, TK50_REV_TONE), (1.0, 0.5, 0.2)))
-    x = tk50_mix(tone, octave_noise(n, RATE, TK50_NOISE_REV, rng), TK50_NOISE_DB + 3.0)
-    return rms_to(x, TK50_FWD_DB - 7.0)
+    tone = tk50_rev_tones(tk50_phase(t, TK50_TONE), tk50_phase(t, TK50_REV_TONE),
+                          tk50_phase(t, TK50_REV_WHINE))
+    x = tk50_mix(tone, octave_noise(n, RATE, TK50_NOISE_REV, rng), TK50_NOISE_DB + 8.0)
+    return rms_to(x, TK50_FWD_DB - 4.0)
 
 
 def tk50_start(rng, rev=False):
@@ -460,14 +476,15 @@ def tk50_start(rng, rev=False):
     ph = np.cumsum(f_end * g) / RATE
     if rev:
         ph2 = np.cumsum(TK50_REV_TONE * g) / RATE
-        tone = harmonics(ph, (0.8, 1.0, 0.4, 0.15)) + 0.8 * harmonics(ph2, (1.0, 0.5, 0.2))
+        ph3 = np.cumsum(TK50_REV_WHINE * (0.967 + 0.033 * (g - 0.5) / 0.5)) / RATE  # 580 -> 600 Hz
+        tone = tk50_rev_tones(ph, ph2, ph3)
         nb = TK50_NOISE_REV
     else:
         tone = harmonics(ph, TK50_HARM)
         nb = TK50_NOISE_FWD
     air = octave_noise(n, RATE, nb, rng, periodic=False)
     swell = 1 + 0.6 * np.exp(-0.5 * ((t - 0.12) / 0.05) ** 2)  # the air whoosh
-    synth = tk50_mix(tone, air * swell, TK50_NOISE_DB + 4.0)
+    synth = tk50_mix(tone, air * swell, TK50_NOISE_DB + (10.0 if rev else 4.0))
     m = t > 0.25 * D                                          # level of the loop
     synth = synth * (np.sqrt(np.mean(loop ** 2)) / (np.sqrt(np.mean(synth[m] ** 2)) + 1e-12))
     rise = 0.5 - 0.5 * np.cos(np.pi * np.minimum(1, t / (0.35 * D)))  # smooth attack
@@ -493,12 +510,13 @@ def tk50_stop(rng, rev=False):
     ph = np.cumsum(TK50_TONE * g) / RATE
     if rev:
         ph2 = np.cumsum(TK50_REV_TONE * g) / RATE
-        tone = harmonics(ph, (0.8, 1.0, 0.4, 0.15)) + 0.8 * harmonics(ph2, (1.0, 0.5, 0.2))
+        ph3 = np.cumsum(TK50_REV_WHINE * g) / RATE
+        tone = tk50_rev_tones(ph, ph2, ph3)
         nb = TK50_NOISE_REV
     else:
         tone = harmonics(ph, TK50_HARM)
         nb = TK50_NOISE_FWD
-    x = tk50_mix(tone, octave_noise(n, RATE, nb, rng, periodic=False), TK50_NOISE_DB)
+    x = tk50_mix(tone, octave_noise(n, RATE, nb, rng, periodic=False), TK50_NOISE_DB + (8.0 if rev else 0.0))
     x = x * (np.sqrt(np.mean(loop ** 2)) / (np.std(x) + 1e-12))
     fin = np.clip(t / (0.4 * D), 0, 1)                        # complement of the loop's fade
     dec = np.clip((t - 0.4 * D) / (0.55 * D), 0, 1)
