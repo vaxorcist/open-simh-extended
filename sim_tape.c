@@ -26,6 +26,9 @@
    Ultimately, this will be a place to hide processing of various tape formats,
    as well as OS-specific direct hardware access.
 
+   09-Nov-26    Ulli    Read forward: after an invalid record length the
+                        position is the record's start again (was 2 GB off
+                        for a marker with bit 31 set)
    23-Jan-12    MP      Added support for Logical EOT detection while positioning
    05-Feb-11    MP      Refactored to prepare for SIM_ASYNC_IO support
                         Added higher level routines:
@@ -1383,7 +1386,14 @@ switch (f) {                                       /* otherwise the read method 
                 }
             if (rev_lnt != *bc) {           /* size mismatch? */
                 status = MTSE_INVRL;
-                uptr->pos -= (sizeof (t_mtrlnt) + *bc + sizeof (t_mtrlnt));
+                /* back to the leading record marker (position not updated).
+                   It used to subtract the unmasked marker value (with the
+                   MTR_ERF bit and without the padding) from a position that
+                   was advanced by the masked, padded length: for a garbage
+                   marker with bit 31 set the position ended 2 GB before the
+                   record, and the attach scan reported about 2 GB of
+                   "unexamined data" in a 2 MB image. */
+                uptr->pos = saved_pos - sizeof (t_mtrlnt);
                 MT_SET_PNU (uptr);                      /* pos not upd */
                 break;
                 }
