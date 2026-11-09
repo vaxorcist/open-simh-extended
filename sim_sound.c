@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   09-Nov-26    Ulli    Streamers: the reverse start of a reposition
+                        follows the stop when it has died away
    09-Nov-26    Ulli    Streamers: SHOW TRANSPORT shows where the tape is
                         during a rewind or move (was "at BOT, rewinding")
    08-Nov-26    Ulli    Streamers: crossfaded start/loop/stop sounds
@@ -2563,8 +2565,10 @@ switch (s->mode) {
    fades in over 0.4 D; the start sound ends with the loop's own first
    0.4 D fading out, so both add up to the loop.  A loop ends where its
    stop sound begins and fades out over 0.4 D of the stop, which fades in
-   over the same time.  The reverse start follows the stop at 0.6 D.  (The
-   TK50 sounds of tools/make_tape_sounds.py v3 are made for this.) */
+   over the same time.  The reverse start follows the stop when it has
+   died away (a short standstill at the direction change, so the
+   reposition is heard as stop - reverse - stop).  (The TK50 sounds of
+   tools/make_tape_sounds.py v4 are made for this.) */
 
 typedef struct { int32 kind; double at; double end; double rate; double rate2; } STRM_PSEG;
 
@@ -2613,7 +2617,7 @@ for (guard = 0; guard < 12; guard++) {
         }
     b = c.pend;
     if (c.mode == STRM_REPOS) {                 /* stop, back up, stop */
-        double r0 = a + 0.6 * 1000000.0 * d_sp;
+        double r0 = a + 1000000.0 * d_sp;       /* after the stop: a short standstill */
 
         PSEG (STRM_S_STOP, a, a, 1.0, 1.0);
         PSEG (STRM_S_RSTART, r0, r0, 1.0, 1.0);
