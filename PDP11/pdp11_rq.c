@@ -28,6 +28,7 @@
 
    10-Nov-26    Ulli    Sound realism mode: SDI drives (RA, ESE, RA8U) only on
                         a UDA50, UDA50A or KDA50, at most 4 drives there;
+                        UDA50/UDA50A only on the Unibus, KDA50 only on Qbus;
                         RA80 capacity explained (237212 as a real RA80)
    10-Nov-26    Ulli    Sound realism mode for the fixed RA drives (RA70,
                         RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92): each
@@ -1152,8 +1153,8 @@ int32 rq_xtime = RQ_XTIME;                              /* transfer time */
      too.  The configuration must be realistic: RC25 drives only as pairs
      (even/odd units and unit numbers) on a KLESI controller, which only
      connects RC25 drives (at most two: 4 units); RA drives only on a
-     UDA50, UDA50A or KDA50 (at most 4 drives); see "configuration rules"
-     below.  A KLESI also reports the RC25's controller timeout
+     UDA50, UDA50A (Unibus) or KDA50 (Qbus), at most 4 drives; see
+     "configuration rules" below.  A KLESI also reports the RC25's controller timeout
      (15 s) and aborts only queued commands.
      Transfers take realistic times: seek t(d) = a + b * d^e (d cylinders)
      through the track-to-track, average (at a third of the stroke) and
@@ -4366,7 +4367,10 @@ return us;
    - SDI drives (the RA drives; also the ESE20/5x and the user-sized RA8U,
      which SIMH marks as SDI drives) only on an SDI controller: UDA50,
      UDA50A or KDA50 (Ulli, 2026-11-10);
-   - an SDI controller has four drive ports: at most 4 enabled units.
+   - an SDI controller has four drive ports: at most 4 enabled units;
+   - an SDI controller only on its bus: the UDA50 and UDA50A on the
+     Unibus, the KDA50 on the Qbus (Ulli, 2026-11-10; a PDP-11 is checked
+     with the bus of its current CPU model).
    SET SOUND ENABLED refuses a configuration that breaks a rule
    (rq_rlz_enable_check, registered with sim_sound).  While sound is
    enabled, SET RQ <controller type>, SET RQn <drive type>, SET RQn UNIT=,
@@ -4431,6 +4435,12 @@ int32 u, n_en = 0;
 
 if (dptr->flags & DEV_DIS)
     return SCPE_OK;
+if ((rq_eff_ctype (cp) == KDA50_CTYPE) && UNIBUS)      /* SDI controller on its bus */
+    return sim_messagef (SCPE_ARG, "%s%s: the KDA50 is a Qbus controller: on the Unibus use a UDA50 or UDA50A (SET %s UDA50A)\n",
+                         prefix, dptr->name, dptr->name);
+if (((rq_eff_ctype (cp) == UDA50_CTYPE) || (rq_eff_ctype (cp) == UDA50A_CTYPE)) && !UNIBUS)
+    return sim_messagef (SCPE_ARG, "%s%s: the %s is a Unibus controller: on the Qbus use a KDA50 (SET %s KDA50)\n",
+                         prefix, dptr->name, ctlr_tab[rq_eff_ctype (cp)].name, dptr->name);
 for (u = 0; u < n; u++) {
     UNIT *uptr = &dptr->units[u];
     uint32 dt = GET_DTYPE (uptr->flags);
@@ -4815,7 +4825,8 @@ fprintf (st, "    KDA50, which connect at most 4 drives: e.g. SET RQ KDA50 befor
 fprintf (st, "    RA81 on a Qbus machine.  SET RQ UDA50, UDA50A or KDA50 disables the\n");
 fprintf (st, "    units from 4 on, SET RQ <other type> gives the RA units their initial\n");
 fprintf (st, "    types back (RD54 if that is an RA as well), SET RQ DRIVES= above 4 is\n");
-fprintf (st, "    refused on them;\n");
+fprintf (st, "    refused on them.  The UDA50 and UDA50A only on the Unibus, the KDA50\n");
+fprintf (st, "    only on the Qbus;\n");
 fprintf (st, "  - a KLESI reports the RC25's controller timeout (15 s) and aborts only\n");
 fprintf (st, "    queued commands, never the active one;\n");
 fprintf (st, "  - RA and RC25 transfers take realistic times: seek, rotational latency\n");
