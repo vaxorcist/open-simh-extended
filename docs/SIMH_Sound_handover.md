@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v23 (v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v24 (v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02 (last update 2026-11-08). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-10). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -888,6 +888,28 @@ Notes from testing:
 - **Calibration on every ATTACH of a still-empty file** (Ulli: "Could that be avoided, e.g. by writing a single tape mark?"): after the calibration the TQ writes an end-of-medium marker at BOT (4 bytes, `ff ff ff ff`). It reads like an empty file in both modes (a tape mark would change what VMS reads at BOT); the guest's first write replaces it. Not for a write-protected file. Checked at the prompt (ATTACH -N, LOAD with calibration, DETACH, ATTACH: "contains 0 bytes", LOAD 15 s without calibration) and with K2 (INITIALIZE over the marker, BACKUP 68 s, LIST 124 s, reload).
 - Recording SIMH's sound, see `tests/tk50/README.txt`.
 - Branch `sound`: f8c89ec; `integration`: 790328d. Patch **`opensimh_5_sound_v21.patch`** replaces v20 (checked as before).
+
+## Phase D, step 2d: TK50 last changes and status (2026-11-09/10)
+
+- **SHOW TRANSPORT during a rewind** showed "loaded, at BOT, rewinding" (the logical position is the move's target from its start). Now interpolated from the move's start (`mv_t0`, `mv_lfrom` in SND_STREAMER): "loaded, rewinding, 344 ft from BOT", "track 1 of 22, 140 ft from BOT, moving"; "at BOT" only at rest.
+- **Reposition not audible** (Ulli: "I hear the tape only moving for several seconds, then slowing down to standstill, short pause (~0,2s) then accelerating again ... I cannot hear the short reposition"): the reverse was a near copy of forward, 6 dB quieter, and started while the stop faded. Now the reverse start follows the stop when it has died away (`r0 = a + d_sp`), and the reverse sounds (`make_tape_sounds.py` v4) lead with 501 Hz, a 600 Hz whine and the hiss of the recording's reverse bands, 2.5 dB under forward. Measured cycle at THROTTLE 150K: forward 2.2 s, braking 0.2 s, standstill 0.04 s, reverse 0.8 s, stop, start.
+- **Fewer repositions than on a real TK50** (Ulli remembers 3 to 4 times more during BACKUP/IMAGE):
+  - Measured: BACKUP/IMAGE of the RA81 test disk (no disk timing) at 450K: 39.7 KB/s, 20 repositions in 617 s. CPU register **STRSHIFT** (new, VAX: string instructions count one instruction per 2^n bytes, default 5 = unchanged) at 3 gave the same rate: string instructions do not limit BACKUP.
+  - Ulli's run with the RA60 (realistic timing): 42489 blocks really written in 784 s = 27.1 KB/s (BACKUP/LIST counts NOBACKUP files such as PAGEFILE.SYS without data).
+  - Many small files give a much lower host rate than large ones (two seeks and latencies per file: about 7 KB/s for 1-block files on the RA60); the real 'constant repositioning' probably came from those stretches. Test procedure `tests/tk50/MKSMALL.COM` (1000 one-block files).
+  - Not settled: BUFFER (32 KB), BACKUP (60 in), REPOS (1420 ms) are provisional; Ulli can try `DEP TQ BUFFER 16384` etc. by ear. Per reposition about 2.3 s carry no data (REPOS 1.42 s + start 0.13 s + run-up (BACKUP - 3.5 in) / 75 in/s).
+- **Ulli, 2026-11-10: "We will stop fine tuning the TK50 tape drive for now."**
+- Branch `sound`: 13559b1; `integration`: 0f8cb48. Patch **`opensimh_5_sound_v22.patch`** replaces v21 (checked: 6 + 5 v22 give the `sound` tree; the full order 1-4, 6, 5 the `integration` tree apart from CI/README).
+
+## Next: the RA Winchester disks (Ulli, 2026-11-10)
+
+RA70, RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92 in the sound realism mode, as the RA60 and RC25 (phase C steps 3 and 5): spindle (spin-up/spin-down, run sound), seek sounds and a realistic seek/rotation/transfer timing in `PDP11/pdp11_rq.c`.
+
+- Where: `rq_rlz_types[]` in `pdp11_rq.c` has entries for RA60 (3600 rpm, 7/42/70 ms, 42+1 sectors, 6 surfaces, 1600 cylinders) and RC25 only; the realism mode covers just these two (`RUN/STOP` button: RA60 and RC25 only, the others say "has no RUN/STOP button"). Geometry defines in `pdp11_rq.c` (sectors/surfaces/cylinders): RA70 33/11/1507, RA71 51/14/1921, RA72 51/20/1921, RA73 70/21/2667, RA80 and RA81 (see the defines), RA82 57/15/1435, RA90 69/13/2656, RA92 73/13/3101.
+- To find out per drive (DEC brochures, technical manuals, gunkies.org): rpm, track-to-track / average / maximum seek, spin-up and spin-down times, whether the front panel has a RUN/STOP (READY/WRITE PROTECT) button, the drive's sound character (the RA80/RA81/RA82 are large 14-inch HDAs; the RA70 is a 5.25-inch, the RA90/RA92 9-inch).
+- Sounds: as `tools/make_spindle_sounds.py` (spindle) and the RA60 seek sounds; recordings from Ulli where available.
+- Tests: Ulli's `VMS047-1.R81` (RA81) is the natural first test for the RA81; the RA60 tests of phase C step 3 as the pattern.
+- Open from the TK50: the notes above; TK70 (prepared), TU81 later.
 
 ## Not done yet (after phase B)
 

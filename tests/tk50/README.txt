@@ -1,4 +1,4 @@
-open-simh-extended/tests/tk50/README.txt  v2
+open-simh-extended/tests/tk50/README.txt  v3
 
 TK50 tests of the sound realism mode (TQ device, TQK50 on the Qbus,
 TUK50 on the Unibus; 2026-11-08), see docs/SIMH_Sound_handover.md,
@@ -27,6 +27,10 @@ tktest.py v2    VMS V4.7 tests with Ulli's image VMS047-1.R81 (RA81, VHD,
                 After the login the script waits 40 s: VMS V4.7 starts
                 the TMSCP port PTA0 only at the end of the startup, MUA0
                 appears about 30 s later.
+
+MKSMALL.COM v1  (v3) VMS command procedure: 1000 test files of one block each
+                (@MKSMALL [count] [directory]), for BACKUP of many small
+                files (low host rate, many repositions)
 
 Recording SIMH's sound (v2)
 
