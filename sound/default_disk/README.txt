@@ -40,13 +40,23 @@ RP      RP06         rp06              SEEKRP06S/SEEKRP06M 50/300
 RP      RM05         rm05              SEEKRM05S/SEEKRM05M 50/300
 RP      RP07         rp07              SEEKRP07S/SEEKRP07M 40/230
 RQ      RA60         ra60              SEEKRA60S/SEEKRA60M 100/600
+RQ      RA70         ra70              SEEKRA70S/SEEKRA70M 90/550
+RQ      RA71         ra71              SEEKRA71S/SEEKRA71M 120/700
+RQ      RA72         ra72              SEEKRA72S/SEEKRA72M 120/700
+RQ      RA73         ra73              SEEKRA73S/SEEKRA73M 160/980
+RQ      RA80         ra80              SEEKRA80S/SEEKRA80M 35/200
+RQ      RA81         ra81              SEEKRA81S/SEEKRA81M 75/460
+RQ      RA82         ra82              SEEKRA82S/SEEKRA82M 90/530
+RQ      RA90         ra90              SEEKRA90S/SEEKRA90M 160/980
+RQ      RA92         ra92              SEEKRA92S/SEEKRA92M 190/1150
 RQ      RC25/RCF25   rc25              SEEKRC25S/SEEKRC25M 50/300
 
 Spindle sounds have no default: they must match the drive's rotation
 speed and its spin-up and spin-down times.  A drive with a RUN/STOP (or
 LOAD) button plays <prefix>_spinup.wav (once), <prefix>_running.wav (a
 seamless loop) and <prefix>_spindown.wav (once) from its directory if
-they exist (all drives above except the fixed RM80, RP07 and RB80).
+they exist (all drives above except the fixed RM80, RP07 and RB80; the
+fixed RA drives have a RUN/STOP button).
 tools/make_spindle_sounds.py (open-simh-extended, branch notes)
 synthesizes matching sets.
 
