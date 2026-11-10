@@ -26,6 +26,9 @@
 
    rq           MSCP disk controller
 
+   10-Nov-26    Ulli    Sound realism mode: SDI drives (RA, ESE, RA8U) only on
+                        a UDA50, UDA50A or KDA50, at most 4 drives there;
+                        RA80 capacity explained (237212 as a real RA80)
    10-Nov-26    Ulli    Sound realism mode for the fixed RA drives (RA70,
                         RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92): each
                         has a RUN/STOP button (SET RQn ONLINE/OFFLINE, ATTACH
@@ -300,7 +303,7 @@ x  RD50  17   4     153   ?    ?    ?     ?       Seagate ST-506
 
    type  sec  surf  cyl   tpg  gpc  RCT   LBNs
    RA60  42+  6     1600  6    1    1008  400176
-   RA80  31   14    546   ?    ?    ?     237212
+   RA80  31   14    546   ?    ?    ?     237212 (see below)
    RA81  51+  14    1258  14   1    2856  891072
    RA82  57+  15    1435  15   1    3420  1216665
    RA70  33+  11   >1507  11   1    ?     547041
@@ -313,6 +316,14 @@ x  RD50  17   4     153   ?    ?    ?     ?       Seagate ST-506
    ESE52 4    128   465   ?    ?    ?     238080
    ESE56 4    128   465   ?    ?    ?     1196544
    ESE58 4    128   465   ?    ?    ?     1915392
+
+   RA80: the User Guide (EK-0RA80-UG-001) gives 546 logical cylinders and
+   236,964 LBNs (31*14*546); a real RA80 reports 237,212 LBNs in its MSCP
+   unit status (Usenet comp.periphs: "237212-236964 == 248 == 31*8"; a 4.3BSD
+   site used 237,212 blocks without problems, comp.bugs.4bsd, Dec 1986).
+   SIMH reports 237,212 like the real drive.  The R80 HDA (561 tracks per
+   head) is also the RM80 (Massbus) and RB80 (RB730): there 31*14*559 =
+   242,606 blocks, without the DSA replacement and table areas.
 
    LESI attached RC25 disks (one removable, one fixed)
 
@@ -662,7 +673,7 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
 #define RA80_GPC        1
 #define RA80_XBN        0                               /*  */
 #define RA80_DBN        0                               /*  */
-#define RA80_LBN        237212                          /* 31*14*546 */
+#define RA80_LBN        237212                          /* 31*14*546 + 248, as a real RA80 reports */
 #define RA80_RCTS       0                               /*  */
 #define RA80_RCTC       1
 #define RA80_RBN        0                               /*  */
@@ -926,6 +937,7 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
 #define KLESI_MODEL     3
 #define KLESI_MAX_UNITS 4               /* master + slave RC25 drive (realism mode) */
 #define KLESI_CTMO      15              /* RC25 controller timeout, s (realism mode) */
+#define SDI_MAX_UNITS   4               /* UDA50/UDA50A/KDA50: SDI drive ports (realism mode) */
 
 #define RUX50_CTYPE     2               // UNIBUS RX50-only controller
 #define RUX50_UQPM      10		// this should be 10 according to the MSCP spec
@@ -1139,8 +1151,9 @@ int32 rq_xtime = RQ_XTIME;                              /* transfer time */
      on an RC25 drive both platters stop and the other unit goes offline
      too.  The configuration must be realistic: RC25 drives only as pairs
      (even/odd units and unit numbers) on a KLESI controller, which only
-     connects RC25 drives (at most two: 4 units); see "configuration
-     rules" below.  A KLESI also reports the RC25's controller timeout
+     connects RC25 drives (at most two: 4 units); RA drives only on a
+     UDA50, UDA50A or KDA50 (at most 4 drives); see "configuration rules"
+     below.  A KLESI also reports the RC25's controller timeout
      (15 s) and aborts only queued commands.
      Transfers take realistic times: seek t(d) = a + b * d^e (d cylinders)
      through the track-to-track, average (at a third of the stroke) and
@@ -1388,6 +1401,8 @@ static t_bool rq_rlz_attach (UNIT *uptr);
 static void rq_rlz_detach (UNIT *uptr);
 struct rq_usnap;                                        /* (rq_snap_take) */
 static t_stat rq_rlz_rules (DEVICE *dptr, const char *prefix);
+static int32 rq_eff_ctype (MSC *cp);
+static t_bool rq_is_sdi_ctype (int32 ct);
 static t_stat rq_rlz_enable_check (void);
 static t_stat rq_rlz_set_type (UNIT *uptr, struct rq_usnap *s);
 static t_stat rq_rlz_set_ctype (UNIT *uptr, int32 newtype);
@@ -3473,6 +3488,10 @@ if (sim_sound_enabled () && (rq_ctxmap[uptr->cnum]->ctype == KLESI_CTYPE) &&
     (new_drives > KLESI_MAX_UNITS))         /* realism: master + slave drive */
     return sim_messagef (SCPE_ARG, "%s: a KLESI connects at most two RC25 drives (%d units)\n",
                          dptr->name, KLESI_MAX_UNITS);
+if (sim_sound_enabled () && rq_is_sdi_ctype (rq_eff_ctype (rq_ctxmap[uptr->cnum])) &&
+    (new_drives > SDI_MAX_UNITS))           /* realism: four SDI drive ports */
+    return sim_messagef (SCPE_ARG, "%s: a %s connects at most %d drives\n",
+                         dptr->name, ctlr_tab[rq_eff_ctype (rq_ctxmap[uptr->cnum])].name, SDI_MAX_UNITS);
 for (i=new_drives; i < old_drives; i++) {
     if (dptr->units[i].flags & UNIT_ATT)
         return sim_messagef (SCPE_ALATT, "Can't change number of drives on %s with %s attached to %s.\n", 
@@ -4343,7 +4362,11 @@ return us;
    - an RC25 drive is always a pair: the RC25 (cartridge) at an even unit,
      its RCF25 (fixed platter) at the next unit;
    - the unit select plug of the drive numbers the pair: the RC25 has an
-     even unit number (PLUG, SET RQn UNIT=), the RCF25 that number + 1.
+     even unit number (PLUG, SET RQn UNIT=), the RCF25 that number + 1;
+   - SDI drives (the RA drives; also the ESE20/5x and the user-sized RA8U,
+     which SIMH marks as SDI drives) only on an SDI controller: UDA50,
+     UDA50A or KDA50 (Ulli, 2026-11-10);
+   - an SDI controller has four drive ports: at most 4 enabled units.
    SET SOUND ENABLED refuses a configuration that breaks a rule
    (rq_rlz_enable_check, registered with sim_sound).  While sound is
    enabled, SET RQ <controller type>, SET RQn <drive type>, SET RQn UNIT=,
@@ -4351,7 +4374,9 @@ return us;
    - SET RQ KLESI sets units 0/1 and 2/3 to RC25/RCF25 (unit numbers as
      pairs) and disables the units from 4 on;
    - SET RQ <other type> on a KLESI sets the RC25/RCF25 units back to the
-     unit's initial drive type;
+     unit's initial drive type, and so does SET RQ <type without SDI> for
+     the SDI drive units; SET RQ UDA50, UDA50A or KDA50 disables the units
+     from 4 on;
    - SET RQn RC25 also sets the next unit to RCF25 (SET RQn RCF25: the unit
      before it to RC25), SET RQn UNIT=m also renumbers the other unit of
      the pair;
@@ -4369,6 +4394,30 @@ static t_bool rq_is_rc25_type (uint32 dt)
 return ((dt == RC25_DTYPE) || (dt == RCF25_DTYPE));
 }
 
+/* An SDI drive (RA drives, ESE, RA8U): needs an SDI controller */
+
+static t_bool rq_is_sdi_type (uint32 dt)
+{
+return ((drv_tab[dt].flgs & RQDF_SDI) != 0);
+}
+
+/* The controller type in effect (DEFAULT is resolved at reset; before
+   that, the type reset will choose) */
+
+static int32 rq_eff_ctype (MSC *cp)
+{
+if (cp->ctype != DEFAULT_CTYPE)
+    return cp->ctype;
+return (UNIBUS ? UDA50A_CTYPE : (MICROVAX1 ? RQDX1_CTYPE : RQDX3_CTYPE));
+}
+
+/* An SDI controller: UDA50, UDA50A (Unibus), KDA50 (Qbus) */
+
+static t_bool rq_is_sdi_ctype (int32 ct)
+{
+return ((ct == UDA50_CTYPE) || (ct == UDA50A_CTYPE) || (ct == KDA50_CTYPE));
+}
+
 /* Check the rules for one controller.  Returns SCPE_OK, or prints the
    first rule broken (with the prefix) and returns SCPE_ARG. */
 
@@ -4376,6 +4425,7 @@ static t_stat rq_rlz_rules (DEVICE *dptr, const char *prefix)
 {
 MSC *cp = rq_ctxmap[dptr->units[0].cnum];
 t_bool klesi = (cp->ctype == KLESI_CTYPE);
+t_bool sdi = rq_is_sdi_ctype (rq_eff_ctype (cp));
 int32 n = (int32) dptr->numunits - 2;
 int32 u, n_en = 0;
 
@@ -4393,6 +4443,9 @@ for (u = 0; u < n; u++) {
                              prefix, dptr->name, sim_uname (uptr), drv_tab[dt].name);
     if (!klesi && rq_is_rc25_type (dt))
         return sim_messagef (SCPE_ARG, "%s%s: an %s needs a KLESI controller (SET %s KLESI)\n",
+                             prefix, sim_uname (uptr), drv_tab[dt].name, dptr->name);
+    if (!sdi && rq_is_sdi_type (dt))
+        return sim_messagef (SCPE_ARG, "%s%s: an %s is an SDI drive: it needs a UDA50, UDA50A or KDA50 controller (SET %s KDA50)\n",
                              prefix, sim_uname (uptr), drv_tab[dt].name, dptr->name);
     }
 for (u = 0; u < n; u++) {                               /* (types first, then the pairs) */
@@ -4425,6 +4478,9 @@ for (u = 0; u < n; u++) {                               /* (types first, then th
 if (klesi && (n_en > KLESI_MAX_UNITS))
     return sim_messagef (SCPE_ARG, "%s%s: a KLESI connects at most two RC25 drives (%d units), %d units are enabled\n",
                          prefix, dptr->name, KLESI_MAX_UNITS, n_en);
+if (sdi && (n_en > SDI_MAX_UNITS))
+    return sim_messagef (SCPE_ARG, "%s%s: a %s connects at most %d drives, %d units are enabled\n",
+                         prefix, dptr->name, ctlr_tab[rq_eff_ctype (cp)].name, SDI_MAX_UNITS, n_en);
 return SCPE_OK;
 }
 
@@ -4574,8 +4630,10 @@ return rq_snap_check (dptr, s);
 /* SET RQ <controller type> in the realism mode (rq_set_ctype, before the
    type is changed): to a KLESI, units 0-3 become two RC25 drives and the
    units from 4 on are disabled; from a KLESI to another type, the RC25
-   and RCF25 units get their initial drive types back.  Refused while a
-   unit that would change is attached. */
+   and RCF25 units get their initial drive types back; to a type without
+   SDI, so do the SDI drive units; to an SDI controller (UDA50, UDA50A,
+   KDA50), the units from 4 on are disabled.  Refused while a unit that
+   would change is attached. */
 
 static t_stat rq_rlz_set_ctype (UNIT *uptr, int32 newtype)
 {
@@ -4583,6 +4641,7 @@ MSC *cp = rq_ctxmap[uptr->cnum];
 DEVICE *dptr = rq_devmap[uptr->cnum];
 int32 n = (int32) dptr->numunits - 2;
 int32 u, oldtype = cp->ctype;
+t_bool sdi = rq_is_sdi_ctype (newtype);
 RQ_USNAP *s;
 t_stat r;
 
@@ -4590,9 +4649,11 @@ if (newtype == cp->ctype)
     return SCPE_OK;
 for (u = 0; u < n; u++) {                               /* nothing attached that changes */
     UNIT *xptr = &dptr->units[u];
+    uint32 dt = GET_DTYPE (xptr->flags);
     t_bool changes = (newtype == KLESI_CTYPE) ?
-        ((u >= KLESI_MAX_UNITS) || !rq_is_rc25_type (GET_DTYPE (xptr->flags))) :
-        rq_is_rc25_type (GET_DTYPE (xptr->flags));
+        ((u >= KLESI_MAX_UNITS) || !rq_is_rc25_type (dt)) :
+        (rq_is_rc25_type (dt) || (!sdi && rq_is_sdi_type (dt)) ||
+         (sdi && (u >= SDI_MAX_UNITS) && rq_unit_enabled (xptr)));
 
     if ((xptr->flags & UNIT_ATT) && changes)
         return sim_messagef (SCPE_ALATT, "%s: %s is attached and would have to change\n",
@@ -4629,9 +4690,20 @@ if (newtype == KLESI_CTYPE) {
 else
     for (u = 0; u < n; u++) {
         UNIT *xptr = &dptr->units[u];
+        uint32 dt = GET_DTYPE (xptr->flags);
 
-        if (rq_is_rc25_type (GET_DTYPE (xptr->flags)))
-            rq_put_dtype (xptr, (u < RQ_NUMDR) ? rq_dflt_dtype[uptr->cnum][u] : rq_dflt_dtype[uptr->cnum][0]);
+        if (sdi && (u >= SDI_MAX_UNITS)) {              /* SDI: four drive ports */
+            if (xptr->flags & UNIT_DISABLE)
+                xptr->flags = xptr->flags | UNIT_DIS;
+            continue;
+            }
+        if (rq_is_rc25_type (dt) || (!sdi && rq_is_sdi_type (dt))) {
+            uint32 ndt = (u < RQ_NUMDR) ? rq_dflt_dtype[uptr->cnum][u] : rq_dflt_dtype[uptr->cnum][0];
+
+            if (!sdi && rq_is_sdi_type (ndt))           /* initial type also SDI */
+                ndt = RD54_DTYPE;
+            rq_put_dtype (xptr, ndt);
+            }
         }
 cp->ctype = newtype;
 r = rq_rlz_rules (dptr, "");
@@ -4738,7 +4810,12 @@ fprintf (st, "    sound is enabled, SET RQ KLESI sets units 0/1 and 2/3 to RC25/
 fprintf (st, "    disables the others, SET RQ <other type> gives them their initial types\n");
 fprintf (st, "    back, SET RQn RC25 (or RCF25) also sets the other half of the pair, SET\n");
 fprintf (st, "    RQn UNIT=m also renumbers it, and settings or an ATTACH that would break\n");
-fprintf (st, "    a rule are refused;\n");
+fprintf (st, "    a rule are refused.  RA drives (SDI drives) only on a UDA50, UDA50A or\n");
+fprintf (st, "    KDA50, which connect at most 4 drives: e.g. SET RQ KDA50 before SET RQ0\n");
+fprintf (st, "    RA81 on a Qbus machine.  SET RQ UDA50, UDA50A or KDA50 disables the\n");
+fprintf (st, "    units from 4 on, SET RQ <other type> gives the RA units their initial\n");
+fprintf (st, "    types back (RD54 if that is an RA as well), SET RQ DRIVES= above 4 is\n");
+fprintf (st, "    refused on them;\n");
 fprintf (st, "  - a KLESI reports the RC25's controller timeout (15 s) and aborts only\n");
 fprintf (st, "    queued commands, never the active one;\n");
 fprintf (st, "  - RA and RC25 transfers take realistic times: seek, rotational latency\n");
