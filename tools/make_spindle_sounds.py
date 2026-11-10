@@ -1,7 +1,8 @@
-# open-simh-extended/tools/make_spindle_sounds.py  v3
+# open-simh-extended/tools/make_spindle_sounds.py  v4
 #
 # Synthesizes the optional spindle sounds of the SIMH sound system for every
-# removable-media disk drive with a RUN/STOP (or LOAD) button:
+# disk drive with a RUN/STOP (or LOAD) button (removable media, and the
+# fixed RA drives, which have a RUN/STOP button too):
 #
 #   <prefix>_spinup.wav    T_up seconds, 0 -> nominal speed (plays once)
 #   <prefix>_running.wav   about 2 s at nominal speed, a seamless loop
@@ -63,6 +64,15 @@
 # tree has no per-drive directories (seek sounds come from
 # sound/default_disk); spindle sounds have no default, so --tree creates
 # the drive's directory (e.g. sound/rl02/) for them.
+#
+# v4 (2026-11-10): the fixed RA drives with a RUN/STOP button: RA70 (4000
+# rpm), RA71/RA72/RA73 (5.25-inch HDAs, 3600 rpm), RA80/RA81/RA82 (14-inch
+# HDAs, 3600 rpm), RA90 (3600 rpm) and RA92 (3405 rpm, 9-inch HDAs).  Start
+# and stop times are the SIMH SPINUPRAnn/SPINDOWNRAnn defaults; "reach" is
+# the motor run-up inside the start time (RA7x: at speed within 15 s, RA7x
+# Pocket Reference Guide; RA80 15 s typical, RA81 20 s, RA80/RA81 User
+# Guides; RA82, RA90, RA92: 20 s provisional).  Sealed HDAs: little air
+# noise, the motor and bearings dominate.
 
 import sys, wave, argparse, zlib
 import numpy as np
@@ -82,6 +92,12 @@ H_RA60 = {1: 1.0, 2: 0.60, 3: 0.45, 4: 0.35, 5: 0.22, 6: 0.28, 7: 0.12,         
           8: 0.16, 9: 0.10, 10: 0.14, 12: 0.12, 15: 0.06, 18: 0.04}            # more electronics hum
 H_RC25 = {1: 1.0, 2: 0.50, 3: 0.40, 4: 0.25, 5: 0.15, 6: 0.20, 8: 0.16,         # RC25: small 8" platters,
           10: 0.10, 12: 0.14, 14: 0.10, 16: 0.08, 20: 0.05, 24: 0.03}          # brushless motor, quiet (53 dB)
+H_RA14 = {1: 1.0, 2: 0.75, 3: 0.55, 4: 0.40, 5: 0.28, 6: 0.30, 7: 0.14,         # RA80/81/82: 14" sealed HDA,
+          8: 0.16, 9: 0.08, 10: 0.10, 12: 0.08, 14: 0.04}                      # heavy platters, deep hum
+H_RA9 = {1: 1.0, 2: 0.60, 3: 0.45, 4: 0.35, 5: 0.22, 6: 0.26, 8: 0.16,          # RA90/92: 9" sealed HDA,
+         10: 0.12, 12: 0.12, 14: 0.08, 16: 0.06, 20: 0.03}                     # brushless motor
+H_RA5 = {1: 1.0, 2: 0.45, 3: 0.35, 4: 0.28, 5: 0.14, 6: 0.22, 8: 0.18,          # RA7x: 5.25" HDA, small
+         10: 0.12, 12: 0.16, 14: 0.12, 16: 0.10, 20: 0.06, 24: 0.04}           # brushless motor, high whine
 
 # One row per sound prefix (= sound directory of the drive type in SIMH).
 #   rpm, up, down: nominal speed, spin-up and spin-down seconds (the SIMH
@@ -109,6 +125,33 @@ DRIVES = {
     "rc25": dict(desc="RC25 (RQ), DEC: start 60 s incl. purge/self-test, stop 30 s; run-up 25 s prov.",
                  rpm=2850, up=60, down=30, reach=25,
                  harm=H_RC25, drive=1.8, noise=0.12, nc=750.0, nw=0.9),
+    "ra70": dict(desc="RA70 (RQ), start 59 s, stop 15 s (Computer History Wiki); run-up 15 s",
+                 rpm=4000, up=59, down=15, reach=15,
+                 harm=H_RA5, drive=1.7, noise=0.06, nc=1100.0, nw=0.8),
+    "ra71": dict(desc="RA71 (RQ), start 60 s, stop 15 s prov. (RF72); run-up 15 s",
+                 rpm=3600, up=60, down=15, reach=15,
+                 harm=H_RA5, drive=1.7, noise=0.06, nc=1000.0, nw=0.8),
+    "ra72": dict(desc="RA72 (RQ), start 60 s, stop 15 s prov. (RF72); run-up 15 s",
+                 rpm=3600, up=60, down=15, reach=15,
+                 harm=H_RA5, drive=1.8, noise=0.07, nc=1000.0, nw=0.8),
+    "ra73": dict(desc="RA73 (RQ), start 60 s, stop 15 s prov. (RF72); run-up 15 s",
+                 rpm=3600, up=60, down=15, reach=15,
+                 harm=H_RA5, drive=1.8, noise=0.07, nc=1000.0, nw=0.8),
+    "ra80": dict(desc="RA80 (RQ), DEC: start 50 s, stop 20 s; run-up 15 s (typical)",
+                 rpm=3600, up=50, down=20, reach=15,
+                 harm=H_RA14, drive=2.3, noise=0.09, nc=450.0, nw=1.0),
+    "ra81": dict(desc="RA81 (RQ), DEC: start 50 s, stop 20 s; run-up 20 s",
+                 rpm=3600, up=50, down=20, reach=20,
+                 harm=H_RA14, drive=2.3, noise=0.09, nc=450.0, nw=1.0),
+    "ra82": dict(desc="RA82 (RQ), start 50 s, stop 20 s; run-up 20 s prov.",
+                 rpm=3600, up=50, down=20, reach=20,
+                 harm=H_RA14, drive=2.2, noise=0.08, nc=480.0, nw=1.0),
+    "ra90": dict(desc="RA90 (RQ), DEC: start 40 s; stop 30 s and run-up 20 s prov.",
+                 rpm=3600, up=40, down=30, reach=20,
+                 harm=H_RA9, drive=2.0, noise=0.07, nc=700.0, nw=0.9),
+    "ra92": dict(desc="RA92 (RQ), DEC: start 40 s; stop 30 s and run-up 20 s prov.",
+                 rpm=3405, up=40, down=30, reach=20,
+                 harm=H_RA9, drive=2.0, noise=0.07, nc=700.0, nw=0.9),
 }
 # Not here: RM80 and RP07 are fixed disks (no RUN/STOP button, SIMH plays no
 # spindle sounds for them); RX01/RX02, RX50/RX33 and TU58 have no spin-up.

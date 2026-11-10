@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v24 (v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v25 (v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02 (last update 2026-11-10). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-10, RA drives). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -901,19 +901,92 @@ Notes from testing:
 - **Ulli, 2026-11-10: "We will stop fine tuning the TK50 tape drive for now."**
 - Branch `sound`: 13559b1; `integration`: 0f8cb48. Patch **`opensimh_5_sound_v22.patch`** replaces v21 (checked: 6 + 5 v22 give the `sound` tree; the full order 1-4, 6, 5 the `integration` tree apart from CI/README).
 
-## Next: the RA Winchester disks (Ulli, 2026-11-10)
+## Phase C, step 6: the fixed RA drives RA70 to RA92 (RQ) (2026-11-10)
 
-RA70, RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92 in the sound realism mode, as the RA60 and RC25 (phase C steps 3 and 5): spindle (spin-up/spin-down, run sound), seek sounds and a realistic seek/rotation/transfer timing in `PDP11/pdp11_rq.c`.
+### Where things are
 
-- Where: `rq_rlz_types[]` in `pdp11_rq.c` has entries for RA60 (3600 rpm, 7/42/70 ms, 42+1 sectors, 6 surfaces, 1600 cylinders) and RC25 only; the realism mode covers just these two (`RUN/STOP` button: RA60 and RC25 only, the others say "has no RUN/STOP button"). Geometry defines in `pdp11_rq.c` (sectors/surfaces/cylinders): RA70 33/11/1507, RA71 51/14/1921, RA72 51/20/1921, RA73 70/21/2667, RA80 and RA81 (see the defines), RA82 57/15/1435, RA90 69/13/2656, RA92 73/13/3101.
-- To find out per drive (DEC brochures, technical manuals, gunkies.org): rpm, track-to-track / average / maximum seek, spin-up and spin-down times, whether the front panel has a RUN/STOP (READY/WRITE PROTECT) button, the drive's sound character (the RA80/RA81/RA82 are large 14-inch HDAs; the RA70 is a 5.25-inch, the RA90/RA92 9-inch).
-- Sounds: as `tools/make_spindle_sounds.py` (spindle) and the RA60 seek sounds; recordings from Ulli where available.
-- Tests: Ulli's `VMS047-1.R81` (RA81) is the natural first test for the RA81; the RA60 tests of phase C step 3 as the pattern.
-- Open from the TK50: the notes above; TK70 (prepared), TU81 later.
+- Branch `sound`: commit 8c636388 on top of 13559b16; branch `integration`: the same change as f6be3ad3.
+- Patch **`opensimh_5_sound_v23.patch`** replaces v22 (same base, applies on top of `opensimh_6_rb730_v2.patch`). Checked by `git am --keep-cr` on 87eb7d5: 6 + 5 v23 give exactly the `sound` tree (without the Visual Studio project files).
+- Changed: `PDP11/pdp11_rq.c` (pdp11 and every VAX with an MSCP controller), `sound/default_disk/README.txt` (table of drives).
+- Notes branch: `tools/make_spindle_sounds.py` v4 (RA rows), `tools/make_sound_devices_ods.py` v9 and `docs/SIMH_Sound_devices.ods` table v8, `docs/SIMH_known_issues.md` v15 (case 41), `docs/SIMH_overview.md` v16, `tests/ra/` (ra1–ra4.ini, ratest.py, vhd2raw.py, README.txt).
+- Sources (supplied by Ulli): RA80 User Guide EK-0RA80-UG-001 (Jan 1982), RA81 User Guide EK-0RA81-UG-001 (1982), RA90/RA92 Disk Drive User Guide EK-ORA90-UG-002, RA7x/SA7x Pocket Reference Guide EK-RSA7X-PG-002 (Aug 1992), DEC brochure EA-24042-18 (RA60/RA80/RA81, Aug 1982); Computer History Wiki for the RA82, RA70 and RF72.
+
+### Question answered first: UDA50 vs UDA50A in SIMH
+
+Only the model numbers differ: `SET RQ UDA50` reports port model and MSCP controller model 2 (the original UDA50), `UDA50A` 6 (the default of every Unibus simulator). Nothing in the code branches on the two; timing, commands and drive types are the same.
+
+### Drive facts
+
+| Drive | rpm | Seek t2t / avg / max (ms) | Start / stop (s) | Source, remarks |
+|---|---|---|---|---|
+| RA70 | 4000 | 4 / 19.5 / 35 | 59 / 15 | pocket guide (rpm); CHW (average, start, stop); t2t and max **provisional** |
+| RA71 | 3600 | 3 / 13.3 / 26 | 60 / 15 | pocket guide (rpm, at speed within 15 s); seeks and times **provisional** from the RF72 (CHW: 13.3 ms average, < 60 s / < 15 s) |
+| RA72 | 3600 | 3 / 13.3 / 26 | 60 / 15 | as the RA71 (the guide does not state its rpm) |
+| RA73 | 3600 | 3 / 13.3 / 26 | 60 / 15 | as the RA71 |
+| RA80 | 3600 | 6 / 25 / 50 | 50 / 20 | User Guide (seeks; start 40 s max., 15 s typical for the rotation), brochure (start 50 s, stop 20 s) |
+| RA81 | 3600 | 7 / 28 / 50 | 50 / 20 | User Guide maxima (brochure 6/28/52); brochure start 50 s, User Guide rotation start 20 s, stop 20 s |
+| RA82 | 3600 | 6 / 24 / 38 | 50 / 20 | CHW |
+| RA90 | 3600 | 5.5 / 18.5 / 31.5 | 40 / 30 | User Guide; stop not published (only "inhibit between stop and restart 40 s"): 30 s **provisional** |
+| RA92 | 3405 | 3.0 / 16.0 / 29.0 | 40 / 30 | User Guide; stop **provisional** |
+
+Every one of them has a RUN/STOP switch on its front panel (User Guides; pocket guide: "Run/Stop switch in/out" in the drive status, OCP with Run, Fault, Ready, Write Protect, Port A/B).
+
+### Behavior
+
+- **All RA drives now have the RUN/STOP button** of the RA60 (`rq_spindle_owner`: every drive type with a realistic timing entry). The RD/RX/RF and other drives keep "has no RUN/STOP button".
+- **Realism mode:** ATTACH loads the disk (the file is the head disk assembly), the drive stays stopped until `SET RQn ONLINE` (**boot scripts need `SET RQ0 ONLINE` before BOOT**, as for the RA60 and the other removable drives; `SET -N` does not wait); "offline, no volume" while stopped, "available" attention when up to speed; AVAILABLE with spin-down (VMS `DISMOUNT`, which unloads by default) spins the drive down, and `SET RQn ONLINE` spins it up again (on the real drive: release and press RUN/STOP).
+- Registers (RQ only, all four controllers): `SPINUPRAnn`, `SPINDOWNRAnn` (ms), `SEEKRAnnS`, `SEEKRAnnM` (cylinders) for nn = 70, 71, 72, 73, 80, 81, 82, 90, 92. The RA60 keeps `SPINUP`/`SPINDOWN`/`SEEKRA60S`/`SEEKRA60M`.
+- Timing as the RA60: fitted seek curve, latency 0..one revolution, one sector slot per block with **one spare slot per track** (RA81 52, RA92 74, ...), a track-to-track seek per cylinder crossed. Geometry comes from the drive defines (`RQ_RLZ_RA` macro).
+- Seek sounds per type `sound/raNN/raNN-s/m/l.wav`, falling back to `default_disk`; limits about 6 % / 37 % of the cylinders (RA81 75/460, RA92 190/1150, ...). Optional spindle sounds `raNN_spinup/_running/_spindown.wav` (`make_spindle_sounds.py` v4 makes them; not bundled).
+- **Normal mode:** unchanged, except that `SET RQn ONLINE/OFFLINE` now also works (at once) on the fixed RA drives, as on the RA60.
+- No configuration rules for RA drives yet (see open questions).
+
+### Tests
+
+Console (`tests/ra/`, MicroVAX II with `SET RQ KDA50`, and VAX-11/750):
+
+| Test | Result |
+|---|---|
+| ra1 (realism, MicroVAX II): RA81, RA92, RA70 after ATTACH | "offline" |
+| ra1: `SET RQ3 ONLINE` on the RD54 | refused: "the RD54 has no RUN/STOP button (only the RA drives and the RC25)" |
+| ra1: RA81 ONLINE (SPINUPRA81 2000) / OFFLINE (1500) / `SET -N RQ1 ONLINE` (RA92, 3000) | waits 2 s / 1.5 s / returns, "spinning up, 3.0 s left" |
+| ra1: VMB reads 50 blocks at LBN 800000 of the RA81 | long seek 1120 cylinders, 68.9 ms (model 63–80 ms) |
+| ra2: BOOT DUA0 with the RA81 stopped | `?4D DEVOFFLINE, DUA0` |
+| ra3 (normal mode) | ready at ATTACH, OFFLINE/ONLINE at once, boots |
+| ra4 (realism, VAX-11/750, UDA50A): RA80, RA82 | ONLINE/OFFLINE wait; SHOW SOUND `ra80 (seek) -> default_disk, ra82 (seek) -> default_disk` |
+| RC25/RA60 regression c1, c2, c4, c5, c6 (MicroVAX 3900, notes `tests/rc25`) | identical: RC25 156,823 µs and 646 cylinders back 51,380 µs; RA60 86,156 µs; c6 as before (the baseline build showed the known `?53` self-test error of case 22 once) |
+
+VMS V4.7 (`tests/ra/ratest.py` v1, Ulli's `VMS047-1.R81`):
+
+| Test | Result |
+|---|---|
+| N1 normal mode, MicroVAX II, KDA50, RA81 | workload (DIRECTORY/SIZE of SYS$SYSTEM, COPY/DIRECTORY/DELETE of 24 help libraries) 0.5 s, as before |
+| R1 realism, MicroVAX II: ATTACH → both "offline"; `SET RQ0 ONLINE` waits 50 s; boot | ok; workload 43 s guest time |
+| R1: blank RA92 data disk `SET -N RQ1 ONLINE` under VMS (40 s), INITIALIZE, MOUNT, COPY, DIRECTORY | ok |
+| R1: `DISMOUNT DUA1:` | the RA92 spins down (30 s), file stays attached |
+| R1: MOUNT of the stopped RA92 | `%MOUNT-I-OPRQST, Please mount volume RA92T in device _DUA1:`; `SET -N RQ1 ONLINE` → mounted by itself |
+| R1: `SET -N RQ0 OFFLINE` under VMS, a DIRECTORY | "_DUA0: is offline. Mount verification in progress."; `SET -N RQ0 ONLINE` (during the spin-down) → "has completed mount verification", DIRECTORY completes |
+| R1 trace | 3448 transfers, longest 87.9 ms, mean 17.6 ms; seek sounds 575 short, 9 medium, 491 long |
+| U1 realism, VAX-11/750 (UDA50A), the system as an RA82 | boot ok, workload 51 s; 1739 transfers, mean 18.7 ms, longest 70.0 ms |
+| T1 realism, MicroVAX II, the system as an RA72, then an RA71 (60 s spin-up each) | workload 39.0 s / 38.5 s; mean transfer 14.7 / 16.0 ms |
+| Build `-Werror` microvax2, microvax3900, microvax1, rtvax1000, vax730, vax750, vax780, vax8200, vax8600, pdp11; microvax2, vax750, pdp11 on `integration` | no warnings (`pdp11_rq.c` with `-Wall -Wextra`: only more of the existing missing-initializer style warnings) |
+| VAX-11/750 diagnostics | passed |
+
+Notes from testing:
+- **VMS V4.7 cannot boot from an RA90 or RA92** (`%SYSINIT-E- error mounting system device, status = 000008C4`), also in the normal mode of the unmodified `sound` build: VMS V4.7 (1987) predates these drives. The RA92 was tested as a data disk (R1); RA70 and RA80 are too small for the 456 MB system and were tested at the console.
+- SIMH's `FORMAT=RAW` is a host device, not a flat file: `ATTACH -N` with it fails ("Cannot create … No such file or directory"). Flat files work in the default SIMH format.
+- The first run converted `pdp11_rq.c` from CRLF to LF line endings (Python text mode); fixed before the commit (the file is CRLF).
+
+### Open questions for Ulli
+
+1. **ATTACH of a fixed RA drive in the realism mode leaves it stopped** (the RUN/STOP switch out), as for the RA60 and the house rule "ATTACH waits for SET ONLINE". Boot scripts must add `SET RQ0 ONLINE` (a 40–60 s spin-up at the prompt, or `SET -N`). Alternative: a fixed RA drive spins up by itself at ATTACH ("RUN/STOP pressed at power-on").
+2. **Configuration rules** as for the RC25? E.g. RA drives only on SDI controllers (UDA50, UDA50A, KDA50, KDB50), RD/RX not on them, at most 4 drives per UDA50/KDA50. Not implemented: which drive each controller supported (RA90/RA92 on a UDA50?) needs a source.
+3. Provisional values: RA70 t2t/max, RA71/72/73 seeks and spin times (from the RF72), RA90/RA92 stop time, motor run-up times in the spindle sounds.
+4. Known issues 41 (RA80 capacity 237,212 vs 236,964 LBNs): correct it?
 
 ## Not done yet (after phase B)
 
-- RX and TU58 later without spin-up/spin-down. (The RA60 and the RC25 are done, see phase C steps 3 and 5; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
+- RX and TU58 later without spin-up/spin-down. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
 - RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.

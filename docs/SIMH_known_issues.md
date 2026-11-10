@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v14 (v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v15 (v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -359,3 +359,11 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Effect 2:** when a later 10 s recalibration found the CPU much too fast, the restart loop computed the wait from `sim_throt_peak_cps`, which no warm-up ever set (0): the wait stays 0 and the loop never ends (a test run wrote 20 GB of debug output).
 - **Fix (patch 5):** without a warm-up the measurement lasts at least 100 ms; one that idled, was below the wanted rate or below 1.25 times it is repeated with a longer window (at most 10 s of the wanted rate); a warning only after 30 repetitions without idling, and the throttle keeps trying. The measured rate feeds the peak; the restart loop uses the current rate when no peak above the wanted one exists. Checked: four MicroVAX II boots in parallel, measurements of 244K and 286K repeated, throttle 450K reached, no warning.
 - **Found:** 2026-11-09.
+
+### 41 — OPEN — Suspicious: RA80 capacity does not match its geometry
+- **Where:** `PDP11/pdp11_rq.c`, `RA80_LBN 237212` with the comment `/* 31*14*546 */`; 31 × 14 × 546 is 236,964.
+- **Published:** RA80 User Guide EK-0RA80-UG-001, Table 1-1: 31 sectors, 14 heads, 546 logical cylinders, **236,964 LBNs**; the DEC RA60/RA80/RA81 brochure (Aug 1982) gives 31 user sectors × 14 tracks × 546 cylinders as well.
+- **Effect:** SIMH reports 248 blocks (8 tracks) more than a real RA80; they lie beyond the last cylinder of the geometry (GET UNIT STATUS still says 546 cylinders). A volume initialized on SIMH's RA80 uses them and would not fit a real RA80. The other RA80 parameters (XBN, DBN, RCT size, RBN) are all 0 in SIMH as well.
+- **Not changed:** correcting the LBN count changes the size SIMH reports for existing RA80 images (and AUTOSIZE matching); decision for Ulli.
+- **Found:** 2026-11-10 (RA drives for the sound realism mode, from the RA80 User Guide).
+
