@@ -1,4 +1,4 @@
-open-simh-extended/tests/ra/README.txt  v1 (2026-11-10)
+open-simh-extended/tests/ra/README.txt  v2 (2026-11-10; v2: ra5, SDI rules)
 
 Tests of the fixed RA drives (RA70, RA71, RA72, RA73, RA80, RA81, RA82,
 RA90, RA92) in the sound realism mode of the RQ device (sound patch v23).
@@ -13,6 +13,7 @@ with SDL_AUDIODRIVER=dummy on a host without audio):
     BIN/microvax2 ra2.ini
     BIN/microvax2 ra3.ini
     BIN/vax750 ra4.ini
+    BIN/microvax2 ra5.ini
 
 Test   What                                                  Expected
 -----  ----------------------------------------------------  ---------------------------------
@@ -25,6 +26,11 @@ ra3    normal mode: RA81 ready at ATTACH, OFFLINE/ONLINE     online/offline/onli
        at once
 ra4    realism, VAX-11/750 (UDA50A): RA80, RA82 ONLINE,      waits; SHOW SOUND: ra80, ra82
        RA82 OFFLINE; SHOW RQ, SHOW SOUND                     (seek) -> default_disk
+ra5    realism rules (MicroVAX II): RA81 on the RQDX3        refused (SET SOUND ENABLED, SET
+       (before/after SET SOUND ENABLED); KDA50 with RA81 +   RQ0 RA81); accepted; DRIVES=8
+       RA92; DRIVES=8; back to RQDX3; RQDX3 with an RA81     refused; RA units -> RD54; refused
+       attached; 8 units enabled then SET SOUND ENABLED;     ("would have to change"); refused
+       RC25 on the KDA50                                     (8 units); refused (KLESI)
 
 VMS V4.7 tests with Ulli's image VMS047-1.R81 (RA81, VHD; SYSTEM/MANAGER):
 

@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v25 (v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v26 (v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02 (last update 2026-11-10, RA drives). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -977,12 +977,20 @@ Notes from testing:
 - SIMH's `FORMAT=RAW` is a host device, not a flat file: `ATTACH -N` with it fails ("Cannot create … No such file or directory"). Flat files work in the default SIMH format.
 - The first run converted `pdp11_rq.c` from CRLF to LF line endings (Python text mode); fixed before the commit (the file is CRLF).
 
-### Open questions for Ulli
+### Ulli's decisions (2026-11-10, afternoon) and what followed
 
-1. **ATTACH of a fixed RA drive in the realism mode leaves it stopped** (the RUN/STOP switch out), as for the RA60 and the house rule "ATTACH waits for SET ONLINE". Boot scripts must add `SET RQ0 ONLINE` (a 40–60 s spin-up at the prompt, or `SET -N`). Alternative: a fixed RA drive spins up by itself at ATTACH ("RUN/STOP pressed at power-on").
-2. **Configuration rules** as for the RC25? E.g. RA drives only on SDI controllers (UDA50, UDA50A, KDA50, KDB50), RD/RX not on them, at most 4 drives per UDA50/KDA50. Not implemented: which drive each controller supported (RA90/RA92 on a UDA50?) needs a source.
-3. Provisional values: RA70 t2t/max, RA71/72/73 seeks and spin times (from the RF72), RA90/RA92 stop time, motor run-up times in the spindle sounds.
-4. Known issues 41 (RA80 capacity 237,212 vs 236,964 LBNs): correct it?
+1. **All RA disks need `SET RQn ONLINE` before booting** in the realism mode (the wait of 40–60 s at the prompt, or `SET -N`): as implemented, unchanged.
+2. **Configuration rules:** RA drives only on a KDA50, UDA50 or UDA50A; at most 4 drives per such controller. Implemented (branch `sound` d826b92d, `integration` 84cc0aca):
+   - the rule uses SIMH's SDI flag of the drive table (`RQDF_SDI`), so it covers all RA drives and also the ESE20/52/56/58 and the user-sized RA8U;
+   - `rq_eff_ctype` resolves the DEFAULT controller type before the first reset as reset will (Unibus UDA50A, MicroVAX I RQDX1, other Qbus RQDX3), so `SET SOUND ENABLED` before a reset checks the right type;
+   - `SET RQ UDA50/UDA50A/KDA50` disables the units from 4 on; `SET RQ <type without SDI>` gives the RA units their initial drive types back (RD54 if the initial type is an SDI drive); refused while a unit that would change is attached; `SET RQ DRIVES=` above 4 is refused on an SDI controller; `SET SOUND ENABLED` refuses a configuration that breaks a rule.
+   - The default configurations (RD54, RD54, RD54, RX50 on every simulator) keep to the rules, so `SET SOUND ENABLED` works as before; Qbus scripts need `SET RQ KDA50` before `SET RQ0 RA81`.
+   - Test `tests/ra/ra5.ini` (MicroVAX II): all 6 refusals and the accepted cases as expected; ra1–ra4, the RC25/RA60 regression c1, c4, c5 (now with `SET RQ KDA50`, c5.ini v2) and c10 unchanged.
+   - The VMS test drivers press the RA81 RUN/STOP button and use a KDA50 on the MicroVAX II: `tests/ts11/tstest.py` v2, `tests/tk50/tktest.py` v3 (TS Q1 run on the MicroVAX II: boots and runs).
+3. **Provisional values:** accepted as they are.
+4. **RA80 capacity (known issues 41): DONE, SIMH is right.** A real RA80 reports **237,212** LBNs in its MSCP unit status (Usenet comp.periphs: "237212-236964 == 248 == 31*8"); a 4.3BSD site used 237,212 blocks to the end of the disk (comp.bugs.4bsd, Dec 1986). The User Guide's 236,964 is just 31 × 14 × 546. The R80 HDA (561 tracks per head) is the RM80 on the Massbus and the RB80 on the RB730, both 31 × 14 × 559 = 242,606 blocks in SIMH (no DSA replacement/table areas); the 4.2/4.3BSD disktab used that geometry for the RA80 and was wrong. Only the comments in `pdp11_rq.c` changed.
+
+Patch **`opensimh_5_sound_v24.patch`** replaces v23 (checked: 6 + 5 v24 on 87eb7d5 give the `sound` tree).
 
 ## Not done yet (after phase B)
 

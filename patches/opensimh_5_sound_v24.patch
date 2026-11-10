@@ -1,6 +1,6 @@
-From af0717254090e43c6e1abad59a058840cb501d1b Mon Sep 17 00:00:00 2001
+From 8a2e0ada25bcb98f5b4b4d5ef0a556e7843fea3a Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
-Date: Tue, 10 Nov 2026 09:55:49 +0100
+Date: Tue, 10 Nov 2026 16:30:33 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
  sound pilot
 
@@ -141,6 +141,9 @@ its realism mode (SET RQn ONLINE/OFFLINE, ATTACH waits for ONLINE,
 AVAILABLE with spin-down spins down, SPINUPRAnn/SPINDOWNRAnn), realistic
 times from the published rotation speed and seek times, and seek sounds
 per type (ra70 ... ra92, default_disk; SEEKRAnnS/SEEKRAnnM).
+In the realism mode SDI drives (RA, ESE, RA8U) are only accepted on a
+UDA50, UDA50A or KDA50, with at most 4 drives there.  RA80_LBN 237212
+explained: a real RA80 reports it (User Guide: 236,964).
 
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
@@ -153,7 +156,7 @@ Claude-Session: https://claude.ai/code/session_01SuavtfCJBWSLAfmJvvMVBw
  PDP11/pdp11_hk.c                    |  346 ++-
  PDP11/pdp11_rl.c                    |  284 ++-
  PDP11/pdp11_rp.c                    |  346 ++-
- PDP11/pdp11_rq.c                    | 1178 ++++++++-
+ PDP11/pdp11_rq.c                    | 1259 ++++++++-
  PDP11/pdp11_tq.c                    |  303 ++-
  PDP11/pdp11_ts.c                    |  605 ++++-
  VAX/vax630_syslist.c                |   10 +
@@ -204,7 +207,7 @@ Claude-Session: https://claude.ai/code/session_01SuavtfCJBWSLAfmJvvMVBw
  sound/tsv05/tsv05_start.wav         |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_stop.wav          |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_unload.wav        |  Bin 0 -> 661544 bytes
- 56 files changed, 8272 insertions(+), 108 deletions(-)
+ 56 files changed, 8351 insertions(+), 110 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -1659,13 +1662,16 @@ index 1d3c6e17..bccf87ed 100644
  fprintf (st, "\nError handling is as follows:\n\n");
  fprintf (st, "    error         STOP_IOE   processed as\n");
 diff --git a/PDP11/pdp11_rq.c b/PDP11/pdp11_rq.c
-index 2cdfedf6..db74f1c4 100644
+index 2cdfedf6..6b630a67 100644
 --- a/PDP11/pdp11_rq.c
 +++ b/PDP11/pdp11_rq.c
-@@ -26,6 +26,38 @@
+@@ -26,6 +26,41 @@
  
     rq           MSCP disk controller
  
++   10-Nov-26    Ulli    Sound realism mode: SDI drives (RA, ESE, RA8U) only on
++                        a UDA50, UDA50A or KDA50, at most 4 drives there;
++                        RA80 capacity explained (237212 as a real RA80)
 +   10-Nov-26    Ulli    Sound realism mode for the fixed RA drives (RA70,
 +                        RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92): each
 +                        has a RUN/STOP button (SET RQn ONLINE/OFFLINE, ATTACH
@@ -1701,7 +1707,7 @@ index 2cdfedf6..db74f1c4 100644
     23-Oct-13    RMS     Revised for new boot setup routine
     09-Dec-12    MB      Added support for changing controller type.
     24-Oct-12    MB      Added mapped transfers for VAX
-@@ -131,6 +163,8 @@ extern int32 MMR2;
+@@ -131,6 +166,8 @@ extern int32 MMR2;
  #include "pdp11_uqssp.h"
  #include "pdp11_mscp.h"
  #include "sim_disk.h"
@@ -1710,7 +1716,31 @@ index 2cdfedf6..db74f1c4 100644
  
  #define UF_MSK          (UF_CMR|UF_CMW)                 /* settable flags */
  
-@@ -589,14 +623,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
+@@ -266,7 +303,7 @@ x  RD50  17   4     153   ?    ?    ?     ?       Seagate ST-506
+ 
+    type  sec  surf  cyl   tpg  gpc  RCT   LBNs
+    RA60  42+  6     1600  6    1    1008  400176
+-   RA80  31   14    546   ?    ?    ?     237212
++   RA80  31   14    546   ?    ?    ?     237212 (see below)
+    RA81  51+  14    1258  14   1    2856  891072
+    RA82  57+  15    1435  15   1    3420  1216665
+    RA70  33+  11   >1507  11   1    ?     547041
+@@ -280,6 +317,14 @@ x  RD50  17   4     153   ?    ?    ?     ?       Seagate ST-506
+    ESE56 4    128   465   ?    ?    ?     1196544
+    ESE58 4    128   465   ?    ?    ?     1915392
+ 
++   RA80: the User Guide (EK-0RA80-UG-001) gives 546 logical cylinders and
++   236,964 LBNs (31*14*546); a real RA80 reports 237,212 LBNs in its MSCP
++   unit status (Usenet comp.periphs: "237212-236964 == 248 == 31*8"; a 4.3BSD
++   site used 237,212 blocks without problems, comp.bugs.4bsd, Dec 1986).
++   SIMH reports 237,212 like the real drive.  The R80 HDA (561 tracks per
++   head) is also the RM80 (Massbus) and RB80 (RB730): there 31*14*559 =
++   242,606 blocks, without the DSA replacement and table areas.
++
+    LESI attached RC25 disks (one removable, one fixed)
+ 
+    type  sec  surf  cyl   tpg  gpc  RCT   LBNs
+@@ -589,14 +634,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
  #define RD32_FLGS       0
  
  #define RC25_DTYPE      17                              /*  */
@@ -1729,7 +1759,7 @@ index 2cdfedf6..db74f1c4 100644
  #define RC25_RCTS       0                               /*  */
  #define RC25_RCTC       1
  #define RC25_RBN        0                               /*  */
-@@ -605,14 +639,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
+@@ -605,14 +650,14 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
  #define RC25_FLGS       RQDF_RMV
  
  #define RCF25_DTYPE     18                              /*  */
@@ -1748,16 +1778,26 @@ index 2cdfedf6..db74f1c4 100644
  #define RCF25_RCTS      0                               /*  */
  #define RCF25_RCTC      1
  #define RCF25_RBN       0                               /*  */
-@@ -890,6 +924,8 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
+@@ -628,7 +673,7 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
+ #define RA80_GPC        1
+ #define RA80_XBN        0                               /*  */
+ #define RA80_DBN        0                               /*  */
+-#define RA80_LBN        237212                          /* 31*14*546 */
++#define RA80_LBN        237212                          /* 31*14*546 + 248, as a real RA80 reports */
+ #define RA80_RCTS       0                               /*  */
+ #define RA80_RCTC       1
+ #define RA80_RBN        0                               /*  */
+@@ -890,6 +935,9 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
  #define KLESI_CTYPE     1               // RC25 controller (UNIBUS and QBUS both)
  #define KLESI_UQPM      3
  #define KLESI_MODEL     3
 +#define KLESI_MAX_UNITS 4               /* master + slave RC25 drive (realism mode) */
 +#define KLESI_CTMO      15              /* RC25 controller timeout, s (realism mode) */
++#define SDI_MAX_UNITS   4               /* UDA50/UDA50A/KDA50: SDI drive ports (realism mode) */
  
  #define RUX50_CTYPE     2               // UNIBUS RX50-only controller
  #define RUX50_UQPM      10		// this should be 10 according to the MSCP spec
-@@ -1060,6 +1096,191 @@ int32 rq_itime4 = 10;                                   /* stage 4 */
+@@ -1060,6 +1108,192 @@ int32 rq_itime4 = 10;                                   /* stage 4 */
  int32 rq_qtime = RQ_QTIME;                              /* queue time */
  int32 rq_xtime = RQ_XTIME;                              /* transfer time */
  
@@ -1804,8 +1844,9 @@ index 2cdfedf6..db74f1c4 100644
 +     on an RC25 drive both platters stop and the other unit goes offline
 +     too.  The configuration must be realistic: RC25 drives only as pairs
 +     (even/odd units and unit numbers) on a KLESI controller, which only
-+     connects RC25 drives (at most two: 4 units); see "configuration
-+     rules" below.  A KLESI also reports the RC25's controller timeout
++     connects RC25 drives (at most two: 4 units); RA drives only on a
++     UDA50, UDA50A or KDA50 (at most 4 drives); see "configuration rules"
++     below.  A KLESI also reports the RC25's controller timeout
 +     (15 s) and aborts only queued commands.
 +     Transfers take realistic times: seek t(d) = a + b * d^e (d cylinders)
 +     through the track-to-track, average (at a third of the stroke) and
@@ -1949,7 +1990,7 @@ index 2cdfedf6..db74f1c4 100644
  typedef struct {
      uint32              cnum;                           /* ctrl number */
      uint32              sa;                             /* status, addr */
-@@ -1156,6 +1377,24 @@ t_stat rq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+@@ -1156,6 +1390,26 @@ t_stat rq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
  t_stat rq_show_unitq (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
  t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
  const char *rq_description (DEVICE *dptr);
@@ -1964,6 +2005,8 @@ index 2cdfedf6..db74f1c4 100644
 +static void rq_rlz_detach (UNIT *uptr);
 +struct rq_usnap;                                        /* (rq_snap_take) */
 +static t_stat rq_rlz_rules (DEVICE *dptr, const char *prefix);
++static int32 rq_eff_ctype (MSC *cp);
++static t_bool rq_is_sdi_ctype (int32 ct);
 +static t_stat rq_rlz_enable_check (void);
 +static t_stat rq_rlz_set_type (UNIT *uptr, struct rq_usnap *s);
 +static t_stat rq_rlz_set_ctype (UNIT *uptr, int32 newtype);
@@ -1974,7 +2017,7 @@ index 2cdfedf6..db74f1c4 100644
  
  t_bool rq_step4 (MSC *cp);
  t_bool rq_mscp (MSC *cp, uint16 pkt, t_bool q);
-@@ -1256,6 +1495,22 @@ REG rq_reg[] = {
+@@ -1256,6 +1510,22 @@ REG rq_reg[] = {
      { DRDATAD (I4TIME,  rq_itime4,                  24, "init stage 4 delay"), PV_LEFT + REG_NZ },
      { DRDATAD (QTIME,   rq_qtime,                   24, "response time for 'immediate' packets"), PV_LEFT + REG_NZ },
      { DRDATAD (XTIME,   rq_xtime,                   24, "response time for data transfers"), PV_LEFT + REG_NZ },
@@ -1997,7 +2040,7 @@ index 2cdfedf6..db74f1c4 100644
      { VBRDATAD (PKTS,   rq_ctx.pak,     DEV_RDX,    16, sizeof(rq_ctx.pak)/2, "packet buffers, 33W each, 32 entries") },
      { URDATAD (CPKT,    rq_unit[0].cpkt, 10, 5, 0, RQ_NUMDR, 0, "current packet, units 0 to 3") },
      { URDATAD (UCNUM,   rq_unit[0].cnum, 10, 5, 0, RQ_NUMDR, 0, "ctrl number, units 0 to 3") },
-@@ -1274,6 +1529,12 @@ MTAB rq_mod[] = {
+@@ -1274,6 +1544,12 @@ MTAB rq_mod[] = {
          &rq_set_wlk, &rq_show_wlk, NULL, "Write enable disk drive" },
      { MTAB_XTD|MTAB_VUN,        1,  NULL, "LOCKED", 
          &rq_set_wlk, NULL, NULL, "Write lock disk drive"  },
@@ -2010,7 +2053,7 @@ index 2cdfedf6..db74f1c4 100644
      { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_RI, "RINGS", NULL,
        NULL, &rq_show_ctrl, NULL, "Display command and response rings" },
      { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_FR, "FREEQ", NULL,
-@@ -1995,7 +2256,9 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_abo\n");
+@@ -1995,7 +2271,9 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_abo\n");
  tpkt = 0;                                               /* set no mtch */
  if ((uptr = rq_getucb (cp, lu))) {                      /* get unit */
      if (uptr->cpkt &&                                   /* curr pkt? */
@@ -2021,7 +2064,7 @@ index 2cdfedf6..db74f1c4 100644
          tpkt = uptr->cpkt;                              /* save match */
          uptr->cpkt = 0;                                 /* gonzo */
          sim_cancel (uptr);                              /* cancel unit */
-@@ -2044,8 +2307,18 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
+@@ -2044,8 +2322,18 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
          return OK;
          }
      uptr->flags = uptr->flags & ~UNIT_ONL;              /* not online */
@@ -2042,7 +2085,7 @@ index 2cdfedf6..db74f1c4 100644
      uptr->uf = 0;                                       /* clr flags */
      sts = ST_SUC;                                       /* success */
      }
-@@ -2099,7 +2372,7 @@ if (cp->pak[pkt].d[CMD_MOD] & MD_NXU) {                 /* next unit? */
+@@ -2099,7 +2387,7 @@ if (cp->pak[pkt].d[CMD_MOD] & MD_NXU) {                 /* next unit? */
          }
      }
  if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
@@ -2051,7 +2094,7 @@ index 2cdfedf6..db74f1c4 100644
          sts = ST_OFL | SB_OFL_NV;                       /* offl no vol */
      else if (uptr->flags & UNIT_ONL)                    /* online */
          sts = ST_SUC;
-@@ -2140,7 +2413,7 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
+@@ -2140,7 +2428,7 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
          rq_enqt (cp, &uptr->pktq, pkt);                 /* do later */
          return OK;
          }
@@ -2060,7 +2103,7 @@ index 2cdfedf6..db74f1c4 100644
          sts = ST_OFL | SB_OFL_NV;                       /* offl no vol */
      else if (uptr->flags & UNIT_ONL)                    /* already online? */
          sts = ST_SUC | SB_SUC_ON;
-@@ -2181,7 +2454,8 @@ else {
+@@ -2181,7 +2469,8 @@ else {
      if ((cp->htmo = cp->pak[pkt].d[SCC_TMO]))           /* set timeout */
          cp->htmo = cp->htmo + 2;                        /* if nz, round up */
      cp->pak[pkt].d[SCC_CFL] = cp->cflgs;                /* return flags */
@@ -2070,7 +2113,7 @@ index 2cdfedf6..db74f1c4 100644
      cp->pak[pkt].d[SCC_VER] = (RQ_HVER << SCC_VER_V_HVER) |
          (RQ_SVER << SCC_VER_V_SVER);
      cp->pak[pkt].d[SCC_CIDA] = 0;                       /* ctrl ID */
-@@ -2296,7 +2570,11 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
+@@ -2296,7 +2585,11 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
          cp->pak[pkt].d[RW_WMPL] = cp->pak[pkt].d[RW_MAPL];
          cp->pak[pkt].d[RW_WMPH] = cp->pak[pkt].d[RW_MAPH];
          uptr->iostarttime = sim_grtime();
@@ -2083,7 +2126,7 @@ index 2cdfedf6..db74f1c4 100644
          sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_rw - started\n");
          return OK;                                      /* done */
          }
-@@ -2316,7 +2594,7 @@ uint32 lbn = GETP32 (pkt, RW_LBNL);                     /* get lbn */
+@@ -2316,7 +2609,7 @@ uint32 lbn = GETP32 (pkt, RW_LBNL);                     /* get lbn */
  uint32 bc = GETP32 (pkt, RW_BCL);                       /* get byte cnt */
  uint32 maxlbn = (uint32)uptr->capac;                    /* get max lbn */
  
@@ -2092,7 +2135,7 @@ index 2cdfedf6..db74f1c4 100644
      return (ST_OFL | SB_OFL_NV);                        /* offl no vol */
  if ((uptr->flags & UNIT_ONL) == 0)                      /* not online? */
      return ST_AVL;                                      /* only avail */
-@@ -2479,7 +2757,8 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_svc(%s,unit=%d, pkt=%d, cmd=%s, lbn
+@@ -2479,7 +2772,8 @@ sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_svc(%s,unit=%d, pkt=%d, cmd=%s, lbn
  
  tbc = (bc > RQ_MAXFR)? RQ_MAXFR: bc;                    /* trim cnt to max */
  
@@ -2102,7 +2145,7 @@ index 2cdfedf6..db74f1c4 100644
      rq_rw_end (cp, uptr, 0, ST_OFL | SB_OFL_NV);        /* offl no vol */
      return SCPE_OK;
      }
-@@ -3122,6 +3401,15 @@ if (cptr) {
+@@ -3122,6 +3416,15 @@ if (cptr) {
          return SCPE_ARG;
      drv_tab[val].lbn = cap;
      }
@@ -2118,7 +2161,7 @@ index 2cdfedf6..db74f1c4 100644
  uptr->flags = (uptr->flags & ~UNIT_DTYPE) | (val << UNIT_V_DTYPE);
  uptr->capac = (t_addr)drv_tab[val].lbn;
  return SCPE_OK;
-@@ -3154,6 +3442,8 @@ if (uptr->unit_plug == plug)
+@@ -3154,6 +3457,8 @@ if (uptr->unit_plug == plug)
  for (i=0; i < dptr->numunits - 2; i++)
      if (dptr->units[i].unit_plug == plug)
          return sim_messagef (SCPE_ARG, "Unit Plug %d Already In Use on %s\n", plug, sim_uname (&dptr->units[i]));
@@ -2127,7 +2170,7 @@ index 2cdfedf6..db74f1c4 100644
  uptr->unit_plug = plug;
  return SCPE_OK;
  }
-@@ -3179,6 +3469,10 @@ if ((r != SCPE_OK) || (new_drives > RQ_MAXDR) || (new_drives < RQ_NUMDR))
+@@ -3179,6 +3484,14 @@ if ((r != SCPE_OK) || (new_drives > RQ_MAXDR) || (new_drives < RQ_NUMDR))
      return sim_messagef (SCPE_ARG, "Invalid Number of Drives: %s\n", cptr);
  if (old_drives == new_drives)
      return SCPE_OK;                         /* Nothing to do */
@@ -2135,10 +2178,14 @@ index 2cdfedf6..db74f1c4 100644
 +    (new_drives > KLESI_MAX_UNITS))         /* realism: master + slave drive */
 +    return sim_messagef (SCPE_ARG, "%s: a KLESI connects at most two RC25 drives (%d units)\n",
 +                         dptr->name, KLESI_MAX_UNITS);
++if (sim_sound_enabled () && rq_is_sdi_ctype (rq_eff_ctype (rq_ctxmap[uptr->cnum])) &&
++    (new_drives > SDI_MAX_UNITS))           /* realism: four SDI drive ports */
++    return sim_messagef (SCPE_ARG, "%s: a %s connects at most %d drives\n",
++                         dptr->name, ctlr_tab[rq_eff_ctype (rq_ctxmap[uptr->cnum])].name, SDI_MAX_UNITS);
  for (i=new_drives; i < old_drives; i++) {
      if (dptr->units[i].flags & UNIT_ATT)
          return sim_messagef (SCPE_ALATT, "Can't change number of drives on %s with %s attached to %s.\n", 
-@@ -3211,6 +3505,8 @@ MSC *cp = rq_ctxmap[uptr->cnum];
+@@ -3211,6 +3524,8 @@ MSC *cp = rq_ctxmap[uptr->cnum];
  
  if (val < 0)
      return SCPE_ARG;
@@ -2147,7 +2194,7 @@ index 2cdfedf6..db74f1c4 100644
  cp->ctype = val;
  return SCPE_OK;
  }
-@@ -3232,6 +3528,9 @@ MSC *cp = rq_ctxmap[uptr->cnum];
+@@ -3232,6 +3547,9 @@ MSC *cp = rq_ctxmap[uptr->cnum];
  t_stat r;
  t_bool dontchangecapac = (uptr->flags & UNIT_NOAUTO);
  
@@ -2157,7 +2204,7 @@ index 2cdfedf6..db74f1c4 100644
  if (drv_tab[GET_DTYPE (uptr->flags)].flgs & RQDF_RO) {
      sim_switches |= SWMASK ('R');
      dontchangecapac = FALSE;
-@@ -3241,6 +3540,8 @@ r = sim_disk_attach_ex (uptr, cptr, RQ_NUMBY, sizeof (uint16), dontchangecapac,
+@@ -3241,6 +3559,8 @@ r = sim_disk_attach_ex (uptr, cptr, RQ_NUMBY, sizeof (uint16), dontchangecapac,
  if (r != SCPE_OK)
      return r;
  
@@ -2166,7 +2213,7 @@ index 2cdfedf6..db74f1c4 100644
  if ((cp->csta == CST_UP) && sim_disk_isavailable (uptr))
      uptr->flags = uptr->flags | UNIT_ATP;
  return SCPE_OK;
-@@ -3257,6 +3558,7 @@ if (r != SCPE_OK)
+@@ -3257,6 +3577,7 @@ if (r != SCPE_OK)
      return r;
  uptr->flags = uptr->flags & ~(UNIT_ONL | UNIT_ATP);     /* clr onl, atn pend */
  uptr->uf = 0;                                           /* clr unit flgs */
@@ -2174,7 +2221,7 @@ index 2cdfedf6..db74f1c4 100644
  return SCPE_OK;
  } 
  
-@@ -3285,6 +3587,7 @@ if (cp->ctype == DEFAULT_CTYPE)
+@@ -3285,6 +3606,7 @@ if (cp->ctype == DEFAULT_CTYPE)
      cp->ctype = (UNIBUS    ? UDA50A_CTYPE :
                   MICROVAX1 ? RQDX1_CTYPE : RQDX3_CTYPE);
  
@@ -2182,7 +2229,7 @@ index 2cdfedf6..db74f1c4 100644
  if (!plugs_inited ) {
  #if !defined (VM_VAX)
      uint32 u = 0;
-@@ -3312,6 +3615,8 @@ if (!plugs_inited ) {
+@@ -3312,6 +3634,8 @@ if (!plugs_inited ) {
                  rq_devmap[i]->units[d].flags |= UNIT_DIS;
                  rq_devmap[i]->units[d].flags &= ~UNIT_DISABLE;
                  }
@@ -2191,7 +2238,7 @@ index 2cdfedf6..db74f1c4 100644
              rq_devmap[i]->units[d].unit_plug = 
  #if defined (VM_VAX)
                  d;          /* VAX default units */
-@@ -3596,6 +3901,783 @@ if (val & RQ_SH_UN) {
+@@ -3596,6 +3920,836 @@ if (val & RQ_SH_UN) {
  return SCPE_OK;
  }
  
@@ -2637,7 +2684,11 @@ index 2cdfedf6..db74f1c4 100644
 +   - an RC25 drive is always a pair: the RC25 (cartridge) at an even unit,
 +     its RCF25 (fixed platter) at the next unit;
 +   - the unit select plug of the drive numbers the pair: the RC25 has an
-+     even unit number (PLUG, SET RQn UNIT=), the RCF25 that number + 1.
++     even unit number (PLUG, SET RQn UNIT=), the RCF25 that number + 1;
++   - SDI drives (the RA drives; also the ESE20/5x and the user-sized RA8U,
++     which SIMH marks as SDI drives) only on an SDI controller: UDA50,
++     UDA50A or KDA50 (Ulli, 2026-11-10);
++   - an SDI controller has four drive ports: at most 4 enabled units.
 +   SET SOUND ENABLED refuses a configuration that breaks a rule
 +   (rq_rlz_enable_check, registered with sim_sound).  While sound is
 +   enabled, SET RQ <controller type>, SET RQn <drive type>, SET RQn UNIT=,
@@ -2645,7 +2696,9 @@ index 2cdfedf6..db74f1c4 100644
 +   - SET RQ KLESI sets units 0/1 and 2/3 to RC25/RCF25 (unit numbers as
 +     pairs) and disables the units from 4 on;
 +   - SET RQ <other type> on a KLESI sets the RC25/RCF25 units back to the
-+     unit's initial drive type;
++     unit's initial drive type, and so does SET RQ <type without SDI> for
++     the SDI drive units; SET RQ UDA50, UDA50A or KDA50 disables the units
++     from 4 on;
 +   - SET RQn RC25 also sets the next unit to RCF25 (SET RQn RCF25: the unit
 +     before it to RC25), SET RQn UNIT=m also renumbers the other unit of
 +     the pair;
@@ -2663,6 +2716,30 @@ index 2cdfedf6..db74f1c4 100644
 +return ((dt == RC25_DTYPE) || (dt == RCF25_DTYPE));
 +}
 +
++/* An SDI drive (RA drives, ESE, RA8U): needs an SDI controller */
++
++static t_bool rq_is_sdi_type (uint32 dt)
++{
++return ((drv_tab[dt].flgs & RQDF_SDI) != 0);
++}
++
++/* The controller type in effect (DEFAULT is resolved at reset; before
++   that, the type reset will choose) */
++
++static int32 rq_eff_ctype (MSC *cp)
++{
++if (cp->ctype != DEFAULT_CTYPE)
++    return cp->ctype;
++return (UNIBUS ? UDA50A_CTYPE : (MICROVAX1 ? RQDX1_CTYPE : RQDX3_CTYPE));
++}
++
++/* An SDI controller: UDA50, UDA50A (Unibus), KDA50 (Qbus) */
++
++static t_bool rq_is_sdi_ctype (int32 ct)
++{
++return ((ct == UDA50_CTYPE) || (ct == UDA50A_CTYPE) || (ct == KDA50_CTYPE));
++}
++
 +/* Check the rules for one controller.  Returns SCPE_OK, or prints the
 +   first rule broken (with the prefix) and returns SCPE_ARG. */
 +
@@ -2670,6 +2747,7 @@ index 2cdfedf6..db74f1c4 100644
 +{
 +MSC *cp = rq_ctxmap[dptr->units[0].cnum];
 +t_bool klesi = (cp->ctype == KLESI_CTYPE);
++t_bool sdi = rq_is_sdi_ctype (rq_eff_ctype (cp));
 +int32 n = (int32) dptr->numunits - 2;
 +int32 u, n_en = 0;
 +
@@ -2687,6 +2765,9 @@ index 2cdfedf6..db74f1c4 100644
 +                             prefix, dptr->name, sim_uname (uptr), drv_tab[dt].name);
 +    if (!klesi && rq_is_rc25_type (dt))
 +        return sim_messagef (SCPE_ARG, "%s%s: an %s needs a KLESI controller (SET %s KLESI)\n",
++                             prefix, sim_uname (uptr), drv_tab[dt].name, dptr->name);
++    if (!sdi && rq_is_sdi_type (dt))
++        return sim_messagef (SCPE_ARG, "%s%s: an %s is an SDI drive: it needs a UDA50, UDA50A or KDA50 controller (SET %s KDA50)\n",
 +                             prefix, sim_uname (uptr), drv_tab[dt].name, dptr->name);
 +    }
 +for (u = 0; u < n; u++) {                               /* (types first, then the pairs) */
@@ -2719,6 +2800,9 @@ index 2cdfedf6..db74f1c4 100644
 +if (klesi && (n_en > KLESI_MAX_UNITS))
 +    return sim_messagef (SCPE_ARG, "%s%s: a KLESI connects at most two RC25 drives (%d units), %d units are enabled\n",
 +                         prefix, dptr->name, KLESI_MAX_UNITS, n_en);
++if (sdi && (n_en > SDI_MAX_UNITS))
++    return sim_messagef (SCPE_ARG, "%s%s: a %s connects at most %d drives, %d units are enabled\n",
++                         prefix, dptr->name, ctlr_tab[rq_eff_ctype (cp)].name, SDI_MAX_UNITS, n_en);
 +return SCPE_OK;
 +}
 +
@@ -2868,8 +2952,10 @@ index 2cdfedf6..db74f1c4 100644
 +/* SET RQ <controller type> in the realism mode (rq_set_ctype, before the
 +   type is changed): to a KLESI, units 0-3 become two RC25 drives and the
 +   units from 4 on are disabled; from a KLESI to another type, the RC25
-+   and RCF25 units get their initial drive types back.  Refused while a
-+   unit that would change is attached. */
++   and RCF25 units get their initial drive types back; to a type without
++   SDI, so do the SDI drive units; to an SDI controller (UDA50, UDA50A,
++   KDA50), the units from 4 on are disabled.  Refused while a unit that
++   would change is attached. */
 +
 +static t_stat rq_rlz_set_ctype (UNIT *uptr, int32 newtype)
 +{
@@ -2877,6 +2963,7 @@ index 2cdfedf6..db74f1c4 100644
 +DEVICE *dptr = rq_devmap[uptr->cnum];
 +int32 n = (int32) dptr->numunits - 2;
 +int32 u, oldtype = cp->ctype;
++t_bool sdi = rq_is_sdi_ctype (newtype);
 +RQ_USNAP *s;
 +t_stat r;
 +
@@ -2884,9 +2971,11 @@ index 2cdfedf6..db74f1c4 100644
 +    return SCPE_OK;
 +for (u = 0; u < n; u++) {                               /* nothing attached that changes */
 +    UNIT *xptr = &dptr->units[u];
++    uint32 dt = GET_DTYPE (xptr->flags);
 +    t_bool changes = (newtype == KLESI_CTYPE) ?
-+        ((u >= KLESI_MAX_UNITS) || !rq_is_rc25_type (GET_DTYPE (xptr->flags))) :
-+        rq_is_rc25_type (GET_DTYPE (xptr->flags));
++        ((u >= KLESI_MAX_UNITS) || !rq_is_rc25_type (dt)) :
++        (rq_is_rc25_type (dt) || (!sdi && rq_is_sdi_type (dt)) ||
++         (sdi && (u >= SDI_MAX_UNITS) && rq_unit_enabled (xptr)));
 +
 +    if ((xptr->flags & UNIT_ATT) && changes)
 +        return sim_messagef (SCPE_ALATT, "%s: %s is attached and would have to change\n",
@@ -2923,9 +3012,20 @@ index 2cdfedf6..db74f1c4 100644
 +else
 +    for (u = 0; u < n; u++) {
 +        UNIT *xptr = &dptr->units[u];
++        uint32 dt = GET_DTYPE (xptr->flags);
 +
-+        if (rq_is_rc25_type (GET_DTYPE (xptr->flags)))
-+            rq_put_dtype (xptr, (u < RQ_NUMDR) ? rq_dflt_dtype[uptr->cnum][u] : rq_dflt_dtype[uptr->cnum][0]);
++        if (sdi && (u >= SDI_MAX_UNITS)) {              /* SDI: four drive ports */
++            if (xptr->flags & UNIT_DISABLE)
++                xptr->flags = xptr->flags | UNIT_DIS;
++            continue;
++            }
++        if (rq_is_rc25_type (dt) || (!sdi && rq_is_sdi_type (dt))) {
++            uint32 ndt = (u < RQ_NUMDR) ? rq_dflt_dtype[uptr->cnum][u] : rq_dflt_dtype[uptr->cnum][0];
++
++            if (!sdi && rq_is_sdi_type (ndt))           /* initial type also SDI */
++                ndt = RD54_DTYPE;
++            rq_put_dtype (xptr, ndt);
++            }
 +        }
 +cp->ctype = newtype;
 +r = rq_rlz_rules (dptr, "");
@@ -2975,7 +3075,7 @@ index 2cdfedf6..db74f1c4 100644
  t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
  {
  fprintf (st, "UDA50A MSCP Disk Controller (%s)\n\n", dptr->name);
-@@ -3618,6 +4700,68 @@ fprintf (st, "disk in either MB (1000000 bytes) or logical block numbers (LBN's,
+@@ -3618,6 +4772,73 @@ fprintf (st, "disk in either MB (1000000 bytes) or logical block numbers (LBN's,
  fprintf (st, "each), or binary MB (1024*1024 bytes).  The minimum size is 5MB; the maximum\n");
  fprintf (st, "size is 2GB without extended file support, 1TB with extended file support.\n\n");
  fprintf (st, "The %s controllers support the BOOT command.\n\n", dptr->name);
@@ -3017,7 +3117,12 @@ index 2cdfedf6..db74f1c4 100644
 +fprintf (st, "    disables the others, SET RQ <other type> gives them their initial types\n");
 +fprintf (st, "    back, SET RQn RC25 (or RCF25) also sets the other half of the pair, SET\n");
 +fprintf (st, "    RQn UNIT=m also renumbers it, and settings or an ATTACH that would break\n");
-+fprintf (st, "    a rule are refused;\n");
++fprintf (st, "    a rule are refused.  RA drives (SDI drives) only on a UDA50, UDA50A or\n");
++fprintf (st, "    KDA50, which connect at most 4 drives: e.g. SET RQ KDA50 before SET RQ0\n");
++fprintf (st, "    RA81 on a Qbus machine.  SET RQ UDA50, UDA50A or KDA50 disables the\n");
++fprintf (st, "    units from 4 on, SET RQ <other type> gives the RA units their initial\n");
++fprintf (st, "    types back (RD54 if that is an RA as well), SET RQ DRIVES= above 4 is\n");
++fprintf (st, "    refused on them;\n");
 +fprintf (st, "  - a KLESI reports the RC25's controller timeout (15 s) and aborts only\n");
 +fprintf (st, "    queued commands, never the active one;\n");
 +fprintf (st, "  - RA and RC25 transfers take realistic times: seek, rotational latency\n");
