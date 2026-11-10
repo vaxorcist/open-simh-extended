@@ -29,7 +29,8 @@
    10-Nov-26    Ulli    Sound realism mode: SDI drives (RA, ESE, RA8U) only on
                         a UDA50, UDA50A or KDA50, at most 4 drives there;
                         UDA50/UDA50A only on the Unibus, KDA50 only on Qbus;
-                        RA80 capacity explained (237212 as a real RA80)
+                        RA80 capacity explained (237212 as a real RA80);
+                        RA81 start 20 s, RA80 40 s (User Guides)
    10-Nov-26    Ulli    Sound realism mode for the fixed RA drives (RA70,
                         RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92): each
                         has a RUN/STOP button (SET RQn ONLINE/OFFLINE, ATTACH
@@ -1179,12 +1180,14 @@ int32 rq_xtime = RQ_XTIME;                              /* transfer time */
    - RA60 (DEC RA60/RA80/RA81 brochure, Aug 1982): 3600 rpm, seek 7 ms
      track-to-track, 42 ms average, 70 ms maximum, start 35 s, stop 35 s.
    - RA80 (RA80 User Guide EK-0RA80-UG-001; brochure): 3600 rpm, seek
-     6 / 25 / 50 ms; start 50 s (brochure; the User Guide gives 40 s
-     maximum, 15 s typical for the rotation), stop 20 s.
+     6 / 25 / 50 ms; start 40 s (User Guide "Single Start/Stop Time":
+     40 s maximum, 15 s typical; the brochure says 50 s), stop 20 s
+     (brochure; the User Guide gives none).
    - RA81 (RA81 User Guide EK-0RA81-UG-001; brochure): 3600 rpm, seek
      7 / 28 / 50 ms (User Guide maxima; brochure 6 / 28 / 52 ms), head
-     switch 4 ms typical; start 50 s (brochure; the User Guide gives 20 s
-     maximum for the disk rotation), stop 20 s.
+     switch 4 ms typical; start 20 s, stop 20 s (User Guide "Disk
+     rotation start/stop times", maxima; the brochure says start 50 s).
+     The drive manuals win over the brochure (Ulli, 2026-11-10).
    - RA82 (Computer History Wiki): 3600 rpm, seek 6 / 24 / 38 ms, start
      50 s, stop 20 s.
    - RA90 (RA90/RA92 User Guide EK-ORA90-UG-002): 3600 rpm, seek 5.5 /
@@ -1230,8 +1233,8 @@ int32 rq_spinup70_ms = 59000, rq_spindown70_ms = 15000, rq_seek70s =  90, rq_see
 int32 rq_spinup71_ms = 60000, rq_spindown71_ms = 15000, rq_seek71s = 120, rq_seek71m =  700;
 int32 rq_spinup72_ms = 60000, rq_spindown72_ms = 15000, rq_seek72s = 120, rq_seek72m =  700;
 int32 rq_spinup73_ms = 60000, rq_spindown73_ms = 15000, rq_seek73s = 160, rq_seek73m =  980;
-int32 rq_spinup80_ms = 50000, rq_spindown80_ms = 20000, rq_seek80s =  35, rq_seek80m =  200;
-int32 rq_spinup81_ms = 50000, rq_spindown81_ms = 20000, rq_seek81s =  75, rq_seek81m =  460;
+int32 rq_spinup80_ms = 40000, rq_spindown80_ms = 20000, rq_seek80s =  35, rq_seek80m =  200;
+int32 rq_spinup81_ms = 20000, rq_spindown81_ms = 20000, rq_seek81s =  75, rq_seek81m =  460;
 int32 rq_spinup82_ms = 50000, rq_spindown82_ms = 20000, rq_seek82s =  90, rq_seek82m =  530;
 int32 rq_spinup90_ms = 40000, rq_spindown90_ms = 30000, rq_seek90s = 160, rq_seek90m =  980;
 int32 rq_spinup92_ms = 40000, rq_spindown92_ms = 30000, rq_seek92s = 190, rq_seek92m = 1150;
@@ -4800,7 +4803,7 @@ fprintf (st, "    cartridge; the drive stays stopped until SET RQn ONLINE (also 
 fprintf (st, "    RA drives: e.g. SET RQ0 ONLINE before BOOT RQ0).  Spin-up and spin-down\n");
 fprintf (st, "    times are registers (ms): SPINUP and SPINDOWN (RA60, 35000 each),\n");
 fprintf (st, "    SPINUPRAnn and SPINDOWNRAnn for the fixed RA drives (e.g. SPINUPRA81\n");
-fprintf (st, "    50000, SPINDOWNRA81 20000), SPINUPRC25 and SPINDOWNRC25 (60000 and\n");
+fprintf (st, "    20000, SPINDOWNRA81 20000), SPINUPRC25 and SPINDOWNRC25 (60000 and\n");
 fprintf (st, "    30000), set e.g. with DEPOSIT RQ SPINUPRA81 5000; at the sim> prompt the\n");
 fprintf (st, "    commands wait until the drive is ready or at rest (SET -N RQn ...\n");
 fprintf (st, "    returns at once);\n");
