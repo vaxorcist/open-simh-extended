@@ -1,4 +1,4 @@
-# open-simh-extended/tools/make_spindle_sounds.py  v4
+# open-simh-extended/tools/make_spindle_sounds.py  v5
 #
 # Synthesizes the optional spindle sounds of the SIMH sound system for every
 # disk drive with a RUN/STOP (or LOAD) button (removable media, and the
@@ -73,6 +73,9 @@
 # Pocket Reference Guide; RA80 15 s typical, RA81 20 s, RA80/RA81 User
 # Guides; RA82, RA90, RA92: 20 s provisional).  Sealed HDAs: little air
 # noise, the motor and bearings dominate.
+#
+# v5 (2026-11-10): RA81 start 20 s, RA80 40 s, from the drive User Guides
+# (they win over the brochure's 50 s; Ulli).
 
 import sys, wave, argparse, zlib
 import numpy as np
@@ -137,11 +140,11 @@ DRIVES = {
     "ra73": dict(desc="RA73 (RQ), start 60 s, stop 15 s prov. (RF72); run-up 15 s",
                  rpm=3600, up=60, down=15, reach=15,
                  harm=H_RA5, drive=1.8, noise=0.07, nc=1000.0, nw=0.8),
-    "ra80": dict(desc="RA80 (RQ), DEC: start 50 s, stop 20 s; run-up 15 s (typical)",
-                 rpm=3600, up=50, down=20, reach=15,
+    "ra80": dict(desc="RA80 (RQ), User Guide: start 40 s max. (15 s typical); stop 20 s (brochure)",
+                 rpm=3600, up=40, down=20, reach=15,
                  harm=H_RA14, drive=2.3, noise=0.09, nc=450.0, nw=1.0),
-    "ra81": dict(desc="RA81 (RQ), DEC: start 50 s, stop 20 s; run-up 20 s",
-                 rpm=3600, up=50, down=20, reach=20,
+    "ra81": dict(desc="RA81 (RQ), User Guide: start 20 s, stop 20 s (maxima); run-up 20 s",
+                 rpm=3600, up=20, down=20, reach=20,
                  harm=H_RA14, drive=2.3, noise=0.09, nc=450.0, nw=1.0),
     "ra82": dict(desc="RA82 (RQ), start 50 s, stop 20 s; run-up 20 s prov.",
                  rpm=3600, up=50, down=20, reach=20,

@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v27 (v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v28 (v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02 (last update 2026-11-10, RA drives). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
@@ -923,8 +923,8 @@ Only the model numbers differ: `SET RQ UDA50` reports port model and MSCP contro
 | RA71 | 3600 | 3 / 13.3 / 26 | 60 / 15 | pocket guide (rpm, at speed within 15 s); seeks and times **provisional** from the RF72 (CHW: 13.3 ms average, < 60 s / < 15 s) |
 | RA72 | 3600 | 3 / 13.3 / 26 | 60 / 15 | as the RA71 (the guide does not state its rpm) |
 | RA73 | 3600 | 3 / 13.3 / 26 | 60 / 15 | as the RA71 |
-| RA80 | 3600 | 6 / 25 / 50 | 50 / 20 | User Guide (seeks; start 40 s max., 15 s typical for the rotation), brochure (start 50 s, stop 20 s) |
-| RA81 | 3600 | 7 / 28 / 50 | 50 / 20 | User Guide maxima (brochure 6/28/52); brochure start 50 s, User Guide rotation start 20 s, stop 20 s |
+| RA80 | 3600 | 6 / 25 / 50 | 40 / 20 | User Guide (seeks; start 40 s max., 15 s typical), brochure (stop 20 s; its start 50 s not used, v28) |
+| RA81 | 3600 | 7 / 28 / 50 | 20 / 20 | User Guide maxima (brochure 6/28/52); User Guide "Disk rotation start/stop times": start 20 s, stop 20 s maximum (the brochure's start 50 s not used, v28) |
 | RA82 | 3600 | 6 / 24 / 38 | 50 / 20 | CHW |
 | RA90 | 3600 | 5.5 / 18.5 / 31.5 | 40 / 30 | User Guide; stop not published (only "inhibit between stop and restart 40 s"): 30 s **provisional** |
 | RA92 | 3405 | 3.0 / 16.0 / 29.0 | 40 / 30 | User Guide; stop **provisional** |
@@ -961,7 +961,7 @@ VMS V4.7 (`tests/ra/ratest.py` v1, Ulli's `VMS047-1.R81`):
 | Test | Result |
 |---|---|
 | N1 normal mode, MicroVAX II, KDA50, RA81 | workload (DIRECTORY/SIZE of SYS$SYSTEM, COPY/DIRECTORY/DELETE of 24 help libraries) 0.5 s, as before |
-| R1 realism, MicroVAX II: ATTACH → both "offline"; `SET RQ0 ONLINE` waits 50 s; boot | ok; workload 43 s guest time |
+| R1 realism, MicroVAX II: ATTACH → both "offline"; `SET RQ0 ONLINE` waits 50 s (the value then); boot | ok; workload 43 s guest time |
 | R1: blank RA92 data disk `SET -N RQ1 ONLINE` under VMS (40 s), INITIALIZE, MOUNT, COPY, DIRECTORY | ok |
 | R1: `DISMOUNT DUA1:` | the RA92 spins down (30 s), file stays attached |
 | R1: MOUNT of the stopped RA92 | `%MOUNT-I-OPRQST, Please mount volume RA92T in device _DUA1:`; `SET -N RQ1 ONLINE` → mounted by itself |
@@ -998,6 +998,12 @@ Patch **`opensimh_5_sound_v24.patch`** replaces v23 (checked: 6 + 5 v24 on 87eb7
 - Tests: `tests/ra/ra6.ini` (microvax2: UDA50A/UDA50 refused, KDA50 accepted), `ra7.ini` (vax750: KDA50 refused, UDA50A accepted); pdp11 11/73 and 11/70 checked by hand; ra1–ra5, RC25/RA60 c1, c4, c5 (MicroVAX 3900) and c10 (vax730, identical to the build before the RA work) unchanged.
 
 Patch **`opensimh_5_sound_v25.patch`** replaces v24 (checked: 6 + 5 v25 on 87eb7d5 give the `sound` tree).
+
+**RA81 and RA80 start times (Ulli, 2026-11-10, evening):** Ulli found 20 s spin-up and 20 s spin-down for the RA81. The RA81 User Guide (EK-0RA81-UG-001, Table 1-1 "Disk rotation start/stop times") gives start 20 s maximum, stop 20 s maximum; the 50 s came from the DEC brochure (EA-24042-18). The drive manuals now win over the brochure: `SPINUPRA81` 20000 (was 50000), and for the same reason `SPINUPRA80` 40000 (RA80 User Guide "Single Start/Stop Time": start 40 s maximum, 15 s typical; was the brochure's 50 s). Stop times unchanged (20 s; the RA80 User Guide has none, the brochure says 20 s). The RA82's 50 s / 20 s (Computer History Wiki) stays until a manual turns up. `make_spindle_sounds.py` v5 and the device table v9 follow; checked at the prompt: RA81 ONLINE "ready in 20 s", OFFLINE "at rest in 20 s", 41 s together.
+
+Spindle sounds: `make_spindle_sounds.py` (since phase C) synthesizes optional spin-up / running / spin-down sounds for every drive with a RUN/STOP or LOAD button (RK07, RL02, RM03, RP04, RP05, RP06, RM05, RA60, RC25); v4 added the fixed RA drives. They are not bundled (decision: the framework supports spindle loops but ships none), so they play only when the files are put into `sound/<drive>/`.
+
+Patch **`opensimh_5_sound_v26.patch`** replaces v25.
 
 ## Not done yet (after phase B)
 
