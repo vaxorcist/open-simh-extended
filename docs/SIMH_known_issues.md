@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v16 (v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v17 (v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -367,3 +367,10 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Same HDA:** the R80 drive is the RM80 on the Massbus, the RA80 on SDI and the RB80 on the RB730 (Computer History Wiki, R80): 561 tracks per head; RM80/RB80 in SIMH 31 × 14 × 559 = 242,606 blocks (no DSA replacement and table areas), the RA80 546 logical cylinders + 8 tracks = 237,212 LBNs.
 - **Result:** SIMH matches the real drive; no change. The comment now says `31*14*546 + 248, as a real RA80 reports`, and the drive table comment explains the difference (sound patch v24).
 - **Found:** 2026-11-10; **closed:** 2026-11-10 (Ulli: "try to find out, e.g. using RM80 RB80 R80 information").
+
+### 42 — OPEN — Suspicious: RX18 "tracks per group" copied from the RD33
+- **Where:** `PDP11/pdp11_rq.c`, `#define RX18_TPG RD33_SURF` (= 7); the drive table comment above says `tpg 9`, the RX18 has 1 surface (`RX18_SURF 1`).
+- **Effect:** GET UNIT STATUS reports 7 tracks per group for the RX18. Every other drive uses its own value (mostly its `_SURF`); 7 matches neither the RX18's surfaces (1) nor the comment (9). Likely a copy/paste slip from the RD33 entry added in the same commit (2396fd03, Nov 2023). Harmless for most host software, which ignores the group size of a diskette.
+- **Not changed:** the real value is not documented (the RX18 is the VT180 "Robin" RX180 diskette, which the MSCP specification only lists as possible); `RX18_SURF` (1) would be consistent. Decision for Ulli.
+- **Found:** 2026-11-10 (question about the RX18).
+
