@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v32 (v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v33 (v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02 (last update 2026-11-11, RX02 floppy, VMS MOUNT fix). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-11, RX01 floppies). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -1101,7 +1101,7 @@ Notes from testing:
 
 ### Open
 
-- RX01 (RX device), the 11/780 console RX01, RX50, RX33 (RQ and VAXstation 3100), RX18: next, with `SND_FLP_MOTOR_CTRL` (motor on at access, off after MOTOROFF), the shared motor and carriage of the RX50, and the controller's interleave mapping on the RQDX.
+- RX01 (RX device) and the 11/780 console RX01: done in step 2 (below). RX50, RX33 (RQ and VAXstation 3100), RX18: next, with `SND_FLP_MOTOR_CTRL` (motor on at access, off after MOTOROFF), the shared motor and carriage of the RX50, and the controller's interleave mapping on the RQDX.
 - Real RX02 recordings would replace the synthetic sounds file by file; levels by ear.
 - Known issues 43, 44 (RX/RY Initialize details), 46 (formatted image not written) and 48 (extended status head load bit) are open.
 
@@ -1117,9 +1117,60 @@ Notes from testing:
 - Script pitfall: in the realism mode several DCL commands typed ahead while a floppy command runs overflow the VMS type-ahead buffer (`%RMS-F-RER, -SYSTEM-W-DATAOVERUN` on the truncated command line); the scripts send one command at a time.
 - New suspicious item (known issues 48): the extended status (Read Error Code) word 4 bit 5 is "diskette in drive" in SIMH, the head load bit in the manual. No effect seen.
 
+## Phase E, step 2: the RX01 (RX device) and the VAX-11/780 console floppy (2026-11-11)
+
+### Where things are
+
+- Branch `sound`: commits 74f013b8 and 77609498 on top of ff6183f0; branch `integration`: d6cf4fc0, ef25b181.
+- Patch **`opensimh_5_sound_v30.patch`** replaces v29 (checked: 6 + 5 v30 on 87eb7d5 give the `sound` tree without the Visual Studio project files).
+- Changed: `PDP11/pdp11_rx.c` (pdp11 only), `VAX/vax780_stddev.c` (vax780), `sim_sound.c`, `sim_sound.h` (drive type alias, RX01 values), `scp.c` (HELP SET SOUND), `sound/rx02/README.txt`.
+- Notes branch: `tests/rx01/` (mkrx01.py, prog.ini, n1, r1, t2, vms4, vms5, README.txt), `tools/make_sound_devices_ods.py` v12 and `docs/SIMH_Sound_devices.ods` table v11 (Floppies sheet: RX and CS rows).
+- Source: **RX8/RX11 Floppy Disk System Maintenance Manual EK-RX01-MM-002** (Dec 1976), read on the web (svn.so-much-stuff.com mirror of dundas-mac.caltech.edu).
+
+### RX01 facts (EK-RX01-MM-002)
+
+| Item | Value |
+|---|---|
+| Speed, geometry | 360 rpm ± 2.5 % (166 ms per revolution), 77 tracks × 26 sectors × 128 bytes, FM |
+| Track to track | 10 ms maximum |
+| Head | loaded after the steps; the microcode (STEPHD) then waits 20 ms (spec: settle 25 ms maximum) |
+| Head unload | "to reduce diskette wear": when no new command (RUN) comes within 45.87 ms |
+| Read Status | "between one and two diskette revolutions or about 250 ms" (drive ready from the index pulses) |
+| Initialize | drive 1 to track 0, then drive 0 reads track 1 sector 1; up to 1.8 s |
+| Transfer rates | diskette 4 µs per bit (250 kbit/s); CPU interface to I/O bus 18 µs per 8-bit byte |
+| Power up | the heads move ten tracks toward the center and back to track 0 |
+| Motor | AC, belt to the spindle (50/60 Hz belts and pulleys), power from the system's AC switch: the same drive as the RX02, motors on the line |
+| Average access | 488 ms published (the manual's own sum gives 493 ms; half the stroke); the model's third-stroke average 360 ms |
+
+### Behavior (realism mode)
+
+- **RX (RX11/RXV11, PDP-11):** as the RY: Read/Write Sector (the other drive's head unloads, steps, head load + 20 ms, the sector at its real time, 6.41 ms), Initialize, Read Status (to the index and once round, no head load), Fill/Empty Buffer and the sector/track bytes 18 µs per byte; ATTACH/DETACH are the door; a command reaching a drive without a diskette ends with error 0110 (normal mode: STOP_IOE as before). New: `SHOW RXn DRIVE`, registers STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP, debug flags OPS, CMD, REG (CMD and REG in both modes), `HELP RX` (the device had no help; it also explains the shared CSR 177170 with the RY, known issues 49).
+- **CS (VAX-11/780 console floppy):** one RX01 drive on the console LSI-11's RXV11. The drive part of a read or write takes its real time, including the 128 bytes between the drive and the RXV11 (18 µs each: write before, read after the drive operation); the bytes between the LSI-11 and the VAX keep XTIME (20 instructions; the real console path speed is not published). Read Status of the console protocol returns the stored error code at once, as before. `SHOW CS DRIVE`, the same registers, debug flag OPS, `HELP CS` (new).
+- **Sounds:** the RX01 is the RX02's drive mechanism, so it uses `sound/rx02/rx02_*.wav` unless `sound/rx01/rx01_*.wav` exist (new `SND_FLP_TYPE.alias`; SHOW SOUND: `rx01 (floppy) -> rx02`), then `default_floppy`. No new WAV files. The steps come every 10 ms (the RX02: 6 ms).
+- In the realism mode Initialize without a diskette in drive 0 ends after its real time with Initialize Done and error 0010; the normal mode keeps SIMH's immediate error without Initialize Done (known issues 44).
+
+### Tests (`tests/rx01/`)
+
+| Test | Result |
+|---|---|
+| n1 normal mode, PDP-11/70: BOOT RX0 of the test image, 26 sectors of track 1 in the 2:1 interleave | R0 = 123, data in order; output identical to plain Open SIMH 87eb7d5 |
+| r1 realism mode | Initialize 140 ms; boot read 166.6 ms (sector 1 had just passed); interleaved reads 9.68 ms each, one every 12.82 ms (two sector times), track 1 in 0.33 s |
+| t2 | DETACH while stepping: error 0110, no stop; Read Status 251 ms, RXES 200; empty drive 1: 0110 after 833 ms (48 steps + head load + two revolutions); normal mode: stops as before |
+| vms4 (normal) / vms5 (realism), VMS V4.7 on the VAX-11/780 | SYSGEN CONNECT CONSOLE, MOUNT/FOREIGN CSA1, EXCHANGE INITIALIZE, COPY SYSGEN.EXE (129 blocks) to CSA1 and back, DIFFERENCES: 0 differences in both modes; vms5: 1132 drive operations, VMS's 2:1 interleave with 6-sector skew, reads normally 12.7 ms, the exchange about 22 s |
+| Audio (SDL disk driver) | step clicks every 10.0 ms; power-up homing (20 clicks) when the 2 s run-up ends |
+| RX02 regression (tests/rx02 n1, r1, t1, t2, sd1) and VMS RX02 test | unchanged (n1 identical; realism runs differ only in timing lines: random rotational phase) |
+| Build `-Werror` pdp11, vax780, vax730, vax750, vax8200, vax8600, microvax2, pdp8, altair; `pdp11_rx.c`, `vax780_stddev.c` with `-Wall -Wextra` | no warnings (only SIMH's usual missing-initializer style warnings with -Wextra) |
+| VAX diagnostics 730, 750, 780, 8600 | passed |
+
+### Open
+
+- The speed of the console path LSI-11 ↔ VAX (XTIME): a real VAX-11/780 console floppy is slow; a measurement on real hardware (e.g. the time of a COPY of a known file from CSA1) would give a realistic value.
+- RX01 Read Error Code: CTIME as before (no published time).
+- A real RX01 recording would replace the RX02-based sounds (`sound/rx01/rx01_*.wav`).
+
 ## Not done yet (after phase B)
 
-- Floppies: the RX02 is done (phase E step 1); RX01, the 11/780 console RX01, RX50, RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
+- Floppies: the RX02 (phase E step 1), the RX01 and the 11/780 console RX01 (step 2) are done; RX50, RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
 - RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.
