@@ -25,6 +25,13 @@
 
    ry           RX211/RXV21/RX02 floppy disk
 
+   11-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): realistic
+                        timing from the RX02 technical manual (stepping,
+                        head load and unload, rotational position from
+                        time, serial buffer transfers), drive sounds,
+                        SHOW RYn DRIVE, DETACH during a command ends it
+                        with an error; Set Media Density on an empty
+                        drive no longer crashes (known issues case 45)
    23-Oct-13    RMS     Revised for new boot setup routine
    03-Sep-13    RMS     Added explicit void * cast
    15-May-06    RMS     Fixed bug in autosize attach (David Gesswein)
@@ -55,6 +62,8 @@
 #include "pdp11_defs.h"
 #define DEV_DISI        DEV_DIS
 #endif
+
+#include "sim_sound.h"
 
 #define RX_NUMTR        77                              /* tracks/disk */
 #define RX_M_TRACK      0377
@@ -151,6 +160,23 @@ int32 ry_swait = 10;                                    /* seek, per track */
 int32 ry_xwait = 1;                                     /* tr set time */
 uint8 rx2xb[RY_NUMBY] = { 0 };                          /* sector buffer */
 
+/* Sound realism mode (SET SOUND ENABLED): the drive mechanics of each
+   RX02 drive (sim_sound SND_FLOPPY) and their adjustable times, shared by
+   both drives (registers STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP). */
+
+static SND_FLOPPY ry_flp[RX_NUMDR];
+static SND_FLP_REGS ry_flp_regs;
+static t_bool ry_flp_inited = FALSE;
+
+#define RY_REAL         (sim_sound_enabled ())
+#define RY_BIT_US       1.2                             /* RX02 <-> interface: 1.2 us per bit */
+#define RYDEB_OPS       0001                            /* debug: commands with their times */
+
+DEBTAB ry_deb[] = {
+    { "OPS",  RYDEB_OPS,  "commands and their realistic times (realism mode)" },
+    { NULL, 0 }
+    };
+
 t_stat ry_rd (int32 *data, int32 PA, int32 access);
 t_stat ry_wr (int32 data, int32 PA, int32 access);
 t_stat ry_svc (UNIT *uptr);
@@ -159,6 +185,11 @@ t_stat ry_boot (int32 unitno, DEVICE *dptr);
 void ry_done (int32 esr_flags, uint8 new_ecode);
 t_stat ry_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat ry_attach (UNIT *uptr, CONST char *cptr);
+t_stat ry_detach (UNIT *uptr);
+t_stat ry_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static double ry_rw_us (UNIT *uptr, int32 bps);
+static double ry_init_us (void);
+static double ry_sden_us (UNIT *uptr);
 t_stat ry_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *ry_description (DEVICE *dptr);
 
@@ -205,6 +236,11 @@ REG ry_reg[] = {
     { DRDATAD (XTIME,         ry_xwait, 24,             "transfer ready delay"), PV_LEFT },
     { BRDATAD (SBUF,             rx2xb, 8, 8, RY_NUMBY, "sector buffer array") },
     { FLDATAD (STOP_IOE,    ry_stopioe, 0,              "stop on I/O error") },
+    { DRDATAD (STEP,  ry_flp_regs.step_us,     24,      "realism mode: step time per track (us)"), PV_LEFT },
+    { DRDATAD (SETTLE, ry_flp_regs.settle_us,  24,      "realism mode: head settle time (us)"), PV_LEFT },
+    { DRDATAD (HDLOAD, ry_flp_regs.hdload_us,  24,      "realism mode: head load time (us)"), PV_LEFT },
+    { DRDATAD (HDUNLOAD, ry_flp_regs.hdunload_ms, 24,   "realism mode: head unloaded after (ms) without a command"), PV_LEFT },
+    { DRDATAD (MOTORUP, ry_flp_regs.motorup_ms, 24,     "realism mode: motor run-up at power on (ms)"), PV_LEFT },
     { URDATA  (CAPAC, ry_unit[0].capac, 10, T_ADDR_W, 0,
               RX_NUMDR, REG_HRO | PV_LEFT) },
     { GRDATA  (DEVADDR,     ry_dib.ba, DEV_RDX, 32, 0), REG_HRO },
@@ -228,6 +264,8 @@ MTAB ry_mod[] = {
         &ry_set_size, NULL, NULL, "Set to Single density (256Kb)" },
     { (UNIT_AUTO+UNIT_DEN),           UNIT_DEN, NULL,               "DOUBLE", 
         &ry_set_size, NULL, NULL, "Set to Double density (512Kb)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO,          0, "DRIVE", NULL,
+        NULL, &ry_show_drive, NULL, "Display the drive mechanics (sound realism mode)" },
 #if defined (VM_PDP11)
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004, "ADDRESS", "ADDRESS",
       &set_addr, &show_addr, NULL, "Bus Address" },
@@ -248,9 +286,9 @@ DEVICE ry_dev = {
     "RY", ry_unit, ry_reg, ry_mod,
     RX_NUMDR, DEV_RDX, 20, 1, DEV_RDX, 8,
     NULL, NULL, &ry_reset,
-    &ry_boot, &ry_attach, NULL,
-    &ry_dib, DEV_DISABLE | DEV_DISI | DEV_UBUS | DEV_Q18, 0,
-    NULL, NULL, NULL, &ry_help, NULL, NULL,
+    &ry_boot, &ry_attach, &ry_detach,
+    &ry_dib, DEV_DISABLE | DEV_DISI | DEV_UBUS | DEV_Q18 | DEV_DEBUG, 0,
+    ry_deb, NULL, NULL, &ry_help, NULL, NULL,
     &ry_description
     };
 
@@ -327,9 +365,20 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
                 ry_ecode = 0;
                 break;
 
-            default:
+            default:                                    /* read status */
                 ry_state = CMD_COMPLETE;                /* state = cmd compl */
-                sim_activate (&ry_unit[drv], ry_cwait);
+                if (RY_REAL) {                          /* load the head, count index */
+                    SND_FLOPPY *f = &ry_flp[drv];       /* pulses: one revolution */
+                    double t;
+
+                    sim_floppy_unload (&ry_flp[drv ^ 1]);
+                    t = sim_floppy_seek (f, sim_floppy_track (f), TRUE);
+                    t = sim_floppy_rotate (f, t, 0, RX_NUMSC);  /* to the index, then once round */
+                    sim_debug (RYDEB_OPS, &ry_dev, ">>RY%d read status: %.1f ms\n", drv, t / 1000.0);
+                    sim_sound_activate_us (&ry_unit[drv], t);
+                    }
+                else
+                    sim_activate (&ry_unit[drv], ry_cwait);
                 break;
                 }                                       /* end switch func */
             return SCPE_OK;
@@ -400,7 +449,10 @@ switch (ry_state) {                                     /* case on state */
     case FEBA:                                          /* buffer address */
         ry_ba = ry_dbr;                                 /* save buf addr */
         ry_state = FEXFR;                               /* next state */
-        sim_activate (uptr, ry_cwait);                  /* schedule xfer */
+        if (RY_REAL)                                    /* serial RX02 <-> interface */
+            sim_sound_activate_us (uptr, (double)(ry_wc << 1) * 8.0 * RY_BIT_US);
+        else
+            sim_activate (uptr, ry_cwait);              /* schedule xfer */
         return SCPE_OK;
 
     case FEXFR:                                         /* transfer */
@@ -427,13 +479,18 @@ switch (ry_state) {                                     /* case on state */
     case RWDT:                                          /* wait for track */
         ry_track = ry_dbr & RX_M_TRACK;                 /* save track */
         ry_state = RWXFR;                               /* next state */
-        sim_activate (uptr,                             /* sched xfer */
-            ry_swait * abs (ry_track - uptr->TRACK));
+        if (RY_REAL)
+            sim_sound_activate_us (uptr, ry_rw_us (uptr, bps));
+        else
+            sim_activate (uptr,                         /* sched xfer */
+                ry_swait * abs (ry_track - uptr->TRACK));
         return SCPE_OK;
 
     case RWXFR:                                         /* read/write */
         if ((uptr->flags & UNIT_BUF) == 0) {            /* not buffered? */
             ry_done (0, 0110);                          /* done, error */
+            if (RY_REAL)                                /* no diskette (or the door was */
+                break;                                  /* opened): an error, as on the drive */
             return IORETURN (ry_stopioe, SCPE_UNATT);
             }
         if (ry_track >= RX_NUMTR) {                     /* bad track? */
@@ -477,10 +534,17 @@ switch (ry_state) {                                     /* case on state */
             break;
             }
         ry_state = SDXFR;                               /* next state */
-        sim_activate (uptr, ry_cwait * 100);            /* schedule operation */
+        if (RY_REAL)
+            sim_sound_activate_us (uptr, ry_sden_us (uptr));
+        else
+            sim_activate (uptr, ry_cwait * 100);        /* schedule operation */
         break;
 
     case SDXFR:                                         /* erase disk */
+        if ((uptr->flags & UNIT_BUF) == 0) {            /* no diskette: the buffer is */
+            ry_done (0, 0110);                          /* not there (known issues 45) */
+            break;
+            }
         for (i = 0; i < (int32) uptr->capac; i++)
             fbuf[i] = 0;
         uptr->hwmark = (uint32) uptr->capac;
@@ -561,6 +625,8 @@ if ((new_ecode > 0) || (ry_esr & RYES_ERR))             /* test for error */
     ry_csr = ry_csr | RYCS_ERR;
 ry_ecode = new_ecode;                                   /* update ecode */
 ry_dbr = ry_esr;                                        /* update RYDB */
+if (RY_REAL)                                            /* the head unloads if no new */
+    sim_floppy_end (&ry_flp[drv], 0.0);                 /* command comes within HDUNLOAD */
 return;
 }
 
@@ -570,6 +636,14 @@ return;
 
 t_stat ry_reset (DEVICE *dptr)
 {
+int32 i;
+
+if (!ry_flp_inited) {                                   /* drive mechanics, once */
+    ry_flp_inited = TRUE;
+    sim_floppy_set_defaults (&ry_flp_regs, &sim_flp_rx02);
+    }
+for (i = 0; i < RX_NUMDR; i++)
+    sim_floppy_init (&ry_flp[i], &ry_unit[i], &sim_flp_rx02, &ry_flp_regs, SND_GRP_DISK, 1.0);
 ry_csr = ry_dbr = 0;                                    /* clear registers */
 ry_esr = ry_ecode = 0;                                  /* clear error */
 ry_ba = ry_wc = 0;                                      /* clear wc, ba */
@@ -579,6 +653,10 @@ CLR_INT (RY);                                           /* clear int req */
 sim_cancel (&ry_unit[1]);                               /* cancel drive 1 */
 if (dptr->flags & UNIT_DIS)                             /* disabled? */
     sim_cancel (&ry_unit[0]);
+else if (RY_REAL) {                                     /* realism mode: */
+    ry_state = INIT_COMPLETE;
+    sim_sound_activate_us (&ry_unit[0], ry_init_us ());
+    }
 else if (ry_unit[0].flags & UNIT_BUF)  {                /* attached? */
     ry_state = INIT_COMPLETE;                           /* yes, sched init */
     sim_activate (&ry_unit[0], ry_swait * abs (1 - ry_unit[0].TRACK));
@@ -592,6 +670,7 @@ return auto_config (dptr->name, 1);                     /* run autoconfig */
 t_stat ry_attach (UNIT *uptr, CONST char *cptr)
 {
 uint32 sz;
+t_stat r;
 
 if ((uptr->flags & UNIT_AUTO) && (sz = sim_fsize_name (cptr))) {
     if (sz > RX_SIZE)
@@ -599,7 +678,101 @@ if ((uptr->flags & UNIT_AUTO) && (sz = sim_fsize_name (cptr))) {
     else uptr->flags = uptr->flags & ~UNIT_DEN;
     }
 uptr->capac = (uptr->flags & UNIT_DEN)? RY_SIZE: RX_SIZE;
-return attach_unit (uptr, cptr);
+r = attach_unit (uptr, cptr);
+if (r == SCPE_OK)
+    sim_floppy_insert (&ry_flp[uptr - ry_unit]);        /* realism: door closed */
+return r;
+}
+
+/* Detach: opening the door.  A command running on the drive ends with an
+   error when it reaches the diskette (realism mode; known issue in the
+   normal mode: STOP_IOE). */
+
+t_stat ry_detach (UNIT *uptr)
+{
+if (uptr->flags & UNIT_ATT)
+    sim_floppy_remove (&ry_flp[uptr - ry_unit]);
+return detach_unit (uptr);
+}
+
+/* Realistic times (sound realism mode), from the RX02 Floppy Disk System
+   Technical Manual EK-0RX02-TM-001:
+   - Read/Write Sector: step 6 ms per track, then head load / settle
+     25 ms, then wait until the sector comes round (360 rpm, 26 sectors
+     evenly spaced after the index), then one sector; a sector that does
+     not exist (or no diskette) is given up after two revolutions (error
+     0070/0110); a track above 76 is refused at once (0040).
+   - Initialize: both heads step home, drive 0 reads track 1 sector 1
+     (at most 1.8 s in the manual).
+   - Set Media Density: about 15 s: a revolution per track plus the step.
+   - Read Status: head load plus counting index pulses (about 250 ms).
+   - Fill/Empty Buffer: 1.2 us per bit between the RX02 and the
+     interface (the RX211 does the DMA). */
+
+static double ry_rw_us (UNIT *uptr, int32 bps)
+{
+int32 drv = (int32)(uptr - ry_unit);
+SND_FLOPPY *f = &ry_flp[drv];
+double t;
+
+sim_floppy_unload (&ry_flp[drv ^ 1]);                   /* one head load line */
+if (ry_track >= RX_NUMTR) {                             /* refused before stepping */
+    sim_debug (RYDEB_OPS, &ry_dev, ">>RY%d track %d refused\n", drv, ry_track);
+    return 100.0;
+    }
+t = sim_floppy_seek (f, ry_track, TRUE);                /* steps, head load, settle */
+if (((uptr->flags & UNIT_BUF) == 0) ||                  /* no diskette or no such sector: */
+    (ry_sector == 0) || (ry_sector > RX_NUMSC))         /* two revolutions */
+    t += 2.0 * sim_floppy_rev_us (f);
+else
+    t = sim_floppy_rotate (f, t, ry_sector - 1, 1);
+sim_debug (RYDEB_OPS, &ry_dev, ">>RY%d %s track %d sector %d: %.2f ms\n", drv,
+           (RYCS_GETFNC (ry_csr) == RYCS_READ) ? "read" : "write", ry_track, ry_sector, t / 1000.0);
+return t;
+}
+
+static double ry_init_us (void)
+{
+SND_FLOPPY *f0 = &ry_flp[0];
+double t0, t1, t;
+
+sim_floppy_unload (&ry_flp[0]);
+sim_floppy_unload (&ry_flp[1]);
+t0 = sim_floppy_seek (&ry_flp[0], 0, FALSE);            /* both heads home */
+t1 = sim_floppy_seek (&ry_flp[1], 0, FALSE);
+t = (t0 > t1) ? t0 : t1;
+t += sim_floppy_seek (f0, 1, TRUE);                     /* drive 0: track 1 */
+if (ry_unit[0].flags & UNIT_BUF)
+    t = sim_floppy_rotate (f0, t, 0, 1);                /* sector 1 */
+else
+    t += 2.0 * sim_floppy_rev_us (f0);                  /* no diskette: no sector */
+sim_debug (RYDEB_OPS, &ry_dev, ">>RY initialize: %.2f ms\n", t / 1000.0);
+return t;
+}
+
+static double ry_sden_us (UNIT *uptr)
+{
+int32 drv = (int32)(uptr - ry_unit);
+SND_FLOPPY *f = &ry_flp[drv];
+double rev = sim_floppy_rev_us (f);
+double per = (double)ry_flp_regs.step_us + (double)ry_flp_regs.settle_us + rev;
+double t;
+
+sim_floppy_unload (&ry_flp[drv ^ 1]);
+t = sim_floppy_seek (f, 0, TRUE);                       /* track 0, head loaded */
+if ((uptr->flags & UNIT_BUF) == 0)                      /* no diskette: no header */
+    return t + 2.0 * rev;
+t = sim_floppy_rotate (f, t, 0, 0);                     /* to the index */
+sim_floppy_steps (f, RX_NUMTR - 1, per, t + rev);       /* a track per revolution */
+t += (double)RX_NUMTR * rev + (double)(RX_NUMTR - 1) * (per - rev);
+(void) sim_floppy_seek (f, RX_NUMTR - 1, FALSE);        /* (no sound: played above) */
+sim_debug (RYDEB_OPS, &ry_dev, ">>RY%d set density: %.1f s\n", drv, t / 1.0e6);
+return t;
+}
+
+t_stat ry_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+return sim_floppy_show (st, &ry_flp[uptr - ry_unit]);
 }
 
 /* Set size routine */
@@ -724,7 +897,23 @@ fprintf (st, "    error         STOP_IOE   processed as\n");
 fprintf (st, "    not attached  1          report error and stop\n");
 fprintf (st, "                  0          disk not ready\n\n");
 fprintf (st, "RX02 data files are buffered in memory; therefore, end of file and OS I/O\n");
-fprintf (st, "errors cannot occur.\n");
+fprintf (st, "errors cannot occur.\n\n");
+fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
+fprintf (st, "  - The RX02 drive motors are AC motors on the power line: they run while\n");
+fprintf (st, "    the system power is on (RUN/BOOT, SET SOUND POWER=ON), with or without\n");
+fprintf (st, "    a diskette.  ATTACH is inserting a diskette and closing the door, DETACH\n");
+fprintf (st, "    opening the door; a command running on the drive then ends with an\n");
+fprintf (st, "    error (it does not stop the simulator).\n");
+fprintf (st, "  - Times from the RX02 Technical Manual: 6 ms per track (STEP), 25 ms head\n");
+fprintf (st, "    load and settle (HDLOAD, SETTLE), 360 rpm; a sector is read or written\n");
+fprintf (st, "    when it comes round under the head, so the interleave of the software\n");
+fprintf (st, "    has its real effect; the head unloads HDUNLOAD (200) ms after the last\n");
+fprintf (st, "    command.  Initialize, Set Media Density (about 15 s) and Read Status\n");
+fprintf (st, "    take their real time, Fill/Empty Buffer 1.2 us per bit.\n");
+fprintf (st, "  - Sounds: motor and fan, a diskette turning, head load and unload, one\n");
+fprintf (st, "    click per track, the door (sound/rx02, else sound/default_floppy).\n");
+fprintf (st, "  - SHOW RYn DRIVE shows diskette, head, track and motor; SET RY DEBUG=OPS\n");
+fprintf (st, "    traces every command with its time.\n");
 return SCPE_OK;
 }
 
