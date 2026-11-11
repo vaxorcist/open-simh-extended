@@ -1,4 +1,4 @@
-open-simh-extended/tests/rx50_8200/README.txt  v1
+open-simh-extended/tests/rx50_8200/README.txt  v2 (v2: VMS tests vms1/vms2)
 
 VAX 8200 console floppy (CS device, an RX50 drive with two slots) in the
 sound realism mode (2026-11-11).
@@ -9,6 +9,11 @@ mkprog.py   writes prog.ini: a VAX program at 1000 that drives the console
             floppy controller registers (200B0000) directly: read sector
             for a list of (slot, track, sector), polling CS0 Done
 prog.ini    the do-file made by mkprog.py
+vms1.ini    VMS V4.7 on the vax8200, normal mode: CSA1/CSA2 (CS0/CS1, new
+            blank diskettes), SYSGEN CONNECT CONSOLE, MOUNT/FOREIGN, EXCHANGE
+            INITIALIZE/COPY/DIRECTORY, DIFFERENCES, DISMOUNT
+vms2.ini    the same in the sound realism mode (SET SOUND ENABLED, SET RQ0
+            ONLINE)
 t1.ini      vax8200, realism mode: runs the program with SET CS DEBUG=FNC
             (one line per command with its realistic time), then SHOW CSn
             DRIVE before and after 3 s at the prompt
@@ -34,3 +39,18 @@ Results (2026-11-11)
 
 After the program: both slots "motor running (off in 2.00 s)"; after 3 s
 at the prompt: heads unloaded, "motor off" for both (one motor).
+
+VMS tests (2026-11-11)
+----------------------
+Need the integration build (patch 3) and a copy of VMS047.R81 (SYSTEM /
+MANAGER) in the current directory:
+
+  BIN/vax8200 vms1.ini > vms1.out < /dev/null
+  SDL_AUDIODRIVER=dummy BIN/vax8200 vms2.ini > vms2.out < /dev/null
+
+Both modes: CSA1: and CSA2: online, both diskettes initialized as RT-11
+volumes, SYSGEN.EXE (129 blocks) copied disk -> CSA1 -> CSA2 -> disk with no
+differences, directory 1 file / 657 blocks free on each.  Realism: 576 sector
+operations, average 63 ms, one motor start (first read 606 ms); the whole run
+takes 78 s.  The RT-11 file date reads 1994 for 2026: VMS V4.7 EXCHANGE
+stores the year modulo 32 (a VMS limit).
