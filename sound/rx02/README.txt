@@ -16,6 +16,11 @@ Technical Manual (EK-0RX02-TM-001) and the RX02 print set (MP00629):
 - the stepper: 6 ms per track (one click per track, a buzz of about
   167 Hz during a long seek).
 
+The RX01 (RX device of the PDP-11, the VAX-11/780 console floppy CS) is
+the same drive: it uses these files too, unless sound/rx01 has files of
+its own (rx01_<name>.wav).  Its steps come every 10 ms and its head
+unloads 46 ms after the last command, so the same click sounds slower.
+
 File                  Content                                    Use
 --------------------  -----------------------------------------  -----------
 rx02_motor_start.wav  motor and fan running up, 2 s              power on

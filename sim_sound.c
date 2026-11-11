@@ -3734,16 +3734,21 @@ return SCPE_OK;
          within 200 ms), 5.3.4.1 (ready within 2 s of power), 2.x (power
          up: the heads move one track in and back); RX02 print set MP00629
          (H771 power supply: both spin motors on the AC line).
-   RX01: RX01 maintenance manual EK-RX01-MM-002 (one track 10 ms, settle
-         25 ms, average access 488 ms; at power up the heads move ten
-         tracks in and back); head unload 200 ms as the RX02 (provisional). */
+   RX01: RX8/RX11 Floppy Disk System Maintenance Manual EK-RX01-MM-002
+         (Dec 1976): 1.6 (track-to-track 10 ms max., head settle 25 ms
+         max., 360 rpm), microcode STEPHD (the head is loaded after the
+         steps, then a 20 ms delay), the head is unloaded "to reduce
+         diskette wear" when no new command (RUN) comes within 45.87 ms,
+         2.4.4 (at power up the heads move ten tracks in and back).  The
+         drive mechanics are those of the RX02 (same drive): its sounds
+         are used unless rx01/ has files of its own. */
 
 const SND_FLP_TYPE sim_flp_rx01 = {
     "RX01", "rx01", 360.0, 77, 26, SND_FLP_MOTOR_AC, 10,
-    10000, 25000, 25000, 200, 2000, 0 };
+    10000, 20000, 20000, 46, 2000, 0, "rx02" };
 const SND_FLP_TYPE sim_flp_rx02 = {
     "RX02", "rx02", 360.0, 77, 26, SND_FLP_MOTOR_AC, 1,
-    6000, 25000, 25000, 200, 2000, 0 };
+    6000, 25000, 25000, 200, 2000, 0, NULL };
 
 #define FLP_S_MOTOR_START   0                   /* sound indexes */
 #define FLP_S_MOTOR         1
@@ -3797,7 +3802,18 @@ for (i = 0; i < SND_FLP_NSMP; i++) {
 
     snprintf (own, sizeof (own), "%s_%s.wav", f->type->prefix, flp_snd_names[i]);
     snprintf (def, sizeof (def), "%s.wav", flp_snd_names[i]);
-    f->smp[i] = snd_load_with_default (f->type->prefix, own, FLP_DEFAULT_DIR, def, "floppy");
+    f->smp[i] = NULL;
+    if (f->type->alias != NULL) {               /* own file, else the same drive's */
+        char alias[CBUFSIZE];                   /* (RX01: rx02/rx02_*.wav) */
+
+        if ((f->smp[i] = sim_sound_load_optional (f->type->prefix, own)) == NULL) {
+            snprintf (alias, sizeof (alias), "%s_%s.wav", f->type->alias, flp_snd_names[i]);
+            if ((f->smp[i] = sim_sound_load_optional (f->type->alias, alias)) != NULL)
+                snd_note_default (f->type->prefix, "floppy", f->type->alias);
+            }
+        }
+    if (f->smp[i] == NULL)                      /* else the default floppy */
+        f->smp[i] = snd_load_with_default (f->type->prefix, own, FLP_DEFAULT_DIR, def, "floppy");
     }
 f->loaded = TRUE;
 }
