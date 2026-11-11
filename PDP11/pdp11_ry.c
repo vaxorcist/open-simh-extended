@@ -359,12 +359,14 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
             case RYCS_FILL: case RYCS_EMPTY:
                 ry_state = FEWC;                        /* state = get wc */
                 ry_csr = ry_csr | RYCS_TR;              /* xfer is ready */
-                break;
+                ry_esr = ry_esr & RYES_ID;              /* initiation clears RX2ES */
+                break;                                  /* (manual 4.3.3.1/2) */
 
             case RYCS_SDEN:
                 ry_state = SDCNF;                       /* state = get conf */
                 ry_csr = ry_csr | RYCS_TR;              /* xfer is ready */
-                break;
+                ry_esr = ry_esr & RYES_ID;              /* initiation clears RX2ES */
+                break;                                  /* (manual 4.3.3.5) */
 
             case RYCS_ESTAT:
                 ry_state = ESBA;                        /* state = get ba */
@@ -380,6 +382,7 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
 
             default:                                    /* read status */
                 ry_state = CMD_COMPLETE;                /* state = cmd compl */
+                ry_esr = ry_esr & RYES_ID;              /* fresh status (known issues 47) */
                 if (RY_REAL) {                          /* load the head, count index */
                     SND_FLOPPY *f = &ry_flp[drv];       /* pulses: one revolution */
                     double t;
@@ -592,8 +595,21 @@ switch (ry_state) {                                     /* case on state */
         ry_done (t? RYES_NXM: 0, 0);                    /* done */
         break;
 
-    case CMD_COMPLETE:                                  /* command complete */
-        ry_done (0, 0);
+    case CMD_COMPLETE:                                  /* read status complete */
+/* Read Status loads the head and reads the first data mark to update
+   the drive density; when the diskette density differs from the
+   density bit of the function, the density error bit is set (RX02
+   manual 4.1.4.6, RX28 text: "possibly sets the density error bit").
+   VMS DYDRIVER depends on this: at PACKACK (MOUNT) it issues a single
+   density Read Status and switches to double density only when RX2ES
+   bit 4 (DERR) comes back set.  Without it VMS read double density
+   diskettes in single density and MOUNT failed with DRVERR (known
+   issues 47).  RX2CS Error is not asserted for this case. */
+        if ((uptr->flags & UNIT_ATT) &&                 /* diskette in drive and */
+            (((uptr->flags & UNIT_DEN) != 0) !=         /* density mismatch? */
+             ((ry_csr & RYCS_DEN) != 0)))
+            ry_esr = ry_esr | RYES_DERR;
+        ry_done (0, 0);                                 /* RYES_DERR not in esr_flags: no ERR */
         break;
 
     case INIT_COMPLETE:                                 /* init complete */
@@ -635,7 +651,13 @@ if (ry_unit[drv].flags & UNIT_ATT) {
     if (ry_unit[drv].flags & UNIT_DEN)
         ry_esr = ry_esr | RYES_DDEN;
     }
-if ((new_ecode > 0) || (ry_esr & RYES_ERR))             /* test for error */
+/* RYCS ERR reports an error of THIS function only (known issues 47).
+   Error bits left in RYES by an earlier function (for example the
+   density error of a failed read) must not make the following Read
+   Status or Read Error Code fail: VMS DYDRIVER reads status after a
+   density error to learn the diskette density, and treated the stale
+   error as a fatal drive error (MOUNT-F-DRVERR on double density). */
+if ((new_ecode > 0) || (esr_flags & RYES_ERR))          /* test for error */
     ry_csr = ry_csr | RYCS_ERR;
 ry_ecode = new_ecode;                                   /* update ecode */
 ry_dbr = ry_esr;                                        /* update RYDB */
