@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v17 (v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v18 (v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -61,6 +61,10 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 38 | FIXED (patch 5) | Bug | `PDP11/pdp11_tq.c` `tq_svc`, OP_POS | Spacing beyond the last record (end of medium) or into an invalid record (invalid record length, format error) returns SCPE_IOERR and stops the simulator, e.g. a VMS DIRECTORY of a tape with an interrupted BACKUP |
 | 39 | FIXED (patch 5) | Bug | `sim_tape.c` `sim_tape_rdlntf` | After an invalid record length the position is set 2 GB too far back when the bad record marker has bit 31 set; the attach scan reports "2149429608 bytes of unexamined data" for a 2 MB image |
 | 40 | FIXED (patch 5) | Bug | `sim_timer.c` `sim_throt_svc` | Throttle without warm-up (THROT_DELAY 0, set by the sound realism mode): a 10 ms measurement while idling or starting up disables the throttle ("Host CPU is too slow"); the too-fast recalibration loops forever without a measured peak rate |
+| 41 | DONE (no change) | Question | `PDP11/pdp11_rq.c` `RA80_LBN` | RA80 capacity 237,212 blocks in SIMH, 236,964 in the User Guide: SIMH matches a real RA80 |
+| 42 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `RX18_TPG` | RX18 "tracks per group" is `RD33_SURF` (7), a copy/paste slip |
+| 43 | OPEN | Suspicious | `PDP11/pdp11_ry.c` `ry_svc` (INIT_COMPLETE) | Initialize reads track 1 sector 1 of drive 0 with single-density size and offset, also from a double-density diskette |
+| 44 | OPEN | Suspicious | `PDP11/pdp11_rx.c`, `pdp11_ry.c` Initialize | A drive without a diskette is reported as "failed to see home" (codes 0010/0020); the RX01 without a diskette in drive 0 also does not set Initialize Done |
 
 ## Details
 
@@ -373,4 +377,18 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Effect:** GET UNIT STATUS reports 7 tracks per group for the RX18. Every other drive uses its own value (mostly its `_SURF`); 7 matches neither the RX18's surfaces (1) nor the comment (9). Likely a copy/paste slip from the RD33 entry added in the same commit (2396fd03, Nov 2023). Harmless for most host software, which ignores the group size of a diskette.
 - **Not changed:** the real value is not documented (the RX18 is the VT180 "Robin" RX180 diskette, which the MSCP specification only lists as possible); `RX18_SURF` (1) would be consistent. Decision for Ulli.
 - **Found:** 2026-11-10 (question about the RX18).
+
+### 43 — OPEN — Suspicious: RX02 Initialize reads the boot sector in single density
+- **Where:** `PDP11/pdp11_ry.c`, `ry_svc`, case `INIT_COMPLETE`. `ry_reset` clears `ry_csr`, so `bps` in `ry_svc` is `RX_NUMBY` (128) and `CALC_DA (1, 1, bps)` computes the single-density offset 26 × 128 = 3328.
+- **Manual:** RX02 Technical Manual EK-0RX02-TM-001, 4.3.2.1 (RX2CS bit 14): after a successful Initialize the RX02 "will also read sector 1 of track 1 on drive 0 into the buffer" — in the diskette's density.
+- **Effect:** with a double-density diskette in drive 0 the buffer gets 128 bytes from track 0 sector 14 (offset 3328 of a 256-byte-sector image) instead of the 256 bytes of track 1 sector 1. Only software that empties the buffer right after Initialize without a Read Sector sees it (SIMH's own bootstrap issues Read Sector).
+- **Probable intent:** use drive 0's density (`UNIT_DEN`) for `bps` in INIT_COMPLETE.
+- **Found:** 2026-11-11 (floppy sound preparation).
+
+### 44 — OPEN — Suspicious: Initialize without a diskette reports "failed to see home"
+- **Where:** `PDP11/pdp11_rx.c` (`rx_reset`, `rx_svc` INIT_COMPLETE) and `PDP11/pdp11_ry.c` (`ry_reset`, `ry_svc` INIT_COMPLETE).
+- **Code:** drive 0 without a diskette → error code 0010 ("Drive 0 failed to see home on Initialize"); drive 1 without a diskette → error code 0020 set *after* `rx_done`/`ry_done` (no error bit). On the RX01 the drive-0 case calls `rx_done (0, 0010)` without `RXES_ID`, so Initialize Done is not set; the RX02 sets `RYES_ID`.
+- **Real drive:** the home (track 0) sensor works without a diskette, so the heads do find home; what fails is the read of track 1 sector 1 (no index pulses, drive not ready). The RX211 error code list has codes for that kind of failure (0110 "More than 40 µs and no SEP clock seen", 0120 "A preamble could not be found"); which one a real RX02 gives without a diskette is not documented and not verified on real hardware. SIMH itself uses 0110 for a Read/Write Sector on an empty drive.
+- **Effect:** small: only a program that reads the error code after Initialize sees a misleading code; RT-11 and VMS just look at drive ready.
+- **Found:** 2026-11-11 (floppy sound preparation).
 
