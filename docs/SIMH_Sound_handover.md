@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v33 (v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v34 (v34: floppies step 3: the RX50 on the RQ, RX50 controller rules, patch 5 v31; v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02 (last update 2026-11-11, RX01 floppies). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-11, RX50 floppies). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -1168,9 +1168,73 @@ Notes from testing:
 - RX01 Read Error Code: CTIME as before (no published time).
 - A real RX01 recording would replace the RX02-based sounds (`sound/rx01/rx01_*.wav`).
 
+## Phase E, step 3: the RX50 on the MSCP controllers (RQ) (2026-11-11)
+
+### Where things are
+
+- Branch `sound`: commit d54c447a on top of 77609498; branch `integration`: 825dad4e.
+- Patch **`opensimh_5_sound_v31.patch`** replaces v30 (checked: 6 + 5 v31 on 87eb7d5 give the `sound` tree without the Visual Studio project files).
+- Changed: `PDP11/pdp11_rq.c` (pdp11 and every VAX with an MSCP controller), `sim_sound.c`, `sim_sound.h`. New: `sound/rx50/` (ten files and `README.txt`).
+- Notes branch: `tools/make_floppy_sounds.py` v3 (RX50), `tools/make_sound_devices_ods.py` v13 and `docs/SIMH_Sound_devices.ods` table v12 (RX50 row), `docs/SIMH_known_issues.md` v22 (case 50), `tests/rx50/` (c1, c2, vms1, vms2, README.txt).
+
+### Decisions (Ulli, 2026-11-11)
+
+1. RX50 drives only on the RQDXn and RUX50 controllers, only in the realism mode.
+2. Two RX50 units with **consecutive drive (unit) numbers** form one drive (not the RC25 even/odd scheme); pairing from the lowest number up.
+3. RX50 units on other controllers: SET SOUND ENABLED (and SET RQ <other type>) **disables them with a message** instead of refusing (the default Unibus configuration has an RX50 at RQ3 on the UDA50A).
+4. A RUX50 only connects RX50 drives.
+
+Not done, on purpose: a bus rule for the RQDXn (Qbus) and the RUX50 (Unibus). A PDP-11 keeps the RQDX3 chosen at start-up for the default 11/73 after `SET CPU 11/70` (known issues 50, also plain Open SIMH), so such a rule refused every Unibus PDP-11 configuration (found by the RX01/RX02 PDP-11/70 tests; removed again).
+
+### RX50 facts
+
+| Item | Value | Source |
+|---|---|---|
+| Medium | 5.25", 1 side, 80 tracks × 10 sectors × 512 bytes (800 blocks), two diskettes per drive | SIMH, Computer History Wiki |
+| Speed | 300 rpm (200 ms per revolution) | Rainbow 100 Technical Manual EK-PC100-TM-001, 6.5.3 |
+| Step | at least 6 ms between step pulses; one stepper, one carriage for both diskettes | EK-PC100-TM-001 6.4.1.6 |
+| Settle, head load | 30 ms each; one head load solenoid per side | EK-PC100-TM-001 6.5 (table, extraction unclear), 6.4.5 |
+| Motor | one spindle motor, MOTOR ON from the controller, at speed within 0.5 s | EK-PC100-TM-001 6.4.1.4 |
+| Average access | 164 ms (published) | Computer History Wiki |
+| Motor off, head unload | 2 s idle, **provisional** (Ulli will measure on his MicroVAX) | |
+| Block mapping (RQDX) | logical track + 1 is the physical track (the last ten blocks on track 0), 2:1 interleave (blocks 0-4 on sectors 1, 3, 5, 7, 9), two-sector skew per track | VMS and RT-11 driver code quoted on TUHS (Jun 2000) and classiccmp; a former DEC floppy firmware engineer confirms that the RQDX3 does it |
+
+### Behavior (realism mode)
+
+- **Model (`sim_sound`):** `SND_FLP_MOTOR_CTRL` is now implemented: `sim_floppy_motor ()` switches the motor on and returns the time until it is at speed, `sim_floppy_end ()` restarts the motor-off timer, `sim_floppy_motor_off ()` stops it. `sim_floppy_share ()` lets a slot use the motor and carriage of another: motor state, motor sounds and head position belong to the first slot; each slot keeps its door, head solenoid and rotational phase. Drive type `sim_flp_rx50`.
+- **Transfer:** the other slot's head unloads (the drive selects one side), the motor starts if it was off (0.5 s; the steps go on meanwhile), the head steps 6 ms per track, loads and settles (30 ms), then each block is read when its sector comes round, with one step to each next track. A whole track takes two revolutions (2:1 interleave): about 11 KB/s.
+- **Door:** ATTACH/DETACH. **AVAILABLE with spin-down** (VMS DISMOUNT): the motor stops, the diskette stays in (normal mode: detached, as before).
+- **Registers** (RQ, all controllers): RX50STEP, RX50SETTLE, RX50HDLOAD, RX50HDUNLOAD, RX50MOTORUP, RX50MOTOROFF. **SHOW RQn DRIVE** (also SPINDLE): e.g. "RX50 drive with RQ2 (unit numbers 1/2), this slot: diskette in, head loaded (unloads in 1.98 s), track 1, motor running (off in 1.98 s)".
+- **Rules:** see the decisions; HELP RQ describes them.
+- **Sounds:** `sound/rx50/rx50_*.wav` (synthetic: DC motor and belt, no fan, smaller solenoid, 6 ms stepper, lever door), else `default_floppy`.
+- Normal mode unchanged.
+
+### Tests (`tests/rx50/`)
+
+| Test | Result |
+|---|---|
+| c1 (MicroVAX II): default RQDX3 configuration | accepted |
+| c1: SET RQ KDA50 | "RQ3 disabled: an RX50 needs an RQDX1, RQDX3, RQDX4 or RUX50 controller, RQ is a KDA50" |
+| c1: RQ1, RQ2, RQ3 RX50 on the RQDX3 | drive 1/2 and a lone slot 3; after SET RQ1 RD54: drive 2/3 |
+| c2 (VAX-11/750): SET SOUND ENABLED | "SET SOUND ENABLED: RQ3 disabled: ..." (UDA50A default) |
+| c2: SET RQ RUX50 / SET RQ1 RD54 / SET RQ UDA50A | RQ0-RQ3 RX50 (drives 0/1, 2/3) / refused / RD54 ×3, RQ3 disabled |
+| vms1 (normal) / vms2 (realism), VMS V4.7 on the MicroVAX II, RA81 on a KDA50, one RX50 drive (DUB1/DUB2) on the RQDX3 of RQB | INITIALIZE, MOUNT both, COPY SYSGEN.EXE (129 blocks) to DUB1 and from DUB1 to DUB2, DIFFERENCES: 0, DIRECTORY, DISMOUNT; both modes |
+| vms2 trace | 126 transfers, 53 s drive time; 127 blocks in 5.7 s; first transfer after motor off about 0.6 s; 15 slot changes |
+| Audio (SDL disk driver, console BOOT DUA1 of a blank RX50) | door, motor start with head load, motor/diskette/head loops, head unload, door, 1.5 s run-down |
+| RA/RC25 realism tests ra1-ra7, c1, c5, c6, c10 against the previous build | only the new "RQ3 disabled" messages differ (c6: the known `?53`, case 22, in both) |
+| RX01 (tests/rx01 r1) and RX02 (tests/rx02 n1, r1) on the PDP-11/70 | unchanged |
+| Build `-Werror` pdp11, microvax1, microvax2, microvax3900, rtvax1000, vax730, vax750, vax780, vax8200, vax8600, pdp8, altair | no warnings |
+| VAX diagnostics 730, 750, 780, 8600; MicroVAX 3900 core test | passed |
+
+### Open
+
+- Motor-off and head unload after 2 s idle are provisional (Ulli's measurement on the MicroVAX II).
+- At the `sim>` prompt the floppy timers (head unload, motor off) only fire when the simulator looks at the drive (SHOW, continuing, a command); until then the motor keeps humming (also the RX02's head unload). The audio thread could time them instead (as the tape voices).
+- RX33 (RQDX3 and VAXstation 3100) and RX18 next.
+
 ## Not done yet (after phase B)
 
-- Floppies: the RX02 (phase E step 1), the RX01 and the 11/780 console RX01 (step 2) are done; RX50, RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
+- Floppies: the RX02 (phase E step 1), the RX01 and the 11/780 console RX01 (step 2), the RX50 (step 3) are done; RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
 - RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.

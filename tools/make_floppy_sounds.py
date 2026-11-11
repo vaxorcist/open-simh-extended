@@ -1,5 +1,7 @@
-# open-simh-extended/tools/make_floppy_sounds.py  v2
+# open-simh-extended/tools/make_floppy_sounds.py  v3
 #
+# v3 (2026-11-11): RX50 (5.25", one DC motor and belt for both diskettes,
+#                  6 ms stepper, a solenoid per side, a lever door per slot)
 # v2 (2026-11-11): steps and solenoid louder, fan noise darker and 3 dB
 #                  quieter (the steps were masked by the fan)
 # v1 (2026-11-11): first version: RX02 (8", AC motor) and the default
@@ -40,6 +42,14 @@
 #            (Technical Manual 5.3.4.1).  Line 50 Hz (230 V units, RX02-BD):
 #            hum at 100 Hz, motor about 1440 rpm (24 rev/s), fan with 7
 #            blades (168 Hz).  Written to rx02/rx02_<name>.wav.
+#   rx50     RX50 (two 5.25" diskettes in one drive): one 12 V DC spindle
+#            motor drives both spindles at 300 rpm (5 rev/s) and is
+#            switched by the controller (at speed within 0.5 s: Rainbow 100
+#            Technical Manual EK-PC100-TM-001, 6.4.1.4); no fan, no AC hum;
+#            motor about 1500 rpm with a commutation whine; one stepper for
+#            the common carriage, at least 6 ms per step; a head load
+#            solenoid per side; a lever per slot that closes the door and
+#            clamps the diskette.  Written to rx50/rx50_<name>.wav.
 #   default  a generic 5.25" drive: brushless DC direct drive at 300 rpm
 #            (5 rev/s), quiet; lighter solenoid and stepper.  Written to
 #            default_floppy/<name>.wav with generic names; used by every
@@ -52,7 +62,8 @@
 #
 # Usage:
 #   python3 -I make_floppy_sounds.py <sound directory>
-#     writes <sound directory>/rx02/rx02_*.wav and
+#     writes <sound directory>/rx02/rx02_*.wav,
+#            <sound directory>/rx50/rx50_*.wav and
 #            <sound directory>/default_floppy/*.wav
 #   python3 -I make_floppy_sounds.py --check <sound directory>
 #     also prints the length, peak and RMS of every file and the seam step
@@ -163,6 +174,31 @@ RX02 = Drive(
     step_s=0.0055,          # a click fits into the 6 ms step
     door_f=(95.0, 330.0),
     door_db=-8.0,
+)
+
+RX50 = Drive(
+    spindle=5.0,            # 300 rpm, both spindles on one belt
+    motor=25.0,             # DC motor about 1500 rpm
+    hum=0.0,                # no AC hum: 12 V DC motor
+    hum_amps=(),
+    hum_db=-60.0,
+    blades=0,               # no fan in the drive
+    fan_db=-48.0,           # belt and bearing noise only
+    belt_db=-42.0,
+    motor_db=-32.0,
+    whine=1500.0,           # commutation whine (60 per motor revolution)
+    up_s=0.5,               # at speed within 0.5 s
+    down_s=1.5,             # two spindles and the belt coast down
+    disk_db=-41.0,
+    head_db=-37.0,
+    load_f=(300.0, 1250.0, 3600.0),      # smaller solenoid than the 8" drives
+    load_db=-6.0,
+    unload_db=-12.0,
+    step_f=(1700.0, 600.0),
+    step_db=-10.0,
+    step_s=0.0055,          # fits into the 6 ms step
+    door_f=(130.0, 520.0),  # the lever turns, the clamp closes on the hub
+    door_db=-10.0,
 )
 
 DEFAULT = Drive(
@@ -346,6 +382,10 @@ def build(outdir):
     files = []
     for name, x in drive_set(RX02, 'rx02'):
         rel = 'rx02/rx02_%s.wav' % name
+        write_wav(os.path.join(outdir, rel), x)
+        files.append((rel, name, x))
+    for name, x in drive_set(RX50, 'rx50'):
+        rel = 'rx50/rx50_%s.wav' % name
         write_wav(os.path.join(outdir, rel), x)
         files.append((rel, name, x))
     for name, x in drive_set(DEFAULT, 'default'):
