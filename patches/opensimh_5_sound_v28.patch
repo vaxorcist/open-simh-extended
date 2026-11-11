@@ -1,6 +1,6 @@
-From 33b82c1f221a13092788a26ce66e1778f264fbdd Mon Sep 17 00:00:00 2001
+From e027fdaaad27e4a5cfad7720b142f5b2894fd74a Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
-Date: Wed, 11 Nov 2026 11:00:00 +0100
+Date: Wed, 11 Nov 2026 14:10:00 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
  sound pilot
 
@@ -157,7 +157,9 @@ interleave has its real effect), Initialize, Set Media Density (about
 are the door, a command on a drive whose door is opened ends with an
 error.  Mixer: repeated one-shots (the step clicks).  Sounds in
 sound/rx02 and the defaults in sound/default_floppy (synthetic).  Set
-Media Density on an empty drive no longer crashes SIMH.
+Media Density on an empty drive no longer crashes SIMH.  RY debug flags
+OPS (realistic times), CMD (functions, INIT, completions with status)
+and REG (register accesses).
 
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
@@ -171,7 +173,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  PDP11/pdp11_rl.c                     |  284 +-
  PDP11/pdp11_rp.c                     |  346 ++-
  PDP11/pdp11_rq.c                     | 1273 +++++++-
- PDP11/pdp11_ry.c                     |  211 +-
+ PDP11/pdp11_ry.c                     |  227 +-
  PDP11/pdp11_tq.c                     |  303 +-
  PDP11/pdp11_ts.c                     |  605 +++-
  VAX/vax630_syslist.c                 |   10 +
@@ -244,7 +246,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  sound/tsv05/tsv05_start.wav          |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_stop.wav           |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_unload.wav         |  Bin 0 -> 661544 bytes
- 79 files changed, 9229 insertions(+), 121 deletions(-)
+ 79 files changed, 9245 insertions(+), 121 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -3223,7 +3225,7 @@ index 2cdfedf6..4d515c7c 100644
  fprint_reg_help (st, dptr);
  fprintf (st, "\nWhile VMS is not timing sensitive, most of the BSD-derived operating systems\n");
 diff --git a/PDP11/pdp11_ry.c b/PDP11/pdp11_ry.c
-index a8e37dbe..e098012c 100644
+index a8e37dbe..28a99906 100644
 --- a/PDP11/pdp11_ry.c
 +++ b/PDP11/pdp11_ry.c
 @@ -25,6 +25,13 @@
@@ -3249,7 +3251,7 @@ index a8e37dbe..e098012c 100644
  #define RX_NUMTR        77                              /* tracks/disk */
  #define RX_M_TRACK      0377
  #define RX_NUMSC        26                              /* sectors/track */
-@@ -151,6 +160,23 @@ int32 ry_swait = 10;                                    /* seek, per track */
+@@ -151,6 +160,27 @@ int32 ry_swait = 10;                                    /* seek, per track */
  int32 ry_xwait = 1;                                     /* tr set time */
  uint8 rx2xb[RY_NUMBY] = { 0 };                          /* sector buffer */
  
@@ -3264,16 +3266,20 @@ index a8e37dbe..e098012c 100644
 +#define RY_REAL         (sim_sound_enabled ())
 +#define RY_BIT_US       1.2                             /* RX02 <-> interface: 1.2 us per bit */
 +#define RYDEB_OPS       0001                            /* debug: commands with their times */
++#define RYDEB_CMD       0002                            /* debug: function starts and ends */
++#define RYDEB_REG       0004                            /* debug: register accesses */
 +
 +DEBTAB ry_deb[] = {
 +    { "OPS",  RYDEB_OPS,  "commands and their realistic times (realism mode)" },
++    { "CMD",  RYDEB_CMD,  "function starts, INIT and completions with status (both modes)" },
++    { "REG",  RYDEB_REG,  "register reads and writes (both modes)" },
 +    { NULL, 0 }
 +    };
 +
  t_stat ry_rd (int32 *data, int32 PA, int32 access);
  t_stat ry_wr (int32 data, int32 PA, int32 access);
  t_stat ry_svc (UNIT *uptr);
-@@ -159,6 +185,11 @@ t_stat ry_boot (int32 unitno, DEVICE *dptr);
+@@ -159,6 +189,11 @@ t_stat ry_boot (int32 unitno, DEVICE *dptr);
  void ry_done (int32 esr_flags, uint8 new_ecode);
  t_stat ry_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
  t_stat ry_attach (UNIT *uptr, CONST char *cptr);
@@ -3285,7 +3291,7 @@ index a8e37dbe..e098012c 100644
  t_stat ry_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
  const char *ry_description (DEVICE *dptr);
  
-@@ -205,6 +236,11 @@ REG ry_reg[] = {
+@@ -205,6 +240,11 @@ REG ry_reg[] = {
      { DRDATAD (XTIME,         ry_xwait, 24,             "transfer ready delay"), PV_LEFT },
      { BRDATAD (SBUF,             rx2xb, 8, 8, RY_NUMBY, "sector buffer array") },
      { FLDATAD (STOP_IOE,    ry_stopioe, 0,              "stop on I/O error") },
@@ -3297,7 +3303,7 @@ index a8e37dbe..e098012c 100644
      { URDATA  (CAPAC, ry_unit[0].capac, 10, T_ADDR_W, 0,
                RX_NUMDR, REG_HRO | PV_LEFT) },
      { GRDATA  (DEVADDR,     ry_dib.ba, DEV_RDX, 32, 0), REG_HRO },
-@@ -228,6 +264,8 @@ MTAB ry_mod[] = {
+@@ -228,6 +268,8 @@ MTAB ry_mod[] = {
          &ry_set_size, NULL, NULL, "Set to Single density (256Kb)" },
      { (UNIT_AUTO+UNIT_DEN),           UNIT_DEN, NULL,               "DOUBLE", 
          &ry_set_size, NULL, NULL, "Set to Double density (512Kb)" },
@@ -3306,7 +3312,7 @@ index a8e37dbe..e098012c 100644
  #if defined (VM_PDP11)
      { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004, "ADDRESS", "ADDRESS",
        &set_addr, &show_addr, NULL, "Bus Address" },
-@@ -248,9 +286,9 @@ DEVICE ry_dev = {
+@@ -248,9 +290,9 @@ DEVICE ry_dev = {
      "RY", ry_unit, ry_reg, ry_mod,
      RX_NUMDR, DEV_RDX, 20, 1, DEV_RDX, 8,
      NULL, NULL, &ry_reset,
@@ -3319,7 +3325,41 @@ index a8e37dbe..e098012c 100644
      &ry_description
      };
  
-@@ -327,9 +365,20 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
+@@ -267,10 +309,12 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
+     case 0:                                             /* RYCS */
+         ry_csr = (ry_csr & RYCS_IMP) | RYCS_RY;         /* clear junk */
+         *data = ry_csr;
++        sim_debug (RYDEB_REG, &ry_dev, ">>RY rd RYCS %06o\n", *data);
+         break;
+ 
+     case 1:                                             /* RYDB */
+         *data = ry_dbr;                                 /* return data */
++        sim_debug (RYDEB_REG, &ry_dev, ">>RY rd RYDB %06o\n", *data);
+         break;
+         }                                               /* end switch PA */
+ 
+@@ -296,13 +340,20 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
+         ry_csr = (ry_csr & RYCS_IMP) | RYCS_RY;         /* clear junk */
+         if (access == WRITEB) data = (PA & 1)?          /* write byte? */
+             (ry_csr & 0377) | (data << 8): (ry_csr & ~0377) | data;
++        sim_debug (RYDEB_REG, &ry_dev, ">>RY wr RYCS %06o (state %d)\n", data, ry_state);
+         if (data & RYCS_INIT) {                         /* initialize? */
++            sim_debug (RYDEB_CMD, &ry_dev, ">>RY INIT (state was %d)\n", ry_state);
+             ry_reset (&ry_dev);                         /* reset device */
+             return SCPE_OK;                             /* end if init */
+             }
++        if ((data & CSR_GO) && (ry_state != IDLE))
++            sim_debug (RYDEB_CMD, &ry_dev, ">>RY GO %06o ignored: busy (state %d)\n", data, ry_state);
+         if ((data & CSR_GO) && (ry_state == IDLE)) {    /* new function? */
+             ry_csr = (data & RYCS_RW) | RYCS_RY;
+             drv = ((ry_csr & RYCS_DRV)? 1: 0);          /* reselect drv */
++            sim_debug (RYDEB_CMD, &ry_dev, ">>RY%d function %d%s%s\n", drv, RYCS_GETFNC (data),
++                       (data & RYCS_DEN) ? " double density" : " single density",
++                       (data & RYCS_IE) ? ", IE" : "");
+             switch (RYCS_GETFNC (data)) {
+ 
+             case RYCS_FILL: case RYCS_EMPTY:
+@@ -327,9 +378,20 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
                  ry_ecode = 0;
                  break;
  
@@ -3342,7 +3382,15 @@ index a8e37dbe..e098012c 100644
                  break;
                  }                                       /* end switch func */
              return SCPE_OK;
-@@ -400,7 +449,10 @@ switch (ry_state) {                                     /* case on state */
+@@ -350,6 +412,7 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
+         if ((PA & 1) || ((ry_state != IDLE) && ((ry_csr & RYCS_TR) == 0)))
+             return SCPE_OK;                             /* if ~IDLE, need tr */
+         ry_dbr = data;                                  /* save data */
++        sim_debug (RYDEB_REG, &ry_dev, ">>RY wr RYDB %06o (state %d)\n", data, ry_state);
+         if (ry_state != IDLE) {
+             drv = ((ry_csr & RYCS_DRV)? 1: 0);          /* select drv */
+             sim_activate (&ry_unit[drv], ry_xwait);     /* sched event */
+@@ -400,7 +463,10 @@ switch (ry_state) {                                     /* case on state */
      case FEBA:                                          /* buffer address */
          ry_ba = ry_dbr;                                 /* save buf addr */
          ry_state = FEXFR;                               /* next state */
@@ -3354,7 +3402,7 @@ index a8e37dbe..e098012c 100644
          return SCPE_OK;
  
      case FEXFR:                                         /* transfer */
-@@ -427,13 +479,18 @@ switch (ry_state) {                                     /* case on state */
+@@ -427,13 +493,18 @@ switch (ry_state) {                                     /* case on state */
      case RWDT:                                          /* wait for track */
          ry_track = ry_dbr & RX_M_TRACK;                 /* save track */
          ry_state = RWXFR;                               /* next state */
@@ -3375,7 +3423,7 @@ index a8e37dbe..e098012c 100644
              return IORETURN (ry_stopioe, SCPE_UNATT);
              }
          if (ry_track >= RX_NUMTR) {                     /* bad track? */
-@@ -477,10 +534,17 @@ switch (ry_state) {                                     /* case on state */
+@@ -477,10 +548,17 @@ switch (ry_state) {                                     /* case on state */
              break;
              }
          ry_state = SDXFR;                               /* next state */
@@ -3394,16 +3442,18 @@ index a8e37dbe..e098012c 100644
          for (i = 0; i < (int32) uptr->capac; i++)
              fbuf[i] = 0;
          uptr->hwmark = (uint32) uptr->capac;
-@@ -561,6 +625,8 @@ if ((new_ecode > 0) || (ry_esr & RYES_ERR))             /* test for error */
+@@ -561,6 +639,10 @@ if ((new_ecode > 0) || (ry_esr & RYES_ERR))             /* test for error */
      ry_csr = ry_csr | RYCS_ERR;
  ry_ecode = new_ecode;                                   /* update ecode */
  ry_dbr = ry_esr;                                        /* update RYDB */
++sim_debug (RYDEB_CMD, &ry_dev, ">>RY%d done: RYCS %06o RYES %06o error code %04o, track %d sector %d\n",
++           drv, ry_csr, ry_esr, ry_ecode, ry_track, ry_sector);
 +if (RY_REAL)                                            /* the head unloads if no new */
 +    sim_floppy_end (&ry_flp[drv], 0.0);                 /* command comes within HDUNLOAD */
  return;
  }
  
-@@ -570,6 +636,14 @@ return;
+@@ -570,6 +652,14 @@ return;
  
  t_stat ry_reset (DEVICE *dptr)
  {
@@ -3418,7 +3468,7 @@ index a8e37dbe..e098012c 100644
  ry_csr = ry_dbr = 0;                                    /* clear registers */
  ry_esr = ry_ecode = 0;                                  /* clear error */
  ry_ba = ry_wc = 0;                                      /* clear wc, ba */
-@@ -579,6 +653,10 @@ CLR_INT (RY);                                           /* clear int req */
+@@ -579,6 +669,10 @@ CLR_INT (RY);                                           /* clear int req */
  sim_cancel (&ry_unit[1]);                               /* cancel drive 1 */
  if (dptr->flags & UNIT_DIS)                             /* disabled? */
      sim_cancel (&ry_unit[0]);
@@ -3429,7 +3479,7 @@ index a8e37dbe..e098012c 100644
  else if (ry_unit[0].flags & UNIT_BUF)  {                /* attached? */
      ry_state = INIT_COMPLETE;                           /* yes, sched init */
      sim_activate (&ry_unit[0], ry_swait * abs (1 - ry_unit[0].TRACK));
-@@ -592,6 +670,7 @@ return auto_config (dptr->name, 1);                     /* run autoconfig */
+@@ -592,6 +686,7 @@ return auto_config (dptr->name, 1);                     /* run autoconfig */
  t_stat ry_attach (UNIT *uptr, CONST char *cptr)
  {
  uint32 sz;
@@ -3437,7 +3487,7 @@ index a8e37dbe..e098012c 100644
  
  if ((uptr->flags & UNIT_AUTO) && (sz = sim_fsize_name (cptr))) {
      if (sz > RX_SIZE)
-@@ -599,7 +678,101 @@ if ((uptr->flags & UNIT_AUTO) && (sz = sim_fsize_name (cptr))) {
+@@ -599,7 +694,101 @@ if ((uptr->flags & UNIT_AUTO) && (sz = sim_fsize_name (cptr))) {
      else uptr->flags = uptr->flags & ~UNIT_DEN;
      }
  uptr->capac = (uptr->flags & UNIT_DEN)? RY_SIZE: RX_SIZE;
@@ -3540,7 +3590,7 @@ index a8e37dbe..e098012c 100644
  }
  
  /* Set size routine */
-@@ -724,7 +897,23 @@ fprintf (st, "    error         STOP_IOE   processed as\n");
+@@ -724,7 +913,23 @@ fprintf (st, "    error         STOP_IOE   processed as\n");
  fprintf (st, "    not attached  1          report error and stop\n");
  fprintf (st, "                  0          disk not ready\n\n");
  fprintf (st, "RX02 data files are buffered in memory; therefore, end of file and OS I/O\n");
