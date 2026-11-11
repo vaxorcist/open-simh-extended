@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v18 (v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v19 (v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -65,6 +65,8 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 42 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `RX18_TPG` | RX18 "tracks per group" is `RD33_SURF` (7), a copy/paste slip |
 | 43 | OPEN | Suspicious | `PDP11/pdp11_ry.c` `ry_svc` (INIT_COMPLETE) | Initialize reads track 1 sector 1 of drive 0 with single-density size and offset, also from a double-density diskette |
 | 44 | OPEN | Suspicious | `PDP11/pdp11_rx.c`, `pdp11_ry.c` Initialize | A drive without a diskette is reported as "failed to see home" (codes 0010/0020); the RX01 without a diskette in drive 0 also does not set Initialize Done |
+| 45 | FIXED (patch 5) | Bug | `PDP11/pdp11_ry.c` `ry_svc` (SDXFR) | Set Media Density on a drive without a diskette writes through a NULL buffer: SIMH crashes (segmentation fault) |
+| 46 | OPEN | Limitation | `scp.c` `detach_unit` with `PDP11/pdp11_ry.c` | A new RX02 image formatted with Set Media Density stays an empty file (the zeroed buffer equals the original, so nothing is written); its density is not recorded |
 
 ## Details
 
@@ -392,3 +394,15 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Effect:** small: only a program that reads the error code after Initialize sees a misleading code; RT-11 and VMS just look at drive ready.
 - **Found:** 2026-11-11 (floppy sound preparation).
 
+
+### 45 — FIXED IN PATCH 5 — Bug: RX02 Set Media Density on an empty drive crashes SIMH
+- **Where:** `PDP11/pdp11_ry.c`, `ry_svc`, states SDCNF/SDXFR: the erase loop `for (i = 0; i < capac; i++) fbuf[i] = 0;` runs without checking `UNIT_BUF`; `capac` is set for an unattached unit (`RY_SIZE` in the unit definition), `filebuf` is NULL.
+- **Effect:** a guest that issues Set Media Density (function 4, confirmed with "I") on a drive without a diskette kills the simulator with a segmentation fault. Reproduced with plain Open SIMH (the unchanged sound branch): `tests/rx02/sd0.ini` (PDP-11/70) exit status 139.
+- **Fix (patch 5 v27):** without a diskette the command ends with error 0110 (as a Read Sector on an empty drive does), in both modes; in the realism mode after the time a real RX02 needs to give up (head load, two revolutions). `tests/rx02/sd1.ini`: RYCS 104050, RYERR 110.
+- **Found and fixed:** 2026-11-11 (RX02 realism work).
+
+### 46 — OPEN — Limitation: a freshly formatted RX02 image stays an empty file
+- **Where:** `scp.c`, `detach_unit`: a buffered unit (`UNIT_BUFABLE`/`UNIT_MUSTBUF`) is written back only if the buffer differs from the copy taken at ATTACH. A new image (ATTACH -N) is all zeros, and Set Media Density writes zeros, so nothing is written: the file stays 0 bytes. The density chosen by Set Media Density (`UNIT_DEN`) is not stored anywhere; the next ATTACH autosizes a 0-byte file to the unit's current setting.
+- **Effect:** after formatting a new diskette in single density and re-attaching it, SIMH may treat it as double density (or the reverse) until data has been written. Same in plain Open SIMH (`tests/rx02/sd2.ini`, old and new build).
+- **Possible fix:** write the whole image when Set Media Density ran (e.g. mark the buffer as changed), so the file gets its full size, which autosize recognizes.
+- **Found:** 2026-11-11 (RX02 realism work).

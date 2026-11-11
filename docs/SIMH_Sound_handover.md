@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v29 (v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v30 (v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02 (last update 2026-11-10, RA drives). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-11, RX02 floppy). Prepared with Claude for Ulli (vaxorcist). Nothing has been pushed to any remote. Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -1009,9 +1009,105 @@ Patch **`opensimh_5_sound_v26.patch`** replaces v25.
 
 **Silencing one drive type (workaround, accepted by Ulli; no per-unit NOSOUND):** silent seek sounds for that type in a user sound directory override the defaults, e.g. 10 ms of silence as `~/simh_silent/ra81/ra81-s.wav`, `-m.wav`, `-l.wav` and `SET SOUND PATH=~/simh_silent`; the other drive types keep their sounds. Works per drive type, not per unit. Ulli used it to hear an RA82 data disk spin down without the RA81 system disk.
 
+## Phase E, step 1: floppies, the RX02 (RY device) (2026-11-11)
+
+### Where things are
+
+- Branch `sound`: commit 224e1d1f on top of 9fd51c82; branch `integration`: the same change as dbda2f25.
+- Patch **`opensimh_5_sound_v27.patch`** replaces v26 (same base, applies on top of `opensimh_6_rb730_v2.patch`). Checked by `git am --keep-cr` on 87eb7d5: 6 + 5 v27 give exactly the `sound` tree (without the Visual Studio project files).
+- Changed: `sim_sound.c`, `sim_sound.h` (SND_FLOPPY, repeated one-shots), `PDP11/pdp11_ry.c` (pdp11 and the VAX-11/730, 750, 780, 8200, 8600), `scp.c` (HELP SET SOUND: floppy defaults).
+- New: `sound/rx02/` (ten files and `README.txt`), `sound/default_floppy/` (ten files and `README.txt`).
+- Notes branch: `tools/make_floppy_sounds.py` v2, `tools/rt11_dir_rx02.py` v1, `tools/make_sound_devices_ods.py` v11 and `docs/SIMH_Sound_devices.ods` table v10 (new sheet **Floppies**), `docs/SIMH_known_issues.md` v19 (cases 43–46), `docs/SIMH_overview.md` v20, `tests/rx02/` (scripts and README).
+- Sources: RX02 Floppy Disk System Technical Manual **EK-0RX02-TM-001** and the RX02 print set **MP00629** (Sep 1978), supplied by Ulli; RX01 maintenance manual EK-RX01-MM-002; for the other floppies see the facts table below.
+
+### Decisions (Ulli, 2026-11-11)
+
+1. The earlier decision "floppies without spin-up/spin-down" is revised: head load and unload sounds and a rotating sound.
+2. No recordings yet: the sounds are synthesized (`tools/make_floppy_sounds.py`).
+3. **RX02 motors:** checked in the print set MP00629, drawing D-CS-H771-A-1 (H771 power connections): line → line filter → fuse F1 → P1 → P2/P3 "to spin motor #1/#2", no relay and no control signal. The motors run whenever the RX02 has power, with or without a diskette.
+4. Sounds ship in `sound/rx02/` etc., plus a fallback `sound/default_floppy/`.
+5. The sector position follows the time (no random latency).
+6. RX50/RX33 motor-off idle time 2 s, provisional, until Ulli has measured it on his MicroVAX.
+7. DETACH during a command is allowed; the command ends with an error, as when a real door is opened.
+8. Tests: VMS V4.7 on the 750 with DYA0 (script for Ulli), RT-11 from Ulli's `RT11.RX2` on the PDP-11.
+9. Next: the 11/780 console RX01 and the VAXstation 3100 RX33 (as well as the RX01, RX50, RX33 and RX18 on RX/RQ); the PDP-8 RX8E/RX28 is postponed until further notice.
+
+### Floppy drive facts
+
+| | RX01 | RX02 | RX50 | RX33 | RX18 |
+|---|---|---|---|---|---|
+| Medium, tracks × sectors | 8", 77 × 26 × 128 B, 1 side | 8", 77 × 26 × 128/256 B (FM/MFM), 1 side | 5.25", 80 × 10 × 512 B, 1 side, 2 diskettes per drive | 5.25" HD, 80 × 15 × 512 B, 2 sides | 5.25", 40 × 9 × 512 B, 1 side |
+| Speed, revolution | 360 rpm, 166.7 ms | 360 rpm ± 2.5 %, 166.7 ms | 300 rpm, 200 ms | 360 rpm (300 rpm for normal-density media) | 300 rpm, 200 ms |
+| Track to track | 10 ms | 6 ms max. (2 step pulses per track) | 6 ms | 3 ms | 20 ms |
+| Settle | 25 ms (1976 manual), 20 ms (1975 bulletin) | 25 ms max. | 30 ms (?) | 15 ms | 20 ms |
+| Head load | solenoid | solenoid; unloaded if no new command within 200 ms | one solenoid per diskette, about 30 ms (?) | no solenoid: the door loads the heads (FD-55 series) | solenoid with drive select (SA400: 75 ms) |
+| Motor | AC, belt | AC on the line (H771), belt, fan on the motor shaft; ready 2 s after power | one 12 V DC motor for both spindles; start 0.5 s | direct drive, start < 500 ms | DC, belt, start 500 ms; off after 2 s idle (Shugart) |
+| Positioner | per drive | per drive | one carriage for both diskettes (heads back to back) | per drive | per drive |
+| Average access (published) | 488 ms (half stroke) | 262 ms = 77/3 × 6 + 25 + 83 | 164 ms (unclear what it includes) | 91–94 ms (seek + settle) | 275 ms |
+| Sources | EK-RX01-MM-002, RX11 option bulletin 1975, pdp8online | EK-0RX02-TM-001, MP00629 | Rainbow 100 Technical Manual EK-PC100-TM-001 ch. 6, gunkies.org | gunkies.org (TEAC FD-55GFR), TEAC FD-55GFR/FD-55 specs | retrocmp.de (RX180 = Shugart SA400L), SA400L OEM manual |
+
+Not published (found): the RX01 head unload delay (200 ms as the RX02, provisional), and how long the RQDX controllers keep the RX50/RX33 motor running (2 s provisional).
+
+### Model (`SND_FLOPPY` in sim_sound)
+
+- Drive types `sim_flp_rx01`, `sim_flp_rx02` (rpm, tracks, sectors, motor kind, power-up steps, register defaults); device registers in an `SND_FLP_REGS` (STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP; MOTOROFF for the controller-switched motors, not yet used).
+- **Motor** `SND_FLP_MOTOR_AC`: starts with the power (RUN, BOOT, SET SOUND POWER=ON; SET SOUND ENABLED with the power on: just the loop), runs down at power off; at power on the heads step in and back (the drive's power-up homing: RX02 one track, RX01 ten). `SND_FLP_MOTOR_CTRL` (RX50/RX33/RX18) is prepared in the header but not implemented yet.
+- **Head:** `sim_floppy_seek` steps (one click per track: a repeated one-shot, one voice), then loads the head (clack, the `head` loop starts) and returns step time + the longer of settle and head load; `sim_floppy_end` (from the device's command end) starts the unload timer (a realtime timer: wall time at the prompt); `sim_floppy_unload` (another drive selected: the RX02 has one head load line).
+- **Rotation:** `sim_floppy_rotate` gives the time until a sector has passed under the head, from the realtime clock (`sim_sound_rt_us`) and a random phase per inserted diskette; sectors evenly spaced after the index.
+- **Door:** `sim_floppy_insert`/`_remove` (ATTACH/DETACH): door sounds, the `disk` loop while a diskette is in and the motor runs.
+- Floppy units count as attached storage for SET SOUND ENABLED/DISABLED (the RY device is not DEV_DISK).
+- **Mixer:** `snd_play_repeat` (internal): a one-shot played n times, one every period, after a delay (the voice has `rep_left`, `rep_period`, `rep_pos`).
+- **Sounds:** `<dir>/<prefix>_<name>.wav`, else `default_floppy/<name>.wav`: motor_start, motor (loop), motor_stop, disk (loop), head (loop), head_load, head_unload, step, door_close, door_open. SHOW SOUND lists `rx02 (floppy) -> default_floppy` when a default is used.
+
+### RY (RX211/RXV21), realism mode
+
+| Function | Time |
+|---|---|
+| Read/Write Sector | the other drive's head unloads; steps 6 ms per track, then 25 ms (settle or head load); the sector comes round (360 rpm, 26 sectors) and is read (6.41 ms); no diskette or a sector 0/>26: two revolutions, then the error; a track > 76: refused at once (0040) |
+| Initialize (INIT bit, bus init, RUN/BOOT) | both heads home, then drive 0: track 1 with head load, sector 1 (manual: at most 1.8 s) |
+| Set Media Density | track 0 with head load, to the index, then per track one revolution plus step and settle: 15.3 s (manual: about 15 s); the step clicks come once per track |
+| Read Status | head load, to the index, one revolution (manual: about 250 ms) |
+| Fill/Empty Buffer | 1.2 µs per bit between the RX02 and the interface (256 bytes: 2.5 ms) |
+| Read Error Code | CTIME (as before) |
+
+- Every command end (`ry_done`) restarts the head unload timer (HDUNLOAD 200 ms).
+- ATTACH = diskette in, door closed; DETACH = door opened (new `ry_detach`). A command reaching a drive without a diskette ends with error 0110 instead of stopping the simulator (normal mode: STOP_IOE as before).
+- `SHOW RYn DRIVE`: e.g. "diskette in, head loaded (unloads in 0.20 s), track 6, motor running"; `SET RY DEBUG=OPS`: one line per command with its time; `HELP RY` describes the realism mode.
+- Normal mode unchanged, except the fix of case 45 (Set Media Density without a diskette crashed SIMH; now error 0110 in both modes).
+
+### Tests (`tests/rx02/` on the notes branch; RT-11SB V05.07 from Ulli's `RT11.RX2`)
+
+| Test | Result |
+|---|---|
+| n1 normal mode, PDP-11/70: boot DY0, DIR, SHOW | output identical to the unchanged build |
+| r1 realism mode: boot, DIR, COPY HELP.SAV (161 blocks), DIR, UNPROTECT, DELETE, DIR | ok; 46 s wall time; 1258 reads (median 10.4 ms, mean 27.0 ms, max 536 ms), 350 writes |
+| r1 trace: RT-11's 2:1 interleave | consecutive sectors 1, 3, 5, … take 10.36 ms each = two sector times (12.82 ms) minus the 2.5 ms Empty Buffer: the guest catches every second sector, as on the hardware; seeks with a head load 50–260 ms |
+| r1 on the `integration` build | same results |
+| a1 audio (SDL disk driver, real time) | motor start, loop at about −27 dBFS (24 and 48 Hz motor, 100/200 Hz hum, 168/336 Hz fan blades), door at DETACH, run-down after power off; steps about 11 dB and the head load about 16 dB above the steady sound above 700 Hz (v1 of the sounds masked the steps: fan noise lowered and darkened, steps and solenoid louder in v2) |
+| t1 one Read Sector | 141 ms; SHOW RY0 DRIVE "head loaded (unloads in 0.20 s)", unloaded after 1 s at the prompt |
+| t2 DETACH during a Read Sector (realism) | RYCS 104446, error 0110, the simulator keeps running |
+| sd0/sd1 Set Media Density without a diskette | before: segmentation fault (exit 139); now error 0110 in both modes |
+| sd1 Set Media Density on a new double-density diskette (drive 1) | 15.3 s; SET SOUND DISABLED with RY1 attached refused |
+| sd2 | the formatted new image stays an empty file, also in the unchanged build (known issues 46) |
+| v1 VAX-11/750 console | RY drive states, power on/off |
+| Build `-Werror` pdp11, vax730, vax750, vax780, vax8200, vax8600, microvax2, pdp8, altair; `sim_sound.c` and `pdp11_ry.c` with `-Wall -Wextra` (PDP-11 and VAX) | no warnings |
+| VAX diagnostics 730, 750, 780, 8600 | passed |
+| VMS V4.7 on the 750 with DYA0 | **not run here** (no VMS image in this workspace): `tests/rx02/vms1.ini` and the DCL commands in `tests/rx02/README.txt` are ready for Ulli |
+
+Notes from testing:
+- In this workspace the SDL2 development package was missing at first: the first build had no sound (no `USE_SIM_SOUND`); after installing `libsdl2-dev` the binary must be removed to be relinked (the makefile does not notice the change).
+- `SDL_DISKAUDIODELAY=0` makes the SDL disk driver write audio as fast as it can (1.3 GB for a 46 s run); leave it unset for real-time recordings.
+- When a script stops the CPU in the middle of an RX02 command, the head stays loaded (the command has not ended): correct, not a bug.
+
+### Open
+
+- RX01 (RX device), the 11/780 console RX01, RX50, RX33 (RQ and VAXstation 3100), RX18: next, with `SND_FLP_MOTOR_CTRL` (motor on at access, off after MOTOROFF), the shared motor and carriage of the RX50, and the controller's interleave mapping on the RQDX.
+- Real RX02 recordings would replace the synthetic sounds file by file; levels by ear.
+- Known issues 43, 44 (RX/RY Initialize details) and 46 (formatted image not written) are open.
+
 ## Not done yet (after phase B)
 
-- RX and TU58 later without spin-up/spin-down. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
+- Floppies: the RX02 is done (phase E step 1); RX01, the 11/780 console RX01, RX50, RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
 - RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.

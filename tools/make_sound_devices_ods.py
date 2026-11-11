@@ -1,4 +1,4 @@
-# open-simh-extended/tools/make_sound_devices_ods.py  v10 (v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
+# open-simh-extended/tools/make_sound_devices_ods.py  v11 (v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
 #
 # Builds SIMH_Sound_devices.ods: the devices prepared for SIMH sound (realism
 # mode, SET SOUND ENABLED) with rotation speed, access times and spin times.
@@ -25,8 +25,8 @@ from odf.table import Table, TableColumn, TableRow, TableCell
 from odf.text import P
 from odf.dc import Title
 
-TABLE_VERSION = "v9"
-TABLE_DATE = "2026-11-10"
+TABLE_VERSION = "v10"
+TABLE_DATE = "2026-11-11"
 
 # ---------------------------------------------------------------- data
 # fit: "fixed" (exponent given, curve through t2t and max), "fit" (exponent
@@ -382,6 +382,32 @@ add_table("Streamers", ["3.4cm", "2.6cm", "1.6cm", "1.8cm", "1.4cm", "1.8cm", "1
            "Calibration of a new cartridge (s)", "Unload (s)", "Registers / commands", "Sound directory",
            "Source", "Notes"], srows)
 
+# ---------------------------------------------------------------- sheet: floppies
+# Mirrors sim_flp_rx02 in sim_sound.c and the RY registers (pdp11_ry.c).
+FLOPPIES = [
+  dict(dev="RY (RX211/RXV21)", drive="RX02", media='8", 1 side, FM 128 B / MFM 256 B', tracks=77, sect=26,
+       rpm=360, step=6.0, settle=25.0, hdload=25.0, unload=200, motor="AC, on the power line (runs while the power is on)",
+       up=2.0, avg_pub=262, regs="STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP; SHOW RYn DRIVE",
+       snd="rx02 (all ten files)", src="RX02 Technical Manual EK-0RX02-TM-001 1.4, 5.3.4; print set MP00629 (H771)",
+       notes="Initialize <= 1.8 s; Set Media Density about 15 s; Read Status about 250 ms; buffer transfer 1.2 us/bit"),
+]
+frows = []
+for f in FLOPPIES:
+    rev = 60000.0 / f["rpm"]
+    model_avg = f["tracks"] / 3.0 * f["step"] + max(f["settle"], f["hdload"]) + rev / 2.0
+    frows.append([f["dev"], f["drive"], f["media"], f["tracks"], f["sect"], f["rpm"], round(rev, 1),
+                  round(rev / f["sect"], 2), f["step"], f["settle"], f["hdload"], f["unload"],
+                  round(model_avg, 0), f["avg_pub"], f["motor"], f["up"], f["regs"], "sound/" + f["snd"],
+                  f["src"], f["notes"]])
+add_table("Floppies", ["3.4cm", "1.6cm", "5.0cm", "1.4cm", "1.4cm", "1.4cm", "1.8cm", "1.8cm", "1.8cm",
+                       "1.8cm", "1.8cm", "2.0cm", "2.2cm", "2.2cm", "5.5cm", "1.8cm", "6.0cm", "4.0cm",
+                       "7.0cm", "7.0cm"],
+          "SIMH sound: floppy drives with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          ["Device", "Drive", "Medium", "Tracks", "Sectors", "rpm", "Revolution (ms)", "Sector (ms)",
+           "Step per track (ms)", "Settle (ms)", "Head load (ms)", "Head unload after (ms)",
+           "Model average access (ms)", "Published average access (ms)", "Motor", "Motor run-up (s)",
+           "Registers / commands", "Sound directory", "Source", "Notes"], frows)
+
 # ---------------------------------------------------------------- sheet: systems
 add_table("Systems", ["4.2cm", "2.6cm", "9.0cm", "3.2cm", "5.0cm", "6.0cm"],
           "SIMH sound: system (CPU cabinet) sounds, table %s, %s" % (TABLE_VERSION, TABLE_DATE),
@@ -423,10 +449,17 @@ notes = [
                      "stream - stop - reverse - start (a slow host: buffer / rate + reposition + start). Serpentine "
                      "tracks: positions and spacing follow the tape (track turns cost a pass), rewind along the tape. "
                      "Load: a random time between LOADMIN and LOADMAX, plus CALTIME for a new (empty) cartridge."],
-  ["Not yet", "RX01/RX02, RX50/RX33 and TU58 (no spin-up/spin-down); tapes other than the TS device and the "
-              "TK50 (TM, TU, TK70, TU81)."],
+  ["Floppy model", "Step per track, then the longer of settle and head load; the sector is read when it comes "
+                   "round under the head (rotational position from the realtime clock, random phase per diskette), "
+                   "so software interleave has its real effect. Model average access: a third of the tracks "
+                   "stepped + settle + half a revolution (the manual's formula). The head unloads after an idle "
+                   "time. Sounds: motor_start, motor, motor_stop, disk, head, head_load, head_unload, step "
+                   "(repeated at the step rate), door_close, door_open; <dir>/<prefix>_<name>.wav, else "
+                   "default_floppy/<name>.wav. Made by tools/make_floppy_sounds.py."],
+  ["Not yet", "RX01, the 11/780 console RX01, RX50, RX33 (RQ and VAXstation 3100), RX18; TU58; tapes other than "
+              "the TS device and the TK50 (TM, TU, TK70, TU81). PDP-8 RX8E/RX28: postponed."],
   ["Update", "Generated by tools/make_sound_devices_ods.py (open-simh-extended, branch notes); add new devices there."],
-  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device). v7 2026-11-08: sheet Streamers: TK50 (TQ device); MicroVAX II THROTTLE 450K. v8 2026-11-10: the fixed RA drives RA70, RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92 (RUN/STOP button, timing, seek sounds). v9 2026-11-10: RA81 start 20 s, RA80 40 s (User Guides win over the brochure)."],
+  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device). v7 2026-11-08: sheet Streamers: TK50 (TQ device); MicroVAX II THROTTLE 450K. v8 2026-11-10: the fixed RA drives RA70, RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92 (RUN/STOP button, timing, seek sounds). v9 2026-11-10: RA81 start 20 s, RA80 40 s (User Guides win over the brochure). v10 2026-11-11: sheet Floppies: RX02 (RY device)."],
 ]
 add_table("Notes", ["4.0cm", "22cm"], "SIMH sound devices: notes, table %s" % TABLE_VERSION,
           ["Topic", "Explanation"], notes)
