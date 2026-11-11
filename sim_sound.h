@@ -715,7 +715,14 @@ int32 sim_sound_seek (SND_SAMPLE *smp[3], int32 dist, int32 s_lim, int32 m_lim,
      no motor-on signal, H771 power supply): it runs while the system
      power is on (sim_sound power on/off), with or without a diskette.
    - SND_FLP_MOTOR_CTRL: a DC motor switched on by the controller and off
-     after an idle time (RX50, RX33, RX18; not yet used).
+     after an idle time (RX50; later RX33, RX18): the device calls
+     sim_floppy_motor () before a command (it returns the time until the
+     motor is at speed) and sim_floppy_end () after it (which also restarts
+     the motor-off timer, motoroff_ms).
+   Shared mechanics: the two diskettes of an RX50 turn on one spindle motor
+   and their heads sit on one carriage (sim_floppy_share ()): motor state,
+   motor sounds and head position belong to the first drive of the pair;
+   each diskette keeps its door, head load solenoid and rotational phase.
    Head: the head load solenoid loads the head at the first command and
    unloads it after hdunload_ms without a new command (the device calls
    sim_floppy_end () at the end of every command); the device unloads
@@ -760,7 +767,12 @@ int32 sim_sound_seek (SND_SAMPLE *smp[3], int32 dist, int32 s_lim, int32 m_lim,
                            delay_us, without moving the head (a sweep).
    sim_floppy_track ()     current head position.
    sim_floppy_show ()      "diskette in, head loaded, track 12, motor
-                           running". */
+                           running".
+   sim_floppy_share ()     the drive shares the motor and the carriage of
+                           another (NULL: its own).
+   sim_floppy_motor ()     CTRL motor: switch it on (or keep it on);
+                           returns the microseconds until it is at speed.
+   sim_floppy_motor_off () CTRL motor: switch it off now. */
 
 #define SND_FLP_MOTOR_AC    0                   /* runs while the power is on */
 #define SND_FLP_MOTOR_CTRL  1                   /* switched by the controller */
@@ -811,10 +823,16 @@ typedef struct SND_FLOPPY {
     SND_HANDLE motor_h;                         /* playing motor, disk and head loops */
     SND_HANDLE disk_h;
     SND_HANDLE head_h;
+    struct SND_FLOPPY *mech;                    /* shares this drive's motor and carriage
+                                                   (NULL: its own) */
+    t_bool motor_on;                            /* CTRL motor switched on */
+    double motor_ready_rt;                      /* ... at speed at this realtime clock (us) */
+    SND_TIMER motor_tmr;                        /* ... switched off after an idle time */
     } SND_FLOPPY;
 
 extern const SND_FLP_TYPE sim_flp_rx01;         /* RX01 (8", single density) */
 extern const SND_FLP_TYPE sim_flp_rx02;         /* RX02 (8", single and double density) */
+extern const SND_FLP_TYPE sim_flp_rx50;         /* RX50 (5.25", two diskettes, one motor) */
 
 void sim_floppy_init (SND_FLOPPY *f, UNIT *uptr, const SND_FLP_TYPE *type, SND_FLP_REGS *regs,
                       int32 group, double gain);
@@ -829,6 +847,9 @@ void sim_floppy_unload (SND_FLOPPY *f);
 void sim_floppy_steps (SND_FLOPPY *f, int32 n, double period_us, double delay_us);
 int32 sim_floppy_track (SND_FLOPPY *f);
 t_stat sim_floppy_show (FILE *st, SND_FLOPPY *f);
+void sim_floppy_share (SND_FLOPPY *f, SND_FLOPPY *mech);
+double sim_floppy_motor (SND_FLOPPY *f);
+void sim_floppy_motor_off (SND_FLOPPY *f);
 
 #ifdef  __cplusplus
 }

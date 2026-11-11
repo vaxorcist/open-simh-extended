@@ -3741,7 +3741,15 @@ return SCPE_OK;
          diskette wear" when no new command (RUN) comes within 45.87 ms,
          2.4.4 (at power up the heads move ten tracks in and back).  The
          drive mechanics are those of the RX02 (same drive): its sounds
-         are used unless rx01/ has files of its own. */
+         are used unless rx01/ has files of its own.
+   RX50: Rainbow 100 Technical Manual EK-PC100-TM-001, chapter 6 (300 rpm,
+         "the minimum width between step pulses is 6 ms", head settle and
+         head load 30 ms each, one head load solenoid per diskette side,
+         one spindle motor that "reaches the rated rotational speed within
+         one half second after an asserted MOTOR ON signal", one stepper
+         motor); Computer History Wiki (one track 6 ms, average access
+         164 ms).  Motor-off and head unload after 2 s idle: provisional
+         (not published for the RQDX controllers; to be measured). */
 
 const SND_FLP_TYPE sim_flp_rx01 = {
     "RX01", "rx01", 360.0, 77, 26, SND_FLP_MOTOR_AC, 10,
@@ -3749,6 +3757,11 @@ const SND_FLP_TYPE sim_flp_rx01 = {
 const SND_FLP_TYPE sim_flp_rx02 = {
     "RX02", "rx02", 360.0, 77, 26, SND_FLP_MOTOR_AC, 1,
     6000, 25000, 25000, 200, 2000, 0, NULL };
+const SND_FLP_TYPE sim_flp_rx50 = {
+    "RX50", "rx50", 300.0, 80, 10, SND_FLP_MOTOR_CTRL, 0,
+    6000, 30000, 30000, 2000, 500, 2000, NULL };
+
+#define FLP_MECH(f)     (((f)->mech != NULL) ? (f)->mech : (f))   /* motor and carriage */
 
 #define FLP_S_MOTOR_START   0                   /* sound indexes */
 #define FLP_S_MOTOR         1
@@ -3833,7 +3846,9 @@ for (i = 0; i < flp_n; i++) {
 
 static t_bool flp_motor_running (SND_FLOPPY *f)
 {
-return snd_power;                               /* SND_FLP_MOTOR_AC (the only kind so far) */
+if (f->type->motor == SND_FLP_MOTOR_AC)         /* on the power line */
+    return snd_power;
+return snd_power && FLP_MECH (f)->motor_on;     /* switched by the controller */
 }
 
 static void flp_disk_start (SND_FLOPPY *f, uint32 fade_ms, double delay_s)
@@ -3844,6 +3859,7 @@ if ((f->disk_h == 0) && f->inserted && flp_motor_running (f))
 }
 
 static void flp_unload_done (SND_TIMER *t);
+static void flp_motor_done (SND_TIMER *t);
 
 void sim_floppy_init (SND_FLOPPY *f, UNIT *uptr, const SND_FLP_TYPE *type, SND_FLP_REGS *regs,
                       int32 group, double gain)
@@ -3864,6 +3880,7 @@ f->group = group;
 f->gain = gain;
 f->phase_us = flp_random () * (60.0e6 / type->rpm);
 sim_sound_timer_init (&f->unload_tmr, "FLOPPY", &flp_unload_done, f);
+sim_sound_timer_init (&f->motor_tmr, "FLOPPY", &flp_motor_done, f);
 flp_list[flp_n++] = f;
 }
 
@@ -3903,8 +3920,23 @@ if (!sim_sound_enabled ())
 for (i = 0; i < flp_n; i++) {
     SND_FLOPPY *f = flp_list[i];
 
-    if (!flp_present (f) || (f->type->motor != SND_FLP_MOTOR_AC))
+    if (!flp_present (f))
         continue;
+    if (f->type->motor != SND_FLP_MOTOR_AC) {   /* CTRL: not started by the power */
+        if (!on) {                              /* power off: a running motor runs down */
+            f->disk_h = f->head_h = 0;
+            f->head_loaded = FALSE;
+            sim_sound_timer_cancel (&f->unload_tmr);
+            if ((f->mech == NULL) && f->motor_on) {
+                flp_load_sounds (f);
+                f->motor_on = FALSE;
+                f->motor_h = 0;
+                sim_sound_timer_cancel (&f->motor_tmr);
+                snd_play_ex (f->smp[FLP_S_MOTOR_STOP], NULL, 0, f->group, f->gain, 0, 0);
+                }
+            }
+        continue;
+        }
     flp_load_sounds (f);
     if (on) {
         double up_s = (double)f->regs->motorup_ms / 1000.0;
@@ -3921,7 +3953,7 @@ for (i = 0; i < flp_n; i++) {
 
             snd_play_repeat (f->smp[FLP_S_STEP], f->group, f->gain, 2 * n,
                              (double)f->regs->step_us / 1.0e6, up_s);
-            f->track = 0;
+            FLP_MECH (f)->track = 0;
             }
         }
     else {                                      /* the loops were faded by power off */
@@ -4015,14 +4047,14 @@ double t, settle = 0.0, hl;
 if (f->uptr == NULL)
     return 0.0;
 sim_sound_timer_cancel (&f->unload_tmr);        /* a command is running */
-dist = abs (track - f->track);
+dist = abs (track - FLP_MECH (f)->track);       /* (one carriage for both RX50 slots) */
 t = (double)dist * (double)f->regs->step_us;
 if ((dist > 0) && sim_sound_enabled ()) {
     flp_load_sounds (f);
     snd_play_repeat (f->smp[FLP_S_STEP], f->group, f->gain, (uint32)dist,
                      (double)f->regs->step_us / 1.0e6, 0.0);
     }
-f->track = track;
+FLP_MECH (f)->track = track;
 if (dist > 0)
     settle = (double)f->regs->settle_us;
 if (load) {                                     /* RX02: step, then load the head */
@@ -4055,7 +4087,13 @@ return after_us + wait + (double)nsect * sec_us;
 
 void sim_floppy_end (SND_FLOPPY *f, double end_us)
 {
-if ((f->uptr == NULL) || !f->head_loaded || !sim_sound_enabled () || (f->regs->hdunload_ms <= 0))
+SND_FLOPPY *m = FLP_MECH (f);
+
+if ((f->uptr == NULL) || !sim_sound_enabled ())
+    return;
+if ((f->type->motor == SND_FLP_MOTOR_CTRL) && m->motor_on && (f->regs->motoroff_ms > 0))
+    sim_sound_timer_start (&m->motor_tmr, end_us + 1000.0 * (double)f->regs->motoroff_ms);
+if (!f->head_loaded || (f->regs->hdunload_ms <= 0))
     return;
 sim_sound_timer_start (&f->unload_tmr, end_us + 1000.0 * (double)f->regs->hdunload_ms);
 }
@@ -4070,7 +4108,106 @@ snd_play_repeat (f->smp[FLP_S_STEP], f->group, f->gain, (uint32)n, period_us / 1
 
 int32 sim_floppy_track (SND_FLOPPY *f)
 {
-return f->track;
+return FLP_MECH (f)->track;
+}
+
+/* Shared mechanics (RX50): f uses the motor and the carriage of mech */
+
+void sim_floppy_share (SND_FLOPPY *f, SND_FLOPPY *mech)
+{
+if ((f->uptr == NULL) || (mech == f))
+    mech = NULL;
+if (f->mech == mech)
+    return;
+if ((mech != NULL) && (FLP_MECH (f) == f) && f->motor_on && (f->type->motor == SND_FLP_MOTOR_CTRL)) {
+    sim_sound_timer_cancel (&f->motor_tmr);     /* its own motor is no longer used */
+    sim_sound_stop (f->motor_h, 100);
+    f->motor_h = 0;
+    f->motor_on = FALSE;
+    }
+f->mech = mech;
+}
+
+/* Every diskette on a motor: its loops follow the motor */
+
+static void flp_motor_loops (SND_FLOPPY *m, t_bool on, double delay_s)
+{
+int32 i;
+
+for (i = 0; i < flp_n; i++) {
+    SND_FLOPPY *f = flp_list[i];
+
+    if ((f->uptr == NULL) || (FLP_MECH (f) != m))
+        continue;
+    if (on) {
+        flp_load_sounds (f);
+        flp_disk_start (f, 300, delay_s);
+        }
+    else {
+        sim_sound_stop (f->disk_h, 400);
+        sim_sound_stop (f->head_h, 100);
+        f->disk_h = f->head_h = 0;
+        }
+    }
+}
+
+/* CTRL motor on: returns the microseconds until it is at speed */
+
+double sim_floppy_motor (SND_FLOPPY *f)
+{
+SND_FLOPPY *m = FLP_MECH (f);
+double now;
+
+if ((f->uptr == NULL) || (f->type->motor != SND_FLP_MOTOR_CTRL) || !sim_sound_enabled ())
+    return 0.0;
+sim_sound_timer_cancel (&m->motor_tmr);
+now = sim_sound_rt_us ();
+if (!m->motor_on) {
+    m->motor_on = TRUE;
+    m->motor_ready_rt = now + 1000.0 * (double)f->regs->motorup_ms;
+    flp_load_sounds (m);
+    if (snd_power) {
+        if (m->smp[FLP_S_MOTOR_START] != NULL)
+            m->motor_h = snd_play_ex (m->smp[FLP_S_MOTOR_START], m->smp[FLP_S_MOTOR], SND_F_RANDPHASE,
+                                      m->group, m->gain, 0, 0);
+        else
+            m->motor_h = snd_play_full (m->smp[FLP_S_MOTOR], NULL, 0, m->group, m->gain,
+                                        SND_F_LOOP | SND_F_RANDPHASE, 200, 1.0, 0.0, 0.0, 0);
+        flp_motor_loops (m, TRUE, 0.0);
+        }
+    }
+return (m->motor_ready_rt > now) ? (m->motor_ready_rt - now) : 0.0;
+}
+
+/* CTRL motor off (idle timer, or a command of the controller): the
+   heads of its diskettes unload, the motor runs down */
+
+void sim_floppy_motor_off (SND_FLOPPY *f)
+{
+SND_FLOPPY *m = FLP_MECH (f);
+int32 i;
+
+if ((f->uptr == NULL) || (f->type->motor != SND_FLP_MOTOR_CTRL))
+    return;
+sim_sound_timer_cancel (&m->motor_tmr);
+if (!m->motor_on)
+    return;
+for (i = 0; i < flp_n; i++)                     /* heads up first */
+    if ((flp_list[i]->uptr != NULL) && (FLP_MECH (flp_list[i]) == m))
+        sim_floppy_unload (flp_list[i]);
+m->motor_on = FALSE;
+if (sim_sound_enabled () && snd_power) {
+    flp_load_sounds (m);
+    flp_motor_loops (m, FALSE, 0.0);
+    sim_sound_stop (m->motor_h, 50);
+    snd_play_ex (m->smp[FLP_S_MOTOR_STOP], NULL, 0, m->group, m->gain, 0, 0);
+    }
+m->motor_h = 0;
+}
+
+static void flp_motor_done (SND_TIMER *t)
+{
+sim_floppy_motor_off ((SND_FLOPPY *)t->ctx);
 }
 
 t_stat sim_floppy_show (FILE *st, SND_FLOPPY *f)
@@ -4080,12 +4217,18 @@ if (f->uptr == NULL) {
     return SCPE_OK;
     }
 (void) sim_sound_timer_busy (&f->unload_tmr);   /* at the prompt: makes a due unload happen */
+(void) sim_sound_timer_busy (&FLP_MECH (f)->motor_tmr); /* (and a due motor-off) */
 fprintf (st, "%s, head %s", f->inserted ? "diskette in" : "no diskette",
          f->head_loaded ? "loaded" : "unloaded");
 if (f->head_loaded && sim_sound_timer_busy (&f->unload_tmr))
     fprintf (st, " (unloads in %.2f s)", sim_sound_timer_left_s (&f->unload_tmr));
-fprintf (st, ", track %d, motor %s\n", (int)f->track,
+fprintf (st, ", track %d, motor %s", (int)FLP_MECH (f)->track,
          !sim_sound_enabled () ? "not simulated (sound disabled)" :
-         (flp_motor_running (f) ? "running" : "stopped (power off)"));
+         (flp_motor_running (f) ? "running" :
+          ((f->type->motor == SND_FLP_MOTOR_AC) || !snd_power) ? "stopped (power off)" : "off"));
+if (sim_sound_enabled () && (f->type->motor == SND_FLP_MOTOR_CTRL) && flp_motor_running (f) &&
+    sim_sound_timer_busy (&FLP_MECH (f)->motor_tmr))
+    fprintf (st, " (off in %.2f s)", sim_sound_timer_left_s (&FLP_MECH (f)->motor_tmr));
+fprintf (st, "\n");
 return SCPE_OK;
 }

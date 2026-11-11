@@ -1293,7 +1293,17 @@ typedef struct {
     SND_SPINDLE         sp;                             /* the drive's spindle (owner unit) */
     RQ_RLZ_TYPE         *sp_type;                       /* type the spindle is set up for */
     int32               cyl;                            /* current cylinder (actuator) */
+    SND_FLOPPY          flp;                            /* RX50: this diskette slot's mechanics */
     } RQ_RLZ;
+
+/* RX50 (sound realism mode): drive mechanics from sim_flp_rx50; the times
+   are registers of the RQ device (all controllers), defaults from the
+   type.  Two RX50 units with consecutive unit numbers (DUAn, DUAn+1,
+   pairing from the lowest number up) are the two slots of one drive:
+   one spindle motor and one head carriage. */
+
+static SND_FLP_REGS rq_flp_regs;
+static t_bool rq_flp_regs_inited = FALSE;
 
 static RQ_RLZ *rq_rlz[RQ_NUMCT][RQ_MAXDR + 2];          /* per-unit realism state */
 static uint32 rq_rand_state = 1;                        /* rotational latency */
@@ -1414,6 +1424,10 @@ static t_stat rq_rlz_set_plug (UNIT *uptr, uint32 plug);
 static struct rq_usnap *rq_snap_take (DEVICE *dptr);
 static uint32 rq_dflt_dtype[RQ_NUMCT][RQ_NUMDR];        /* initial drive types (realism rules) */
 static double rq_rlz_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc);
+static SND_FLOPPY *rq_flp_setup (UNIT *uptr);
+static t_bool rq_rx50_pair (UNIT *uptr, UNIT **mate);
+static t_bool rq_unit_enabled (UNIT *uptr);
+static double rq_flp_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc);
 
 t_bool rq_step4 (MSC *cp);
 t_bool rq_mscp (MSC *cp, uint16 pkt, t_bool q);
@@ -1530,6 +1544,12 @@ REG rq_reg[] = {
     RQ_RA_REGS (70), RQ_RA_REGS (71), RQ_RA_REGS (72), RQ_RA_REGS (73),
     RQ_RA_REGS (80), RQ_RA_REGS (81), RQ_RA_REGS (82),
     RQ_RA_REGS (90), RQ_RA_REGS (92),
+    { DRDATAD (RX50STEP,   rq_flp_regs.step_us,     24, "RX50 step time per track in us (sound realism mode)"), PV_LEFT },
+    { DRDATAD (RX50SETTLE, rq_flp_regs.settle_us,   24, "RX50 head settle time in us"), PV_LEFT },
+    { DRDATAD (RX50HDLOAD, rq_flp_regs.hdload_us,   24, "RX50 head load time in us"), PV_LEFT },
+    { DRDATAD (RX50HDUNLOAD, rq_flp_regs.hdunload_ms, 24, "RX50 head unloaded after n ms idle (provisional)"), PV_LEFT },
+    { DRDATAD (RX50MOTORUP, rq_flp_regs.motorup_ms, 24, "RX50 motor start in ms"), PV_LEFT },
+    { DRDATAD (RX50MOTOROFF, rq_flp_regs.motoroff_ms, 24, "RX50 motor off after n ms idle (provisional)"), PV_LEFT },
     { VBRDATAD (PKTS,   rq_ctx.pak,     DEV_RDX,    16, sizeof(rq_ctx.pak)/2, "packet buffers, 33W each, 32 entries") },
     { URDATAD (CPKT,    rq_unit[0].cpkt, 10, 5, 0, RQ_NUMDR, 0, "current packet, units 0 to 3") },
     { URDATAD (UCNUM,   rq_unit[0].cnum, 10, 5, 0, RQ_NUMDR, 0, "ctrl number, units 0 to 3") },
@@ -1553,7 +1573,9 @@ MTAB rq_mod[] = {
     { MTAB_XTD|MTAB_VUN,        0,  NULL, "OFFLINE",
         &rq_set_online, NULL, NULL, "RA/RC25 RUN/STOP button: spin the drive down" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SPINDLE", NULL,
-        NULL, &rq_show_spindle, NULL, "Display the RA/RC25 spindle state" },
+        NULL, &rq_show_spindle, NULL, "Display the RA/RC25 spindle or the RX50 drive state" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
+        NULL, &rq_show_spindle, NULL, "Display the RA/RC25 spindle or the RX50 drive state" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_RI, "RINGS", NULL,
       NULL, &rq_show_ctrl, NULL, "Display command and response rings" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, RQ_SH_FR, "FREEQ", NULL,
@@ -2327,7 +2349,10 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
         }
     uptr->flags = uptr->flags & ~UNIT_ONL;              /* not online */
     if ((mdf & MD_SPD) && RQ_RMV (uptr)) {              /* unload of removable device */
-        if (sim_sound_enabled () && (rq_spindle_owner (uptr) != NULL)) {
+        if (sim_sound_enabled () && (GET_DTYPE (uptr->flags) == RX50_DTYPE))
+            sim_floppy_motor_off (rq_flp_setup (uptr)); /* realism: RX50 motor off, */
+                                                        /* the diskette stays in */
+        else if (sim_sound_enabled () && (rq_spindle_owner (uptr) != NULL)) {
             if (rq_avl_spins_down (uptr))               /* realism: RA60, RC25 */
                 rq_spin_down (uptr);                    /* spin down, pack stays */
             }
@@ -2592,6 +2617,9 @@ if ((uptr = rq_getucb (cp, lu))) {                      /* unit exist? */
         if (sim_sound_enabled () && (rq_rlz_type (uptr) != NULL)) /* realism: seek, */
             sim_sound_activate_us (uptr,                /* sector times, seek sound */
                 rq_rlz_xfer_us (uptr, GETP32 (pkt, RW_LBNL), GETP32 (pkt, RW_BCL)));
+        else if (sim_sound_enabled () && (GET_DTYPE (uptr->flags) == RX50_DTYPE))
+            sim_sound_activate_us (uptr,                /* realism: RX50 motor, steps, */
+                rq_flp_xfer_us (uptr, GETP32 (pkt, RW_LBNL), GETP32 (pkt, RW_BCL)));
         else
             sim_activate (uptr, 0);                     /* activate */
         sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_rw - started\n");
@@ -3563,6 +3591,8 @@ r = sim_disk_attach_ex (uptr, cptr, RQ_NUMBY, sizeof (uint16), dontchangecapac, 
 if (r != SCPE_OK)
     return r;
 
+if (GET_DTYPE (uptr->flags) == RX50_DTYPE)              /* RX50: diskette in, door closed */
+    sim_floppy_insert (rq_flp_setup (uptr));
 if (!rq_rlz_attach (uptr))                              /* realism: waits for ONLINE */
     return SCPE_OK;
 if ((cp->csta == CST_UP) && sim_disk_isavailable (uptr))
@@ -3575,6 +3605,9 @@ return SCPE_OK;
 t_stat rq_detach (UNIT *uptr)
 {
 t_stat r;
+
+if ((uptr->flags & UNIT_ATT) && (GET_DTYPE (uptr->flags) == RX50_DTYPE))
+    sim_floppy_remove (rq_flp_setup (uptr));            /* RX50: door opened */
 
 r = sim_disk_detach (uptr);                             /* detach unit */
 if (r != SCPE_OK)
@@ -3597,6 +3630,10 @@ static t_bool plugs_inited = FALSE;
 DIB *dibp = (DIB *) dptr->ctxt;
 
 sim_debug (DBG_TRC, dptr, "rq_reset\n");
+if (!rq_flp_regs_inited) {                              /* RX50 register defaults, once */
+    rq_flp_regs_inited = TRUE;
+    sim_floppy_set_defaults (&rq_flp_regs, &sim_flp_rx50);
+    }
 
 for (i = 0, cidx = -1; i < RQ_NUMCT; i++) {             /* find ctrl num */
     if (rq_devmap[i] == dptr)
@@ -4210,6 +4247,22 @@ t_stat rq_show_spindle (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 UNIT *optr = rq_spindle_owner (uptr);
 t_stat r = SCPE_OK;
 
+if (GET_DTYPE (uptr->flags) == RX50_DTYPE) {            /* an RX50 slot */
+    UNIT *mate = NULL;
+    SND_FLOPPY *f = rq_flp_setup (uptr);
+
+    if (f == NULL)
+        return SCPE_MEM;
+    rq_rx50_pair (uptr, &mate);
+    if (mate != NULL)
+        fprintf (st, "RX50 drive with %s (unit numbers %d/%d), this slot: ", sim_uname (mate),
+                 (int)((uptr->unit_plug < mate->unit_plug) ? uptr->unit_plug : mate->unit_plug),
+                 (int)((uptr->unit_plug < mate->unit_plug) ? mate->unit_plug : uptr->unit_plug));
+    else
+        fprintf (st, "RX50 drive, one slot used: ");
+    return sim_floppy_show (st, f);                     /* (ends the line) */
+    }
+
 if (optr == NULL)
     fprintf (st, "fixed disk (no RUN/STOP button)");
 else if (!(optr->flags & UNIT_ATT)) {
@@ -4357,6 +4410,155 @@ sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: %s LBN %u, %u blocks: from cylin
 return us;
 }
 
+/* RX50 (sound realism mode)
+
+   Pairs: two enabled RX50 units of a controller with consecutive unit
+   numbers (PLUG, SET RQn UNIT=) are the two slots of one RX50 drive, as
+   DUA1 and DUA2 on a MicroVAX II.  Pairing goes from the lowest unit
+   number up, so RX50s with numbers 1, 2, 3 make a drive 1/2 and a drive
+   whose second slot is not configured (3).  Returns TRUE if uptr is the
+   first slot of its drive (it owns the motor and the carriage) and sets
+   *mate to the other slot or NULL. */
+
+static t_bool rq_rx50_pair (UNIT *uptr, UNIT **mate)
+{
+DEVICE *dptr = rq_devmap[uptr->cnum];
+int32 n = (int32) dptr->numunits - 2;
+int32 u;
+int32 done[RQ_MAXDR];
+int32 nd = 0, i;
+
+*mate = NULL;
+for (;;) {                                              /* lowest unpaired RX50 number */
+    UNIT *lo = NULL, *nx = NULL;
+
+    for (u = 0; u < n; u++) {
+        UNIT *xptr = &dptr->units[u];
+        t_bool used = FALSE;
+
+        if (!rq_unit_enabled (xptr) || (GET_DTYPE (xptr->flags) != RX50_DTYPE))
+            continue;
+        for (i = 0; i < nd; i++)
+            used = used || (done[i] == (int32) xptr->unit_plug);
+        if (!used && ((lo == NULL) || (xptr->unit_plug < lo->unit_plug)))
+            lo = xptr;
+        }
+    if (lo == NULL)
+        return TRUE;                                    /* (not an enabled RX50) */
+    for (u = 0; u < n; u++) {                           /* the next number an RX50? */
+        UNIT *xptr = &dptr->units[u];
+
+        if (rq_unit_enabled (xptr) && (GET_DTYPE (xptr->flags) == RX50_DTYPE) &&
+            (xptr->unit_plug == lo->unit_plug + 1))
+            nx = xptr;
+        }
+    if ((lo == uptr) || (nx == uptr)) {
+        *mate = (lo == uptr) ? nx : lo;
+        return (lo == uptr);
+        }
+    if (nd + 2 > RQ_MAXDR)
+        return TRUE;
+    done[nd++] = (int32) lo->unit_plug;
+    if (nx != NULL)
+        done[nd++] = (int32) nx->unit_plug;
+    }
+}
+
+/* The diskette slot's mechanics, set up and joined to its drive */
+
+static SND_FLOPPY *rq_flp_setup (UNIT *uptr)
+{
+RQ_RLZ *rz = rq_rlz_get (uptr);
+UNIT *mate;
+t_bool first;
+
+if (rz == NULL)
+    return NULL;
+if (rz->flp.uptr == NULL) {
+    if (!rq_flp_regs_inited) {
+        rq_flp_regs_inited = TRUE;
+        sim_floppy_set_defaults (&rq_flp_regs, &sim_flp_rx50);
+        }
+    sim_floppy_init (&rz->flp, uptr, &sim_flp_rx50, &rq_flp_regs, SND_GRP_DISK, 1.0);
+    }
+first = rq_rx50_pair (uptr, &mate);
+if (!first && (mate != NULL)) {
+    RQ_RLZ *mz = rq_rlz_get (mate);
+
+    if ((mz != NULL) && (mz->flp.uptr == NULL))
+        sim_floppy_init (&mz->flp, mate, &sim_flp_rx50, &rq_flp_regs, SND_GRP_DISK, 1.0);
+    sim_floppy_share (&rz->flp, (mz != NULL) ? &mz->flp : NULL);
+    }
+else
+    sim_floppy_share (&rz->flp, NULL);
+return &rz->flp;
+}
+
+/* Physical place of an RX50 logical block, as the RQDX controllers (and
+   RT-11's DZ handler, VMS's DUDRIVER for the PRO) map it: logical track
+   lbn / 10 is physical track + 1, the last ten blocks on physical track
+   0; within a track a 2:1 interleave (blocks 0-4 on sectors 1, 3, 5, 7,
+   9, blocks 5-9 on 2, 4, 6, 8, 10) and a skew of two sectors per track.
+   Returns the physical track, *sec the 0-based sector. */
+
+static int32 rq_rx50_place (uint32 lbn, int32 *sec)
+{
+int32 ltrk = (int32) (lbn / RX50_SECT);
+int32 c = (int32) (lbn % RX50_SECT);
+int32 s = (c < 5) ? (2 * c) : (2 * (c - 5) + 1);
+
+*sec = (s + 2 * ltrk) % RX50_SECT;
+return (ltrk + 1) % RX50_CYL;
+}
+
+/* Realistic time of an RX50 transfer (us): the motor started if it was
+   off (0.5 s), the head of the other slot unloaded (the drive selects one
+   side), steps to the track (6 ms each; one carriage for both slots), the
+   head loaded and settled (30 ms), then block by block the sector coming
+   round under the head (300 rpm, 10 sectors), one step to each next
+   track.  The command end restarts the head unload and motor-off timers. */
+
+static double rq_flp_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc)
+{
+SND_FLOPPY *f = rq_flp_setup (uptr);
+UNIT *mate;
+uint32 nblk = (bc + RQ_NUMBY - 1) / RQ_NUMBY;
+uint32 b;
+int32 trk, sec, cur = -1, from;
+double t, tm;
+
+if (f == NULL)
+    return 0.0;
+if (nblk == 0)
+    nblk = 1;
+(void) rq_rx50_pair (uptr, &mate);
+if (mate != NULL) {                                     /* one side at a time */
+    RQ_RLZ *mz = rq_rlz_get (mate);
+
+    if ((mz != NULL) && (mz->flp.uptr != NULL))
+        sim_floppy_unload (&mz->flp);
+    }
+from = sim_floppy_track (f);
+tm = sim_floppy_motor (f);                              /* motor on, time to speed */
+t = 0.0;
+for (b = 0; (b < nblk) && ((lbn + b) < RX50_LBN); b++) {
+    trk = rq_rx50_place (lbn + b, &sec);
+    if (trk != cur) {                                   /* steps, head load, settle */
+        t += sim_floppy_seek (f, trk, TRUE);
+        cur = trk;
+        if (t < tm)                                     /* (the steps go on while */
+            t = tm;                                     /* the motor runs up) */
+        }
+    t = sim_floppy_rotate (f, t, sec, 1);
+    }
+sim_floppy_end (f, t);
+if (t < 100.0)
+    t = 100.0;
+sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RX50 LBN %u, %u blocks: track %d -> %d, %.2f ms\n",
+           sim_uname (uptr), lbn, nblk, from, cur, t / 1000.0);
+return t;
+}
+
 /* Sound realism mode: configuration rules ("as realistic as possible")
 
    With SET SOUND ENABLED the RQ controllers must look like real ones:
@@ -4373,7 +4575,18 @@ return us;
    - an SDI controller has four drive ports: at most 4 enabled units;
    - an SDI controller only on its bus: the UDA50 and UDA50A on the
      Unibus, the KDA50 on the Qbus (Ulli, 2026-11-10; a PDP-11 is checked
-     with the bus of its current CPU model).
+     with the bus of its current CPU model);
+   - RX50 drives only on an RX50 controller: RQDX1 (also the RQDX2),
+     RQDX3, RQDX4 (Qbus) or RUX50 (Unibus), and a RUX50 only connects RX50
+     drives (Ulli, 2026-11-11).  No bus rule for them: a PDP-11 keeps the
+     RQDX3 chosen at start-up for the default (Qbus) CPU after SET CPU
+     11/70 (known issues 50), so a bus rule would refuse every Unibus
+     PDP-11 configuration.  SET SOUND ENABLED and SET RQ <other controller
+     type> disable RX50 units on the other controllers (with a message)
+     instead of refusing, so the default Unibus configuration (UDA50A with
+     an RX50 at RQ3) keeps working; SET RQ RUX50 makes the units 0-3 RX50
+     units (two drives) and disables the others, SET RQ <other type> on a
+     RUX50 gives its units their initial drive types back.
    SET SOUND ENABLED refuses a configuration that breaks a rule
    (rq_rlz_enable_check, registered with sim_sound).  While sound is
    enabled, SET RQ <controller type>, SET RQn <drive type>, SET RQn UNIT=,
@@ -4418,6 +4631,38 @@ if (cp->ctype != DEFAULT_CTYPE)
 return (UNIBUS ? UDA50A_CTYPE : (MICROVAX1 ? RQDX1_CTYPE : RQDX3_CTYPE));
 }
 
+/* An RX50 controller: RQDX1/RQDX2, RQDX3, RQDX4 (Qbus), RUX50 (Unibus) */
+
+static t_bool rq_is_rx50_ctype (int32 ct)
+{
+return ((ct == RQDX1_CTYPE) || (ct == RQDX3_CTYPE) || (ct == RQDX4_CTYPE) || (ct == RUX50_CTYPE));
+}
+
+/* Realism mode: RX50 units on a controller that cannot have them are
+   disabled, with a message (SET SOUND ENABLED, SET RQ <controller type>).
+   An attached one is left alone (the rules then refuse). */
+
+static void rq_rlz_rx50_disable (DEVICE *dptr, int32 ctype, const char *prefix)
+{
+int32 n = (int32) dptr->numunits - 2;
+int32 u;
+
+if ((dptr->flags & DEV_DIS) || rq_is_rx50_ctype (ctype))
+    return;
+for (u = 0; u < n; u++) {
+    UNIT *xptr = &dptr->units[u];
+
+    if (rq_unit_enabled (xptr) && (GET_DTYPE (xptr->flags) == RX50_DTYPE) &&
+        !(xptr->flags & UNIT_ATT) && (xptr->flags & UNIT_DISABLE)) {
+        xptr->flags = xptr->flags | UNIT_DIS;
+        sim_printf ("%s%s disabled: an RX50 needs an RQDX1, RQDX3, RQDX4 or RUX50 controller, %s is a%s %s\n",
+                    prefix, sim_uname (xptr), dptr->name,
+                    ((ctlr_tab[ctype].name[0] == 'U') || (ctlr_tab[ctype].name[0] == 'K')) ? "" : "n",
+                    ctlr_tab[ctype].name);
+        }
+    }
+}
+
 /* An SDI controller: UDA50, UDA50A (Unibus), KDA50 (Qbus) */
 
 static t_bool rq_is_sdi_ctype (int32 ct)
@@ -4433,6 +4678,8 @@ static t_stat rq_rlz_rules (DEVICE *dptr, const char *prefix)
 MSC *cp = rq_ctxmap[dptr->units[0].cnum];
 t_bool klesi = (cp->ctype == KLESI_CTYPE);
 t_bool sdi = rq_is_sdi_ctype (rq_eff_ctype (cp));
+t_bool rx50c = rq_is_rx50_ctype (rq_eff_ctype (cp));
+t_bool rux50 = (rq_eff_ctype (cp) == RUX50_CTYPE);
 int32 n = (int32) dptr->numunits - 2;
 int32 u, n_en = 0;
 
@@ -4460,6 +4707,12 @@ for (u = 0; u < n; u++) {
     if (!sdi && rq_is_sdi_type (dt))
         return sim_messagef (SCPE_ARG, "%s%s: an %s is an SDI drive: it needs a UDA50, UDA50A or KDA50 controller (SET %s KDA50)\n",
                              prefix, sim_uname (uptr), drv_tab[dt].name, dptr->name);
+    if (!rx50c && (dt == RX50_DTYPE))
+        return sim_messagef (SCPE_ARG, "%s%s: an RX50 needs an RQDX1, RQDX3, RQDX4 (Qbus) or RUX50 (Unibus) controller\n",
+                             prefix, sim_uname (uptr));
+    if (rux50 && (dt != RX50_DTYPE))
+        return sim_messagef (SCPE_ARG, "%s%s: a RUX50 only connects RX50 drives, %s is an %s\n",
+                             prefix, dptr->name, sim_uname (uptr), drv_tab[dt].name);
     }
 for (u = 0; u < n; u++) {                               /* (types first, then the pairs) */
     UNIT *uptr = &dptr->units[u];
@@ -4504,6 +4757,9 @@ static t_stat rq_rlz_enable_check (void)
 int32 i;
 t_stat r;
 
+for (i = 0; i < RQ_NUMCT; i++)                          /* RX50s on other controllers: off */
+    rq_rlz_rx50_disable (rq_devmap[i], rq_eff_ctype (rq_ctxmap[rq_devmap[i]->units[0].cnum]),
+                         "SET SOUND ENABLED: ");
 for (i = 0; i < RQ_NUMCT; i++)
     if ((r = rq_rlz_rules (rq_devmap[i], "SET SOUND ENABLED: ")) != SCPE_OK)
         return r;
@@ -4665,8 +4921,12 @@ for (u = 0; u < n; u++) {                               /* nothing attached that
     uint32 dt = GET_DTYPE (xptr->flags);
     t_bool changes = (newtype == KLESI_CTYPE) ?
         ((u >= KLESI_MAX_UNITS) || !rq_is_rc25_type (dt)) :
-        (rq_is_rc25_type (dt) || (!sdi && rq_is_sdi_type (dt)) ||
-         (sdi && (u >= SDI_MAX_UNITS) && rq_unit_enabled (xptr)));
+        ((newtype == RUX50_CTYPE) ?
+         (((u >= 4) && rq_unit_enabled (xptr)) || (dt != RX50_DTYPE)) :
+         (rq_is_rc25_type (dt) || (!sdi && rq_is_sdi_type (dt)) ||
+          (sdi && (u >= SDI_MAX_UNITS) && rq_unit_enabled (xptr)) ||
+          ((oldtype == RUX50_CTYPE) && (dt == RX50_DTYPE)) ||
+          (!rq_is_rx50_ctype (newtype) && (dt == RX50_DTYPE) && rq_unit_enabled (xptr))));
 
     if ((xptr->flags & UNIT_ATT) && changes)
         return sim_messagef (SCPE_ALATT, "%s: %s is attached and would have to change\n",
@@ -4700,6 +4960,20 @@ if (newtype == KLESI_CTYPE) {
             }
         }
     }
+else if (newtype == RUX50_CTYPE) {                      /* RUX50: two RX50 drives */
+    for (u = 0; u < n; u++) {
+        UNIT *xptr = &dptr->units[u];
+
+        if (u >= 4) {
+            if (xptr->flags & UNIT_DISABLE)
+                xptr->flags = xptr->flags | UNIT_DIS;
+            continue;
+            }
+        xptr->flags = xptr->flags & ~UNIT_DIS;
+        if (!(xptr->flags & UNIT_ATT))
+            rq_put_dtype (xptr, RX50_DTYPE);
+        }
+    }
 else
     for (u = 0; u < n; u++) {
         UNIT *xptr = &dptr->units[u];
@@ -4710,7 +4984,8 @@ else
                 xptr->flags = xptr->flags | UNIT_DIS;
             continue;
             }
-        if (rq_is_rc25_type (dt) || (!sdi && rq_is_sdi_type (dt))) {
+        if (rq_is_rc25_type (dt) || (!sdi && rq_is_sdi_type (dt)) ||
+            ((oldtype == RUX50_CTYPE) && (dt == RX50_DTYPE))) { /* (from a RUX50: initial types) */
             uint32 ndt = (u < RQ_NUMDR) ? rq_dflt_dtype[uptr->cnum][u] : rq_dflt_dtype[uptr->cnum][0];
 
             if (!sdi && rq_is_sdi_type (ndt))           /* initial type also SDI */
@@ -4718,6 +4993,7 @@ else
             rq_put_dtype (xptr, ndt);
             }
         }
+rq_rlz_rx50_disable (dptr, newtype, "");               /* RX50s on another type: off */
 cp->ctype = newtype;
 r = rq_rlz_rules (dptr, "");
 if (r != SCPE_OK) {
@@ -4829,7 +5105,27 @@ fprintf (st, "    RA81 on a Qbus machine.  SET RQ UDA50, UDA50A or KDA50 disable
 fprintf (st, "    units from 4 on, SET RQ <other type> gives the RA units their initial\n");
 fprintf (st, "    types back (RD54 if that is an RA as well), SET RQ DRIVES= above 4 is\n");
 fprintf (st, "    refused on them.  The UDA50 and UDA50A only on the Unibus, the KDA50\n");
-fprintf (st, "    only on the Qbus;\n");
+fprintf (st, "    only on the Qbus.  RX50 drives only on an RQDX1 (RQDX2), RQDX3, RQDX4 or\n");
+fprintf (st, "    RUX50 controller, and a RUX50 only connects RX50 drives:\n");
+fprintf (st, "    SET SOUND ENABLED and SET RQ <other controller type> disable RX50 units\n");
+fprintf (st, "    on the other controllers (with a message, e.g. RQ3 of the default\n");
+fprintf (st, "    Unibus configuration), SET RQ RUX50 makes units 0-3 RX50 units, SET\n");
+fprintf (st, "    RQ <other type> on a RUX50 gives them their initial types back;\n");
+fprintf (st, "  - RX50: two RX50 units with consecutive unit numbers (DUA1 and DUA2;\n");
+fprintf (st, "    pairing from the lowest number up) are the two diskette slots of one\n");
+fprintf (st, "    drive, with one spindle motor and one head carriage.  The controller\n");
+fprintf (st, "    switches the motor on for a transfer (at speed in RX50MOTORUP, 500 ms)\n");
+fprintf (st, "    and off after RX50MOTOROFF (2000 ms, provisional) without a command;\n");
+fprintf (st, "    the head steps 6 ms per track (RX50STEP), is loaded and settles 30 ms\n");
+fprintf (st, "    (RX50HDLOAD, RX50SETTLE), unloads after RX50HDUNLOAD (2000 ms,\n");
+fprintf (st, "    provisional) or when the other slot is used; the blocks are read where\n");
+fprintf (st, "    the controller puts them (logical track + 1, 2:1 interleave, a skew of\n");
+fprintf (st, "    two sectors per track, the last ten blocks on track 0) when they come\n");
+fprintf (st, "    round (300 rpm, 10 sectors).  ATTACH and DETACH are the door; an\n");
+fprintf (st, "    AVAILABLE with spin-down (VMS DISMOUNT) stops the motor and leaves the\n");
+fprintf (st, "    diskette in (without the realism mode it detaches, as before).  SHOW\n");
+fprintf (st, "    RQn DRIVE shows the slot; sounds from sound/rx50 (else\n");
+fprintf (st, "    sound/default_floppy);\n");
 fprintf (st, "  - a KLESI reports the RC25's controller timeout (15 s) and aborts only\n");
 fprintf (st, "    queued commands, never the active one;\n");
 fprintf (st, "  - RA and RC25 transfers take realistic times: seek, rotational latency\n");
@@ -4849,7 +5145,7 @@ fprintf (st, "    SEEKRA60M, default 100/600, SEEKRAnnS/SEEKRAnnM, e.g. SEEKRA81
 fprintf (st, "    SEEKRA81M 75/460, and SEEKRC25S/SEEKRC25M, default 50/300); optional\n");
 fprintf (st, "    spindle sounds <type>_spinup.wav, <type>_running.wav and\n");
 fprintf (st, "    <type>_spindown.wav are used if found (no default);\n");
-fprintf (st, "  - the other drive types keep the QTIME/XTIME timing.\n");
+fprintf (st, "  - the other drive types (RD, RX33, ...) keep the QTIME/XTIME timing.\n");
 fprintf (st, "Without the realism mode an RA drive or RC25 spins up at ATTACH, ONLINE and\n");
 fprintf (st, "OFFLINE take effect at once, an RCF25 works without a cartridge in its RC25,\n");
 fprintf (st, "the timing is unchanged, and any configuration is accepted, as before.\n\n");
