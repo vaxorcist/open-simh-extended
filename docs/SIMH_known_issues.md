@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v19 (v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v20 (v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -67,6 +67,8 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 44 | OPEN | Suspicious | `PDP11/pdp11_rx.c`, `pdp11_ry.c` Initialize | A drive without a diskette is reported as "failed to see home" (codes 0010/0020); the RX01 without a diskette in drive 0 also does not set Initialize Done |
 | 45 | FIXED (patch 5) | Bug | `PDP11/pdp11_ry.c` `ry_svc` (SDXFR) | Set Media Density on a drive without a diskette writes through a NULL buffer: SIMH crashes (segmentation fault) |
 | 46 | OPEN | Limitation | `scp.c` `detach_unit` with `PDP11/pdp11_ry.c` | A new RX02 image formatted with Set Media Density stays an empty file (the zeroed buffer equals the original, so nothing is written); its density is not recorded |
+| 47 | FIXED (patch 5) | Bug | `PDP11/pdp11_ry.c` Read Status, `ry_done` | Read Status never sets the density error, so VMS DYDRIVER reads a double density diskette in single density: MOUNT fails with %MOUNT-F-DRVERR; error bits left in RX2ES by an earlier function also set RX2CS Error on the next Read Status/Read Error Code |
+| 48 | OPEN | Suspicious | `PDP11/pdp11_ry.c` `ry_svc` (ESXFR) | Extended status word 4 bit 5 (0040) is set when the drive has a diskette; the RX02 manual defines it as the head load bit |
 
 ## Details
 
@@ -406,3 +408,17 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Effect:** after formatting a new diskette in single density and re-attaching it, SIMH may treat it as double density (or the reverse) until data has been written. Same in plain Open SIMH (`tests/rx02/sd2.ini`, old and new build).
 - **Possible fix:** write the whole image when Set Media Density ran (e.g. mark the buffer as changed), so the file gets its full size, which autosize recognizes.
 - **Found:** 2026-11-11 (RX02 realism work).
+
+### 47 — FIXED IN PATCH 5 — Bug: VMS cannot mount a double density RX02 diskette (MOUNT-F-DRVERR)
+- **Where:** `PDP11/pdp11_ry.c`, Read Status (function 5, state CMD_COMPLETE) and `ry_done`.
+- **How VMS finds the density:** DYDRIVER V4.7 (disassembled from the running system with SDA and the SIMH examine command) issues at PACKACK (MOUNT) a **single density** Read Status and switches the unit to double density only when RX2ES bit 4 (density error) comes back set; bit 1 then selects double sided. This matches the RX02 manual 4.1.4.6: Read Status loads the head, reads the first data mark and "possibly sets the density error bit".
+- **Bug:** the RY never set the density error on Read Status, so VMS read the home block in single density, got density error 0240 on every retry and gave up: `INITIALIZE/DENSITY=DOUBLE DYA0: RX02T` worked (it sets the density explicitly), `MOUNT DYA0: RX02T` failed with `%MOUNT-F-DRVERR, fatal drive error`. Same in plain Open SIMH (normal mode). A second fault made it worse: `ry_done` set RX2CS Error whenever error bits were in RX2ES, and only Read/Write cleared them, so after the density error the following Read Error Code and Read Status also ended with Error.
+- **Fix (patch 5 v29):** Read Status starts with fresh error bits and sets the density error when a diskette is in the drive and its density differs from the function density (RX2CS Error is not asserted for it). RX2CS Error now reports the errors of the current function only. Fill/Empty Buffer and Set Media Density clear RX2ES at initiation (manual 4.3.3.1, 4.3.3.2, 4.3.3.5).
+- **Test:** `tests/rx02/vms2.ini` (normal) and `tests/rx02/vms3.ini` (realism) with VMS V4.7 on the VAX-11/750: INITIALIZE double (DYA0) and single (DYA1), MOUNT, COPY LOGINOUT.EXE, DIRECTORY, DISMOUNT; both mounts succeed, no errors. RT-11 tests n1, r1, t1, t2, sd0, sd1 unchanged.
+- **Found and fixed:** 2026-11-11 (Ulli's VMS V4.7 test of the RX02 realism work).
+
+### 48 — OPEN — Suspicious: extended status word 4 bit 5 is "diskette in drive", not "head loaded"
+- **Where:** `PDP11/pdp11_ry.c`, `ry_svc` state ESXFR: `estat[6]` bit 0040 is set from `UNIT_ATT` of the selected unit.
+- **Manual:** RX02 manual 4.3.3.8, Read Error Code: Word 4 <5> is the Head Load Bit (<7> unit select, <6>/<4> drive densities, <0> density of the Read Error Code command).
+- **Effect:** none seen (VMS DYDRIVER and RT-11 do not use the bit for decisions as far as tested); diagnostics that check it may complain. In the realism mode the real head state is known (`SND_FLOPPY`) and could be reported.
+- **Found:** 2026-11-11 (diagnosis of case 47).

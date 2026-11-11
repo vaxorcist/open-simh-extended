@@ -1,4 +1,4 @@
-open-simh-extended/tests/rx02/README.txt  v1
+open-simh-extended/tests/rx02/README.txt  v2
 
 RX02 (RY device) tests for the sound realism mode (2026-11-11).
 
@@ -38,12 +38,17 @@ sd2.ini  pdp11      normal   the formatted new image stays an empty file
                              (known issues 46)
 v1.ini   vax750     realism  RY at the VAX-11/750 console: drive states,
                              power on/off
+vms2.ini vax750     normal   VMS V4.7: INITIALIZE double (DYA0) and single
+                             (DYA1), MOUNT, COPY, DIRECTORY, DISMOUNT; needs
+                             a copy of VMS047.R81 (known issues 47: MOUNT
+                             failed with DRVERR on double density)
+vms3.ini vax750     realism  as vms2.ini in the sound realism mode
 
 Results (2026-11-11): see docs/SIMH_Sound_handover.md (v30), floppy section.
 tools/rt11_dir_rx02.py lists the RT-11 directory of an RX02 image (it
 decodes the DY handler's 2:1 interleave with a 6-sector skew per track).
 
-VMS test (for Ulli, not run here: no VMS image in this workspace):
+VMS test (interactive, for Ulli; vms2.ini/vms3.ini run the same automatically):
   BIN/vax750 tests/rx02/vms1.ini     (from a directory with VMS047-1.R81)
 then, logged in as SYSTEM:
 
