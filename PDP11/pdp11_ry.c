@@ -171,9 +171,13 @@ static t_bool ry_flp_inited = FALSE;
 #define RY_REAL         (sim_sound_enabled ())
 #define RY_BIT_US       1.2                             /* RX02 <-> interface: 1.2 us per bit */
 #define RYDEB_OPS       0001                            /* debug: commands with their times */
+#define RYDEB_CMD       0002                            /* debug: function starts and ends */
+#define RYDEB_REG       0004                            /* debug: register accesses */
 
 DEBTAB ry_deb[] = {
     { "OPS",  RYDEB_OPS,  "commands and their realistic times (realism mode)" },
+    { "CMD",  RYDEB_CMD,  "function starts, INIT and completions with status (both modes)" },
+    { "REG",  RYDEB_REG,  "register reads and writes (both modes)" },
     { NULL, 0 }
     };
 
@@ -305,10 +309,12 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
     case 0:                                             /* RYCS */
         ry_csr = (ry_csr & RYCS_IMP) | RYCS_RY;         /* clear junk */
         *data = ry_csr;
+        sim_debug (RYDEB_REG, &ry_dev, ">>RY rd RYCS %06o\n", *data);
         break;
 
     case 1:                                             /* RYDB */
         *data = ry_dbr;                                 /* return data */
+        sim_debug (RYDEB_REG, &ry_dev, ">>RY rd RYDB %06o\n", *data);
         break;
         }                                               /* end switch PA */
 
@@ -334,13 +340,20 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
         ry_csr = (ry_csr & RYCS_IMP) | RYCS_RY;         /* clear junk */
         if (access == WRITEB) data = (PA & 1)?          /* write byte? */
             (ry_csr & 0377) | (data << 8): (ry_csr & ~0377) | data;
+        sim_debug (RYDEB_REG, &ry_dev, ">>RY wr RYCS %06o (state %d)\n", data, ry_state);
         if (data & RYCS_INIT) {                         /* initialize? */
+            sim_debug (RYDEB_CMD, &ry_dev, ">>RY INIT (state was %d)\n", ry_state);
             ry_reset (&ry_dev);                         /* reset device */
             return SCPE_OK;                             /* end if init */
             }
+        if ((data & CSR_GO) && (ry_state != IDLE))
+            sim_debug (RYDEB_CMD, &ry_dev, ">>RY GO %06o ignored: busy (state %d)\n", data, ry_state);
         if ((data & CSR_GO) && (ry_state == IDLE)) {    /* new function? */
             ry_csr = (data & RYCS_RW) | RYCS_RY;
             drv = ((ry_csr & RYCS_DRV)? 1: 0);          /* reselect drv */
+            sim_debug (RYDEB_CMD, &ry_dev, ">>RY%d function %d%s%s\n", drv, RYCS_GETFNC (data),
+                       (data & RYCS_DEN) ? " double density" : " single density",
+                       (data & RYCS_IE) ? ", IE" : "");
             switch (RYCS_GETFNC (data)) {
 
             case RYCS_FILL: case RYCS_EMPTY:
@@ -399,6 +412,7 @@ switch ((PA >> 1) & 1) {                                /* decode PA<1> */
         if ((PA & 1) || ((ry_state != IDLE) && ((ry_csr & RYCS_TR) == 0)))
             return SCPE_OK;                             /* if ~IDLE, need tr */
         ry_dbr = data;                                  /* save data */
+        sim_debug (RYDEB_REG, &ry_dev, ">>RY wr RYDB %06o (state %d)\n", data, ry_state);
         if (ry_state != IDLE) {
             drv = ((ry_csr & RYCS_DRV)? 1: 0);          /* select drv */
             sim_activate (&ry_unit[drv], ry_xwait);     /* sched event */
@@ -625,6 +639,8 @@ if ((new_ecode > 0) || (ry_esr & RYES_ERR))             /* test for error */
     ry_csr = ry_csr | RYCS_ERR;
 ry_ecode = new_ecode;                                   /* update ecode */
 ry_dbr = ry_esr;                                        /* update RYDB */
+sim_debug (RYDEB_CMD, &ry_dev, ">>RY%d done: RYCS %06o RYES %06o error code %04o, track %d sector %d\n",
+           drv, ry_csr, ry_esr, ry_ecode, ry_track, ry_sector);
 if (RY_REAL)                                            /* the head unloads if no new */
     sim_floppy_end (&ry_flp[drv], 0.0);                 /* command comes within HDUNLOAD */
 return;
