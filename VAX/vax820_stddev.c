@@ -29,10 +29,18 @@
    cs           console floppy
    todr         TODR clock
    tmr          interval timer
+
+   11-Nov-26    Ulli    Console floppy (CS, the RX50 of the VAX 8200 console):
+                        sound realism mode (SET SOUND ENABLED): one RX50
+                        drive, both slots on one motor and one head carriage,
+                        realistic timing (motor start, steps, head load,
+                        sectors at their real time) and drive sounds; SHOW
+                        CSn DRIVE, ATTACH/DETACH are the door; HELP CS
 */
 
 #include "vax_defs.h"
 #include "sim_tmxr.h"
+#include "sim_sound.h"
 
 /* Terminal definitions */
 
@@ -248,6 +256,24 @@ void tmr_sched (uint32 incr);
 t_stat todr_resync (void);
 t_bool fl_test_xfr (UNIT *uptr, t_bool wr);
 void fl_protocol_error (void);
+static void fl_go (void);
+t_stat fl_attach (UNIT *uptr, CONST char *cptr);
+t_stat fl_detach (UNIT *uptr);
+t_stat fl_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat fl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+
+/* Sound realism mode (SET SOUND ENABLED): CS0 and CS1 are the two
+   diskette slots of the console's RX50 drive: one spindle motor switched
+   by the controller, one head carriage (CS1 shares the mechanics of CS0),
+   a head load solenoid per side (sim_sound SND_FLOPPY, sim_flp_rx50).
+   The adjustable times are the registers STEP, SETTLE, HDLOAD, HDUNLOAD,
+   MOTORUP, MOTOROFF. */
+
+static SND_FLOPPY fl_flp[2];
+static SND_FLP_REGS fl_flp_regs;
+static t_bool fl_flp_inited = FALSE;
+
+#define FL_REAL         (sim_sound_enabled ())
 
 extern int32 con_halt (int32 code, int32 cc);
 
@@ -417,6 +443,12 @@ REG fl_reg[] = {
     { DRDATAD (XTIME,      fl_xwait, 24, "transfer time delay, per byte"), PV_LEFT },
     { FLDATAD (STOP_IOE, fl_stopioe,  0, "stop on I/O error") },
     { BRDATAD (DBUF,         fl_buf, 16, 8, FL_NUMBY, "data buffer") },
+    { DRDATAD (STEP,     fl_flp_regs.step_us,     24, "realism mode: step time per track (us)"), PV_LEFT },
+    { DRDATAD (SETTLE,   fl_flp_regs.settle_us,   24, "realism mode: head settle time (us)"), PV_LEFT },
+    { DRDATAD (HDLOAD,   fl_flp_regs.hdload_us,   24, "realism mode: head load time (us)"), PV_LEFT },
+    { DRDATAD (HDUNLOAD, fl_flp_regs.hdunload_ms, 24, "realism mode: head unloaded after n ms idle (provisional)"), PV_LEFT },
+    { DRDATAD (MOTORUP,  fl_flp_regs.motorup_ms,  24, "realism mode: motor start (ms)"), PV_LEFT },
+    { DRDATAD (MOTOROFF, fl_flp_regs.motoroff_ms, 24, "realism mode: motor off after n ms idle (provisional)"), PV_LEFT },
     { NULL }
     };
 
@@ -425,6 +457,8 @@ MTAB fl_mod[] = {
         &set_writelock, &show_writelock,   NULL, "Write enable floppy drive" },
     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
         &set_writelock, NULL,   NULL, "Write lock floppy drive" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
+        NULL, &fl_show_drive, NULL, "Display the RX50 drive mechanics (sound realism mode)" },
     { 0 }
     };
 
@@ -443,9 +477,9 @@ DEVICE fl_dev = {
     "CS", fl_unit, fl_reg, fl_mod,
     2, DEV_RDX, 20, 1, DEV_RDX, 8,
     NULL, NULL, &fl_reset,
-    NULL, NULL, NULL,
+    NULL, &fl_attach, &fl_detach,
     NULL, DEV_DEBUG, 0,
-    fl_deb, NULL, NULL, NULL, NULL, NULL,
+    fl_deb, NULL, NULL, &fl_help, NULL, NULL,
     &fl_description
     };
 
@@ -1045,10 +1079,7 @@ switch (rg) {
         break;
 
     case FL_GO:
-        if (fl_cs0 & FLCS0_DKS)                         /* disk 1? */
-            sim_activate (&fl_unit[1], fl_cwait);       /* start operation */
-        else                                            /* no, disk 0 */
-            sim_activate (&fl_unit[0], fl_cwait);       /* start operation */
+        fl_go ();                                       /* start operation */
         break;
         }
 sim_debug (FL_DB_REG, &fl_dev, "fl_rd(%s) data=0x%02X\n", fl_regnames[rg], val);
@@ -1083,10 +1114,7 @@ switch (rg) {
         break;
 
     case FL_GO:
-        if (fl_cs0 & FLCS0_DKS)                         /* disk 1? */
-            sim_activate (&fl_unit[1], fl_cwait);       /* start operation */
-        else                                            /* no, disk 0 */
-            sim_activate (&fl_unit[0], fl_cwait);       /* start operation */
+        fl_go ();                                       /* start operation */
         break;
 
     case FL_FB:
@@ -1134,6 +1162,59 @@ fl_cs4 = 0;                                             /* FIXME */
    FL_WRITE1            Write sector, schedule FL_DONE
    FL_DONE              Copy requested data to TXDB, set FL_IDLE
 */
+
+/* Start the function in CS0 on the selected drive (GO): CTIME
+   instructions in the normal mode; in the realism mode the RX50's real
+   time (Rainbow 100 Technical Manual EK-PC100-TM-001, chapter 6):
+   - Read/Write Sector: the other slot's head unloads (the drive selects
+     one side), the motor starts if it was off (at speed in 0.5 s; the
+     steps go on meanwhile), the head steps 6 ms per track, is loaded and
+     settles (30 ms), then the sector comes round (300 rpm, 10 sectors;
+     the guest gives the physical sector) and is read or written; no
+     diskette: not ready at once (error 0x50); a track > 79 or a sector 0
+     or > 10: two revolutions;
+   - Restore Drive and Initialize: the motor on, the head steps to track 0;
+   - the other functions: CTIME. */
+
+static void fl_go (void)
+{
+int32 unit = (fl_cs0 & FLCS0_DKS) ? 1 : 0;
+int32 fnc = (fl_cs0 >> FLCS0_V_FNC) & FLCS0_M_FNC;
+UNIT *uptr = &fl_unit[unit];
+SND_FLOPPY *f = &fl_flp[unit];
+int32 trk = fl_cs1 & FLCS1_TRK;
+int32 sec = fl_cs2 & FLCS2_SECT;
+double t, tm;
+
+if (!FL_REAL || ((fnc != FL_FNCRS) && (fnc != FL_FNCWS) &&
+    (fnc != FL_FNCRD) && (fnc != FL_FNCIN)) || !(uptr->flags & UNIT_BUF)) {
+    sim_activate (uptr, fl_cwait);
+    return;
+    }
+sim_floppy_unload (&fl_flp[unit ^ 1]);                  /* one side selected */
+tm = sim_floppy_motor (f);                              /* motor on, time to speed */
+if ((fnc == FL_FNCRD) || (fnc == FL_FNCIN)) {           /* restore: to track 0 */
+    t = sim_floppy_seek (f, 0, FALSE);
+    if (t < tm)
+        t = tm;
+    }
+else if (trk >= FL_NUMTR) {                             /* refused, no steps */
+    t = tm + 2.0 * sim_floppy_rev_us (f);
+    }
+else {
+    t = sim_floppy_seek (f, trk, TRUE);                 /* steps, head load, settle */
+    if (t < tm)
+        t = tm;
+    if ((sec == 0) || (sec > FL_NUMSC))                 /* no such sector */
+        t += 2.0 * sim_floppy_rev_us (f);
+    else
+        t = sim_floppy_rotate (f, t, sec - 1, 1);
+    }
+sim_floppy_end (f, t);
+sim_debug (FL_DB_FNC, &fl_dev, "fl_go(%d) - %s track %d sector %d: %.2f ms\n",
+           unit, fl_fncnames[fnc], trk, sec, t / 1000.0);
+sim_sound_activate_us (uptr, (t < 50.0) ? 50.0 : t);
+}
 
 t_stat fl_svc (UNIT *uptr)
 {
@@ -1219,12 +1300,66 @@ return FALSE;
 
 t_stat fl_reset (DEVICE *dptr)
 {
+if (!fl_flp_inited) {                                   /* drive mechanics, once */
+    fl_flp_inited = TRUE;
+    sim_floppy_set_defaults (&fl_flp_regs, &sim_flp_rx50);
+    }
+sim_floppy_init (&fl_flp[0], &fl_unit[0], &sim_flp_rx50, &fl_flp_regs, SND_GRP_DISK, 1.0);
+sim_floppy_init (&fl_flp[1], &fl_unit[1], &sim_flp_rx50, &fl_flp_regs, SND_GRP_DISK, 1.0);
+sim_floppy_share (&fl_flp[1], &fl_flp[0]);              /* one motor, one carriage */
 fl_ecode = 0;                                           /* clear error */
 fl_sector = 0;                                          /* clear addr */
 fl_track = 0;
 fl_bptr = 0;
 sim_cancel (&fl_unit[0]);                               /* cancel drive */
 sim_cancel (&fl_unit[1]);                               /* cancel drive */
+return SCPE_OK;
+}
+
+/* Attach: a diskette in, the door closed; detach: the door opened */
+
+t_stat fl_attach (UNIT *uptr, CONST char *cptr)
+{
+t_stat r = attach_unit (uptr, cptr);
+
+if (r == SCPE_OK)
+    sim_floppy_insert (&fl_flp[uptr - fl_unit]);
+return r;
+}
+
+t_stat fl_detach (UNIT *uptr)
+{
+if (uptr->flags & UNIT_ATT)
+    sim_floppy_remove (&fl_flp[uptr - fl_unit]);
+return detach_unit (uptr);
+}
+
+t_stat fl_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fprintf (st, "RX50 slot %c: ", (uptr == &fl_unit[0]) ? 'A' : 'B');
+return sim_floppy_show (st, &fl_flp[uptr - fl_unit]);
+}
+
+t_stat fl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+{
+fprintf (st, "Console Floppy (CS)\n\n");
+fprintf (st, "The VAX 8200 console floppy is an RX50 drive with two diskette slots, CS0\n");
+fprintf (st, "and CS1 (VMS: CSA1 and CSA2): 80 tracks of 10 sectors of 512 bytes per\n");
+fprintf (st, "diskette.  The CPU reaches it through the floppy controller registers.\n\n");
+fprint_set_help (st, dptr);
+fprint_show_help (st, dptr);
+fprint_reg_help (st, dptr);
+fprintf (st, "\nSound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
+fprintf (st, "  - Both slots turn on one spindle motor and share one head carriage.  The\n");
+fprintf (st, "    controller switches the motor on for a command (at speed in MOTORUP,\n");
+fprintf (st, "    500 ms) and off after MOTOROFF (2000 ms, provisional) without one.\n");
+fprintf (st, "  - Read/Write Sector: the head steps 6 ms per track (STEP), is loaded and\n");
+fprintf (st, "    settles 30 ms (HDLOAD, SETTLE), the sector is read when it comes round\n");
+fprintf (st, "    (300 rpm); the head unloads after HDUNLOAD (2000 ms, provisional) or\n");
+fprintf (st, "    when the other slot is used.  ATTACH and DETACH are the door.\n");
+fprintf (st, "  - Sounds from sound/rx50 (else sound/default_floppy).\n");
+fprintf (st, "  - SHOW CSn DRIVE shows the slot; SET CS DEBUG=FNC traces every command\n");
+fprintf (st, "    with its realistic time.\n");
 return SCPE_OK;
 }
 
