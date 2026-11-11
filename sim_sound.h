@@ -728,8 +728,9 @@ int32 sim_sound_seek (SND_SAMPLE *smp[3], int32 dist, int32 s_lim, int32 m_lim,
    comes round at a definite time and the guest's interleave has its
    real effect.  Sectors are evenly spaced, the first after the index.
 
-   Sounds (group DISK): <dir>/<prefix>_<name>.wav, else
-   default_floppy/<name>.wav, for the names motor_start, motor (loop),
+   Sounds (group DISK): <dir>/<prefix>_<name>.wav, else (a type with an
+   alias, the RX01) <alias>/<alias>_<name>.wav of the drive with the same
+   mechanics, else default_floppy/<name>.wav, for the names motor_start, motor (loop),
    motor_stop, disk (loop: a diskette turning in its jacket), head (loop:
    the head pad on the turning diskette), head_load, head_unload, step
    (one click per track), door_close (ATTACH), door_open (DETACH).
@@ -778,6 +779,9 @@ typedef struct {
     int32 hdunload_ms;                          /* ... head unloaded after this idle time */
     int32 motorup_ms;                           /* ... motor run-up */
     int32 motoroff_ms;                          /* ... CTRL: idle time before the motor stops */
+    const char *alias;                          /* NULL, or the prefix of a drive with the same
+                                                   mechanics whose sounds come before the
+                                                   defaults ("rx02" for the RX01) */
     } SND_FLP_TYPE;
 
 typedef struct {                                /* device registers (int32 each) */
