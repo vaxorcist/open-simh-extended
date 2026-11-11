@@ -100,6 +100,9 @@ static const char *snd_sys_names[SND_SYS_COUNT] = {
 
 static t_bool snd_enabled = FALSE;              /* SET SOUND ENABLED (realism mode) */
 static t_bool snd_power = FALSE;                /* system power state */
+static void flp_power (t_bool on, t_bool direct);   /* floppy drives (end of file) */
+static UNIT *flp_attached_unit (void);
+static void flp_forget_sounds (void);
 static int32 snd_master_vol = 100;              /* master volume (%) */
 static t_bool snd_master_mute = FALSE;          /* master mute */
 static int32 snd_group_vol[SND_GRP_COUNT] = {   /* group volumes (%) */
@@ -130,6 +133,10 @@ static int32 snd_n_runhooks = 0;
    - tapes: sound/default_tape/load.wav, unload.wav, rewind_start.wav,
      rewind.wav, rewind_stop.wav, start.wav, motion.wav, stop.wav (the
      synthetic TS11 transport sounds, tools/make_tape_sounds.py);
+   - floppies (2026-11-11): sound/default_floppy/motor_start.wav, motor.wav,
+     motor_stop.wav, disk.wav, head.wav, head_load.wav, head_unload.wav,
+     step.wav, door_close.wav, door_open.wav (a synthetic 5.25" drive,
+     tools/make_floppy_sounds.py), motor sounds included;
    - CPUs: sound/default_cpu/starting.wav, running.wav, stopping.wav (the
      recordings of a real VAX-11/750), only for simulators that opt in with
      sim_sound_use_default_cpu ().
@@ -186,7 +193,7 @@ for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
             return &dptr->units[j];
         }
     }
-return NULL;
+return flp_attached_unit ();                    /* floppies (not DEV_DISK devices) */
 }
 
 /* Directory of the executable, ending with a path separator, or "" if it
@@ -363,6 +370,8 @@ typedef struct {
     uint32 delay;                               /* PLAY: silent frames before the start */
     uint32 life;                                /* PLAY: fade out after this many frames (0: never) */
     uint32 life_fade;                           /* PLAY: ... over this many frames */
+    uint32 rep_count;                           /* PLAY: play the sample this many more times */
+    uint32 rep_period;                          /* PLAY: ... every rep_period frames (0: no repeats) */
     } SND_CMD;
 
 /* A voice: one sample being played.  Only the audio thread touches the
@@ -384,6 +393,9 @@ typedef struct {
     uint32 delay;                               /* frames of silence before the start */
     uint32 life;                                /* frames until the voice fades out (0: never) */
     uint32 life_fade;                           /* ... fade length in frames */
+    uint32 rep_left;                            /* repetitions still to come (step clicks) */
+    uint32 rep_period;                          /* ... one every rep_period frames (0: none) */
+    uint32 rep_pos;                             /* frames since the current repetition began */
     t_bool loop;                                /* loop at the end */
     int32 group;                                /* mixer group */
     float gain;                                 /* voice gain */
@@ -448,21 +460,21 @@ return (snd_rand_state >> 8);
 
 /* Start a voice (audio thread) */
 
-static void snd_voice_start (SND_HANDLE handle, SND_SAMPLE *smp, SND_SAMPLE *chain,
-                             uint32 chain_flags, int32 group, float gain, uint32 flags, uint32 fade,
-                             double rate, uint32 delay, uint32 life, uint32 life_fade)
+static SND_VOICE *snd_voice_start (SND_HANDLE handle, SND_SAMPLE *smp, SND_SAMPLE *chain,
+                                   uint32 chain_flags, int32 group, float gain, uint32 flags, uint32 fade,
+                                   double rate, uint32 delay, uint32 life, uint32 life_fade)
 {
 int32 i;
 SND_VOICE *v;
 
 if ((smp == NULL) || (smp->data == NULL) || (smp->frames == 0))
-    return;
+    return NULL;
 for (i = 0; i < SND_VOICES; i++) {
     if (!snd_voices[i].active)
         break;
     }
 if (i == SND_VOICES)                            /* all voices busy: drop the request */
-    return;
+    return NULL;
 v = &snd_voices[i];
 memset (v, 0, sizeof (*v));
 v->active = TRUE;
@@ -487,6 +499,7 @@ else {
     v->fade_step = 0.0f;
     }
 SDL_AtomicAdd (&snd_active_count, 1);
+return v;
 }
 
 /* Fade out and stop a voice (audio thread) */
@@ -540,10 +553,17 @@ while (snd_qhead != snd_qtail) {
 
     snd_qhead = (snd_qhead + 1) % SND_QSIZE;
     switch (c->type) {
-        case SND_CMD_PLAY:
-            snd_voice_start (c->handle, c->smp, c->chain, c->chain_flags, c->group, c->gain, c->flags, c->fade,
-                             c->rate, c->delay, c->life, c->life_fade);
+        case SND_CMD_PLAY: {
+            SND_VOICE *v = snd_voice_start (c->handle, c->smp, c->chain, c->chain_flags, c->group, c->gain,
+                                            c->flags, c->fade, c->rate, c->delay, c->life, c->life_fade);
+
+            if ((v != NULL) && (c->rep_period > 0)) {   /* repeated one-shot (step clicks) */
+                v->rep_left = c->rep_count;
+                v->rep_period = c->rep_period;
+                v->rep_pos = 0;
+                }
             break;
+            }
         case SND_CMD_RATE:
             for (i = 0; i < SND_VOICES; i++) {
                 if (snd_voices[i].active && (snd_voices[i].handle == c->handle))
@@ -645,9 +665,19 @@ for (k = 0; k < SND_VOICES; k++) {
             if (--v->life == 0)
                 snd_voice_fade_out (v, v->life_fade);
             }
+        if (v->rep_period > 0) {                /* repeated one-shot: the next repetition */
+            if ((v->rep_pos >= v->rep_period) && (v->rep_left > 0)) {
+                v->pos = 0.0;                   /* starts again (a longer sample is cut off) */
+                v->rep_pos = 0;
+                v->rep_left--;
+                }
+            v->rep_pos++;
+            }
 
         if (v->pos >= (double)frames) {
             if (!v->loop) {                     /* one-shot finished */
+                if (v->rep_left > 0)            /* silence until the next repetition */
+                    continue;
                 snd_voice_end (v);
                 break;
                 }
@@ -759,6 +789,32 @@ cmd.rate = rate;
 cmd.delay = (delay_s > 0.0) ? (uint32)(delay_s * SND_RATE) : 0;
 cmd.life = (life_s > 0.0) ? (uint32)(life_s * SND_RATE) + 1 : 0;
 cmd.life_fade = (uint32)(((double)life_fade_ms * SND_RATE) / 1000.0);
+return snd_queue_cmd (&cmd) ? cmd.handle : 0;
+}
+
+/* A one-shot played count times, one every period_s seconds, starting
+   after delay_s: e.g. the step clicks of a floppy head stepping over n
+   tracks (one voice for the whole seek). */
+
+static SND_HANDLE snd_play_repeat (SND_SAMPLE *smp, int32 group, double gain, uint32 count,
+                                   double period_s, double delay_s)
+{
+SND_CMD cmd;
+
+if ((snd_dev == 0) || (smp == NULL) || (smp->data == NULL) || (count == 0))
+    return 0;
+memset (&cmd, 0, sizeof (cmd));
+cmd.type = SND_CMD_PLAY;
+cmd.handle = SDL_AtomicAdd (&snd_handle_seq, 1) + 1;
+cmd.smp = smp;
+cmd.group = group;
+cmd.gain = (float)gain;
+cmd.rate = 1.0;
+cmd.delay = (delay_s > 0.0) ? (uint32)(delay_s * SND_RATE) : 0;
+cmd.rep_count = count - 1;
+cmd.rep_period = (uint32)(period_s * SND_RATE);
+if (cmd.rep_period == 0)
+    cmd.rep_period = 1;
 return snd_queue_cmd (&cmd) ? cmd.handle : 0;
 }
 
@@ -994,6 +1050,12 @@ static void snd_glide_ex (SND_HANDLE handle, double rate, double secs, int32 cur
 
 static void snd_extend_ex (SND_HANDLE handle, double secs)
 {
+}
+
+static SND_HANDLE snd_play_repeat (SND_SAMPLE *smp, int32 group, double gain, uint32 count,
+                                   double period_s, double delay_s)
+{
+return 0;
 }
 
 static SND_HANDLE snd_play_full (SND_SAMPLE *smp, SND_SAMPLE *chain, uint32 chain_flags,
@@ -3314,6 +3376,7 @@ if (snd_power)                                  /* already on: e.g. RUN after HA
 snd_power = TRUE;
 snd_sys_start (FALSE);
 snd_unitloops_restore ();                       /* spindles that kept running */
+flp_power (TRUE, FALSE);                        /* floppy AC motors start */
 }
 
 void sim_sound_power_off (t_bool wait)
@@ -3331,6 +3394,7 @@ if (!sim_sound_available ())
 snd_stop_ex (SND_CMD_STOPALL, 0, 150);
 snd_sys_handle = 0;
 snd_unitloops_silence ();
+flp_power (FALSE, FALSE);                       /* floppy AC motors run down */
 if (stopping != NULL) {
     snd_play_ex (stopping, NULL, 0, SND_GRP_SYSTEM, 1.0, 0, 0);
     if (wait)                                   /* let the run-down finish before exit */
@@ -3394,8 +3458,10 @@ snd_apply_throttle (enable);
 if (enable) {
     if (snd_audio_open ()) {
         snd_sys_load ();
-        if (snd_power)                          /* power already on: just the loop */
+        if (snd_power) {                        /* power already on: just the loops */
             snd_sys_start (TRUE);
+            flp_power (TRUE, TRUE);
+            }
         }
     else {
 #if defined (USE_SIM_SOUND)
@@ -3413,6 +3479,7 @@ else {
     snd_audio_close ();
     snd_sys_handle = 0;
     memset (snd_sys_smp, 0, sizeof (snd_sys_smp));
+    flp_forget_sounds ();
     }
 return SCPE_OK;
 }
@@ -3654,5 +3721,355 @@ for (i = 0; i < SND_SYS_COUNT; i++) {
 fprintf (st, "Defaults: %s\n", snd_default_uses ? snd_default_uses : "(none used yet)");
 if (sim_sound_available ())
     fprintf (st, "Voices:  %d playing\n", (int)snd_active_voices ());
+return SCPE_OK;
+}
+
+/* Floppy disk drives (see sim_sound.h) */
+
+/* Drive types.  Sources:
+   RX02: RX02 Floppy Disk System Technical Manual EK-0RX02-TM-001, 1.4
+         (360 rpm, 166 ms/rev, track-to-track 6 ms max., head settle
+         25 ms max., 77 tracks of 26 sectors, average access 262 ms =
+         77/3 x 6 + 25 + 166/2), 5.3.4.4 (head unloaded if no new command
+         within 200 ms), 5.3.4.1 (ready within 2 s of power), 2.x (power
+         up: the heads move one track in and back); RX02 print set MP00629
+         (H771 power supply: both spin motors on the AC line).
+   RX01: RX01 maintenance manual EK-RX01-MM-002 (one track 10 ms, settle
+         25 ms, average access 488 ms; at power up the heads move ten
+         tracks in and back); head unload 200 ms as the RX02 (provisional). */
+
+const SND_FLP_TYPE sim_flp_rx01 = {
+    "RX01", "rx01", 360.0, 77, 26, SND_FLP_MOTOR_AC, 10,
+    10000, 25000, 25000, 200, 2000, 0 };
+const SND_FLP_TYPE sim_flp_rx02 = {
+    "RX02", "rx02", 360.0, 77, 26, SND_FLP_MOTOR_AC, 1,
+    6000, 25000, 25000, 200, 2000, 0 };
+
+#define FLP_S_MOTOR_START   0                   /* sound indexes */
+#define FLP_S_MOTOR         1
+#define FLP_S_MOTOR_STOP    2
+#define FLP_S_DISK          3
+#define FLP_S_HEAD          4
+#define FLP_S_HEAD_LOAD     5
+#define FLP_S_HEAD_UNLOAD   6
+#define FLP_S_STEP          7
+#define FLP_S_DOOR_CLOSE    8
+#define FLP_S_DOOR_OPEN     9
+
+static const char *flp_snd_names[SND_FLP_NSMP] = {
+    "motor_start", "motor", "motor_stop", "disk", "head",
+    "head_load", "head_unload", "step", "door_close", "door_open" };
+
+#define FLP_DEFAULT_DIR     "default_floppy"
+#define FLP_GAIN_DISK       0.5                 /* the loops relative to the drive gain */
+#define FLP_GAIN_HEAD       0.6
+
+static SND_FLOPPY **flp_list = NULL;            /* every floppy drive ever initialized */
+static int32 flp_n = 0;
+static uint32 flp_rand_state = 4711;            /* rotational phases (simulator thread) */
+
+static double flp_random (void)                 /* 0 <= x < 1 */
+{
+flp_rand_state = flp_rand_state * 1103515245u + 12345u;
+return (double)((flp_rand_state >> 8) & 0xFFFFFF) / 16777216.0;
+}
+
+/* The drive takes part: its unit and device are enabled */
+
+static t_bool flp_present (SND_FLOPPY *f)
+{
+DEVICE *dptr;
+
+if ((f->uptr == NULL) || (f->uptr->flags & UNIT_DIS))
+    return FALSE;
+dptr = find_dev_from_unit (f->uptr);
+return (dptr != NULL) && ((dptr->flags & DEV_DIS) == 0);
+}
+
+static void flp_load_sounds (SND_FLOPPY *f)
+{
+int32 i;
+
+if (f->loaded || !sim_sound_available ())
+    return;
+for (i = 0; i < SND_FLP_NSMP; i++) {
+    char own[CBUFSIZE], def[CBUFSIZE];
+
+    snprintf (own, sizeof (own), "%s_%s.wav", f->type->prefix, flp_snd_names[i]);
+    snprintf (def, sizeof (def), "%s.wav", flp_snd_names[i]);
+    f->smp[i] = snd_load_with_default (f->type->prefix, own, FLP_DEFAULT_DIR, def, "floppy");
+    }
+f->loaded = TRUE;
+}
+
+/* SET SOUND DISABLED closes the audio output: the samples are gone */
+
+static void flp_forget_sounds (void)
+{
+int32 i;
+
+for (i = 0; i < flp_n; i++) {
+    flp_list[i]->loaded = FALSE;
+    memset (flp_list[i]->smp, 0, sizeof (flp_list[i]->smp));
+    flp_list[i]->motor_h = flp_list[i]->disk_h = flp_list[i]->head_h = 0;
+    }
+}
+
+static t_bool flp_motor_running (SND_FLOPPY *f)
+{
+return snd_power;                               /* SND_FLP_MOTOR_AC (the only kind so far) */
+}
+
+static void flp_disk_start (SND_FLOPPY *f, uint32 fade_ms, double delay_s)
+{
+if ((f->disk_h == 0) && f->inserted && flp_motor_running (f))
+    f->disk_h = snd_play_full (f->smp[FLP_S_DISK], NULL, 0, f->group, f->gain * FLP_GAIN_DISK,
+                               SND_F_LOOP | SND_F_RANDPHASE, fade_ms, 1.0, delay_s, 0.0, 0);
+}
+
+static void flp_unload_done (SND_TIMER *t);
+
+void sim_floppy_init (SND_FLOPPY *f, UNIT *uptr, const SND_FLP_TYPE *type, SND_FLP_REGS *regs,
+                      int32 group, double gain)
+{
+SND_FLOPPY **n;
+
+if (f->uptr != NULL)                            /* already initialized */
+    return;
+n = (SND_FLOPPY **) realloc (flp_list, (flp_n + 1) * sizeof (*flp_list));
+if (n == NULL)
+    return;
+flp_list = n;
+memset (f, 0, sizeof (*f));
+f->uptr = uptr;
+f->type = type;
+f->regs = regs;
+f->group = group;
+f->gain = gain;
+f->phase_us = flp_random () * (60.0e6 / type->rpm);
+sim_sound_timer_init (&f->unload_tmr, "FLOPPY", &flp_unload_done, f);
+flp_list[flp_n++] = f;
+}
+
+void sim_floppy_set_defaults (SND_FLP_REGS *regs, const SND_FLP_TYPE *type)
+{
+regs->step_us = type->step_us;
+regs->settle_us = type->settle_us;
+regs->hdload_us = type->hdload_us;
+regs->hdunload_ms = type->hdunload_ms;
+regs->motorup_ms = type->motorup_ms;
+regs->motoroff_ms = type->motoroff_ms;
+}
+
+/* A diskette attached to a floppy drive keeps SET SOUND ENABLED/DISABLED
+   from changing the timing under it (the floppy devices are not DEV_DISK) */
+
+static UNIT *flp_attached_unit (void)
+{
+int32 i;
+
+for (i = 0; i < flp_n; i++)
+    if ((flp_list[i]->uptr != NULL) && (flp_list[i]->uptr->flags & UNIT_ATT))
+        return flp_list[i]->uptr;
+return NULL;
+}
+
+/* Power on: the AC motors start (direct: SET SOUND ENABLED with the power
+   already on, just the running loops); the heads step in and back (the
+   drive's power-up homing).  Power off: they run down, the heads unload. */
+
+static void flp_power (t_bool on, t_bool direct)
+{
+int32 i;
+
+if (!sim_sound_enabled ())
+    return;
+for (i = 0; i < flp_n; i++) {
+    SND_FLOPPY *f = flp_list[i];
+
+    if (!flp_present (f) || (f->type->motor != SND_FLP_MOTOR_AC))
+        continue;
+    flp_load_sounds (f);
+    if (on) {
+        double up_s = (double)f->regs->motorup_ms / 1000.0;
+
+        if (direct || (f->smp[FLP_S_MOTOR_START] == NULL))
+            f->motor_h = snd_play_full (f->smp[FLP_S_MOTOR], NULL, 0, f->group, f->gain,
+                                        SND_F_LOOP | SND_F_RANDPHASE, 300, 1.0, 0.0, 0.0, 0);
+        else
+            f->motor_h = snd_play_ex (f->smp[FLP_S_MOTOR_START], f->smp[FLP_S_MOTOR], SND_F_RANDPHASE,
+                                      f->group, f->gain, 0, 0);
+        flp_disk_start (f, direct ? 300 : (uint32)(up_s * 1000.0), 0.0);
+        if (!direct && (f->type->powerup_steps > 0)) {  /* power-up homing */
+            int32 n = f->type->powerup_steps;
+
+            snd_play_repeat (f->smp[FLP_S_STEP], f->group, f->gain, 2 * n,
+                             (double)f->regs->step_us / 1.0e6, up_s);
+            f->track = 0;
+            }
+        }
+    else {                                      /* the loops were faded by power off */
+        f->motor_h = f->disk_h = f->head_h = 0;
+        f->head_loaded = FALSE;
+        sim_sound_timer_cancel (&f->unload_tmr);
+        snd_play_ex (f->smp[FLP_S_MOTOR_STOP], NULL, 0, f->group, f->gain, 0, 0);
+        }
+    }
+}
+
+void sim_floppy_insert (SND_FLOPPY *f)
+{
+f->inserted = TRUE;
+f->head_loaded = FALSE;
+f->phase_us = flp_random () * sim_floppy_rev_us (f);
+if (!sim_sound_enabled () || (f->uptr == NULL))
+    return;
+flp_load_sounds (f);
+snd_play_ex (f->smp[FLP_S_DOOR_CLOSE], NULL, 0, f->group, f->gain, 0, 0);
+flp_disk_start (f, 400, 0.3);                   /* the cone clamps the diskette */
+}
+
+void sim_floppy_remove (SND_FLOPPY *f)
+{
+t_bool was = f->inserted;
+
+f->inserted = FALSE;
+if (!sim_sound_enabled () || (f->uptr == NULL)) {
+    f->head_loaded = FALSE;
+    return;
+    }
+sim_sound_timer_cancel (&f->unload_tmr);
+f->head_loaded = FALSE;                         /* opening the door lifts the head */
+sim_sound_stop (f->head_h, 30);
+sim_sound_stop (f->disk_h, 200);
+f->head_h = f->disk_h = 0;
+if (was) {
+    flp_load_sounds (f);
+    snd_play_ex (f->smp[FLP_S_DOOR_OPEN], NULL, 0, f->group, f->gain, 0, 0);
+    }
+}
+
+/* Head load: the solenoid clacks after delay_us (the steps come first);
+   returns the head load time, 0 if the head was loaded already */
+
+static double flp_head_load (SND_FLOPPY *f, double delay_us)
+{
+if (f->head_loaded)
+    return 0.0;
+f->head_loaded = TRUE;
+if (f->regs->hdload_us <= 0)                    /* no solenoid */
+    return 0.0;
+if (sim_sound_enabled ()) {
+    flp_load_sounds (f);
+    snd_play_full (f->smp[FLP_S_HEAD_LOAD], NULL, 0, f->group, f->gain, 0, 0, 1.0,
+                   delay_us / 1.0e6, 0.0, 0);
+    if (f->inserted && flp_motor_running (f))
+        f->head_h = snd_play_full (f->smp[FLP_S_HEAD], NULL, 0, f->group, f->gain * FLP_GAIN_HEAD,
+                                   SND_F_LOOP | SND_F_RANDPHASE, 20, 1.0, delay_us / 1.0e6, 0.0, 0);
+    }
+return (double)f->regs->hdload_us;
+}
+
+void sim_floppy_unload (SND_FLOPPY *f)
+{
+if (f->uptr == NULL)
+    return;
+sim_sound_timer_cancel (&f->unload_tmr);
+if (!f->head_loaded)
+    return;
+f->head_loaded = FALSE;
+if (sim_sound_enabled () && (f->regs->hdload_us > 0)) {
+    flp_load_sounds (f);
+    sim_sound_stop (f->head_h, 30);
+    f->head_h = 0;
+    snd_play_ex (f->smp[FLP_S_HEAD_UNLOAD], NULL, 0, f->group, f->gain, 0, 0);
+    }
+}
+
+static void flp_unload_done (SND_TIMER *t)
+{
+sim_floppy_unload ((SND_FLOPPY *)t->ctx);
+}
+
+double sim_floppy_seek (SND_FLOPPY *f, int32 track, t_bool load)
+{
+int32 dist;
+double t, settle = 0.0, hl;
+
+if (f->uptr == NULL)
+    return 0.0;
+sim_sound_timer_cancel (&f->unload_tmr);        /* a command is running */
+dist = abs (track - f->track);
+t = (double)dist * (double)f->regs->step_us;
+if ((dist > 0) && sim_sound_enabled ()) {
+    flp_load_sounds (f);
+    snd_play_repeat (f->smp[FLP_S_STEP], f->group, f->gain, (uint32)dist,
+                     (double)f->regs->step_us / 1.0e6, 0.0);
+    }
+f->track = track;
+if (dist > 0)
+    settle = (double)f->regs->settle_us;
+if (load) {                                     /* RX02: step, then load the head */
+    hl = flp_head_load (f, t);                  /* and wait 25 ms (flowchart 5-28) */
+    if (hl > settle)
+        settle = hl;
+    }
+return t + settle;
+}
+
+double sim_floppy_rev_us (SND_FLOPPY *f)
+{
+return (f->type != NULL) ? 60.0e6 / f->type->rpm : 0.0;
+}
+
+double sim_floppy_rotate (SND_FLOPPY *f, double after_us, int32 sector, int32 nsect)
+{
+double rev = sim_floppy_rev_us (f);
+double sec_us, angle, wait;
+
+if ((f->type == NULL) || (rev <= 0.0))
+    return after_us;
+sec_us = rev / (double)f->type->sectors;
+angle = fmod (sim_sound_rt_us () + after_us + f->phase_us, rev);
+wait = (double)sector * sec_us - angle;
+if (wait < 0.0)
+    wait += rev;
+return after_us + wait + (double)nsect * sec_us;
+}
+
+void sim_floppy_end (SND_FLOPPY *f, double end_us)
+{
+if ((f->uptr == NULL) || !f->head_loaded || !sim_sound_enabled () || (f->regs->hdunload_ms <= 0))
+    return;
+sim_sound_timer_start (&f->unload_tmr, end_us + 1000.0 * (double)f->regs->hdunload_ms);
+}
+
+void sim_floppy_steps (SND_FLOPPY *f, int32 n, double period_us, double delay_us)
+{
+if ((n <= 0) || !sim_sound_enabled () || (f->uptr == NULL))
+    return;
+flp_load_sounds (f);
+snd_play_repeat (f->smp[FLP_S_STEP], f->group, f->gain, (uint32)n, period_us / 1.0e6, delay_us / 1.0e6);
+}
+
+int32 sim_floppy_track (SND_FLOPPY *f)
+{
+return f->track;
+}
+
+t_stat sim_floppy_show (FILE *st, SND_FLOPPY *f)
+{
+if (f->uptr == NULL) {
+    fprintf (st, "not initialized\n");
+    return SCPE_OK;
+    }
+(void) sim_sound_timer_busy (&f->unload_tmr);   /* at the prompt: makes a due unload happen */
+fprintf (st, "%s, head %s", f->inserted ? "diskette in" : "no diskette",
+         f->head_loaded ? "loaded" : "unloaded");
+if (f->head_loaded && sim_sound_timer_busy (&f->unload_tmr))
+    fprintf (st, " (unloads in %.2f s)", sim_sound_timer_left_s (&f->unload_tmr));
+fprintf (st, ", track %d, motor %s\n", (int)f->track,
+         !sim_sound_enabled () ? "not simulated (sound disabled)" :
+         (flp_motor_running (f) ? "running" : "stopped (power off)"));
 return SCPE_OK;
 }

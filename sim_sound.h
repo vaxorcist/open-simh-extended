@@ -23,6 +23,9 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   11-Nov-26    Ulli    Floppy disk drives (SND_FLOPPY): motor, head load and
+                        unload, step clicks, rotational position from time;
+                        repeated one-shots in the mixer
    08-Nov-26    Ulli    Cartridge streamers (SND_STREAMER, TK50): buffer,
                         streaming and repositioning, serpentine tracks;
                         realtime clock sim_sound_rt_us ()
@@ -697,6 +700,131 @@ t_stat sim_strm_show (FILE *st, SND_STREAMER *s);
 void sim_sound_seek_load (SND_SAMPLE *smp[3], const char *dir, const char *prefix);
 int32 sim_sound_seek (SND_SAMPLE *smp[3], int32 dist, int32 s_lim, int32 m_lim,
                       t_bool force_long, int32 group, double gain);
+
+/* Floppy disk drives: the drive mechanics (spindle motor, head load
+   solenoid, stepper) for the timing and the sounds of a floppy drive.
+
+   The device keeps the controller semantics; a SND_FLOPPY per drive keeps
+   the mechanics.  A drive type (SND_FLP_TYPE; the standard ones are
+   sim_flp_rx01, sim_flp_rx02, ...) gives speed, geometry and times; the
+   adjustable times are device registers (SND_FLP_REGS, defaults from the
+   type with sim_floppy_set_defaults ()).
+
+   Motor:
+   - SND_FLP_MOTOR_AC: an AC motor wired to the power line (RX01, RX02:
+     no motor-on signal, H771 power supply): it runs while the system
+     power is on (sim_sound power on/off), with or without a diskette.
+   - SND_FLP_MOTOR_CTRL: a DC motor switched on by the controller and off
+     after an idle time (RX50, RX33, RX18; not yet used).
+   Head: the head load solenoid loads the head at the first command and
+   unloads it after hdunload_ms without a new command (the device calls
+   sim_floppy_end () at the end of every command); the device unloads
+   the other drive's head when it selects a drive, if the controller has
+   one head load line.  Stepper: step_us per track, settle_us after a
+   step (a head load needs hdload_us; the longer of the two counts).
+   Rotation: the angular position of the diskette follows the realtime
+   clock (sim_sound_rt_us: simulated time while the CPU runs, wall time at
+   the prompt), with a random phase per inserted diskette, so a sector
+   comes round at a definite time and the guest's interleave has its
+   real effect.  Sectors are evenly spaced, the first after the index.
+
+   Sounds (group DISK): <dir>/<prefix>_<name>.wav, else
+   default_floppy/<name>.wav, for the names motor_start, motor (loop),
+   motor_stop, disk (loop: a diskette turning in its jacket), head (loop:
+   the head pad on the turning diskette), head_load, head_unload, step
+   (one click per track), door_close (ATTACH), door_open (DETACH).
+
+   Everything here is for the realism mode only: in the normal mode the
+   device keeps its old timing and does not call these functions (those
+   that it calls do nothing).
+
+   sim_floppy_init ()      once per drive (device reset); registers the
+                           drive, so that SET SOUND ENABLED/DISABLED is
+                           refused while a diskette is attached.
+   sim_floppy_set_defaults () register defaults from the type.
+   sim_floppy_insert ()    ATTACH: diskette in, door closed.
+   sim_floppy_remove ()    DETACH: door opened, diskette out.
+   sim_floppy_seek ()      move the head to track (step clicks) and, with
+                           load, load the head: returns the microseconds
+                           until the head is settled on the track.
+   sim_floppy_rotate ()    microseconds from now until nsect sectors
+                           starting at sector index (0-based) have passed
+                           under the head, the head being ready after_us
+                           from now.
+   sim_floppy_rev_us ()    one revolution in microseconds.
+   sim_floppy_end ()       a command ends end_us from now: (re)start the
+                           head unload timer.
+   sim_floppy_unload ()    unload the head now (another drive selected).
+   sim_floppy_steps ()     play n step clicks, one every period_us after
+                           delay_us, without moving the head (a sweep).
+   sim_floppy_track ()     current head position.
+   sim_floppy_show ()      "diskette in, head loaded, track 12, motor
+                           running". */
+
+#define SND_FLP_MOTOR_AC    0                   /* runs while the power is on */
+#define SND_FLP_MOTOR_CTRL  1                   /* switched by the controller */
+
+typedef struct {
+    const char *name;                           /* "RX02" */
+    const char *prefix;                         /* sound directory and file prefix "rx02" */
+    double rpm;                                 /* rotation speed */
+    int32 tracks;                               /* tracks per side */
+    int32 sectors;                              /* sectors per track */
+    int32 motor;                                /* SND_FLP_MOTOR_xxx */
+    int32 powerup_steps;                        /* power on: the heads step in and back */
+    int32 step_us;                              /* register defaults: step time per track */
+    int32 settle_us;                            /* ... settle after steps */
+    int32 hdload_us;                            /* ... head load (0: no solenoid) */
+    int32 hdunload_ms;                          /* ... head unloaded after this idle time */
+    int32 motorup_ms;                           /* ... motor run-up */
+    int32 motoroff_ms;                          /* ... CTRL: idle time before the motor stops */
+    } SND_FLP_TYPE;
+
+typedef struct {                                /* device registers (int32 each) */
+    int32 step_us;
+    int32 settle_us;
+    int32 hdload_us;
+    int32 hdunload_ms;
+    int32 motorup_ms;
+    int32 motoroff_ms;
+    } SND_FLP_REGS;
+
+#define SND_FLP_NSMP        10                  /* sounds per drive */
+
+typedef struct SND_FLOPPY {
+    UNIT *uptr;                                 /* drive unit (NULL: not initialized) */
+    const SND_FLP_TYPE *type;                   /* drive type */
+    SND_FLP_REGS *regs;                         /* device registers */
+    int32 group;                                /* sound group and gain */
+    double gain;
+    t_bool inserted;                            /* a diskette is in, door closed */
+    t_bool head_loaded;                         /* head load solenoid on */
+    int32 track;                                /* head position */
+    double phase_us;                            /* rotational phase of the diskette */
+    SND_TIMER unload_tmr;                       /* head unload after an idle time */
+    t_bool loaded;                              /* sounds loaded */
+    SND_SAMPLE *smp[SND_FLP_NSMP];              /* the sounds */
+    SND_HANDLE motor_h;                         /* playing motor, disk and head loops */
+    SND_HANDLE disk_h;
+    SND_HANDLE head_h;
+    } SND_FLOPPY;
+
+extern const SND_FLP_TYPE sim_flp_rx01;         /* RX01 (8", single density) */
+extern const SND_FLP_TYPE sim_flp_rx02;         /* RX02 (8", single and double density) */
+
+void sim_floppy_init (SND_FLOPPY *f, UNIT *uptr, const SND_FLP_TYPE *type, SND_FLP_REGS *regs,
+                      int32 group, double gain);
+void sim_floppy_set_defaults (SND_FLP_REGS *regs, const SND_FLP_TYPE *type);
+void sim_floppy_insert (SND_FLOPPY *f);
+void sim_floppy_remove (SND_FLOPPY *f);
+double sim_floppy_seek (SND_FLOPPY *f, int32 track, t_bool load);
+double sim_floppy_rotate (SND_FLOPPY *f, double after_us, int32 sector, int32 nsect);
+double sim_floppy_rev_us (SND_FLOPPY *f);
+void sim_floppy_end (SND_FLOPPY *f, double end_us);
+void sim_floppy_unload (SND_FLOPPY *f);
+void sim_floppy_steps (SND_FLOPPY *f, int32 n, double period_us, double delay_us);
+int32 sim_floppy_track (SND_FLOPPY *f);
+t_stat sim_floppy_show (FILE *st, SND_FLOPPY *f);
 
 #ifdef  __cplusplus
 }
