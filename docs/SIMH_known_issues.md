@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v22 (v22: case 50, PDP-11 RQ controller type after SET CPU; v21: case 49, RY boot with the RX enabled; v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v23 (v23: cases 51 (fixed), 52 and 53, VAX 8600 console RL02; v22: case 50, PDP-11 RQ controller type after SET CPU; v21: case 49, RY boot with the RX enabled; v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -71,6 +71,9 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 48 | OPEN | Suspicious | `PDP11/pdp11_ry.c` `ry_svc` (ESXFR) | Extended status word 4 bit 5 (0040) is set when the drive has a diskette; the RX02 manual defines it as the head load bit |
 | 49 | OPEN | Pitfall | `PDP11/pdp11_io_lib.c` autoconfig, `pdp11_ry.c` `ry_boot`, RT-11 boot block | With RX and RY both enabled the RX gets CSR 177170 and the RY a floating CSR (160270); BOOT RY0 loads the RT-11 boot block, which hardcodes 177170 and so talks to the empty RX: the simulator stops with "Unexpected I/O error … RX0 - Unit not attached" (vanilla 87eb7d5 the same) |
 | 50 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_reset` (DEFAULT_CTYPE), PDP-11 `SET CPU` | The default MSCP controller type is resolved at the first reset with the default CPU (11/73, Qbus): after `SET CPU 11/70` the RQ stays an RQDX3, a Qbus controller on a Unibus machine (plain Open SIMH too) |
+| 51 | FIXED (patch 5) | Bug | `sim_disk.c` `sim_disk_pdp11_bad_block` (path without a sim_disk context), `VAX/vax860_stddev.c` `rlcs_attach` | A new VAX 8600 console RL02 image created with ATTACH -Y gets its bad block table in the middle of the pack (byte 5,237,760 of 10,485,760; the ten copies overlap): the capacity in 16-bit words is used as a byte offset |
+| 52 | OPEN | Pitfall | `scp.c` `get_yn` with `pdp11_bad_block` / `sim_disk_attach` | `ATTACH -N` (new file) also answers the "Overwrite last track?" question with No (switch N), so a new RL/RK/RP/console RL02 image never gets a bad block table that way; ATTACH -Y or an interactive Y does |
+| 53 | OPEN | Suspicious | `VAX/vax860_stddev.c` `rlcs_svc` (RL_STATUS, RL_MP) | The console RL02's drive status never has the RL02 bit (0200) nor the volume check bit (kept in `STAT` but not reported) |
 
 ## Details
 
@@ -439,3 +442,20 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Effect:** the guest sees an RQDX3 (MSCP controller model 19) on a Unibus machine; drivers that look at the model may behave differently from a real UDA50. In the sound realism mode this is why there is no bus rule for the RX50 controllers (RQDXn Qbus, RUX50 Unibus): it would refuse every Unibus PDP-11 configuration (decided 2026-11-11 while adding the RX50).
 - **Possible fix:** when the CPU model changes the bus (`cpu_set_model`), a controller still at its resolved default type gets the new bus's default, or keep DEFAULT_CTYPE until a type is set explicitly and resolve it at each reset.
 - **Found:** 2026-11-11 (RX50 controller rules).
+
+### 51 — FIXED IN PATCH 5 — Bug: the VAX 8600 console RL02 bad block table lands in the middle of a new image
+- **Where:** `sim_disk.c`, `sim_disk_pdp11_bad_block`, the branch for a unit without a sim_disk context (`uptr->disk_ctx == NULL`). Only the VAX 8600 console RL02 (`VAX/vax860_stddev.c` `rlcs_attach`, `attach_unit`, no sim_disk) takes it; every other caller has a context and writes through `sim_disk_wrsect`.
+- **Bug:** `da = capac - sec * wds` counts 16-bit words (the unit's capacity is in words), but the branch uses it as the byte offset of `sim_fseek` and steps it by `wds` (128) while writing 256 bytes per copy. A new console RL02 created with `ATTACH -Y CS file` therefore got the table at byte 5,237,760 (the middle of the 10,485,760-byte pack, block 10230), the ten copies overlapping, and the file was only 5.2 MB long.
+- **Fix (patch 5 v33):** the branch converts the word offset to bytes (`da * sizeof (uint16)`, not for DEV_SECTORS devices). Checked: the table now starts at byte 10,475,520 (cylinder 511, head 1, sector 0), ten 256-byte copies, as the sim_disk path writes it.
+- **Found and fixed:** 2026-11-12 (8600 console RL02 realism work).
+
+### 52 — OPEN — Pitfall: ATTACH -N never writes a bad block table
+- **Where:** `scp.c` `get_yn`: switch Y answers yes, switch N answers no, before asking. `pdp11_bad_block` (and `sim_disk_attach` for new images with a PDP-11 track size) asks "Overwrite last track? [N]" with `get_yn`.
+- **Effect:** `ATTACH -N` means "create a new file" to attach, but get_yn takes the same N as the answer No: a new image never gets the DEC standard bad block table that way. `ATTACH -Y` (or a plain ATTACH of a new file with Y typed at the prompt) writes it. In a command file without input the default (No) applies too. VMS INITIALIZE then warns `%INIT-W-NOBADDATA` (seen in the RL02/RP06 tests); EXCHANGE does not care.
+- **Possible change:** a separate switch for the bad block question, or ask only when the file existed before.
+- **Found:** 2026-11-12 (8600 console RL02 realism work).
+
+### 53 — OPEN — Suspicious: the 8600 console RL02 status lacks the RL02 and volume check bits
+- **Where:** `VAX/vax860_stddev.c`, `rlcs_svc`, RL_STATUS / RL_MP: an attached, ready drive reports `RLDS_ATT` (heads out, brushes home, lock on = 035); `RLDS_RL02` (0200) is never set; `rlcs_attach` keeps volume check in `STAT`, which is never reported or cleared.
+- **Effect:** none seen (VMS V4.7 CSDRIVER mounts and uses the drive). Software that checks the drive type (RL01/RL02) or volume check in the console's RL status would see an RL01 without volume check. The realism mode reports the drive state (load, spin-up, spin-down) while the drive is not up to speed.
+- **Found:** 2026-11-12 (8600 console RL02 realism work).

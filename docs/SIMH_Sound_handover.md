@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v36 (v36: VMS V4.7 on the VAX 8200 with the console RX50 CSA1/CSA2, both modes; v35: the VAX 8200 console RX50, patch 5 v32; v34: floppies step 3: the RX50 on the RQ, RX50 controller rules, patch 5 v31; v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v37 (v37: the VAX 8600 console RL02, patch 5 v33; v36: VMS V4.7 on the VAX 8200 with the console RX50 CSA1/CSA2, both modes; v35: the VAX 8200 console RX50, patch 5 v32; v34: floppies step 3: the RX50 on the RQ, RX50 controller rules, patch 5 v31; v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02 (last update 2026-11-11, VAX 8200 console RX50 under VMS). Prepared with Claude for Ulli (vaxorcist). Everything is pushed to the fork vaxorcist/open-simh-extended (branches `sound`, `integration`, `notes`). Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-12, VAX 8600 console RL02). Prepared with Claude for Ulli (vaxorcist). Everything is pushed to the fork vaxorcist/open-simh-extended (branches `sound`, `integration`, `notes`). Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -1252,9 +1252,46 @@ Not done, on purpose: a bus rule for the RQDXn (Qbus) and the RUX50 (Unibus). A 
 
 - The RT-11 file date shows 11-Nov-1994 for 2026: VMS V4.7 EXCHANGE writes the year modulo 32 (1972 + 22), a VMS limit, not a SIMH problem.
 
+## Phase E, step 5: the VAX 8600 console RL02 (CS) (2026-11-12)
+
+### Where things are
+
+- Branch `sound`: commit e5d0b3d1 on top of f38de89c; branch `integration`: 046ad64d.
+- Patch **`opensimh_5_sound_v33.patch`** replaces v32 (checked: 6 + 5 v33 on 87eb7d5 give the `sound` tree without the Visual Studio project files).
+- Changed: `VAX/vax860_stddev.c` (vax8600 only), `sim_sound.c`, `sim_sound.h` (`sim_sound_register_storage`), `sim_disk.c` (known issues 51).
+- Notes branch: `tests/rl02_8600/` (c1, vms1, vms2, vms3, README.txt), `tools/make_sound_devices_ods.py` v15 and `docs/SIMH_Sound_devices.ods` table v14 (Disks sheet: CS row), `docs/SIMH_known_issues.md` v23 (cases 51-53).
+- Sources: 4.3BSD/ULTRIX `crl(4)` (the console RL02 of the VAX 8600/8650: the whole RL02, 512 cylinders × 2 tracks × 20 sectors of 256 bytes, the standard RL02 pack format, transfers a word at a time through privileged registers); Computer History Wiki and classiccmp (console processor: a T-11 on the L0201 board, an RLV12 for the RL02). RL02 drive facts as the RL device (phase C step 1).
+
+### Behavior
+
+- **Protocol (unchanged):** the VAX gives a block number in STXCS and moves the 512-byte block (two RL02 sectors) word by word through STXDB. Block n is cylinder n / 40, head (n / 20) & 1, sectors 2 × (n % 20) and the next one.
+- **LOAD button (both modes):** `SET CS ONLINE` (or `LOAD`) and `SET CS OFFLINE` (or `UNLOAD`), with the common spindle support; `SHOW CS SPINDLE`. While the drive is not up to speed a read or write ends with the hardware error status (as without a cartridge), the RL drive status shows the drive state (load, spin-up, spin-down, brushes home) and the CSR has drive ready clear. When it is up to speed: heads at cylinder 0, volume check.
+- **Realism mode:** ATTACH only loads the cartridge; the drive waits for `SET CS ONLINE` (SPINUP 40000 ms, SPINDOWN 30000 ms, as the RL02; at the prompt the commands wait unless `SET -N`). Reading a block (when its first word is asked for) and writing it (after its last word) take the seek (t(d) = a + b·d^0.67, 15 ms track to track, 100 ms full stroke; head switch alone 7 ms), the wait until the block's first sector comes round (2400 rpm, 40 sectors per track, the position follows the clock) and two sector times (0.625 ms each). Seek sounds `sound/rl02/rl02-s/m/l.wav`, else `default_disk` (registers SEEK2S/SEEK2M, 30/190 cylinders); optional `rl02_spinup/_running/_spindown.wav`. The words between the console and the VAX keep STIME (no published speed for that path).
+- `SET CS DEBUG=OPS` (new; the CS device had no debug): one line per block transfer with cylinder, head, sectors, distance and time, the seek sound class, the LOAD button. `HELP CS` (new).
+- The CS device is not DEV_DISK (it does not use sim_disk), so it registers with the new `sim_sound_register_storage ()`: SET SOUND ENABLED/DISABLED is refused while a cartridge is attached, as for the other disks.
+- **Normal mode:** ATTACH spins the drive up at once, ONLINE/OFFLINE take effect at once (OFFLINE makes the drive not ready), the timing is STIME per word as before.
+
+### Tests (`tests/rl02_8600/`; VMS V4.7, SYSTEM/MANAGER, RA81 on the UDA50A)
+
+| Test | Result |
+|---|---|
+| c1 (prompt): ONLINE without cartridge; realism ATTACH; SET SOUND DISABLED; ONLINE/OFFLINE (SPINUP 2000, SPINDOWN 1500), -N; normal mode | refused; "offline"; refused ("CS is attached"); waits 2 s / 1.5 s, -N returns ("spinning down, 1.5 s left"); at once |
+| vms1 (normal mode): SYSGEN CONNECT CONSOLE, MOUNT/FOREIGN CSA1, EXCHANGE INITIALIZE (RT-11), COPY SYSGEN.EXE and LOGINOUT.EXE to CSA1, SYSGEN.EXE back, DIFFERENCES, DIRECTORY, DISMOUNT | 0 differences; 2 files, 236 blocks, 20176 free; 21 s; the same on the `integration` build |
+| vms2 (realism mode) | the same results; 454 block transfers, average 25.3 ms, longest 38.2 ms, 20 short seek sounds; 121 s (60 s of it the RA81 and RL02 spin-ups at the prompt) |
+| vms3 (realism mode): MOUNT/FOREIGN with the drive stopped | `%MOUNT-I-OPRQST, Please mount device _CSA1:`; `SET -N CS ONLINE` from the expect action: `%MOUNT-I-RQSTDON ... mount completed successfully` |
+| vms3: `SET -N CS OFFLINE` under the mounted volume, EXCHANGE DIRECTORY | `%EXCHANGE-W-READERR, error reading _CSA1:[].;` (no hang); `SET -N CS ONLINE`, after 45 s DIRECTORY lists the file |
+| New image with `ATTACH -Y` (bad block table) | before: the table at byte 5,237,760 (middle of the pack), now at 10,475,520 (last track); known issues 51 |
+| Build `-Werror` vax8600, vax750, vax780, microvax2, pdp11, pdp8, altair (sim_disk.c, sim_sound.c); `vax860_stddev.c` and `sim_sound.c` with `-Wall -Wextra` | no warnings |
+| VAX diagnostics 8600, 750, 780; MicroVAX II, PDP-11 register checks; PDP-8 tests | passed |
+
+Notes:
+- About one revolution per block in vms2: the VAX moves each block word by word, so by the next request the following sectors have passed (EXCHANGE reads block by block). A real console would show the same pattern; the absolute speed of the console path is unknown.
+- **Open (decision for Ulli):** the vax8600 has no realistic THROTTLE default. Realistic durations are converted with SIMH's instruction-rate estimate, which lags on an unthrottled CPU: the 40 s spin-up appeared as about 25 s of VMS time (OPCOM 09:17:42 to 09:18:07). A default THROTTLE for the 8600 (4.2 VUPs, about 2100K by the 11/780 scale of 500K = 1 VUP; provisional) would make the durations exact, as on the 750 (300K) and the MicroVAX II (450K).
+- New known issues: 51 (fixed, bad block table offset), 52 (`ATTACH -N` never writes a bad block table: switch N also answers the question), 53 (the console RL status never shows the RL02 or volume check bit).
+
 ## Not done yet (after phase B)
 
-- Floppies: the RX02 (phase E step 1), the RX01 and the 11/780 console RX01 (step 2), the RX50 (step 3), the VAX 8200 console RX50 (step 4) are done; RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
+- Floppies: the RX02 (phase E step 1), the RX01 and the 11/780 console RX01 (step 2), the RX50 (step 3), the VAX 8200 console RX50 (step 4) are done; the VAX 8600 console RL02 (step 5) too; RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
 - RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.
