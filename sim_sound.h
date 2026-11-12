@@ -859,6 +859,87 @@ void sim_floppy_share (SND_FLOPPY *f, SND_FLOPPY *mech);
 double sim_floppy_motor (SND_FLOPPY *f);
 void sim_floppy_motor_off (SND_FLOPPY *f);
 
+/* TU58 DECtape II cartridge drives (SND_TU58)
+
+   A block-addressed tape: 512 blocks of 512 bytes on two tracks of 1024
+   records of 128 bytes (TU58 DECtape II User's Guide EK-0TU58-UG-004).
+   The record slots of a track alternate between two halves of 512
+   records (1:2 interleave, inferred from the User's Guide figure 1-4):
+   slot = 2 * (r % 512) + r / 512 for record r of the track, so the four
+   records of a block lie two slots apart and blocks 0-127 (track 0),
+   128-255 (track 0, the slots between), 256-383 and 384-511 (track 1)
+   each run once over the whole tape.  Both tracks are read forward; the
+   head has both tracks (track selection is electronic).
+
+   The tape moves at 60 in/s to search and at 30 in/s to read or write
+   (24 kbit/s, 42.7 ms per record); a slot is 1600 in / 1024 = 1.5625 in
+   (52 ms at 30 in/s).  The model keeps the tape position of each drive
+   (shared by both tracks: one tape).  Reaching a record: if the tape is
+   already moving forward at read speed and the record is close ahead,
+   the drive just reads it when it comes; otherwise it searches at 60
+   in/s (forward or back, with a turnaround) to a run-up distance before
+   the record and reads it at 30 in/s.  The tape stops at the end of each
+   command (sim_tu58_stop).  Start/turnaround times and the run-up are
+   device registers (provisional: not published).  With these the full
+   length takes about 28 s (published maximum access 28 s) and a random
+   access about 9 s (published average 9.3 s).
+
+   Sounds (group TAPE): <dir>/<prefix>_<name>.wav for start, search
+   (loop), read (loop), reverse (turnaround), stop, insert, remove; a
+   missing one is taken from default_tape (start, motion (search at twice
+   the rate), motion, stop, stop, load, unload).
+
+   sim_tu58_init ()        once per drive (device reset).
+   sim_tu58_insert ()      ATTACH: cartridge in (the tape at BOT).
+   sim_tu58_remove ()      DETACH: cartridge out (a motion stops).
+   sim_tu58_record_us ()   microseconds from now until record rec (0-2047,
+                           the special address mode numbering: block * 4
+                           + record of the block) has passed the head
+                           (read or written); plays the motion sounds.
+   sim_tu58_position_us () microseconds from now until the tape stands
+                           at the start of record rec (Position command).
+   sim_tu58_records_us ()  microseconds from now until n consecutive
+                           records from rec have passed the head, starting
+                           after_us from now (write/verify: read back).
+   sim_tu58_stop ()        the command ends: the tape stops.
+   sim_tu58_show ()        "cartridge in, block 12 (track 0), stopped". */
+
+typedef struct {                                /* device registers (int32 each) */
+    int32 start_ms;                             /* tape start (acceleration) */
+    int32 turn_ms;                              /* reversal of the direction */
+    int32 runup_hin;                            /* run-up before a record, 1/100 in */
+    } SND_TU58_REGS;
+
+typedef struct SND_TU58 {
+    UNIT *uptr;                                 /* drive unit (NULL: not initialized) */
+    SND_TU58_REGS *regs;                        /* device registers */
+    int32 group;
+    double gain;
+    t_bool loaded;                              /* cartridge in */
+    double pos_in;                              /* tape position under the head, in */
+    double t_pos;                               /* sim_sound_rt_us () at pos_in */
+    t_bool moving;                              /* moving forward at read speed */
+    int32 last_rec;                             /* last record passed (-1: none) */
+    SND_SAMPLE *smp[7];                         /* start, search, read, reverse, stop,
+                                                   insert, remove */
+    double search_rate;                         /* playback rate of the search sound */
+    SND_HANDLE h_read;                          /* the read loop while moving */
+    } SND_TU58;
+
+#define SND_TU58_RECORDS        2048            /* per cartridge */
+#define SND_TU58_REC_US         42700.8         /* 1024 bits at 41.7 us */
+
+void sim_tu58_init (SND_TU58 *t, UNIT *uptr, SND_TU58_REGS *regs, int32 group, double gain);
+void sim_tu58_set_defaults (SND_TU58_REGS *regs);
+void sim_tu58_load (SND_TU58 *t, const char *dir, const char *prefix);
+void sim_tu58_insert (SND_TU58 *t);
+void sim_tu58_remove (SND_TU58 *t);
+double sim_tu58_record_us (SND_TU58 *t, int32 rec);
+double sim_tu58_position_us (SND_TU58 *t, int32 rec);
+double sim_tu58_records_us (SND_TU58 *t, int32 rec, int32 n, double after_us);
+void sim_tu58_stop (SND_TU58 *t, double after_us);
+t_stat sim_tu58_show (FILE *st, SND_TU58 *t);
+
 #ifdef  __cplusplus
 }
 #endif

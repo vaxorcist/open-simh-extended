@@ -2409,6 +2409,7 @@ static t_bool snd_rt_inited = FALSE;
 static t_bool snd_rt_running = FALSE;
 static double snd_rt_base_us = 0.0;             /* running: rt at snd_rt_gbase */
 static double snd_rt_gbase = 0.0;               /*  ... sim_gtime () then */
+static double snd_rt_ipu = 0.0;                 /*  ... and the rate used since */
 static double snd_rt_stop_us = 0.0;             /* stopped: rt at snd_rt_wall_ms */
 static uint32 snd_rt_wall_ms = 0;
 
@@ -2419,8 +2420,19 @@ if (!snd_rt_inited) {
     snd_rt_wall_ms = sim_os_msec ();
     snd_rt_stop_us = 0.0;
     }
-if (snd_rt_running)
-    return snd_rt_base_us + (sim_gtime () - snd_rt_gbase) / sim_sound_inst_per_us ();
+if (snd_rt_running) {                           /* piecewise linear: when the rate */
+    double ipu = sim_sound_inst_per_us ();      /* estimate changes, the time so far */
+    double g = sim_gtime ();                    /* stays as it was (dividing all the */
+                                                /* instructions since the start by */
+    if (ipu != snd_rt_ipu) {                    /* the new rate made the clock jump, */
+        if (snd_rt_ipu > 0.0) {                 /* seconds after a long run: known */
+            snd_rt_base_us += (g - snd_rt_gbase) / snd_rt_ipu;  /* issues 55) */
+            snd_rt_gbase = g;
+            }
+        snd_rt_ipu = ipu;
+        }
+    return snd_rt_base_us + (g - snd_rt_gbase) / snd_rt_ipu;
+    }
 return snd_rt_stop_us + 1000.0 * (double)(sim_os_msec () - snd_rt_wall_ms);
 }
 
@@ -2433,6 +2445,7 @@ if (running == snd_rt_running)
 if (running) {
     snd_rt_base_us = now;
     snd_rt_gbase = sim_gtime ();
+    snd_rt_ipu = sim_sound_inst_per_us ();
     }
 else {
     snd_rt_stop_us = now;
@@ -4255,6 +4268,261 @@ fprintf (st, ", track %d, motor %s", (int)FLP_MECH (f)->track,
 if (sim_sound_enabled () && (f->type->motor == SND_FLP_MOTOR_CTRL) && flp_motor_running (f) &&
     sim_sound_timer_busy (&FLP_MECH (f)->motor_tmr))
     fprintf (st, " (off in %.2f s)", sim_sound_timer_left_s (&FLP_MECH (f)->motor_tmr));
+fprintf (st, "\n");
+return SCPE_OK;
+}
+
+/* TU58 DECtape II cartridge drives: see sim_sound.h.
+
+   Positions are in inches from the start of the first record slot; the
+   time base is sim_sound_rt_us () (simulated time while the CPU runs,
+   wall time at the prompt).  The sounds are scheduled with delays from
+   the moment of the call (the audio thread times them), so a motion that
+   was computed ahead plays at the right moments. */
+
+#define TU58_SLOT_IN    1.5625                  /* 1600 in / 1024 slots */
+#define TU58_REC_IN     1.28                    /* 1024 bits at 800 bits/in */
+#define TU58_LEN_IN     (1024 * TU58_SLOT_IN)   /* one pass over the tape */
+#define TU58_RD_IPS     30.0                    /* read/write speed */
+#define TU58_SR_IPS     60.0                    /* search speed */
+#define TU58_STREAM_IN  (3.0 * TU58_SLOT_IN)    /* a record this close ahead is
+                                                   just read when it comes */
+#define TU58_GRACE_S    0.25                    /* read loop beyond the record */
+
+enum { TU58_START, TU58_SEARCH, TU58_READ, TU58_REVERSE, TU58_STOP, TU58_INSERT, TU58_REMOVE };
+static const char *tu58_names[7] = { "start", "search", "read", "reverse", "stop", "insert", "remove" };
+static const char *tu58_defaults[7] = { "start", "motion", "motion", "stop", "stop", "load", "unload" };
+
+void sim_tu58_set_defaults (SND_TU58_REGS *regs)
+{
+regs->start_ms = 60;                            /* provisional: not published */
+regs->turn_ms = 150;
+regs->runup_hin = 150;                          /* 1.5 in */
+}
+
+void sim_tu58_init (SND_TU58 *t, UNIT *uptr, SND_TU58_REGS *regs, int32 group, double gain)
+{
+if (t->uptr != NULL)                            /* already initialized */
+    return;
+memset (t, 0, sizeof (*t));
+t->uptr = uptr;
+t->regs = regs;
+t->group = group;
+t->gain = gain;
+t->last_rec = -1;
+t->search_rate = 1.0;
+}
+
+void sim_tu58_load (SND_TU58 *t, const char *dir, const char *prefix)
+{
+char name[64];
+int32 i;
+
+for (i = 0; i < 7; i++) {
+    snprintf (name, sizeof (name), "%s_%s.wav", prefix, tu58_names[i]);
+    t->smp[i] = sim_sound_load_optional (dir, name);
+    if (t->smp[i] == NULL) {                    /* own file missing: the default */
+        snprintf (name, sizeof (name), "%s.wav", tu58_defaults[i]);
+        if ((t->smp[i] = sim_sound_load (SND_DEFAULT_TAPE, name)) != NULL) {
+            snd_note_default (dir, "tape", SND_DEFAULT_TAPE);
+            if (i == TU58_SEARCH)               /* the default motion at */
+                t->search_rate = 2.0;           /* twice the read speed */
+            }
+        }
+    else if (i == TU58_SEARCH)
+        t->search_rate = 1.0;
+    }
+}
+
+void sim_tu58_insert (SND_TU58 *t)
+{
+if (t->uptr == NULL)
+    return;
+t->loaded = TRUE;
+t->pos_in = 0.0;                                /* at BOT */
+t->t_pos = sim_sound_rt_us ();
+t->moving = FALSE;
+t->last_rec = -1;
+if (sim_sound_enabled ())
+    sim_sound_play (t->smp[TU58_INSERT], t->group, t->gain, 0);
+}
+
+void sim_tu58_remove (SND_TU58 *t)
+{
+if ((t->uptr == NULL) || !t->loaded)
+    return;
+if (t->h_read != 0) {
+    sim_sound_stop (t->h_read, 30);
+    t->h_read = 0;
+    }
+t->loaded = FALSE;
+t->moving = FALSE;
+if (sim_sound_enabled ())
+    sim_sound_play (t->smp[TU58_REMOVE], t->group, t->gain, 0);
+}
+
+static double tu58_rec_x (int32 rec)            /* start of a record slot */
+{
+int32 r = (rec & (SND_TU58_RECORDS - 1)) % 1024;  /* record of its track */
+
+return (2 * (r % 512) + r / 512) * TU58_SLOT_IN;
+}
+
+static double tu58_pos_at (SND_TU58 *t, double at)  /* tape position at time at */
+{
+double x = t->pos_in;
+
+if (t->moving && (at > t->t_pos))
+    x = x + (at - t->t_pos) * TU58_RD_IPS / 1.0e6;
+return (x > TU58_LEN_IN) ? TU58_LEN_IN : x;
+}
+
+/* The head reaches the start of the slot at x, moving forward at read
+   speed: returns that time (absolute).  Plays the motion sounds, with
+   delays from rt_now. */
+
+static double tu58_reach (SND_TU58 *t, double x, double at, double rt_now)
+{
+double cur = tu58_pos_at (t, at);
+double start_s = t->regs->start_ms / 1000.0;
+double turn_s = t->regs->turn_ms / 1000.0;
+double runup = t->regs->runup_hin / 100.0;
+double target, d, s, t_srch, t_dur, t_read;
+t_bool back;
+
+if (t->moving && (x >= cur) && ((x - cur) <= TU58_STREAM_IN))   /* streaming on */
+    return at + (x - cur) * 1.0e6 / TU58_RD_IPS;
+if (runup > x)                                  /* (the first slots) */
+    runup = x;
+target = x - runup;
+d = target - cur;
+back = (d < 0.0);
+s = 0.0;
+if (t->h_read != 0) {                           /* leaving read speed */
+    sim_sound_extend (t->h_read, (at - rt_now) / 1.0e6 + 0.02);
+    t->h_read = 0;
+    }
+if (!t->moving)                                 /* from rest */
+    s = start_s;
+else if (back) {                                /* forward, now back */
+    sim_sound_play_timed (t->smp[TU58_REVERSE], t->group, t->gain, 0, 1.0,
+                          (at - rt_now) / 1.0e6, 0.0, 0);
+    s = turn_s;
+    }
+if (!t->moving)
+    sim_sound_play_timed (t->smp[TU58_START], t->group, t->gain, 0, 1.0,
+                          (at - rt_now) / 1.0e6, 0.0, 0);
+t_srch = at + s * 1.0e6;                        /* search at 60 in/s */
+t_dur = fabs (d) / TU58_SR_IPS;
+if (t_dur > 0.0)
+    sim_sound_play_timed (t->smp[TU58_SEARCH], t->group, t->gain, SND_F_LOOP,
+                          t->search_rate, (t_srch - rt_now) / 1.0e6, t_dur, 40);
+t_read = t_srch + t_dur * 1.0e6;
+if (back) {                                     /* turn to forward */
+    sim_sound_play_timed (t->smp[TU58_REVERSE], t->group, t->gain, 0, 1.0,
+                          (t_read - rt_now) / 1.0e6, 0.0, 0);
+    t_read = t_read + turn_s * 1.0e6;
+    }
+t->h_read = sim_sound_play_timed (t->smp[TU58_READ], t->group, t->gain, SND_F_LOOP, 1.0,
+                                  (t_read - rt_now) / 1.0e6, 0.0, 40);
+t->moving = TRUE;                               /* run-up at read speed */
+t->pos_in = target;
+t->t_pos = t_read;
+return t_read + runup * 1.0e6 / TU58_RD_IPS;
+}
+
+/* Record rec passes the head, from time at: returns its end (absolute) */
+
+static double tu58_pass (SND_TU58 *t, int32 rec, double at, double rt_now)
+{
+double x = tu58_rec_x (rec);
+double t0 = tu58_reach (t, x, at, rt_now);
+double t1 = t0 + SND_TU58_REC_US;
+
+t->pos_in = x + TU58_REC_IN;
+t->t_pos = t1;
+t->moving = TRUE;
+t->last_rec = rec;
+if (t->h_read != 0)                             /* the read loop lasts a little */
+    sim_sound_extend (t->h_read, (t1 - rt_now) / 1.0e6 + TU58_GRACE_S);  /* longer */
+return t1;
+}
+
+double sim_tu58_record_us (SND_TU58 *t, int32 rec)
+{
+double now = sim_sound_rt_us ();
+
+if ((t->uptr == NULL) || !t->loaded)
+    return 0.0;
+return tu58_pass (t, rec, now, now) - now;
+}
+
+double sim_tu58_records_us (SND_TU58 *t, int32 rec, int32 n, double after_us)
+{
+double now = sim_sound_rt_us ();
+double at = now + after_us;
+int32 i;
+
+if ((t->uptr == NULL) || !t->loaded)
+    return after_us;
+for (i = 0; i < n; i++)
+    at = tu58_pass (t, rec + i, at, now);
+return at - now;
+}
+
+double sim_tu58_position_us (SND_TU58 *t, int32 rec)
+{
+double now = sim_sound_rt_us ();
+double t0;
+
+if ((t->uptr == NULL) || !t->loaded)
+    return 0.0;
+t0 = tu58_reach (t, tu58_rec_x (rec), now, now);
+t->pos_in = tu58_rec_x (rec);
+t->t_pos = t0;
+sim_tu58_stop (t, t0 - now);
+return t0 - now;
+}
+
+void sim_tu58_stop (SND_TU58 *t, double after_us)
+{
+double now = sim_sound_rt_us ();
+double at = now + after_us;
+
+if ((t->uptr == NULL) || !t->moving)
+    return;
+t->pos_in = tu58_pos_at (t, at);
+t->t_pos = at;
+t->moving = FALSE;
+if (t->h_read != 0) {
+    sim_sound_extend (t->h_read, after_us / 1.0e6 + 0.02);
+    t->h_read = 0;
+    }
+sim_sound_play_timed (t->smp[TU58_STOP], t->group, t->gain, 0, 1.0, after_us / 1.0e6, 0.0, 0);
+}
+
+t_stat sim_tu58_show (FILE *st, SND_TU58 *t)
+{
+double now = sim_sound_rt_us ();
+double x;
+int32 slot;
+
+if (t->uptr == NULL) {
+    fprintf (st, "not initialized\n");
+    return SCPE_OK;
+    }
+if (!t->loaded) {
+    fprintf (st, "no cartridge\n");
+    return SCPE_OK;
+    }
+x = tu58_pos_at (t, now);
+slot = (int32)(x / TU58_SLOT_IN);
+fprintf (st, "cartridge in, tape at %.1f in (record slot %d of 1024), %s", x, (int)slot,
+         !sim_sound_enabled () ? "position not simulated (sound disabled)" :
+         (t->moving ? "moving" : "stopped"));
+if (t->last_rec >= 0)
+    fprintf (st, ", last record %d (block %d, track %d)", (int)t->last_rec, (int)(t->last_rec / 4),
+             (int)(t->last_rec / 1024));
 fprintf (st, "\n");
 return SCPE_OK;
 }
