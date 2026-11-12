@@ -31,6 +31,18 @@
                         This module implements the TU58 functionality for the
                         VAX730 and VAX750 console devices as well as 
                         Unibus/Qbus connected dual drive TU58s.
+   12-Nov-26    Ulli    Sound realism mode (SET SOUND ENABLED): the tape model
+                        of sim_sound (SND_TU58: position per drive, 1:2
+                        interleaved records on two tracks, search 60 in/s,
+                        read/write 30 in/s, the tape stops after each
+                        command), the serial line at BAUD, motion sounds,
+                        cartridge insert/remove; SHOW TDCn DRIVE, debug
+                        flag MOTION.  Both modes: a command for a unit the
+                        controller does not have ends with "bad unit"
+                        (0370) instead of scheduling a unit outside the
+                        unit array; a cartridge removed during a transfer
+                        ends it with "no cartridge" instead of using the
+                        freed buffer.
 
    PDP-11 TU58 DECtapes are represented in memory by fixed length buffer of 32b words.
 
@@ -605,6 +617,43 @@ static int32 td_itime = 180;                            /* init time */
 
 static int32 td_ctrls = 1;                              /* number of enabled controllers */
 
+/* Sound realism mode: see the comments of SND_TU58 in sim_sound.h.  The
+   tape times come from the model, the bytes on the serial line take
+   10 bits each at td_baud (38.4 kbaud, the TU58's factory setting).
+   Host to TU58 bytes are not timed (the host sees transmit done at once,
+   as before). */
+
+SND_TU58_REGS td_tu58_regs = { 60, 150, 150 };          /* start ms, turn ms, run-up 1/100 in */
+int32 td_baud = 38400;                                  /* serial line, bits/s */
+
+#define TD_SND          "tu58"                          /* sound directory and prefix */
+#define TD_SND_GAIN     0.6
+
+static t_bool td_rlz (void)
+{
+return sim_sound_enabled ();
+}
+
+static double td_byte_us (void)                         /* one character on the line */
+{
+return 10.0e6 / ((td_baud > 0) ? td_baud : 38400);
+}
+
+/* Schedule a unit: the instruction count in the normal mode, a realistic
+   time in the realism mode */
+
+static void td_sched (UNIT *uptr, int32 inst, double us)
+{
+if (td_rlz ())
+    sim_sound_activate_us (uptr, us);
+else
+    sim_activate (uptr, inst);
+}
+
+/* (macros: CTLR is defined further down) */
+#define td_drive(c,u)   (&(c)->drv[((u) - (c)->uptr) & 1])     /* a unit's tape */
+#define td_rec(c)       ((c)->block * 4 + (c)->offset / 128)  /* record at the offset */
+
 static uint32 tdi_ireq = 0;
 static uint32 tdo_ireq = 0;
 
@@ -630,6 +679,8 @@ struct CTLR {
     int32 o_state;                          /* output state */
     int32 unitno;                           /* active unit number */
     int32 ecode;                            /* end packet success code */
+    SND_TU58 drv[2];                        /* realism: the two drives' tapes */
+    t_bool wr_verify;                       /* write command with verify */
     };
 
 static CTLR td_ctlr[TD_NUMCTLR+1];          /* one for each DL based TU58 plus console */
@@ -676,6 +727,10 @@ static REG td_reg[] = {
     { DRDATAD (STIME,  td_stime,24, "seek, per block"), PV_LEFT },
     { DRDATAD (XTIME,  td_xtime,24, "tr set time"), PV_LEFT },
     { DRDATAD (ITIME,  td_itime,24, "init time"), PV_LEFT },
+    { DRDATAD (STARTMS, td_tu58_regs.start_ms, 16, "realism: tape start time, ms"), PV_LEFT },
+    { DRDATAD (TURNMS,  td_tu58_regs.turn_ms,  16, "realism: tape reversal time, ms"), PV_LEFT },
+    { DRDATAD (RUNUP,   td_tu58_regs.runup_hin,16, "realism: run-up before a record, 1/100 in"), PV_LEFT },
+    { DRDATAD (BAUD,    td_baud,               24, "realism: serial line speed, bits/s"), PV_LEFT },
 
 #define RDATA(nm,loc,wd,desc) STRDATAD(nm,td_ctlr[0].loc,16,wd,0,TD_NUMCTLR+1,sizeof(CTLR),REG_RO,desc)
 #define RDATAF(nm,loc,wd,desc,flds) STRDATADF(nm,td_ctlr[0].loc,16,wd,0,TD_NUMCTLR+1,sizeof(CTLR),REG_RO,desc,flds)
@@ -706,6 +761,7 @@ static MTAB td_mod[] = {
     { MTAB_XTD|MTAB_VUN,   0, "write enabled", "WRITEENABLED",  &set_writelock, &show_writelock,   NULL, "Write enable TU58 drive" },
     { MTAB_XTD|MTAB_VUN,   1, NULL,             "LOCKED",       &set_writelock, NULL,              NULL, "Write lock TU58 drive" },
     { MTAB_XTD | MTAB_VDV, 0, "CONTROLLERS",    "CONTROLLERS",  &td_set_ctrls, &td_show_ctlrs,     NULL, "Number of Controllers" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE",   NULL,           NULL,          &td_show_drive,     NULL, "Display the drive: cartridge, tape position" },
     { MTAB_XTD|MTAB_VDV,   0, "ADDRESS",        NULL,           &set_addr,     &show_addr,         NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV,   1, "VECTOR",         NULL,           &set_vec,      &show_vec,          NULL, "Interrupt vector" },
     { 0 }
@@ -715,7 +771,7 @@ DEVICE tdc_dev = {
     "TDC", td_unit, td_reg, td_mod,
     2*TD_NUMCTLR, DEV_RDX, 20, 1, DEV_RDX, 8,
     NULL, NULL, &td_reset,
-    &td_boot, NULL, NULL,
+    &td_boot, &td_attach, &td_detach,
     &td_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_QBUS | DEV_DEBUG, 0,
     td_deb, NULL, NULL, &td_help, NULL, NULL,
     &td_description
@@ -924,7 +980,16 @@ switch (opcode) {
             return;
             }
         ctlr->p_state = TD_WRITE2;
-        sim_activate (ctlr->uptr+ctlr->unitno, td_ctime);   /* sched command */
+        if (td_rlz ()) {                                    /* written when its slot */
+            UNIT *uptr = ctlr->uptr+ctlr->unitno;           /* passes the head */
+            double us = sim_tu58_record_us (td_drive (ctlr, uptr), td_rec (ctlr));
+
+            sim_debug (TDDEB_MOT, ctlr->dptr, "%s: write record %d (block %d): %.1f ms\n",
+                       sim_uname (uptr), td_rec (ctlr), ctlr->block + ctlr->offset / 512, us / 1000.0);
+            sim_sound_activate_us (uptr, us);
+            }
+        else
+            sim_activate (ctlr->uptr+ctlr->unitno, td_ctime);   /* sched command */
         break;
 
     case TD_OPCMD:
@@ -941,6 +1006,17 @@ switch (opcode) {
         else
             command_name = td_ops[ctlr->ibuf[2]];
         sim_debug (TDDEB_OPS, ctlr->dptr, "strt: fnc=%d(%s), len=%d, unit=%d, block=%d, size=%d\n", ctlr->ibuf[2], command_name, ctlr->ibuf[1], ctlr->ibuf[4], ((ctlr->ibuf[11] << 8) | ctlr->ibuf[10]), ((ctlr->ibuf[9] << 8) | ctlr->ibuf[8]));
+        if ((ctlr->ibuf[2] != TD_CMDMRSP) &&                /* a unit the controller */
+            (ctlr->ibuf[4] >= MIN (ctlr->dptr->numunits, 2))) { /* does not have: */
+            ctlr->unitno = 0;                               /* bad unit number (the unit */
+            ctlr->p_state = TD_END;                         /* pointer would be outside */
+            ctlr->ecode = TD_STSBUN;                        /* the unit array) */
+            ctlr->offset = 0;
+            sim_debug (TDDEB_ERR, ctlr->dptr, "td_process_packet() bad unit number %d\n", ctlr->ibuf[4]);
+            sim_activate (ctlr->uptr, td_ctime);
+            break;
+            }
+        ctlr->wr_verify = (ctlr->ibuf[2] == TD_CMDWR) && (ctlr->ibuf[3] & 1);  /* write/verify */
         switch (ctlr->ibuf[2]) {
             case TD_CMDNOP:                              /* NOP */
             case TD_CMDGST:                              /* Get status */
@@ -991,8 +1067,10 @@ switch (opcode) {
         break;
 
     case TD_OPINI:
-        for (unit=0; unit < MIN(ctlr->dptr->numunits, 2); unit++)
+        for (unit=0; unit < MIN(ctlr->dptr->numunits, 2); unit++) {
             sim_cancel (ctlr->uptr+unit);
+            sim_tu58_stop (&ctlr->drv[unit], 0.0);          /* operations cancelled */
+            }
         ctlr->ibptr = 0;
         ctlr->obptr = 0;
         ctlr->olen = 0;
@@ -1029,11 +1107,19 @@ switch (opcode) {
             for (i=0; i < TD_NUMBY; i++)
                 ctlr->obuf[i] = fbuf[i];
             ctlr->olen = TD_NUMBY;
+            sim_data_trace(ctlr->dptr, &ctlr->uptr[ctlr->unitno], ctlr->obuf, "Boot Block Data", ctlr->olen, "", TDDEB_DAT);
+            if (td_rlz () && (ctlr->unitno < 2)) {      /* realism: block 0 is read */
+                UNIT *uptr = ctlr->uptr+ctlr->unitno;   /* first (4 records), the */
+                double us = sim_tu58_records_us (td_drive (ctlr, uptr), 0, 4, 0.0);  /* bytes */
+
+                sim_debug (TDDEB_MOT, ctlr->dptr, "%s: bootstrap block 0: %.1f ms\n", sim_uname (uptr), us / 1000.0);
+                sim_sound_activate_us (uptr, us);       /* follow from TD_BOOTSTRAP */
+                break;
+                }
             ctlr->rx_buf = ctlr->obuf[ctlr->obptr++];   /* get first byte */
             ctlr->rx_csr |= CSR_DONE;                   /* set input flag */
             if (ctlr->rx_csr & CSR_IE)                  /* interrupt if enabled */
                 CSI_SET_INT;
-            sim_data_trace(ctlr->dptr, &ctlr->uptr[ctlr->unitno], ctlr->obuf, "Boot Block Data", ctlr->olen, "", TDDEB_DAT);
             sim_activate (ctlr->uptr+ctlr->unitno, td_ctime);/* sched command */
             }
         break;
@@ -1067,6 +1153,19 @@ switch (ctlr->p_state) {                                /* case on state */
             if (t == 0)                                 /* minimum 1 */
                 t = 1;
             ctlr->p_state++;                            /* set next state */
+            if (td_rlz ()) {
+                double us;
+
+                if (ctlr->p_state == TD_READ1)          /* read: the first record */
+                    us = sim_tu58_record_us (td_drive (ctlr, uptr), td_rec (ctlr));
+                else                                    /* write: Continue for the */
+                    us = td_byte_us ();                 /* first data packet */
+                sim_debug (TDDEB_MOT, ctlr->dptr, "%s: %s block %d, %d bytes: first record %d %.1f ms\n",
+                           sim_uname (uptr), (ctlr->p_state == TD_READ1) ? "read" : "write",
+                           ctlr->block, ctlr->txsize, td_rec (ctlr), us / 1000.0);
+                sim_sound_activate_us (uptr, us);
+                break;
+                }
             sim_activate (uptr, td_stime * t);          /* schedule seek */
             break;
             }
@@ -1081,6 +1180,14 @@ switch (ctlr->p_state) {                                /* case on state */
             if (t == 0)                                 /* minimum 1 */
                 t = 1;
             ctlr->p_state = TD_END;                     /* set next state */
+            if (td_rlz ()) {                            /* the tape stands at the block */
+                double us = sim_tu58_position_us (td_drive (ctlr, uptr), ctlr->block * 4);
+
+                sim_debug (TDDEB_MOT, ctlr->dptr, "%s: position to block %d: %.1f ms\n",
+                           sim_uname (uptr), ctlr->block, us / 1000.0);
+                sim_sound_activate_us (uptr, us);
+                break;
+                }
             sim_activate (uptr, td_stime * t);          /* schedule seek */
             break;
             }
@@ -1090,6 +1197,12 @@ switch (ctlr->p_state) {                                /* case on state */
         break;
 
     case TD_READ1:                                      /* build data packet */
+        if (fbuf == NULL) {                             /* cartridge removed meanwhile */
+            ctlr->ecode = TD_STSNC;
+            ctlr->p_state = TD_END;
+            sim_activate (uptr, td_xtime);
+            break;
+            }
         da = (ctlr->block * 512) + ctlr->offset;        /* get tape address */
         if (ctlr->txsize > 128)                         /* Packet length */
             data_size = 128;
@@ -1114,7 +1227,7 @@ switch (ctlr->p_state) {                                /* case on state */
         ctlr->obptr = 0;
         ctlr->p_state = TD_READ2;                       /* go empty */
         sim_data_trace(ctlr->dptr, &ctlr->uptr[ctlr->unitno], ctlr->obuf, "Sending Read Data Packet", ctlr->olen, "", TDDEB_DAT);
-        sim_activate (uptr, td_xtime);                  /* schedule next */
+        td_sched (uptr, td_xtime, td_byte_us ());       /* schedule next */
         break;
 
     case TD_READ2:                                      /* send data packet to host */
@@ -1124,13 +1237,22 @@ switch (ctlr->p_state) {                                /* case on state */
             if (ctlr->rx_csr & CSR_IE)
                 CSI_SET_INT;
             if (ctlr->obptr >= ctlr->olen) {            /* buffer empty? */
-                if (ctlr->txsize > 0)
+                if (ctlr->txsize > 0) {
                     ctlr->p_state = TD_READ1;
+                    if (td_rlz () && (fbuf != NULL)) {  /* realism: the next record */
+                        double us = sim_tu58_record_us (td_drive (ctlr, uptr), td_rec (ctlr));
+
+                        sim_debug (TDDEB_MOT, ctlr->dptr, "%s: record %d: %.1f ms (%.1f inst/us)\n",
+                                   sim_uname (uptr), td_rec (ctlr), us / 1000.0, sim_sound_inst_per_us ());
+                        sim_sound_activate_us (uptr, us);
+                        break;
+                        }
+                    }
                 else
                     ctlr->p_state = TD_END;
                 }
             }
-        sim_activate (uptr, td_xtime);                  /* schedule next */
+        td_sched (uptr, td_xtime, td_byte_us ());       /* schedule next */
         break;
 
     case TD_WRITE1:                                     /* send continue */
@@ -1141,10 +1263,16 @@ switch (ctlr->p_state) {                                /* case on state */
                 CSI_SET_INT;
             break;
             }
-        sim_activate (uptr, td_xtime);                  /* schedule next */
+        td_sched (uptr, td_xtime, td_byte_us ());       /* schedule next */
         break;
 
     case TD_WRITE2:                                     /* write data to buffer */
+        if (fbuf == NULL) {                             /* cartridge removed meanwhile */
+            ctlr->ecode = TD_STSNC;
+            ctlr->p_state = TD_END;
+            sim_activate (uptr, td_xtime);
+            break;
+            }
         da = (ctlr->block * 512) + ctlr->offset;        /* get tape address */
         ctlr->olen = ctlr->ibuf[1];
         for (i = 0; i < ctlr->olen; i++)                /* write data to buffer */
@@ -1165,8 +1293,18 @@ switch (ctlr->p_state) {                                /* case on state */
                     uptr->hwmark = da;
                 }
             ctlr->p_state = TD_END;
+            if (td_rlz () && ctlr->wr_verify) {         /* write/verify: back to the */
+                int32 first = ctlr->block * 4;          /* first record, read them all */
+                int32 n = (ctlr->offset + 127) / 128;
+                double us = sim_tu58_records_us (td_drive (ctlr, uptr), first, n, 0.0);
+
+                sim_debug (TDDEB_MOT, ctlr->dptr, "%s: verify %d records from %d: %.1f ms\n",
+                           sim_uname (uptr), n, first, us / 1000.0);
+                sim_sound_activate_us (uptr, us);
+                break;
+                }
             }
-        sim_activate (uptr, td_xtime);                  /* schedule next */
+        td_sched (uptr, td_xtime, td_byte_us ());       /* schedule next */
         break;
         
     case TD_BOOTSTRAP:                                  /* send data to host */
@@ -1177,13 +1315,17 @@ switch (ctlr->p_state) {                                /* case on state */
                 CSI_SET_INT;
             if (ctlr->obptr >= ctlr->olen) {            /* buffer empty? */
                 ctlr->p_state = TD_IDLE;
+                if (td_rlz ())                          /* the tape stops */
+                    sim_tu58_stop (td_drive (ctlr, uptr), 0.0);
                 break;
                 }
             }
-        sim_activate (uptr, td_xtime);                  /* schedule next */
+        td_sched (uptr, td_xtime, td_byte_us ());       /* schedule next */
         break;
 
     case TD_END:                                        /* build end packet */
+        if (td_rlz ())                                  /* the command ends: */
+            sim_tu58_stop (td_drive (ctlr, uptr), 0.0); /* the tape stops */
         ctlr->obptr = 0;
         ctlr->obuf[ctlr->obptr++] = TD_OPCMD;           /* Command packet */
         ctlr->obuf[ctlr->obptr++] = 0xA;                /* ** Need definition ** */
@@ -1208,7 +1350,7 @@ switch (ctlr->p_state) {                                /* case on state */
         ctlr->obptr = 0;
         ctlr->p_state = TD_END1;                        /* go empty */
         sim_debug(TDDEB_PKT, ctlr->dptr, "END PKT: %s Generated - Unit: %d, Success Code: %X\n", sim_uname(uptr), ctlr->unitno, ctlr->ecode);
-        sim_activate (uptr, td_xtime);                  /* schedule next */
+        td_sched (uptr, td_xtime, td_byte_us ());       /* schedule next */
         break;
 
     case TD_END1:                                       /* send end packet to host */
@@ -1223,7 +1365,7 @@ switch (ctlr->p_state) {                                /* case on state */
                 break;
                 }
             }
-        sim_activate (uptr, td_xtime);                  /* schedule next */
+        td_sched (uptr, td_xtime, td_byte_us ());       /* schedule next */
         break;
 
     case TD_INIT:
@@ -1235,7 +1377,7 @@ switch (ctlr->p_state) {                                /* case on state */
             ctlr->p_state = TD_IDLE;
             break;
             }
-        sim_activate (uptr, td_xtime);                  /* schedule next */
+        td_sched (uptr, td_xtime, td_byte_us ());       /* schedule next */
         break;
     }
 return SCPE_OK;
@@ -1420,6 +1562,8 @@ for (ctl=0; ctl<TD_NUMCTLR; ctl++) {
     td_unit[2*ctl+1].flags |= UNIT_FIX|UNIT_ATTABLE|UNIT_BUFABLE|UNIT_MUSTBUF|UNIT_DIS;
     td_unit[2*ctl+1].capac = TD_SIZE;
     td_unit[2*ctl+1].up7 = ctlr;
+    sim_tu58_init (&ctlr->drv[0], &td_unit[2*ctl+0], &td_tu58_regs, SND_GRP_TAPE, TD_SND_GAIN);
+    sim_tu58_init (&ctlr->drv[1], &td_unit[2*ctl+1], &td_tu58_regs, SND_GRP_TAPE, TD_SND_GAIN);
     td_reset_ctlr (ctlr);
     sim_cancel (&td_unit[2*ctl]);
     sim_cancel (&td_unit[2*ctl+1]);
@@ -1428,6 +1572,7 @@ for (ctl=0; ctl<td_ctrls; ctl++) {
     td_unit[2*ctl+0].flags &= ~UNIT_DIS;
     td_unit[2*ctl+1].flags &= ~UNIT_DIS;
     }
+sim_sound_register_storage (&tdc_dev);          /* not DEV_DISK: SET SOUND guard */
 return auto_config (tdc_dev.name, td_ctrls);    /* auto config */
 }
 
@@ -1484,10 +1629,62 @@ static t_stat td_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const cha
 {
 fprintf (st, "%s (%s)\n\n", dptr->description (dptr), dptr->name);
 fprintf (st, "DECtape TU58 Cartridge .\n\n");
+fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n");
+fprintf (st, "  - ATTACH inserts a cartridge (the tape at BOT), DETACH removes it; a command\n");
+fprintf (st, "    in progress then ends with \"no cartridge\".\n");
+fprintf (st, "  - The tape is modelled per drive: 512 blocks of four 128-byte records on two\n");
+fprintf (st, "    tracks, 1:2 interleaved; search at 60 in/s, read/write at 30 in/s (42.7 ms\n");
+fprintf (st, "    per record); the tape stops after each command.  A random block takes\n");
+fprintf (st, "    about 9 s, the length of the tape about 28 s (the published figures).\n");
+fprintf (st, "  - The bytes from the TU58 to the host take 10 bits each at BAUD (38400).\n");
+fprintf (st, "  - Registers STARTMS, TURNMS, RUNUP (provisional values); SHOW %sn DRIVE;\n", dptr->name);
+fprintf (st, "    SET %s DEBUG=MOTION shows each motion with its time.\n", dptr->name);
+fprintf (st, "  - Sounds in sound/tu58 (tu58_start, _search, _read, _reverse, _stop,\n");
+fprintf (st, "    _insert, _remove.wav), else sound/default_tape.\n\n");
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
 return SCPE_OK;
+}
+
+/* ATTACH: the cartridge goes in (realism: the tape at BOT, the insert
+   sound); DETACH: it comes out.  Also used by the VAX console TD. */
+
+t_stat td_attach (UNIT *uptr, CONST char *cptr)
+{
+CTLR *ctlr = (CTLR *)uptr->up7;
+t_stat r = attach_unit (uptr, cptr);
+
+if ((r == SCPE_OK) && (ctlr != NULL)) {
+    SND_TU58 *t = td_drive (ctlr, uptr);
+
+    if (sim_sound_enabled ())                   /* load the sounds here, not */
+        sim_tu58_load (t, TD_SND, TD_SND);      /* in the I/O path */
+    sim_tu58_insert (t);
+    }
+return r;
+}
+
+t_stat td_detach (UNIT *uptr)
+{
+CTLR *ctlr = (CTLR *)uptr->up7;
+
+if ((uptr->flags & UNIT_ATT) && (ctlr != NULL))
+    sim_tu58_remove (td_drive (ctlr, uptr));
+return detach_unit (uptr);
+}
+
+/* SHOW <unit> DRIVE.  MTAB_NMO: SCP adds no line end; sim_tu58_show does. */
+
+t_stat td_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+CTLR *ctlr = (CTLR *)uptr->up7;
+
+if (ctlr == NULL) {
+    fprintf (st, "not configured\n");
+    return SCPE_OK;
+    }
+return sim_tu58_show (st, td_drive (ctlr, uptr));
 }
 
 t_stat td_connect_console_device (DEVICE *dptr,
@@ -1503,7 +1700,12 @@ for (i=0; i<dptr->numunits; i++) {
     dptr->units[i].flags |= UNIT_FIX|UNIT_ATTABLE|UNIT_BUFABLE|UNIT_MUSTBUF;
     dptr->units[i].up7 = (void *)ctlr;
     sim_cancel (&dptr->units[i]);
+    if (i < 2)
+        sim_tu58_init (&ctlr->drv[i], &dptr->units[i], &td_tu58_regs, SND_GRP_TAPE, TD_SND_GAIN);
     }
+dptr->attach = &td_attach;                      /* cartridge in/out (realism) */
+dptr->detach = &td_detach;
+sim_sound_register_storage (dptr);              /* not DEV_DISK: SET SOUND guard */
 ctlr->dptr = dptr;
 ctlr->uptr = dptr->units;
 ctlr->rx_set_int = rx_set_int;

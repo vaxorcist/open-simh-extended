@@ -374,6 +374,10 @@ REG td_reg[] = {
     { DRDATAD (STIME,  td_regval,24, "seek, per block"), PV_LEFT },
     { DRDATAD (XTIME,  td_regval,24, "tr set time"), PV_LEFT },
     { DRDATAD (ITIME,  td_regval,24, "init time"), PV_LEFT },
+    { DRDATAD (STARTMS, td_tu58_regs.start_ms, 16, "realism: tape start time, ms"), PV_LEFT },
+    { DRDATAD (TURNMS,  td_tu58_regs.turn_ms,  16, "realism: tape reversal time, ms"), PV_LEFT },
+    { DRDATAD (RUNUP,   td_tu58_regs.runup_hin,16, "realism: run-up before a record, 1/100 in"), PV_LEFT },
+    { DRDATAD (BAUD,    td_baud,               24, "realism: serial line speed, bits/s"), PV_LEFT },
     { NULL }
     };
 
@@ -382,6 +386,8 @@ MTAB td_mod[] = {
         &set_writelock, &show_writelock,   NULL, "Write enable TU58 drive" },
     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
         &set_writelock, NULL,   NULL, "Write lock TU58 drive" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
+        NULL, &td_show_drive, NULL, "Display the drive: cartridge, tape position (sound realism mode)" },
     { 0 }
     };
 
