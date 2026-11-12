@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_TU58_sound_notes.md  v1 (v1: facts, current SIMH code, planned model, progress; written before the code so the work survives a stop) -->
+<!-- open-simh-extended/docs/SIMH_TU58_sound_notes.md  v2 (v2: model coded (branch tu58-wip), first VMS results; v1: facts, current SIMH code, planned model, progress; written before the code so the work survives a stop) -->
 # TU58 DECtape II in the sound realism mode: working notes
 
 Started 2026-11-12 for Ulli (vaxorcist). Phase F, step 1 of the sound project. This file is the running record of the TU58 work: facts, design, progress. It is updated at every step so the work can be picked up after an interruption (weekly limit). The handover (`SIMH_Sound_handover.md`) gets the summary when the step is done.
@@ -57,3 +57,14 @@ Not published (found): start/stop and reversal times, the exact record order on 
 ## 5. Progress
 
 - 2026-11-12: facts collected, model designed (this file v1). Nothing coded yet.
+- 2026-11-12 (v2): coded, work branch **`tu58-wip`** (commit 2182acbf on the `sound` tree, not yet in a patch):
+  - `sim_sound.c/.h`: `SND_TU58` (tape position per drive, record slots, search/read speeds, start/turnaround/run-up, timed motion sounds start/search/read/reverse/stop, insert/remove; fallback to `default_tape`), `sim_tu58_record_us`, `_records_us`, `_position_us`, `_stop`, `_show`.
+  - `PDP11/pdp11_td.c/.h`: realistic times in READ/READ1/READ2, WRITE/WRITE1/WRITE2 (+ write/verify read-back), POSITION, BOOTSTRAP, END (the tape stops); bytes TU58 to host at BAUD (38400); registers STARTMS 60, TURNMS 150, RUNUP 150 (1/100 in), BAUD; `SHOW TDCn DRIVE`, debug flag MOTION; `td_attach`/`td_detach` (cartridge in/out) also for the VAX console TD; storage registration (SET SOUND guard).
+  - Fixed on the way (both modes): command for a unit number the controller does not have (unit pointer outside the unit array) now ends with "bad unit" 0370; a cartridge removed during a transfer ends it with "no cartridge" instead of using the freed buffer.
+  - `VAX/vax730_stddev.c`, `vax750_stddev.c`: the console TD gets real registers STARTMS/TURNMS/RUNUP/BAUD and SHOW TD DRIVE.
+  - Builds without warnings: pdp11, vax730, vax750.
+- First tests (`tests/tu58/vms1.ini` normal, `vms2.ini` realism; VMS V4.7 on the VAX-11/750, console TU58 = CSA1 after SYSGEN CONNECT CONSOLE, blank cartridge): MOUNT/FOREIGN, EXCHANGE INITIALIZE (RT-11), COPY LOGINOUT.EXE (107 blocks) to CSA1 and back, DIFFERENCES 0, DIRECTORY 107 blocks / 397 free, DISMOUNT: both modes ok. Realism: whole run 5 min 12 s wall; 982 motions, 139.5 s of tape time; records within a block 69.9 ms after the previous packet (2 slots minus the 34 ms of the packet on the line), written records 95 ms apart, a block from a stopped tape 0.34-0.66 s, longest search 24 s.
+  - Script pitfall: after SYSGEN CONNECT CONSOLE the next command must wait for the SYSGEN> prompt (typed early, characters are lost; plain Open SIMH the same).
+- Found, not changed (to go into the known issues): the console TD register table of the 730/750 shows dummies (`td_regval` for every register: EXAMINE/DEPOSIT TD CTIME etc. do nothing); the command modifier byte (special address mode = record numbers, write/verify) is ignored; host to TU58 bytes are not timed (transmit done at once).
+- Asked Ulli (14:15) for images: an RT-11 TU58 for the PDP-11, the VAX-11/750 and VAX-11/730 console cartridges.
+- Next: synthetic sounds (`sound/tu58`), PDP-11 TDC test, VAX-11/730 console, device table, known issues, handover, patch.
