@@ -180,11 +180,37 @@ return (snd_sys_user[idx][0] != '\0') ? snd_sys_user[idx] : snd_sys_default[idx]
    refused while one exists, because the realism mode changes the timing
    and the operator behavior of these devices. */
 
+static DEVICE **snd_storage_devs = NULL;              /* sim_sound_register_storage () */
+static int32 snd_n_storage_devs = 0;
+
+void sim_sound_register_storage (DEVICE *dptr)
+{
+DEVICE **n;
+int32 i;
+
+for (i = 0; i < snd_n_storage_devs; i++)
+    if (snd_storage_devs[i] == dptr)
+        return;
+n = (DEVICE **) realloc ((void *) snd_storage_devs, (snd_n_storage_devs + 1) * sizeof (*n));
+if (n == NULL)
+    return;
+snd_storage_devs = n;
+snd_storage_devs[snd_n_storage_devs++] = dptr;
+}
+
 static UNIT *snd_attached_storage_unit (void)
 {
 DEVICE *dptr;
 uint32 i, j;
+int32 k;
 
+for (k = 0; k < snd_n_storage_devs; k++) {      /* registered storage devices */
+    dptr = snd_storage_devs[k];
+    for (j = 0; j < dptr->numunits; j++) {
+        if (dptr->units[j].flags & UNIT_ATT)
+            return &dptr->units[j];
+        }
+    }
 for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
     if ((DEV_TYPE (dptr) != DEV_DISK) && (DEV_TYPE (dptr) != DEV_TAPE))
         continue;
