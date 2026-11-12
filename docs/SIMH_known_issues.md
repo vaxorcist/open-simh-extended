@@ -153,6 +153,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **In:** the next sound patch (after v8). This was Claude's own code, so it was fixed directly.
 - **Found and fixed:** 2026-11-04.
 - **Superseded 2026-11-04:** with the RB730 on sim_disk (case 7) the device is `DEV_DISK`, so the SET SOUND check covers it without the registration. `sim_sound_register_storage` was removed again (sound patch v10).
+- **2026-11-12:** `sim_sound_register_storage` is back (sound patch v33) for the VAX 8600 console RL02, which does not use sim_disk and so is not `DEV_DISK`.
 
 ### 9 — OPEN — Bug: MSCP Compare stores a wrong bus address after a memory error
 - **Where:** `PDP11/pdp11_rq.c`, `rq_svc`, Compare branch, non-existent memory:
