@@ -37,6 +37,7 @@
 #define PDP11_TD_H
 
 #include "sim_defs.h"
+#include "sim_sound.h"
 
 typedef struct CTLR CTLR;
 
@@ -55,6 +56,16 @@ t_stat td_wr_i_buf (CTLR *ctlr, int32 data);
 t_stat td_wr_o_csr (CTLR *ctlr, int32 data);
 t_stat td_wr_o_buf (CTLR *ctlr, int32 data);
 
+/* Sound realism mode (SET SOUND ENABLED): the TU58 tape model registers
+   (shared by every TU58: TDC and the VAX console TD), the serial line
+   speed, and the drive routines the console devices use */
+
+extern SND_TU58_REGS td_tu58_regs;
+extern int32 td_baud;
+t_stat td_attach (UNIT *uptr, CONST char *cptr);
+t_stat td_detach (UNIT *uptr);
+t_stat td_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+
 /* Debug detail levels */
 
 #define TDDEB_OPS       00001                           /* transactions */
@@ -69,9 +80,11 @@ t_stat td_wr_o_buf (CTLR *ctlr, int32 data);
 #define TDDEB_PKT       00200                           /* packet */
 #define TDDEB_DAT       00400                           /* data */
 #define TDDEB_ERR       01000                           /* errors */
+#define TDDEB_MOT       02000                           /* tape motion (realism mode) */
 
 static DEBTAB td_deb[] = {
     { "OPS", TDDEB_OPS, "transactions" },
+    { "MOTION", TDDEB_MOT, "realistic tape motion and times (sound realism mode)" },
     { "PKT", TDDEB_PKT, "packet" },
     { "RRD", TDDEB_RRD, "reg reads"},
     { "IRD", TDDEB_IRD, "input reg reads" },
