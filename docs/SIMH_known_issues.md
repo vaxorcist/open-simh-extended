@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v25 (v25: cases 55-61, TU58 realism work; v24: case 54 (fixed), VAX 8200 console floppy physical track 0; v23: cases 51 (fixed), 52 and 53, VAX 8600 console RL02; v22: case 50, PDP-11 RQ controller type after SET CPU; v21: case 49, RY boot with the RX enabled; v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v26 (v26: case 62 (fixed), BOOT CS on the VAX 8200; v25: cases 55-61, TU58 realism work; v24: case 54 (fixed), VAX 8200 console floppy physical track 0; v23: cases 51 (fixed), 52 and 53, VAX 8600 console RL02; v22: case 50, PDP-11 RQ controller type after SET CPU; v21: case 49, RY boot with the RX enabled; v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -82,6 +82,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 59 | OPEN | Limitation | `PDP11/pdp11_td.c` `td_process_packet` | The TU58 command modifier byte is ignored: the special address mode (record numbers 0-2047 instead of blocks) is not supported, write/verify only gets its time in the realism mode |
 | 60 | OPEN | Limitation | `VAX/vax730_sys.c` BOOT TD with the internal VMB | A VAX-11/730 console cartridge (RT-11 volume, e.g. the diagnostic supervisor) cannot be booted: VMB looks for a standalone boot file, `%BOOT-F-Unable to locate BOOT file` |
 | 61 | OPEN | Pitfall | RT-11 V5.7 with the PDP-11 TDC | RT-11 V5.7 installs the serial printer handler LS at CSR 176500, the TDC's default address |
+| 62 | FIXED (patch 3) | Bug | `VAX/vax820_bi.c` `vax820_boot_parse` | BOOT CS0 on the VAX 8200 fails with "Invalid argument": the parser rejects devices without a DIB, although CS is in the boot table |
 
 ## Details
 
@@ -519,3 +520,10 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Seen:** Ulli's RT-11 V5.7 RX02 system (`SHOW DEVICES`): `LS Installed 176500 470 474 300 304`, the serial printer handler on the CSR and vector 300 of the PDP-11 TDC (TU58), which this kit has no handler for (no DD.SYS). RT-11 V5.3 installs XL at 176500.
 - **Effect:** a TDC at its default address shares it with an installed handler for another device; use the DD handler (`tests/tu58/mkdd.ini` builds an RT-11 V5.3 TU58) or move the TDC (`SET TDC ADDRESS=`).
 - **Found:** 2026-11-12.
+
+### 62 — FIXED IN PATCH 3 — Bug: BOOT CS0 on the VAX 8200 gives "Invalid argument"
+- **Reported by Ulli (2026-11-12):** `BOOT CS0` with the STABACKIT diskette SYSTEM_1 attached: `Invalid argument`.
+- **Where:** `VAX/vax820_bi.c`, `vax820_boot_parse`: `if (dibp == NULL) return SCPE_ARG;`. The console floppy CS has no DIB, but it is in the boot table (`BOOT_CS`, device code 64), so it could never be booted. Plain Open SIMH 87eb7d5 since the 8200 was added (1d159661). The VAX-11/780 (`vax780_sbi.c`) and 8600 (`vax860_abus.c`) parsers use base address 0 for a device without a DIB.
+- **Fix (patch 3, third commit):** the same as on the 780 and 8600. `BOOT CS0` loads VMB from the console RX50; VMB reads SYSTEM_1 and asks for the standalone system volumes.
+- **Not yet checked here:** the complete standalone BACKUP boot with the diskette changes (Ulli tests it).
+- **Found and fixed:** 2026-11-12.

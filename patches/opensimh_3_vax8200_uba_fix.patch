@@ -1,7 +1,7 @@
-From 6a937e736f1bee4585baa2e8be869bc81639aa72 Mon Sep 17 00:00:00 2001
+From aee2a1b0729b05ef62f108a1508590ebe8d89cea Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 28 Oct 2026 17:45:06 +0100
-Subject: [PATCH 1/2] VAX8200: Deliver DWBUA error and Unibus device interrupts
+Subject: [PATCH 1/3] VAX8200: Deliver DWBUA error and Unibus device interrupts
  at all BI levels
 
 uba_eval_int() looped over IPL_HMAX - IPL_HMIN (3) levels and so never
@@ -28,7 +28,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 20 insertions(+), 15 deletions(-)
 
 diff --git a/VAX/vax820_uba.c b/VAX/vax820_uba.c
-index 9ee3516..fe67859 100644
+index 9ee3516b..fe67859e 100644
 --- a/VAX/vax820_uba.c
 +++ b/VAX/vax820_uba.c
 @@ -537,31 +537,36 @@ SET_IRQL;                                               /* update ints */
@@ -87,10 +87,10 @@ index 9ee3516..fe67859 100644
 2.43.0
 
 
-From 644df090effed06a28ed5175305603686a778e4f Mon Sep 17 00:00:00 2001
+From a009d86c2873fdc14207634dc6b5bf1c95a9fbaa Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 28 Oct 2026 20:45:01 +0100
-Subject: [PATCH 2/2] VAX8200: BICSR Start Self-Test also initializes the
+Subject: [PATCH 2/3] VAX8200: BICSR Start Self-Test also initializes the
  UNIBUS
 
 BICSR bit 10 (BICSR_RST) is the BIIC's Start Self-Test bit.  On the DWBUA
@@ -112,7 +112,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 10 insertions(+), 1 deletion(-)
 
 diff --git a/VAX/vax820_uba.c b/VAX/vax820_uba.c
-index fe67859..762c2b6 100644
+index fe67859e..762c2b67 100644
 --- a/VAX/vax820_uba.c
 +++ b/VAX/vax820_uba.c
 @@ -387,8 +387,17 @@ if (ofs >= UBAMAP_OF) {                                 /* map? */
@@ -134,6 +134,63 @@ index fe67859..762c2b6 100644
          uba_biic.csr = (uba_biic.csr & ~BICSR_RW) | (val & BICSR_RW);
          break;
  
+-- 
+2.43.0
+
+
+From ade0cba3593edf8d68eaaa8b26134e0dbe2d89c0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 21:56:18 +0100
+Subject: [PATCH 3/3] VAX8200: BOOT CS (console RX50) no longer fails with
+ "Invalid argument"
+
+The 8200 boot parser rejected every device without a DIB, so the
+console floppy CS, which is in the boot table (BOOT_CS), could never be
+booted: BOOT CS0 gave "Invalid argument". The VAX-11/780 and 8600
+parsers use base address 0 for such a device; the 8200 now does the
+same. VMB then loads from the console RX50 (e.g. standalone BACKUP made
+by @SYS$UPDATE:STABACKIT CSA1:).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
+---
+ VAX/vax820_bi.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/VAX/vax820_bi.c b/VAX/vax820_bi.c
+index 24c78872..da84a760 100644
+--- a/VAX/vax820_bi.c
++++ b/VAX/vax820_bi.c
+@@ -638,6 +638,7 @@ char gbuf[CBUFSIZE];
+ char *slptr;
+ const char *regptr;
+ int32 i, r5v, unitno;
++uint32 ba;
+ DEVICE *dptr;
+ UNIT *uptr;
+ DIB *dibp;
+@@ -656,8 +657,10 @@ dptr = find_unit (gbuf, &uptr);                         /* find device */
+ if ((dptr == NULL) || (uptr == NULL))
+     return SCPE_ARG;
+ dibp = (DIB *) dptr->ctxt;                              /* get DIB */
+-if (dibp == NULL)
+-    return SCPE_ARG;
++if (dibp == NULL)                                       /* none (console */
++    ba = 0;                                             /* floppy CS): as on */
++else                                                    /* the 780 and 8600 */
++    ba = dibp->ba;
+ unitno = (int32) (uptr - dptr->units);
+ r5v = 0;
+ /* coverity[NULL_RETURNS] */
+@@ -675,7 +678,7 @@ for (i = 0; boot_tab[i].name != NULL; i++) {
+     if (strcmp (dptr->name, boot_tab[i].name) == 0) {
+         R[0] = boot_tab[i].code;
+         R[1] = TR_UBA;
+-        R[2] = boot_tab[i].let | (dibp->ba & UBADDRMASK);
++        R[2] = boot_tab[i].let | (ba & UBADDRMASK);
+         R[3] = unitno;
+         R[4] = 0;
+         R[5] = r5v;
 -- 
 2.43.0
 
