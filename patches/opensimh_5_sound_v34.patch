@@ -1,4 +1,4 @@
-From 59744614a4065ca921eeeed9ebcb657daeaa1538 Mon Sep 17 00:00:00 2001
+From a7afb43798caa4562f0829c5e207e36c18820e73 Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
 Date: Wed, 11 Nov 2026 21:34:30 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
@@ -185,6 +185,10 @@ are not DEV_DISK; sim_disk_pdp11_bad_block without a sim_disk context now
 writes the bad block table at the end of the image (it used a word offset
 as a byte offset).
 
+VAX 8200 console floppy: physical track 0 (logical track 79, blocks
+790-799) gave a negative disk address and crashed SIMH (VMS STABACKIT on
+CSA1); it now maps as the RQDX maps an RX50.
+
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
 
@@ -205,7 +209,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  VAX/vax730_rb.c                      |  317 +-
  VAX/vax750_syslist.c                 |   15 +
  VAX/vax780_stddev.c                  |  151 +-
- VAX/vax820_stddev.c                  |  155 +-
+ VAX/vax820_stddev.c                  |  166 +-
  VAX/vax860_stddev.c                  |  263 +-
  VAX/vax_cpu.c                        |    7 +-
  cmake/add_simulator.cmake            |    2 +
@@ -286,7 +290,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  sound/tsv05/tsv05_start.wav          |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_stop.wav           |  Bin 0 -> 7100 bytes
  sound/tsv05/tsv05_unload.wav         |  Bin 0 -> 661544 bytes
- 95 files changed, 10647 insertions(+), 160 deletions(-)
+ 95 files changed, 10656 insertions(+), 162 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -6495,14 +6499,17 @@ index 1689a5c1..130df102 100644
  {
  return "console floppy";
 diff --git a/VAX/vax820_stddev.c b/VAX/vax820_stddev.c
-index ab30ec88..0cc96856 100644
+index ab30ec88..0e0f0626 100644
 --- a/VAX/vax820_stddev.c
 +++ b/VAX/vax820_stddev.c
-@@ -29,10 +29,18 @@
+@@ -29,10 +29,21 @@
     cs           console floppy
     todr         TODR clock
     tmr          interval timer
 +
++   12-Nov-26    Ulli    Console floppy: physical track 0 (logical track 79,
++                        blocks 790-799) gave a negative disk address and
++                        crashed SIMH (VMS STABACKIT on CSA1)
 +   11-Nov-26    Ulli    Console floppy (CS, the RX50 of the VAX 8200 console):
 +                        sound realism mode (SET SOUND ENABLED): one RX50
 +                        drive, both slots on one motor and one head carriage,
@@ -6517,7 +6524,22 @@ index ab30ec88..0cc96856 100644
  
  /* Terminal definitions */
  
-@@ -248,6 +256,24 @@ void tmr_sched (uint32 incr);
+@@ -168,8 +179,12 @@ const char *fl_fncnames[] = {
+ #define FL_SIZE         (FL_NUMTR * FL_NUMSC * FL_NUMBY)/* bytes/disk */
+ 
+ #define TRACK u3                                        /* current track */
+-#define CALC_SC(t,s)    (fl_intl[((t) - 1) % FL_INTL][((s) - 1)])
+-#define CALC_DA(t,s)    ((((t) - 1) * FL_NUMSC) + CALC_SC(t,s)) * FL_NUMBY
++/* Physical track t holds logical track t - 1; physical track 0 holds the
++   last one, logical track 79 (blocks 790-799), as the RQDX maps an RX50
++   (t - 1 was -1 for track 0: a negative disk address, SIMH crashed) */
++#define CALC_LT(t)      (((t) + FL_NUMTR - 1) % FL_NUMTR)
++#define CALC_SC(t,s)    (fl_intl[CALC_LT(t) % FL_INTL][((s) - 1)])
++#define CALC_DA(t,s)    ((CALC_LT(t) * FL_NUMSC) + CALC_SC(t,s)) * FL_NUMBY
+ 
+ int32 tti_csr = 0;                                      /* control/status */
+ uint32 tti_buftime;                                     /* time input character arrived */
+@@ -248,6 +263,24 @@ void tmr_sched (uint32 incr);
  t_stat todr_resync (void);
  t_bool fl_test_xfr (UNIT *uptr, t_bool wr);
  void fl_protocol_error (void);
@@ -6542,7 +6564,7 @@ index ab30ec88..0cc96856 100644
  
  extern int32 con_halt (int32 code, int32 cc);
  
-@@ -417,6 +443,12 @@ REG fl_reg[] = {
+@@ -417,6 +450,12 @@ REG fl_reg[] = {
      { DRDATAD (XTIME,      fl_xwait, 24, "transfer time delay, per byte"), PV_LEFT },
      { FLDATAD (STOP_IOE, fl_stopioe,  0, "stop on I/O error") },
      { BRDATAD (DBUF,         fl_buf, 16, 8, FL_NUMBY, "data buffer") },
@@ -6555,7 +6577,7 @@ index ab30ec88..0cc96856 100644
      { NULL }
      };
  
-@@ -425,6 +457,8 @@ MTAB fl_mod[] = {
+@@ -425,6 +464,8 @@ MTAB fl_mod[] = {
          &set_writelock, &show_writelock,   NULL, "Write enable floppy drive" },
      { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
          &set_writelock, NULL,   NULL, "Write lock floppy drive" },
@@ -6564,7 +6586,7 @@ index ab30ec88..0cc96856 100644
      { 0 }
      };
  
-@@ -443,9 +477,9 @@ DEVICE fl_dev = {
+@@ -443,9 +484,9 @@ DEVICE fl_dev = {
      "CS", fl_unit, fl_reg, fl_mod,
      2, DEV_RDX, 20, 1, DEV_RDX, 8,
      NULL, NULL, &fl_reset,
@@ -6576,7 +6598,7 @@ index ab30ec88..0cc96856 100644
      &fl_description
      };
  
-@@ -1045,10 +1079,7 @@ switch (rg) {
+@@ -1045,10 +1086,7 @@ switch (rg) {
          break;
  
      case FL_GO:
@@ -6588,7 +6610,7 @@ index ab30ec88..0cc96856 100644
          break;
          }
  sim_debug (FL_DB_REG, &fl_dev, "fl_rd(%s) data=0x%02X\n", fl_regnames[rg], val);
-@@ -1083,10 +1114,7 @@ switch (rg) {
+@@ -1083,10 +1121,7 @@ switch (rg) {
          break;
  
      case FL_GO:
@@ -6600,7 +6622,7 @@ index ab30ec88..0cc96856 100644
          break;
  
      case FL_FB:
-@@ -1135,6 +1163,59 @@ fl_cs4 = 0;                                             /* FIXME */
+@@ -1135,6 +1170,59 @@ fl_cs4 = 0;                                             /* FIXME */
     FL_DONE              Copy requested data to TXDB, set FL_IDLE
  */
  
@@ -6660,7 +6682,7 @@ index ab30ec88..0cc96856 100644
  t_stat fl_svc (UNIT *uptr)
  {
  int32 fnc = (fl_cs0 >> FLCS0_V_FNC) & FLCS0_M_FNC;
-@@ -1219,6 +1300,13 @@ return FALSE;
+@@ -1219,6 +1307,13 @@ return FALSE;
  
  t_stat fl_reset (DEVICE *dptr)
  {
@@ -6674,7 +6696,7 @@ index ab30ec88..0cc96856 100644
  fl_ecode = 0;                                           /* clear error */
  fl_sector = 0;                                          /* clear addr */
  fl_track = 0;
-@@ -1228,6 +1316,53 @@ sim_cancel (&fl_unit[1]);                               /* cancel drive */
+@@ -1228,6 +1323,53 @@ sim_cancel (&fl_unit[1]);                               /* cancel drive */
  return SCPE_OK;
  }
  

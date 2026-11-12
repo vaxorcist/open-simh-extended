@@ -1,4 +1,4 @@
-# open-simh-extended/tests/rx50_8200/mkprog.py  v1
+# open-simh-extended/tests/rx50_8200/mkprog.py  v2 (v2: command list on the command line)
 #
 # Writes prog.ini (a SIMH do-file) for the VAX 8200 console floppy tests
 # (2026-11-11): a VAX program at 1000 that drives the RX50 console floppy
@@ -9,6 +9,9 @@
 # (EB), so the next command starts at once.
 #
 # Usage: python3 -I mkprog.py > prog.ini
+#        python3 -I mkprog.py 0,0,1 0,0,2 1,79,10 > t0prog.ini
+#          (each argument slot,track,sector; v2, for the track 0 test of
+#          known issues 54)
 
 CMDS = [
     (0, 40, 3),                              # A: motor start, 40 steps, head load
@@ -21,6 +24,10 @@ CMDS = [
     (1, 10, 1),                              # B: 30 steps back
     (0, 79, 10),                             # A: B unloads, 69 steps, A loads
 ]
+
+import sys
+if len(sys.argv) > 1:                        # v2: slot,track,sector arguments
+    CMDS = [tuple(int(x) for x in a.split(',')) for a in sys.argv[1:]]
 
 REG = 0x200B0000
 def absaddr(off):
