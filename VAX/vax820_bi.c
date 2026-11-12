@@ -638,6 +638,7 @@ char gbuf[CBUFSIZE];
 char *slptr;
 const char *regptr;
 int32 i, r5v, unitno;
+uint32 ba;
 DEVICE *dptr;
 UNIT *uptr;
 DIB *dibp;
@@ -656,8 +657,10 @@ dptr = find_unit (gbuf, &uptr);                         /* find device */
 if ((dptr == NULL) || (uptr == NULL))
     return SCPE_ARG;
 dibp = (DIB *) dptr->ctxt;                              /* get DIB */
-if (dibp == NULL)
-    return SCPE_ARG;
+if (dibp == NULL)                                       /* none (console */
+    ba = 0;                                             /* floppy CS): as on */
+else                                                    /* the 780 and 8600 */
+    ba = dibp->ba;
 unitno = (int32) (uptr - dptr->units);
 r5v = 0;
 /* coverity[NULL_RETURNS] */
@@ -675,7 +678,7 @@ for (i = 0; boot_tab[i].name != NULL; i++) {
     if (strcmp (dptr->name, boot_tab[i].name) == 0) {
         R[0] = boot_tab[i].code;
         R[1] = TR_UBA;
-        R[2] = boot_tab[i].let | (dibp->ba & UBADDRMASK);
+        R[2] = boot_tab[i].let | (ba & UBADDRMASK);
         R[3] = unitno;
         R[4] = 0;
         R[5] = r5v;
