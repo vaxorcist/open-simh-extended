@@ -200,6 +200,14 @@ void sim_sound_register_run_hook (void (*fn)(t_bool running));
 
 void sim_sound_register_enable_check (t_stat (*fn) (void));
 
+/* Storage devices that are neither DEV_DISK nor DEV_TAPE (e.g. the VAX
+   8600 console RL02, which does not use sim_disk): their attached units
+   keep SET SOUND ENABLED/DISABLED from changing the timing under them, as
+   the units of disk and tape devices do.  Registering the same device
+   twice is harmless. */
+
+void sim_sound_register_storage (DEVICE *dptr);
+
 /* Sample and voice API for devices.
 
    sim_sound_load ()     loads and converts a WAV file (cached by file name).

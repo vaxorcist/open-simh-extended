@@ -3725,8 +3725,12 @@ da = (uptr->capac*((dptr->flags & DEV_SECTORS) ? 512 : 1)) - (sec * wds);
 for (i = 0; (stat == SCPE_OK) && (i < sec) && (i < 10); i++, da += wds)
     if (ctx)
         stat = sim_disk_wrsect (uptr, (t_lba)(da/wds), (uint8 *)buf, NULL, 1);
-    else {
-        if (sim_fseek (uptr->fileref, da, SEEK_SET)) {
+    else {                                      /* a unit without sim_disk (VAX 8600 */
+        t_offset pos = (dptr->flags & DEV_SECTORS) ? /* console RL02): capac and da count */
+                       (t_offset) da :          /* words, the file offset bytes */
+                       (t_offset) da * sizeof (uint16);
+
+        if (sim_fseek (uptr->fileref, pos, SEEK_SET)) {
             stat = SCPE_IOERR;
             break;
             }
