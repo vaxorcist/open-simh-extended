@@ -1,0 +1,59 @@
+<!-- open-simh-extended/docs/SIMH_TU58_sound_notes.md  v1 (v1: facts, current SIMH code, planned model, progress; written before the code so the work survives a stop) -->
+# TU58 DECtape II in the sound realism mode: working notes
+
+Started 2026-11-12 for Ulli (vaxorcist). Phase F, step 1 of the sound project. This file is the running record of the TU58 work: facts, design, progress. It is updated at every step so the work can be picked up after an interruption (weekly limit). The handover (`SIMH_Sound_handover.md`) gets the summary when the step is done.
+
+Ulli: "although it is a tape drive, it is used like a disk drive, i.e. files are accessed via their directory entries" (RT-11, VMS EXCHANGE, the VAX consoles: block-addressed, random access).
+
+## 1. Facts
+
+Sources: TU58 DECtape II User's Guide **EK-0TU58-UG-004** (Dec 1983, bitsavers; sections given below), Computer History Wiki (TU58), cctalk 2015 ("Sector Interleave", quoting EK-0TU58-UG-001 p. 1-4).
+
+| Item | Value | Source |
+|---|---|---|
+| Cartridge | 42.7 m (140 ft) of 3.81 mm (0.150 in) tape; 262,144 bytes = 512 blocks of 512 bytes | UG 1.4.1 |
+| Tracks | 2 tracks, 256 blocks each | UG 1.2 |
+| Records | each track 1024 "individually numbered, firmware-interleaved records" of 128 bytes; 4 records make a block | UG 1.4.1, UG-001 p. 1-4 |
+| Record addressing | special address mode: records 0-2047 (block × 4) | UG 3.2.3.1 |
+| Tape speed | 30 in/s read/write, 60 in/s search | UG 1.4.1 |
+| Density | 800 bits/in (ratio encoding), 41.7 µs per data bit, 24 kbit/s | UG 1.4.1 |
+| Access time | average 9.3 s, maximum 28 s | UG 1.4.1 |
+| Serial line | 150 to 38.4 kbaud (jumpers), factory setting 38.4 kbaud, 1 start + 1 stop bit, no parity | UG 1.4.1, 4.2.4, 4.7.1 |
+| Drives | one or two per controller, only one runs at a time | UG 1.4.1 |
+| Motor | one servo motor (speed and direction), tachometer feedback, current limiting, anti-runaway timer ("motor stopped" error -33) | UG 1.3.1, 1.2, C-2 |
+| Run indicator | lights while the tape moves; do not touch the cartridge while it is on; removal during motion does no harm to the mechanism, a write in progress may lose data | UG 5.1, 2.5.2 |
+| Power-up | initializes, runs its diagnostics, ready within 1 s | UG 2.4.1 |
+| Cartridge life | 5000 end-to-end-and-back passes | UG 1.4.1 |
+| Write/verify | writes, then backs up and reads the blocks just written | UG 3.3 |
+| Newtape | host routine: seek to block 777 (octal), then to block 0 (a full wind and rewind, retensions the tape) | UG appendix A, 1.4.4 |
+
+Not published (found): start/stop and reversal times, the exact record order on the tape, rewind speed other than the search speed.
+
+## 2. Derived model (provisional where marked)
+
+- **Record order (inference, provisional):** Figure 1-4 of the UG groups the blocks by 128 (#0, #128, #256, #384) and the interleave is 1:2. Assumed: on each track the 1024 record slots alternate between two halves, slot = 2 × (r mod 512) + (r div 512) for record r (0-1023) of the track. Blocks 0-127 (records 0-511) use every second slot over the whole tape in one pass, blocks 128-255 the slots between them; track 1 (blocks 256-511) the same. Both tracks are read in the forward direction; the head has both tracks, track selection is electronic.
+- **Lengths:** 1024 slots per track over the usable tape; the model uses 1600 in (1024 × 1.5625 in per slot; a 128-byte record is 1.28 in at 800 bits/in, the rest header and gap). 1600 in at 60 in/s = 26.7 s; with acceleration and turnaround about 28 s: the published maximum. A third of it (random to random) about 9 s: the published average 9.3 s.
+- **Times per record:** a slot passes in 52 ms at 30 in/s; a record is read in 42.7 ms (1024 bits × 41.7 µs). The 4 records of a block lie 2 slots apart: reading a block takes 7 slots + 1 record ≈ 0.41 s; consecutive blocks stream at 8 slots per block (0.42 s, about 1.2 KB/s).
+- **Serial line:** 38.4 kbaud, 10 bits per character: 260 µs per byte, 33 ms per 128-byte data packet (register; the VAX console TU58 lines are also run at 38.4 kbaud, to be checked).
+- **Positioning:** search at 60 in/s from the current position (per drive) to a run-up distance before the target slot; if the target is behind, or too close ahead, the tape reverses (turnaround, provisional 0.1 s) and searches back; then reads at 30 in/s. Run-up, turnaround and acceleration are provisional registers.
+- **Position after a command:** where it ended (after the last record transferred); the tape stops after each command (the run indicator goes off).
+- **Write:** the TU58 has a 128-byte buffer: it sends Continue, receives a data packet (33 ms on the line) and writes it when its slot comes; the 1:2 interleave leaves one slot (52 ms) for the next packet. Write/verify: then back to the block's first record and read the records again.
+- **Cartridge:** ATTACH = insert (click), DETACH = remove (allowed; a command in progress ends with "no cartridge"). Position after insert: BOT (provisional).
+
+## 3. SIMH today (`PDP11/pdp11_td.c`, Open SIMH 87eb7d5)
+
+- One file for every TU58: the PDP-11 TDC device (up to 16 DL-based controllers, 2 drives each) and the console TU58 (device TD) of the VAX-11/730 (`VAX/vax730_stddev.c`) and VAX-11/750 (`VAX/vax750_stddev.c`), connected by `td_connect_console_device`.
+- Timing in instructions: `STIME` per block of the seek, `CTIME` command, `XTIME` per byte on the line, `ITIME` init. The seek distance is always counted from block 0 (`t = abs (ctlr->block - 0)`), there is no tape position.
+- States: READ (seek) → READ1 (build a 128-byte data packet) → READ2 (send it, a byte per XTIME) → ... → END/END1 (end packet); WRITE → WRITE1 (Continue) → host data packet → WRITE2 (copy into the buffer) → ...; POSITION; BOOTSTRAP; INIT.
+- The image is a 256 KB file in block order, buffered in memory (`UNIT_BUF`).
+
+## 4. Plan
+
+1. Model in sim_sound or in pdp11_td.c (per drive: position, track, motion), realistic times in the states READ/READ1, WRITE1/WRITE2, POSITION, write/verify; the line at the baud rate; registers; SHOW TDCn/TDn DRIVE; debug flag for the motion.
+2. Sounds (synthetic, `tools/make_tape_sounds.py`): motor at search and read speed (loops), start, stop, reversal, cartridge insert and remove; `sound/tu58`, fallback `default_tape`.
+3. Tests: PDP-11 (TDC, a program or RT-11 if an image is available), VAX-11/750 console TU58 under VMS V4.7 (SYSGEN CONNECT CONSOLE, CSA1, EXCHANGE), VAX-11/730 console.
+4. Device table (new rows), known issues for anything found, handover, patch.
+
+## 5. Progress
+
+- 2026-11-12: facts collected, model designed (this file v1). Nothing coded yet.
