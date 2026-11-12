@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v38 (v38: VAX 8200 console floppy track 0 crash fixed (known issues 54), patch 5 v34; v37: the VAX 8600 console RL02, patch 5 v33; v36: VMS V4.7 on the VAX 8200 with the console RX50 CSA1/CSA2, both modes; v35: the VAX 8200 console RX50, patch 5 v32; v34: floppies step 3: the RX50 on the RQ, RX50 controller rules, patch 5 v31; v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v39 (v39: phase F step 1: the TU58 (TDC, VAX-11/730/750 console TD), realism clock fix, patch 5 v35; v38: VAX 8200 console floppy track 0 crash fixed (known issues 54), patch 5 v34; v37: the VAX 8600 console RL02, patch 5 v33; v36: VMS V4.7 on the VAX 8200 with the console RX50 CSA1/CSA2, both modes; v35: the VAX 8200 console RX50, patch 5 v32; v34: floppies step 3: the RX50 on the RQ, RX50 controller rules, patch 5 v31; v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
-Date: 2026-11-02 (last update 2026-11-12, VAX 8200 console floppy track 0 fix). Prepared with Claude for Ulli (vaxorcist). Everything is pushed to the fork vaxorcist/open-simh-extended (branches `sound`, `integration`, `notes`). Design: `SIMH_Sound_design.md` (v1).
+Date: 2026-11-02 (last update 2026-11-12, TU58). Prepared with Claude for Ulli (vaxorcist). Everything is pushed to the fork vaxorcist/open-simh-extended (branches `sound`, `integration`, `notes`). Design: `SIMH_Sound_design.md` (v1).
 
 ## Phase A (2026-11-02): core, mixer, system sounds
 
@@ -1298,9 +1298,67 @@ Notes:
 - Tests (`tests/rx50_8200/`): t0 (track 0 sector 1 reads block 791; before: exit 139), stab1 (STABACKIT, normal mode: crash reproduced on the old build; fixed: "The kit is complete.", 47 verified copies), stab3 (realism mode: complete, 5.5 min VMS time), stab2 (SYSTEM_1 on the MicroVAX II RQDX3: mounts, VMB.EXE identical, SYS.EXE's blocks on track 0 identical to the verified copy). VAX 8200 diagnostics passed, build without warnings. `mkprog.py` v2 takes the command list as arguments.
 - Note: STABACKIT finally asks for the original console diskette and mounts it /NOWRITE; the scripts leave the BACKUP diskette in the drive.
 
+## Phase F, step 1: the TU58 DECtape II (2026-11-12)
+
+Ulli: "although it is a tape drive, it is used like a disk drive, i.e. files are accessed via their directory entries". Working notes with all details and the history of the step: `docs/SIMH_TU58_sound_notes.md` (v3).
+
+### Where things are
+
+- Branch `sound`: commit 3aff591b on top of 23e48fce; branch `integration`: df505088. The work branch `tu58-wip` (two intermediate commits) is squashed into these and can be deleted.
+- Patch **`opensimh_5_sound_v35.patch`** replaces v34 (checked: 6 + 5 v35 on 87eb7d5 give the `sound` tree without the Visual Studio project files).
+- Changed: `PDP11/pdp11_td.c`, `pdp11_td.h` (pdp11, vax730, vax750), `VAX/vax730_stddev.c`, `VAX/vax750_stddev.c`, `sim_sound.c`, `sim_sound.h`. New: `sound/tu58/` (seven files and `README.txt`).
+- Notes branch: `tools/make_tu58_sounds.py` v1, `tools/make_sound_devices_ods.py` v16 and `docs/SIMH_Sound_devices.ods` table v15 (new sheet **TU58**), `docs/SIMH_known_issues.md` v25 (cases 55-61), `docs/SIMH_TU58_sound_notes.md` v3, `tests/tu58/` (vms1-vms6, rt1, rt2, mkdd.ini, mkdd_prep.py, README.txt).
+- Source: TU58 DECtape II User's Guide **EK-0TU58-UG-004** (Dec 1983).
+
+### Facts and model
+
+| Item | Value |
+|---|---|
+| Cartridge | 140 ft of 0.150 in tape, 512 blocks of 512 bytes, 2 tracks of 1024 records of 128 bytes |
+| Speeds | read/write 30 in/s, search 60 in/s; 800 bits/in, 41.7 µs per bit (42.7 ms per record) |
+| Access | published average 9.3 s, maximum 28 s; model: full length 1600 in at 60 in/s = 26.7 s + start/turnaround, a third of it about 9 s |
+| Record order | 1:2 interleave (UG: "firmware-interleaved records", figure 1-4 groups by 128 blocks): **inferred** slot = 2 × (r mod 512) + r div 512 on each track, so blocks 0-127 and 128-255 alternate over the whole tape on track 0, 256-383 and 384-511 on track 1; a block takes 12.5 in of tape |
+| Serial line | 38.4 kbaud (factory setting), 10 bits per character |
+| Provisional | start 60 ms, turnaround 150 ms, run-up 1.5 in (registers STARTMS, TURNMS, RUNUP) |
+
+### Behavior (realism mode)
+
+- `SND_TU58` in sim_sound keeps the tape position of each drive. Reading or writing a record: if the tape already moves forward at read speed and the record is close ahead, it is transferred when it comes; otherwise the tape searches at 60 in/s (with turnarounds when the record is behind) to a run-up point and reads at 30 in/s. The tape stops at the end of every command (motor sounds: search and read loops, start, stop, reverse).
+- `pdp11_td.c`: realistic times in the read (first record, then each next record after its data packet has been sent), write (each record when its slot passes; write/verify reads the records back), position and bootstrap paths; the bytes from the TU58 to the host at `BAUD` (38400). The host's bytes to the TU58 are not timed (transmit done at once, as before).
+- ATTACH inserts the cartridge (tape at BOT, insert sound), DETACH removes it (allowed; a running transfer ends with "no cartridge").
+- `SHOW TDCn DRIVE` / `SHOW TD DRIVE`, debug flag `MOTION` (each motion with its time and the instruction rate), `HELP TDC`. The console TD of the VAX-11/730 and 750 gets the realism registers; its other registers are dummies (known issues 58).
+- Both modes: a command for a unit the controller does not have ends with "bad unit" (known issues 56); a cartridge removed during a transfer ends it with "no cartridge" (57).
+- Normal mode: unchanged (instruction counts CTIME/STIME/XTIME).
+
+### Realism clock fix (known issues 55)
+
+`sim_sound_rt_us` (the clock of all realism timers and models since phase D) divided all instructions since the last start by the *current* instruction rate estimate. Without a THROTTLE (VAX-11/730, PDP-11) the estimate changes every second by up to ±20 %, so after a long run the clock jumped by seconds: the TU58 model took the next record as passed and searched back for 13-20 s. Now piecewise linear. The floppy rotation and the tape models on unthrottled simulators benefit as well; the RX02 RT-11 realism test is unchanged.
+
+### Tests (`tests/tu58/`)
+
+| Test | Result |
+|---|---|
+| vms1 / vms2 (VAX-11/750, VMS V4.7, CSA1, blank cartridge: EXCHANGE INITIALIZE, COPY 107 blocks to and from, DIFFERENCES) | 0 differences in both modes; realism: 982 motions, 139.5 s of tape time, 5 min 12 s wall; records of a block 69.9 ms apart |
+| vms3 / vms4 (VAX-11/730, the same) | 0 differences in both modes; realism 1323 motions, 202 s wall (after the clock fix) |
+| vms5 (750, realism, Ulli's 750 console cartridge, /NOWRITE) | directory 71 files, 263 blocks; VMB.EXE and PCS750.BIN read twice in block mode: 0 differences; 720 motions, 96 s of tape time |
+| vms6 (730, realism, Ulli's 11/725-730 diagnostic supervisor cartridge) | 5 files, 398 blocks; ENSAA.EXE (229 blocks) read twice: 0 differences |
+| mkdd (PDP-11, RT-11 V5.3 kit from Ulli: Ulli's V5.7 RX02 kit has no DD.SYS) | bootable RT-11 V5.3 SJ TU58 `rt11v53_dd.dsk` (8 files, 210 blocks); `BOOT DD0:` and SIMH's `BOOT TDC0` both work (in 2016 `boot tdc0` failed on cctalk) |
+| rt1 / rt2 (PDP-11: BOOT TDC0, DIR, COPY DUP.SAV, UNPROTECT, DELETE, DIR) | all ok in both modes; realism 1882 motions, 703 s of tape time: COPY shuttles 12-27 s between the two files; an RT-11 boot with DIR about 3 min (20 commands, mostly searches between distant blocks) |
+| Audio (SDL disk driver, RT-11 boot + DIR, 174 s) | the search loop (about −33 dBFS) and the read loop (about −36 dBFS) alternate as the commands go; start/stop transitions between commands |
+| BOOT TD0 (/R5:10) of the 730 diagnostic cartridge | `%BOOT-F-Unable to locate BOOT file`, plain Open SIMH the same: SIMH's internal VMB does not boot an RT-11 console cartridge (known issues 60) |
+| Build `-Werror` pdp11, vax730, vax750, vax780, vax8600, microvax2, pdp8, altair; `pdp11_td.c` with `-Wall -Wextra` (PDP-11 and VAX), `sim_sound.c` | no warnings |
+| VAX diagnostics 730, 750, 780, 8600; MicroVAX II, PDP-11, PDP-8 register checks; RX02 RT-11 realism test | passed / unchanged |
+| Integration build (vax750, vms1) | passed 3 of 4 runs; one run stood in the VMS idle loop right after the boot banner (before the login) and was not reproduced in three reruns: an observation, cause unknown |
+
+### Open
+
+- The record order is inferred (1:2 interleave from figure 1-4): a measurement on a real TU58 (e.g. the time of an RT-11 boot or of `DIR` of a full cartridge, or the time to read blocks 0 and 128 one after the other) would confirm or correct it; start, turnaround and run-up are provisional.
+- The host's bytes to the TU58 are not timed (the serial transmitter is done at once).
+- Known issues 58-61 (console TD register dummies, modifiers, 730 console cartridge boot, RT-11 V5.7 LS on 176500).
+
 ## Not done yet (after phase B)
 
-- Floppies: the RX02 (phase E step 1), the RX01 and the 11/780 console RX01 (step 2), the RX50 (step 3), the VAX 8200 console RX50 (step 4) are done; the VAX 8600 console RL02 (step 5) too; RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
+- Floppies: the RX02 (phase E step 1), the RX01 and the 11/780 console RX01 (step 2), the RX50 (step 3), the VAX 8200 console RX50 (step 4) are done; the VAX 8600 console RL02 (step 5) too; the TU58 (phase F step 1) is done; RX33, RX18 next; PDP-8 RX8E/RX28 postponed. TU58 later. (The RA60, the fixed RA drives and the RC25 are done, see phase C steps 3, 5 and 6; the TS11/TSV05 tapes in phase D step 1, the TK50 in phase D step 2; other tapes later.)
 - RC25: KLESI ABORT/timeout paths untested; case 22 (KA655 self-test timing) separately.
 - Real start/stop times of the RP04/05/06, RM02/03/05 (SPINUP/SPINDOWN are provisional 30 s).
 - Calibrate the 11/750 THROTTLE default; tune the seek and spindle gains by ear; spindle recordings of a real RK07.

@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v24 (v24: case 54 (fixed), VAX 8200 console floppy physical track 0; v23: cases 51 (fixed), 52 and 53, VAX 8600 console RL02; v22: case 50, PDP-11 RQ controller type after SET CPU; v21: case 49, RY boot with the RX enabled; v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v25 (v25: cases 55-61, TU58 realism work; v24: case 54 (fixed), VAX 8200 console floppy physical track 0; v23: cases 51 (fixed), 52 and 53, VAX 8600 console RL02; v22: case 50, PDP-11 RQ controller type after SET CPU; v21: case 49, RY boot with the RX enabled; v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -75,6 +75,13 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 52 | OPEN | Pitfall | `scp.c` `get_yn` with `pdp11_bad_block` / `sim_disk_attach` | `ATTACH -N` (new file) also answers the "Overwrite last track?" question with No (switch N), so a new RL/RK/RP/console RL02 image never gets a bad block table that way; ATTACH -Y or an interactive Y does |
 | 53 | OPEN | Suspicious | `VAX/vax860_stddev.c` `rlcs_svc` (RL_STATUS, RL_MP) | The console RL02's drive status never has the RL02 bit (0200) nor the volume check bit (kept in `STAT` but not reported) |
 | 54 | FIXED (patch 5) | Bug | `VAX/vax820_stddev.c` `CALC_SC`, `CALC_DA` | VAX 8200 console RX50: a Read/Write Sector of physical track 0 (the last logical track, blocks 790-799) computes a negative disk address and SIMH dies with a segmentation fault (VMS @SYS$UPDATE:STABACKIT CSA1:, Ulli) |
+| 55 | FIXED (patch 5) | Bug | `sim_sound.c` `sim_sound_rt_us` | The realism clock divided all instructions since the last start by the current rate estimate: on unthrottled simulators it jumped by seconds after a long run (TU58 records taken as passed: 13-20 s searches) |
+| 56 | FIXED (patch 5) | Bug | `PDP11/pdp11_td.c` `td_process_packet` | A TU58 command for a unit number the controller does not have (2-255) schedules `ctlr->uptr + unitno`: another controller's unit, or memory outside the unit array of the VAX console TD (1 unit) |
+| 57 | FIXED (patch 5) | Suspicious | `PDP11/pdp11_td.c` `td_svc` (READ1, WRITE2) | A cartridge removed (DETACH) during a TU58 transfer leaves `filebuf` NULL; the next data packet is built from / written to the NULL buffer |
+| 58 | OPEN | Bug | `VAX/vax730_stddev.c`, `vax750_stddev.c` `td_reg` | Every register of the console TD points to the same dummy `td_regval`: EXAMINE shows nothing real, DEPOSIT (e.g. CTIME, XTIME) changes nothing |
+| 59 | OPEN | Limitation | `PDP11/pdp11_td.c` `td_process_packet` | The TU58 command modifier byte is ignored: the special address mode (record numbers 0-2047 instead of blocks) is not supported, write/verify only gets its time in the realism mode |
+| 60 | OPEN | Limitation | `VAX/vax730_sys.c` BOOT TD with the internal VMB | A VAX-11/730 console cartridge (RT-11 volume, e.g. the diagnostic supervisor) cannot be booted: VMB looks for a standalone boot file, `%BOOT-F-Unable to locate BOOT file` |
+| 61 | OPEN | Pitfall | RT-11 V5.7 with the PDP-11 TDC | RT-11 V5.7 installs the serial printer handler LS at CSR 176500, the TDC's default address |
 
 ## Details
 
@@ -472,3 +479,43 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
   - `tests/rx50_8200/stab1.ini`: Ulli's STABACKIT (three diskettes, copy verification) on the old integration build: segmentation fault at the same place; on the fixed one "The kit is complete.", 47 verified copies, no errors. `stab3.ini`: the same in the realism mode (5.5 min VMS time, 20 operations on track 0).
   - `tests/rx50_8200/stab2.ini`: the kit diskette SYSTEM_1 read by VMS on the MicroVAX II as an RX50 on an RQDX3: mounts, ANALYZE/DISK_STRUCTURE only reports the missing QUOTA.SYS and the storage control block of a kit volume, VMB.EXE identical; SYS.EXE's first extent is LBN 727-799 and its blocks on track 0 (LBN 790-799) are identical to the copy STABACKIT verified (host-side comparison with the RA81 image).
 - **Found and fixed:** 2026-11-12 (Ulli).
+
+### 55 — FIXED IN PATCH 5 — Bug: the realism clock jumped on unthrottled simulators
+- **Where:** `sim_sound.c`, `sim_sound_rt_us` (Claude's own code, since sound patch v16): while the CPU ran it returned `base + (sim_gtime () - gbase) / sim_sound_inst_per_us ()`, i.e. all instructions since the last start divided by the *current* rate estimate.
+- **Effect:** without a THROTTLE (VAX-11/730, PDP-11, ...) SIMH's instruction rate estimate changes about every second by up to ±20 %; after a long run a 1 % change moves the clock by seconds. Found with the TU58 model (VAX-11/730 console TU58 under VMS, PDP-11 RT-11): consecutive records were taken as already passed and the tape searched back, 13-20 s instead of 0.1 s. The same clock drives the floppy rotation and the tape models, which could show the same on unthrottled simulators. With a THROTTLE (VAX-11/750 300K, MicroVAX II 450K) the rate is fixed and nothing happened.
+- **Fix (patch 5 v35):** piecewise linear: when the rate estimate changes, the time so far is kept (computed with the old rate) and a new segment starts. Tests: `tests/tu58/vms4.ini` (VAX-11/730) and `rt2.ini` (PDP-11) without long searches between consecutive records; RX02 RT-11 realism test unchanged.
+- **Found and fixed:** 2026-11-12 (TU58 realism work).
+
+### 56 — FIXED IN PATCH 5 — Bug: TU58 command for a unit the controller does not have
+- **Where:** `PDP11/pdp11_td.c`, `td_process_packet`: `ctlr->unitno = ctlr->ibuf[4]` (any value 0-255) and then `sim_activate (ctlr->uptr+ctlr->unitno, ...)`; `td_svc` uses that unit and its `up7`.
+- **Effect:** a guest that sends a command for unit 2 or more (a TU58 has drives 0 and 1) schedules another controller's unit (PDP-11 TDC: the units of all controllers are one array) or, on the VAX-11/730/750 console TD (one unit), memory outside the unit array. Plain Open SIMH 87eb7d5 has the same code. Not seen with VMS or RT-11 (they only use valid units).
+- **Fix (patch 5 v35):** such a command ends with the TU58's "bad unit number" success code (0370, -8) in its end packet, in both modes.
+- **Found and fixed:** 2026-11-12 (code reading for the TU58 realism work).
+
+### 57 — FIXED IN PATCH 5 — Suspicious: a TU58 cartridge removed during a transfer
+- **Where:** `PDP11/pdp11_td.c`, `td_svc`, states READ1 and WRITE2: `fbuf = uptr->filebuf` is used without checking that the unit is still attached; `td_test_xfr` checks only at the start of the command.
+- **Effect:** a DETACH between the data packets of a transfer (possible from the sim> prompt or a script) frees the buffer; the next data packet would be built from or copied into a NULL buffer. Not reproduced (the window is short in the normal mode); in the realism mode a transfer of several blocks takes seconds.
+- **Fix (patch 5 v35):** the transfer ends with "no cartridge" (0367) instead, in both modes (as when a real cartridge is pulled: UG 2.5.2).
+- **Found and fixed:** 2026-11-12 (code reading).
+
+### 58 — OPEN — Bug: the console TD registers of the VAX-11/730 and 750 are dummies
+- **Where:** `VAX/vax730_stddev.c` and `VAX/vax750_stddev.c`, `td_reg[]`: ECODE, BLOCK, RX_CSR, ..., CTIME, STIME, XTIME, ITIME all point to the same `int32 td_regval` ("temp location used in reg declarations"); the real values live in `pdp11_td.c` (`td_ctlr[TD_NUMCTLR]`, `td_ctime`, ...).
+- **Effect:** EXAMINE TD shows the dummy for every register; DEPOSIT TD CTIME etc. has no effect; SAVE/RESTORE of the console TU58 state saves nothing. The new realism registers STARTMS, TURNMS, RUNUP and BAUD do point to the real variables (patch 5 v35).
+- **Possible fix:** export the variables from `pdp11_td.c` (as done for the realism registers) or build the console register table there.
+- **Found:** 2026-11-12.
+
+### 59 — OPEN — Limitation: TU58 command modifiers ignored
+- **Where:** `PDP11/pdp11_td.c`, `td_process_packet`: the modifier byte (command packet byte 3) is not looked at.
+- **Effect:** the special address mode (modifier bit 7: the block number field holds a 128-byte record number 0-2047, User's Guide 3.2.3.1) is executed as a block number, so such a request reads or writes the wrong place; write/verify (modifier 1 of the Write command) gets its read-back time only in the realism mode (the data are not verified, which cannot fail in SIMH anyway); read with decreased sensitivity (Read modifier 1) is a plain read (fine).
+- **Found:** 2026-11-12.
+
+### 60 — OPEN — Limitation: a VAX-11/730 console cartridge cannot be booted
+- **Where:** `VAX/vax730_sys.c` BOOT TDn with SIMH's internal VMB.
+- **Seen:** Ulli's 11/725-730 diagnostic supervisor cartridge (BE-T175I-DE, RT-11 volume: DIAGBO.EXE, ENSAA.EXE, DEFBOO.CMD): `BOOT TD0` and `BOOT TD0/R5:10` both end in VMB's standalone-kit dialog ("Insert the first standalone system volume") and then `%BOOT-F-Unable to locate BOOT file`; plain Open SIMH 87eb7d5 the same. A real 730 boots its console cartridge through the console microcode, which reads the RT-11 volume.
+- **Effect:** the console and diagnostic cartridges of the 730 can only be used as data volumes (VMS CSA1, `tests/tu58/vms6.ini`).
+- **Found:** 2026-11-12.
+
+### 61 — OPEN — Pitfall: RT-11 V5.7 LS handler on the TDC address
+- **Seen:** Ulli's RT-11 V5.7 RX02 system (`SHOW DEVICES`): `LS Installed 176500 470 474 300 304`, the serial printer handler on the CSR and vector 300 of the PDP-11 TDC (TU58), which this kit has no handler for (no DD.SYS). RT-11 V5.3 installs XL at 176500.
+- **Effect:** a TDC at its default address shares it with an installed handler for another device; use the DD handler (`tests/tu58/mkdd.ini` builds an RT-11 V5.3 TU58) or move the TDC (`SET TDC ADDRESS=`).
+- **Found:** 2026-11-12.

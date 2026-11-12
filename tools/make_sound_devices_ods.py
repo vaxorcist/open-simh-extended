@@ -1,4 +1,4 @@
-# open-simh-extended/tools/make_sound_devices_ods.py  v15 (v15: VAX 8600 console RL02 (CS); v14: VAX 8200 console RX50; v13: RX50 (RQ); v12: RX01: RX device and the VAX-11/780 console floppy CS; v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
+# open-simh-extended/tools/make_sound_devices_ods.py  v16 (v16: sheet TU58: TDC and the VAX-11/730/750 console TD; v15: VAX 8600 console RL02 (CS); v14: VAX 8200 console RX50; v13: RX50 (RQ); v12: RX01: RX device and the VAX-11/780 console floppy CS; v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
 #
 # Builds SIMH_Sound_devices.ods: the devices prepared for SIMH sound (realism
 # mode, SET SOUND ENABLED) with rotation speed, access times and spin times.
@@ -25,7 +25,7 @@ from odf.table import Table, TableColumn, TableRow, TableCell
 from odf.text import P
 from odf.dc import Title
 
-TABLE_VERSION = "v14"
+TABLE_VERSION = "v15"
 TABLE_DATE = "2026-11-12"
 
 # ---------------------------------------------------------------- data
@@ -440,6 +440,41 @@ add_table("Floppies", ["3.4cm", "1.6cm", "5.0cm", "1.4cm", "1.4cm", "1.4cm", "1.
            "Model average access (ms)", "Published average access (ms)", "Motor", "Motor run-up (s)",
            "Registers / commands", "Sound directory", "Source", "Notes"], frows)
 
+# ---------------------------------------------------------------- sheet: TU58
+# Mirrors SND_TU58 in sim_sound.c and the TDC/TD registers (pdp11_td.c).
+TU58S = [
+  dict(dev="TDC (PDP-11, DL-type serial interface, up to 16 controllers)", unit="TDCn: 2 drives per controller",
+       regs="STARTMS, TURNMS, RUNUP, BAUD; SHOW TDCn DRIVE; SET TDC DEBUG=MOTION",
+       os_use="RT-11 DD handler (DD.SYS); BOOT TDCn"),
+  dict(dev="TD (VAX-11/730 and VAX-11/750 console TU58)", unit="TD: 1 drive (the console's DD0)",
+       regs="STARTMS, TURNMS, RUNUP, BAUD; SHOW TD DRIVE; SET TD DEBUG=MOTION",
+       os_use="VMS CSA1 after SYSGEN CONNECT CONSOLE (EXCHANGE, MOUNT/FOREIGN)"),
+]
+TU58_SLOT_IN = 1600.0 / 1024
+urows = []
+for u in TU58S:
+    rec_ms = 1024 * 41.7 / 1000.0
+    slot_rd = TU58_SLOT_IN / 30.0 * 1000.0
+    full_s = 1600.0 / 60.0
+    urows.append([u["dev"], u["unit"], "DECtape II: 140 ft of 0.150 in tape, 2 tracks", 512, 2048, 30, 60, 800,
+                  "41.7 us/bit (24 kbit/s)", round(rec_ms, 1), round(slot_rd, 1), round(8 * slot_rd, 0),
+                  round(512.0 / (8 * slot_rd / 1000.0), 0), round(full_s, 1), round(full_s / 3.0, 1), "9.3 / 28",
+                  "38400 (10 bits per character: 260 us)", "60 / 150 / 1.5 in (provisional)", u["regs"],
+                  "sound/tu58 (read and search loops, start, stop, reverse, insert, remove) -> default_tape",
+                  u["os_use"],
+                  "TU58 DECtape II User's Guide EK-0TU58-UG-004 (1.2, 1.3.1, 1.4.1, 2.5, 3.2, 5.1); Computer History Wiki",
+                  "Record slots 1:2 interleaved: blocks 0-127 and 128-255 alternate on track 0, 256-383 and 384-511 on track 1 "
+                  "(inferred from UG figure 1-4); both tracks read forward; position per drive; the tape stops after each "
+                  "command; the host's bytes to the TU58 are not timed"])
+add_table("TU58", ["4.2cm", "3.4cm", "4.2cm", "1.4cm", "1.6cm", "1.8cm", "1.8cm", "1.6cm", "2.6cm", "1.8cm", "1.8cm",
+                   "2.0cm", "2.0cm", "2.0cm", "2.0cm", "2.0cm", "3.4cm", "3.2cm", "5.5cm", "5.0cm", "5.0cm", "6.0cm", "8.0cm"],
+          "SIMH sound: TU58 DECtape II with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          ["Device", "Units", "Cartridge", "Blocks", "Records (128 B)", "Read/write (in/s)", "Search (in/s)",
+           "Density (bits/in)", "Data rate", "Record (ms)", "Slot at 30 in/s (ms)", "Block streaming (ms)",
+           "Streaming (bytes/s)", "Full length at 60 in/s (s)", "A third of it (s)", "Published average / max access (s)",
+           "Serial line (baud)", "Start / turnaround / run-up", "Registers / commands", "Sound directory", "Used by",
+           "Source", "Notes"], urows)
+
 # ---------------------------------------------------------------- sheet: systems
 add_table("Systems", ["4.2cm", "2.6cm", "9.0cm", "3.2cm", "5.0cm", "6.0cm"],
           "SIMH sound: system (CPU cabinet) sounds, table %s, %s" % (TABLE_VERSION, TABLE_DATE),
@@ -488,10 +523,10 @@ notes = [
                    "time. Sounds: motor_start, motor, motor_stop, disk, head, head_load, head_unload, step "
                    "(repeated at the step rate), door_close, door_open; <dir>/<prefix>_<name>.wav, else "
                    "default_floppy/<name>.wav. Made by tools/make_floppy_sounds.py."],
-  ["Not yet", "RX33 (RQ and VAXstation 3100), RX18; TU58; tapes other than "
+  ["Not yet", "RX33 (RQ and VAXstation 3100), RX18; tapes other than "
               "the TS device and the TK50 (TM, TU, TK70, TU81). PDP-8 RX8E/RX28: postponed."],
   ["Update", "Generated by tools/make_sound_devices_ods.py (open-simh-extended, branch notes); add new devices there."],
-  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device). v7 2026-11-08: sheet Streamers: TK50 (TQ device); MicroVAX II THROTTLE 450K. v8 2026-11-10: the fixed RA drives RA70, RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92 (RUN/STOP button, timing, seek sounds). v9 2026-11-10: RA81 start 20 s, RA80 40 s (User Guides win over the brochure). v10 2026-11-11: sheet Floppies: RX02 (RY device). v11 2026-11-11: RX01 (RX device, VAX-11/780 console floppy CS). v12 2026-11-11: RX50 (RQ device). v13 2026-11-11: VAX 8200 console RX50 (CS). v14 2026-11-12: VAX 8600 console RL02 (CS)."],
+  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device). v7 2026-11-08: sheet Streamers: TK50 (TQ device); MicroVAX II THROTTLE 450K. v8 2026-11-10: the fixed RA drives RA70, RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92 (RUN/STOP button, timing, seek sounds). v9 2026-11-10: RA81 start 20 s, RA80 40 s (User Guides win over the brochure). v10 2026-11-11: sheet Floppies: RX02 (RY device). v11 2026-11-11: RX01 (RX device, VAX-11/780 console floppy CS). v12 2026-11-11: RX50 (RQ device). v13 2026-11-11: VAX 8200 console RX50 (CS). v14 2026-11-12: VAX 8600 console RL02 (CS). v15 2026-11-12: sheet TU58: TDC (PDP-11) and the console TD of the VAX-11/730 and 750."],
 ]
 add_table("Notes", ["4.0cm", "22cm"], "SIMH sound devices: notes, table %s" % TABLE_VERSION,
           ["Topic", "Explanation"], notes)
