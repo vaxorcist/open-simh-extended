@@ -30,6 +30,9 @@
    todr         TODR clock
    tmr          interval timer
 
+   12-Nov-26    Ulli    Console floppy: physical track 0 (logical track 79,
+                        blocks 790-799) gave a negative disk address and
+                        crashed SIMH (VMS STABACKIT on CSA1)
    11-Nov-26    Ulli    Console floppy (CS, the RX50 of the VAX 8200 console):
                         sound realism mode (SET SOUND ENABLED): one RX50
                         drive, both slots on one motor and one head carriage,
@@ -176,8 +179,12 @@ const char *fl_fncnames[] = {
 #define FL_SIZE         (FL_NUMTR * FL_NUMSC * FL_NUMBY)/* bytes/disk */
 
 #define TRACK u3                                        /* current track */
-#define CALC_SC(t,s)    (fl_intl[((t) - 1) % FL_INTL][((s) - 1)])
-#define CALC_DA(t,s)    ((((t) - 1) * FL_NUMSC) + CALC_SC(t,s)) * FL_NUMBY
+/* Physical track t holds logical track t - 1; physical track 0 holds the
+   last one, logical track 79 (blocks 790-799), as the RQDX maps an RX50
+   (t - 1 was -1 for track 0: a negative disk address, SIMH crashed) */
+#define CALC_LT(t)      (((t) + FL_NUMTR - 1) % FL_NUMTR)
+#define CALC_SC(t,s)    (fl_intl[CALC_LT(t) % FL_INTL][((s) - 1)])
+#define CALC_DA(t,s)    ((CALC_LT(t) * FL_NUMSC) + CALC_SC(t,s)) * FL_NUMBY
 
 int32 tti_csr = 0;                                      /* control/status */
 uint32 tti_buftime;                                     /* time input character arrived */
