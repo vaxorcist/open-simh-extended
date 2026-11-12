@@ -2409,6 +2409,7 @@ static t_bool snd_rt_inited = FALSE;
 static t_bool snd_rt_running = FALSE;
 static double snd_rt_base_us = 0.0;             /* running: rt at snd_rt_gbase */
 static double snd_rt_gbase = 0.0;               /*  ... sim_gtime () then */
+static double snd_rt_ipu = 0.0;                 /*  ... and the rate used since */
 static double snd_rt_stop_us = 0.0;             /* stopped: rt at snd_rt_wall_ms */
 static uint32 snd_rt_wall_ms = 0;
 
@@ -2419,8 +2420,19 @@ if (!snd_rt_inited) {
     snd_rt_wall_ms = sim_os_msec ();
     snd_rt_stop_us = 0.0;
     }
-if (snd_rt_running)
-    return snd_rt_base_us + (sim_gtime () - snd_rt_gbase) / sim_sound_inst_per_us ();
+if (snd_rt_running) {                           /* piecewise linear: when the rate */
+    double ipu = sim_sound_inst_per_us ();      /* estimate changes, the time so far */
+    double g = sim_gtime ();                    /* stays as it was (dividing all the */
+                                                /* instructions since the start by */
+    if (ipu != snd_rt_ipu) {                    /* the new rate made the clock jump, */
+        if (snd_rt_ipu > 0.0) {                 /* seconds after a long run: known */
+            snd_rt_base_us += (g - snd_rt_gbase) / snd_rt_ipu;  /* issues 55) */
+            snd_rt_gbase = g;
+            }
+        snd_rt_ipu = ipu;
+        }
+    return snd_rt_base_us + (g - snd_rt_gbase) / snd_rt_ipu;
+    }
 return snd_rt_stop_us + 1000.0 * (double)(sim_os_msec () - snd_rt_wall_ms);
 }
 
@@ -2433,6 +2445,7 @@ if (running == snd_rt_running)
 if (running) {
     snd_rt_base_us = now;
     snd_rt_gbase = sim_gtime ();
+    snd_rt_ipu = sim_sound_inst_per_us ();
     }
 else {
     snd_rt_stop_us = now;

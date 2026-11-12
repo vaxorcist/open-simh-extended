@@ -1242,8 +1242,8 @@ switch (ctlr->p_state) {                                /* case on state */
                     if (td_rlz () && (fbuf != NULL)) {  /* realism: the next record */
                         double us = sim_tu58_record_us (td_drive (ctlr, uptr), td_rec (ctlr));
 
-                        sim_debug (TDDEB_MOT, ctlr->dptr, "%s: record %d: %.1f ms\n",
-                                   sim_uname (uptr), td_rec (ctlr), us / 1000.0);
+                        sim_debug (TDDEB_MOT, ctlr->dptr, "%s: record %d: %.1f ms (%.1f inst/us)\n",
+                                   sim_uname (uptr), td_rec (ctlr), us / 1000.0, sim_sound_inst_per_us ());
                         sim_sound_activate_us (uptr, us);
                         break;
                         }
