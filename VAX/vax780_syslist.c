@@ -28,12 +28,19 @@
 */
 
 #include "vax_defs.h"
+#include "sim_sound.h"
 
 char sim_name[] = "VAX 11/780";
 
 void vax_init(void)
 {
 sim_savename = "VAX780";
+/* Realistic CPU speed in the sound realism mode: a VAX-11/780 is 1 VUP;
+   about 0.5 million VAX instructions per second (the reference of the 750
+   and MicroVAX II values), so about 500K instructions per second (VUPs
+   times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
+   Provisional: to be calibrated with a CPU benchmark on a real machine. */
+sim_sound_set_throttle ("500K");
 }
 
 extern DEVICE cpu_dev;
