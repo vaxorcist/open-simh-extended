@@ -697,7 +697,10 @@ for (i = 0; boot_tab[i].name != NULL; i++) {
             R[1] = TR_UBA;
             R[2] = boot_tab[i].let | (ba & UBADDRMASK);
             }
-        R[3] = unitno;
+        if (strcmp (dptr->name, "CS") == 0)            /* console floppy: */
+            R[3] = 1;                                   /* it is CSA1 (VMS's */
+        else                                            /* driver takes its */
+            R[3] = unitno;                              /* ID from the unit) */
         R[4] = 0;
         R[5] = r5v;
         return SCPE_OK;
