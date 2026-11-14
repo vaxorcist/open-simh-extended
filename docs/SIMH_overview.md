@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v30, 2026-11-14 (v30: patch 5 v36, realism throttle starts at once; v29: patch 3 third commit, BOOT CS on the VAX 8200; v28: patch 5 v35, TU58; v27: patch 5 v34, VAX 8200 console floppy track 0 fix; v26: patch 5 v33, VAX 8600 console RL02; v25: patch 5 v32, VAX 8200 console RX50; v24: patch 5 v31, RX50, RX50 controller rules; v23: patch 5 v30, RX01 (RX, 11/780 console floppy); v22: patch 5 v29, RX02 density error on Read Status (VMS MOUNT); v21: patch 5 v28, RY debug flags; v20: patch 5 v27, RX02 floppy; v19: patch 5 v26, RA81 start 20 s, RA80 40 s; v18: patch 5 v25, SDI bus rule; v17: patch 5 v24, SDI rules, RA80 capacity; v16: patch 5 v23, the fixed RA drives, RA facts; v15: patch 5 v22; next the RA disks; v14: patch 5 v21; v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v31, 2026-11-14 (v31: patch 5 v37, 780 BOOT CS unit; v30: patch 5 v36, realism throttle starts at once; v29: patch 3 third commit, BOOT CS on the VAX 8200; v28: patch 5 v35, TU58; v27: patch 5 v34, VAX 8200 console floppy track 0 fix; v26: patch 5 v33, VAX 8600 console RL02; v25: patch 5 v32, VAX 8200 console RX50; v24: patch 5 v31, RX50, RX50 controller rules; v23: patch 5 v30, RX01 (RX, 11/780 console floppy); v22: patch 5 v29, RX02 density error on Read Status (VMS MOUNT); v21: patch 5 v28, RY debug flags; v20: patch 5 v27, RX02 floppy; v19: patch 5 v26, RA81 start 20 s, RA80 40 s; v18: patch 5 v25, SDI bus rule; v17: patch 5 v24, SDI rules, RA80 capacity; v16: patch 5 v23, the fixed RA drives, RA facts; v15: patch 5 v22; next the RA disks; v14: patch 5 v21; v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -34,14 +34,14 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 | 3 | `opensimh_3_vax8200_uba_fix.patch` | VAX 8200 DWBUA interrupt delivery and Unibus init, BOOT CS (console RX50) (3 commits) | 87eb7d5, independent |
 | 4 | `opensimh_4_dmc_ultrix_v8.patch` | DMC11/DMR11 fixes for the ULTRIX-32 V1.1 `if_dmc` driver | after 1 |
 | 6 | `opensimh_6_rb730_v2.patch` | RB730: DEC logical block order, SIMH disk library, status, seek and range fixes, at most one RB80 | 87eb7d5, independent |
-| 5 | `opensimh_5_sound_v36.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RA70–RA92, RC25/RCF25, RB02/RB80; tapes: TS11/TSV05, TK50 cartridge streamer; floppies: RX02, RX01, VAX-11/780 console RX01, RX50, VAX 8200 console RX50; VAX 8600 console RL02; TU58 (PDP-11 TDC, VAX-11/730/750 console); MicroVAX II THROTTLE 450K); without the Visual Studio project files | after 6 |
+| 5 | `opensimh_5_sound_v37.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RA70–RA92, RC25/RCF25, RB02/RB80; tapes: TS11/TSV05, TK50 cartridge streamer; floppies: RX02, RX01, VAX-11/780 console RX01, RX50, VAX 8200 console RX50; VAX 8600 console RL02; TU58 (PDP-11 TDC, VAX-11/730/750 console); MicroVAX II THROTTLE 450K); without the Visual Studio project files | after 6 |
 
 Patch 6 comes before patch 5. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
 git am --keep-cr opensimh_1_dmv11_v11.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
-                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v36.patch
+                 opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v37.patch
 ```
 
 The same work as git branches of the fork:

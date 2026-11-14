@@ -1,4 +1,4 @@
-From 8ed6a1a38812bdd01358afc2486dd6e3a036e011 Mon Sep 17 00:00:00 2001
+From 5af87a1940d7b192ec3eb44cfc39d57540bd6b77 Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
 Date: Wed, 11 Nov 2026 21:34:30 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
@@ -203,6 +203,10 @@ measuring the host at full speed: a guest booting during the measurement
 calibrated its delay loops at the host speed (VMS TIMEWAIT 10-100 times
 too long, e.g. SYSGEN CONNECT CONSOLE on the VAX-11/750 for minutes).
 
+BOOT CS on the VAX-11/780 passes unit 1 (CSA1) in R3: the VMS console
+floppy driver takes its console ID from the boot unit, so standalone
+VMS (STABACKIT) could not read the console floppy after the banner.
+
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
 
@@ -226,6 +230,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  VAX/vax730_stddev.c                  |    6 +
  VAX/vax750_stddev.c                  |    6 +
  VAX/vax750_syslist.c                 |   15 +
+ VAX/vax780_sbi.c                     |    5 +-
  VAX/vax780_stddev.c                  |  151 +-
  VAX/vax820_stddev.c                  |  166 +-
  VAX/vax860_stddev.c                  |  263 +-
@@ -316,7 +321,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  sound/tu58/tu58_search.wav           |  Bin 0 -> 176444 bytes
  sound/tu58/tu58_start.wav            |  Bin 0 -> 7100 bytes
  sound/tu58/tu58_stop.wav             |  Bin 0 -> 8864 bytes
- 107 files changed, 11337 insertions(+), 176 deletions(-)
+ 108 files changed, 11341 insertions(+), 177 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -6823,6 +6828,22 @@ index 75642805..2fe1c94a 100644
  }
  
  extern DEVICE cpu_dev;
+diff --git a/VAX/vax780_sbi.c b/VAX/vax780_sbi.c
+index 90d62161..04c82895 100644
+--- a/VAX/vax780_sbi.c
++++ b/VAX/vax780_sbi.c
+@@ -697,7 +697,10 @@ for (i = 0; boot_tab[i].name != NULL; i++) {
+             R[1] = TR_UBA;
+             R[2] = boot_tab[i].let | (ba & UBADDRMASK);
+             }
+-        R[3] = unitno;
++        if (strcmp (dptr->name, "CS") == 0)            /* console floppy: */
++            R[3] = 1;                                   /* it is CSA1 (VMS's */
++        else                                            /* driver takes its */
++            R[3] = unitno;                              /* ID from the unit) */
+         R[4] = 0;
+         R[5] = r5v;
+         return SCPE_OK;
 diff --git a/VAX/vax780_stddev.c b/VAX/vax780_stddev.c
 index 1689a5c1..130df102 100644
 --- a/VAX/vax780_stddev.c
