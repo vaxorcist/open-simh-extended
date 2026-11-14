@@ -1,4 +1,4 @@
-From 5af87a1940d7b192ec3eb44cfc39d57540bd6b77 Mon Sep 17 00:00:00 2001
+From 0e9261bffc59bd5cbffd462d723d716e984ac5ee Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
 Date: Wed, 11 Nov 2026 21:34:30 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
@@ -207,6 +207,10 @@ BOOT CS on the VAX-11/780 passes unit 1 (CSA1) in R3: the VMS console
 floppy driver takes its console ID from the boot unit, so standalone
 VMS (STABACKIT) could not read the console floppy after the banner.
 
+Realistic THROTTLE defaults in the realism mode for every VAX simulator
+(VUPs times 500K): 780 500K, 730 150K, 750 300K, 8200 400K, 8600 2100K,
+MicroVAX I 150K, MicroVAX II and rtVAX 1000 450K, MicroVAX 3900 1900K.
+
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
 
@@ -225,16 +229,22 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  PDP11/pdp11_td.h                     |   13 +
  PDP11/pdp11_tq.c                     |  303 +-
  PDP11/pdp11_ts.c                     |  605 +++-
- VAX/vax630_syslist.c                 |   10 +
+ VAX/vax610_syslist.c                 |    6 +
+ VAX/vax630_syslist.c                 |   14 +
  VAX/vax730_rb.c                      |  317 +-
  VAX/vax730_stddev.c                  |    6 +
+ VAX/vax730_syslist.c                 |    6 +
  VAX/vax750_stddev.c                  |    6 +
  VAX/vax750_syslist.c                 |   15 +
  VAX/vax780_sbi.c                     |    5 +-
  VAX/vax780_stddev.c                  |  151 +-
+ VAX/vax780_syslist.c                 |    7 +
  VAX/vax820_stddev.c                  |  166 +-
+ VAX/vax820_syslist.c                 |    7 +
  VAX/vax860_stddev.c                  |  263 +-
+ VAX/vax860_syslist.c                 |    6 +
  VAX/vax_cpu.c                        |    7 +-
+ VAX/vax_syslist.c                    |    7 +
  cmake/add_simulator.cmake            |    2 +
  cmake/dep-link.cmake                 |   27 +
  cmake/dep-locate.cmake               |   17 +
@@ -321,7 +331,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  sound/tu58/tu58_search.wav           |  Bin 0 -> 176444 bytes
  sound/tu58/tu58_start.wav            |  Bin 0 -> 7100 bytes
  sound/tu58/tu58_stop.wav             |  Bin 0 -> 8864 bytes
- 108 files changed, 11341 insertions(+), 177 deletions(-)
+ 114 files changed, 11384 insertions(+), 177 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -6279,8 +6289,31 @@ index 23e89f34..b7acd369 100644
  fprintf (st, "\nError handling is as follows:\n\n");
  fprintf (st, "    error         processed as\n");
  fprintf (st, "    not attached  tape not ready\n\n");
+diff --git a/VAX/vax610_syslist.c b/VAX/vax610_syslist.c
+index ee6dfe51..148d9874 100644
+--- a/VAX/vax610_syslist.c
++++ b/VAX/vax610_syslist.c
+@@ -28,12 +28,18 @@
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_sound.h"
+ 
+ char sim_name[] = "MicroVAX I (KA610)";
+ 
+ void vax_init(void)
+ {
+ sim_savename = "MicroVAX I (KA610)";
++/* Realistic CPU speed in the sound realism mode: a MicroVAX I is about 0.3
++   of a VAX-11/780 (0.3 VUP), so about 150K instructions per second (VUPs
++   times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
++   Provisional: to be calibrated with a CPU benchmark on a real machine. */
++sim_sound_set_throttle ("150K");
+ }
+ 
+ extern DEVICE cpu_dev;
 diff --git a/VAX/vax630_syslist.c b/VAX/vax630_syslist.c
-index de0ba4e2..50c07e54 100644
+index de0ba4e2..30e77ded 100644
 --- a/VAX/vax630_syslist.c
 +++ b/VAX/vax630_syslist.c
 @@ -24,10 +24,13 @@
@@ -6297,7 +6330,18 @@ index de0ba4e2..50c07e54 100644
  
  #if defined(VAX_620)
  char sim_name[] = "rtVAX1000 (KA620)";
-@@ -42,6 +45,13 @@ char sim_name[] = "MicroVAX II (KA630)";
+@@ -35,6 +38,10 @@ char sim_name[] = "rtVAX1000 (KA620)";
+ void vax_init(void)
+ {
+ sim_savename = "rtVAX1000 (KA620)";
++/* Realistic CPU speed in the sound realism mode: an rtVAX 1000 (KA620,
++   the KA630 processor) is about 0.9 of a VAX-11/780, so about 450,000
++   instructions per second, as the MicroVAX II.  Provisional. */
++sim_sound_set_throttle ("450K");
+ }
+ #else
+ char sim_name[] = "MicroVAX II (KA630)";
+@@ -42,6 +49,13 @@ char sim_name[] = "MicroVAX II (KA630)";
  void vax_init(void)
  {
  sim_savename = "MicroVAX II (KA630)";
@@ -6768,6 +6812,29 @@ index cb739b75..c1b497ab 100644
      { 0 }
      };
  
+diff --git a/VAX/vax730_syslist.c b/VAX/vax730_syslist.c
+index ee9c174a..74499ae1 100644
+--- a/VAX/vax730_syslist.c
++++ b/VAX/vax730_syslist.c
+@@ -28,12 +28,18 @@
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_sound.h"
+ 
+ char sim_name[] = "VAX 11/730";
+ 
+ void vax_init(void)
+ {
+ sim_savename = "VAX730";
++/* Realistic CPU speed in the sound realism mode: a VAX-11/730 is about 0.3
++   of a VAX-11/780 (0.3 VUP), so about 150K instructions per second (VUPs
++   times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
++   Provisional: to be calibrated with a CPU benchmark on a real machine. */
++sim_sound_set_throttle ("150K");
+ }
+ 
+ extern DEVICE cpu_dev;
 diff --git a/VAX/vax750_stddev.c b/VAX/vax750_stddev.c
 index a307458a..1ab5084d 100644
 --- a/VAX/vax750_stddev.c
@@ -7076,6 +7143,30 @@ index 1689a5c1..130df102 100644
  const char *fl_description (DEVICE *dptr)
  {
  return "console floppy";
+diff --git a/VAX/vax780_syslist.c b/VAX/vax780_syslist.c
+index 7bf8ec1f..f976cc90 100644
+--- a/VAX/vax780_syslist.c
++++ b/VAX/vax780_syslist.c
+@@ -28,12 +28,19 @@
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_sound.h"
+ 
+ char sim_name[] = "VAX 11/780";
+ 
+ void vax_init(void)
+ {
+ sim_savename = "VAX780";
++/* Realistic CPU speed in the sound realism mode: a VAX-11/780 is 1 VUP;
++   about 0.5 million VAX instructions per second (the reference of the 750
++   and MicroVAX II values), so about 500K instructions per second (VUPs
++   times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
++   Provisional: to be calibrated with a CPU benchmark on a real machine. */
++sim_sound_set_throttle ("500K");
+ }
+ 
+ extern DEVICE cpu_dev;
 diff --git a/VAX/vax820_stddev.c b/VAX/vax820_stddev.c
 index ab30ec88..0e0f0626 100644
 --- a/VAX/vax820_stddev.c
@@ -7328,6 +7419,30 @@ index ab30ec88..0e0f0626 100644
  const char *fl_description (DEVICE *dptr)
  {
  return "console floppy";
+diff --git a/VAX/vax820_syslist.c b/VAX/vax820_syslist.c
+index 879a73be..2ace3e57 100644
+--- a/VAX/vax820_syslist.c
++++ b/VAX/vax820_syslist.c
+@@ -26,12 +26,19 @@
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_sound.h"
+ 
+ char sim_name[] = "VAX 8200 (KA820)";
+ 
+ void vax_init(void)
+ {
+ sim_savename = "VAX820";
++/* Realistic CPU speed in the sound realism mode: a VAX 8200 (one KA820) is
++   about 0.8 of a VAX-11/780 (0.8 VUP), so about 400K instructions per
++   second (VUPs times the VAX-11/780's 500K, the method of the VAX-11/750's
++   300K). Provisional: to be calibrated with a CPU benchmark on a real
++   machine. */
++sim_sound_set_throttle ("400K");
+ }
+ 
+ extern DEVICE cpu_dev;
 diff --git a/VAX/vax860_stddev.c b/VAX/vax860_stddev.c
 index 5ead283f..36f4abe9 100644
 --- a/VAX/vax860_stddev.c
@@ -7702,6 +7817,29 @@ index 5ead283f..36f4abe9 100644
 +fprint_reg_help (st, dptr);
 +return SCPE_OK;
 +}
+diff --git a/VAX/vax860_syslist.c b/VAX/vax860_syslist.c
+index ddfa40ba..bb503b63 100644
+--- a/VAX/vax860_syslist.c
++++ b/VAX/vax860_syslist.c
+@@ -28,12 +28,18 @@
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_sound.h"
+ 
+ char sim_name[] = "VAX 8600";
+ 
+ void vax_init(void)
+ {
+ sim_savename = "VAX 8600";
++/* Realistic CPU speed in the sound realism mode: a VAX 8600 is about 4.2
++   times a VAX-11/780 (4.2 VUPs), so about 2100K instructions per second
++   (VUPs times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
++   Provisional: to be calibrated with a CPU benchmark on a real machine. */
++sim_sound_set_throttle ("2100K");
+ }
+ 
+ extern DEVICE cpu_dev;
 diff --git a/VAX/vax_cpu.c b/VAX/vax_cpu.c
 index 882c630d..a4a581d9 100644
 --- a/VAX/vax_cpu.c
@@ -7741,6 +7879,30 @@ index 882c630d..a4a581d9 100644
      extra_bytes = 0;                                    /* digest string count */
      GET_ISTR (opc, L_BYTE);                             /* get opcode */
      if (opc == 0xFD) {                                  /* 2 byte op? */
+diff --git a/VAX/vax_syslist.c b/VAX/vax_syslist.c
+index 23671d13..7ad1f2b8 100644
+--- a/VAX/vax_syslist.c
++++ b/VAX/vax_syslist.c
+@@ -31,12 +31,19 @@
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_sound.h"
+ 
+ char sim_name[] = "MicroVAX 3900";
+ 
+ void vax_init(void)
+ {
+ sim_savename = "VAX";
++/* Realistic CPU speed in the sound realism mode: a MicroVAX 3900 (KA655)
++   is about 3.8 times a VAX-11/780 (3.8 VUPs), so about 1900K instructions
++   per second (VUPs times the VAX-11/780's 500K, the method of the
++   VAX-11/750's 300K). Provisional: to be calibrated with a CPU benchmark
++   on a real machine. */
++sim_sound_set_throttle ("1900K");
+ }
+ 
+ extern DEVICE cpu_dev;
 diff --git a/cmake/add_simulator.cmake b/cmake/add_simulator.cmake
 index e87ef16c..ce2ee202 100644
 --- a/cmake/add_simulator.cmake

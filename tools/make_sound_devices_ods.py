@@ -1,4 +1,4 @@
-# open-simh-extended/tools/make_sound_devices_ods.py  v16 (v16: sheet TU58: TDC and the VAX-11/730/750 console TD; v15: VAX 8600 console RL02 (CS); v14: VAX 8200 console RX50; v13: RX50 (RQ); v12: RX01: RX device and the VAX-11/780 console floppy CS; v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
+# open-simh-extended/tools/make_sound_devices_ods.py  v17 (v17: Systems sheet: realism THROTTLE of every VAX simulator; v16: sheet TU58: TDC and the VAX-11/730/750 console TD; v15: VAX 8600 console RL02 (CS); v14: VAX 8200 console RX50; v13: RX50 (RQ); v12: RX01: RX device and the VAX-11/780 console floppy CS; v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
 #
 # Builds SIMH_Sound_devices.ods: the devices prepared for SIMH sound (realism
 # mode, SET SOUND ENABLED) with rotation speed, access times and spin times.
@@ -25,8 +25,8 @@ from odf.table import Table, TableColumn, TableRow, TableCell
 from odf.text import P
 from odf.dc import Title
 
-TABLE_VERSION = "v15"
-TABLE_DATE = "2026-11-12"
+TABLE_VERSION = "v16"
+TABLE_DATE = "2026-11-14"
 
 # ---------------------------------------------------------------- data
 # fit: "fixed" (exponent given, curve through t2t and max), "fit" (exponent
@@ -221,12 +221,28 @@ STREAMERS = [
 ]
 
 SYSTEMS = [
+  dict(sim="vax780 (VAX-11/780)", snd="none (no system sounds yet)", files="-",
+       throttle="500K (provisional)", src="1 VUP; the reference: about 0.5 million VAX instructions per second",
+       notes="every other value is VUPs times 500K; to be calibrated with a CPU benchmark"),
+  dict(sim="vax730 (VAX-11/730)", snd="none (no system sounds yet)", files="-",
+       throttle="150K (provisional)", src="about 0.3 VUP", notes=""),
   dict(sim="vax750 (VAX-11/750)", snd="vax750 (own: none) -> default_cpu (opt-in)",
        files="default_cpu: starting.wav, running.wav (4.27 s seamless loop), stopping.wav",
-       throttle="300K (provisional)", src="recordings of a real VAX-11/750", notes="calibration of the THROTTLE still open"),
+       throttle="300K (provisional)", src="about 0.6 VUP; recordings of a real VAX-11/750 for the sounds", notes="calibration of the THROTTLE still open"),
+  dict(sim="vax8200 (VAX 8200, one KA820)", snd="none (no system sounds yet)", files="-",
+       throttle="400K (provisional)", src="about 0.8 VUP", notes=""),
+  dict(sim="vax8600 (VAX 8600)", snd="none (no system sounds yet)", files="-",
+       throttle="2100K (provisional)", src="about 4.2 VUPs",
+       notes="before: no throttle, realistic durations (console RL02 spin-up) appeared shorter to the guest"),
+  dict(sim="microvax1 (MicroVAX I)", snd="none (no system sounds yet)", files="-",
+       throttle="150K (provisional)", src="about 0.3 VUP", notes=""),
   dict(sim="microvax2 (MicroVAX II)", snd="none (no system sounds yet)", files="-",
-       throttle="450K (provisional)", src="0.9 times an 11/780 (about 0.5 MIPS at THROTTLE 500K)",
-       notes="calibration by a CPU benchmark still open (the boot time is no measure); rtVAX1000 unchanged"),
+       throttle="450K (provisional)", src="about 0.9 VUP",
+       notes="Ulli will measure a CPU benchmark on his real MicroVAX II (the boot time is no measure)"),
+  dict(sim="rtvax1000 (rtVAX 1000, KA620)", snd="none (no system sounds yet)", files="-",
+       throttle="450K (provisional)", src="the KA630 processor: as the MicroVAX II", notes=""),
+  dict(sim="microvax3900 (MicroVAX 3900, KA655)", snd="none (no system sounds yet)", files="-",
+       throttle="1900K (provisional)", src="about 3.8 VUPs", notes=""),
 ]
 
 # ---------------------------------------------------------------- model
@@ -480,7 +496,7 @@ add_table("Systems", ["4.2cm", "2.6cm", "9.0cm", "3.2cm", "5.0cm", "6.0cm"],
           "SIMH sound: system (CPU cabinet) sounds, table %s, %s" % (TABLE_VERSION, TABLE_DATE),
           ["Simulator", "Sound directory", "Starting / running / stopping", "Default THROTTLE (realism mode)",
            "Source", "Notes"],
-          [[s["sim"], "sound/" + s["snd"], s["files"], s["throttle"], s["src"], s["notes"]] for s in SYSTEMS])
+          [[s["sim"], s["snd"] if s["snd"].startswith("none") else "sound/" + s["snd"], s["files"], s["throttle"], s["src"], s["notes"]] for s in SYSTEMS])
 
 # ---------------------------------------------------------------- sheet: notes
 notes = [
@@ -526,7 +542,7 @@ notes = [
   ["Not yet", "RX33 (RQ and VAXstation 3100), RX18; tapes other than "
               "the TS device and the TK50 (TM, TU, TK70, TU81). PDP-8 RX8E/RX28: postponed."],
   ["Update", "Generated by tools/make_sound_devices_ods.py (open-simh-extended, branch notes); add new devices there."],
-  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device). v7 2026-11-08: sheet Streamers: TK50 (TQ device); MicroVAX II THROTTLE 450K. v8 2026-11-10: the fixed RA drives RA70, RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92 (RUN/STOP button, timing, seek sounds). v9 2026-11-10: RA81 start 20 s, RA80 40 s (User Guides win over the brochure). v10 2026-11-11: sheet Floppies: RX02 (RY device). v11 2026-11-11: RX01 (RX device, VAX-11/780 console floppy CS). v12 2026-11-11: RX50 (RQ device). v13 2026-11-11: VAX 8200 console RX50 (CS). v14 2026-11-12: VAX 8600 console RL02 (CS). v15 2026-11-12: sheet TU58: TDC (PDP-11) and the console TD of the VAX-11/730 and 750."],
+  ["Version history", "v1 2026-11-04: RK06/RK07, RL01/RL02, RM03, RP04, RP05, RP06, RM05, RM80, RP07, RA60; VAX-11/750 system. v2 2026-11-04: RB02, RB80 (RB730). v3 2026-11-04: RB80 with 31 sectors per track (RB730 fixes). v4 2026-11-06: RC25 and RCF25 (one spindle, one actuator). v5 2026-11-07: default sounds (default_disk, default_cpu). v6 2026-11-07: sheet Tapes: TS11 and TSV05 (TS device). v7 2026-11-08: sheet Streamers: TK50 (TQ device); MicroVAX II THROTTLE 450K. v8 2026-11-10: the fixed RA drives RA70, RA71, RA72, RA73, RA80, RA81, RA82, RA90, RA92 (RUN/STOP button, timing, seek sounds). v9 2026-11-10: RA81 start 20 s, RA80 40 s (User Guides win over the brochure). v10 2026-11-11: sheet Floppies: RX02 (RY device). v11 2026-11-11: RX01 (RX device, VAX-11/780 console floppy CS). v12 2026-11-11: RX50 (RQ device). v13 2026-11-11: VAX 8200 console RX50 (CS). v14 2026-11-12: VAX 8600 console RL02 (CS). v15 2026-11-12: sheet TU58: TDC (PDP-11) and the console TD of the VAX-11/730 and 750. v16 2026-11-14: Systems sheet: realism THROTTLE of every VAX simulator (VUPs times 500K)."],
 ]
 add_table("Notes", ["4.0cm", "22cm"], "SIMH sound devices: notes, table %s" % TABLE_VERSION,
           ["Topic", "Explanation"], notes)
