@@ -38,6 +38,10 @@ char sim_name[] = "rtVAX1000 (KA620)";
 void vax_init(void)
 {
 sim_savename = "rtVAX1000 (KA620)";
+/* Realistic CPU speed in the sound realism mode: an rtVAX 1000 (KA620,
+   the KA630 processor) is about 0.9 of a VAX-11/780, so about 450,000
+   instructions per second, as the MicroVAX II.  Provisional. */
+sim_sound_set_throttle ("450K");
 }
 #else
 char sim_name[] = "MicroVAX II (KA630)";
