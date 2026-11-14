@@ -1,4 +1,4 @@
-From 895f3612017d2a7f4efe65c90d60a2a550a51617 Mon Sep 17 00:00:00 2001
+From 8ed6a1a38812bdd01358afc2486dd6e3a036e011 Mon Sep 17 00:00:00 2001
 From: vaxorcist <vaxorcist@gmail.com>
 Date: Wed, 11 Nov 2026 21:34:30 +0100
 Subject: [PATCH] SCP, HK: Common SDL2 sound support (sim_sound) and the RK07
@@ -198,6 +198,11 @@ removed during a transfer end the command with an error.  The realism
 clock (sim_sound_rt_us) is piecewise linear (it jumped on unthrottled
 simulators).
 
+The realism throttle (no warm-up) starts throttling at once instead of
+measuring the host at full speed: a guest booting during the measurement
+calibrated its delay loops at the host speed (VMS TIMEWAIT 10-100 times
+too long, e.g. SYSGEN CONNECT CONSOLE on the VAX-11/750 for minutes).
+
 This patch applies on top of opensimh_6_rb730 (the RB730 fixes); it
 also applies after the DMV11, DMF32, VAX 8200 and DMC patches (1-4).
 
@@ -235,7 +240,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  sim_sound.c                          | 4528 ++++++++++++++++++++++++++
  sim_sound.h                          |  947 ++++++
  sim_tape.c                           |   12 +-
- sim_timer.c                          |  107 +-
+ sim_timer.c                          |  146 +-
  sim_timer.h                          |    3 +
  sound/default_cpu/README.txt         |   56 +
  sound/default_cpu/running.wav        |  Bin 0 -> 376374 bytes
@@ -311,7 +316,7 @@ Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
  sound/tu58/tu58_search.wav           |  Bin 0 -> 176444 bytes
  sound/tu58/tu58_start.wav            |  Bin 0 -> 7100 bytes
  sound/tu58/tu58_stop.wav             |  Bin 0 -> 8864 bytes
- 107 files changed, 11299 insertions(+), 175 deletions(-)
+ 107 files changed, 11337 insertions(+), 176 deletions(-)
  create mode 100644 sim_sound.c
  create mode 100644 sim_sound.h
  create mode 100644 sound/default_cpu/README.txt
@@ -13608,13 +13613,20 @@ index 450b98a8..d4f87a68 100644
                  break;
                  }
 diff --git a/sim_timer.c b/sim_timer.c
-index 333d26a9..a4a8a400 100644
+index 333d26a9..5dfbd0c7 100644
 --- a/sim_timer.c
 +++ b/sim_timer.c
-@@ -23,6 +23,12 @@
+@@ -23,6 +23,19 @@
     used in advertising or otherwise to promote the sale, use or other dealings
     in this Software without prior written authorization from Robert M Supnik.
  
++   14-Nov-26    Ulli    Throttle without warm-up and a fixed rate (xK, xM):
++                        no measurement at full speed any more; it starts
++                        throttling at once with one sleep per 1/1000 of
++                        the wanted rate and corrects after 1 s.  The
++                        unthrottled measurement let a booting guest
++                        calibrate its delay loops at the host speed
++                        (VMS TIMEWAIT 10-100 times too long)
 +   09-Nov-26    Ulli    Throttle without warm-up (sound realism mode): a
 +                        measurement that the CPU spent idling, or that is
 +                        below the wanted rate, is repeated instead of
@@ -13624,7 +13636,7 @@ index 333d26a9..a4a8a400 100644
     27-Sep-22    RMS     Removed OS/2 and Mac "Classic" support
     01-Feb-21    JDB     Added cast for down-conversion
     22-May-17    RMS     Hacked for V4.0 CONST compatibility
-@@ -188,6 +194,11 @@ static double sim_throt_inst_start;
+@@ -188,6 +201,12 @@ static double sim_throt_inst_start;
  static uint32 sim_throt_sleep_time = 0;
  static int32 sim_throt_wait = 0;
  static uint32 sim_throt_delay = 3;
@@ -13633,10 +13645,11 @@ index 333d26a9..a4a8a400 100644
 +static uint32 sim_throt_retries = 0;                    /* repeated measurements (no warm-up) */
 +#define SIM_THROT_RETRY_WARN 30                         /* warn once after this many */
 +#define SIM_THROT_MSMIN_NODELAY 100                     /* measurement without warm-up (ms) */
++static t_bool sim_throt_quick = FALSE;                  /* first recalibration after 1 s */
  #define CLK_TPS 100
  #define CLK_INIT (sim_precalibrate_ips/CLK_TPS)
  static int32 sim_int_clk_tps;
-@@ -1637,6 +1648,7 @@ else
+@@ -1637,6 +1656,7 @@ else
  cyc_since_idle = sim_gtime() - sim_idle_end_time;       /* time since prior idle */
  act_ms = sim_idle_ms_sleep (w_ms);                      /* wait */
  rtc->clock_time_idled += act_ms;
@@ -13644,7 +13657,7 @@ index 333d26a9..a4a8a400 100644
  act_cyc = act_ms * sim_idle_cyc_ms;
  if (cyc_since_idle > sim_idle_cyc_sleep)
      act_cyc -= sim_idle_cyc_sleep / 2;                  /* account for half an interval's worth of cycles */
-@@ -1762,6 +1774,44 @@ if (sim_throt_type == SIM_THROT_SPC) {  /* Set initial value while correct one i
+@@ -1762,6 +1782,44 @@ if (sim_throt_type == SIM_THROT_SPC) {  /* Set initial value while correct one i
  return SCPE_OK;
  }
  
@@ -13689,10 +13702,37 @@ index 333d26a9..a4a8a400 100644
  t_stat sim_show_throt (FILE *st, DEVICE *dnotused, UNIT *unotused, int32 flag, CONST char *cptr)
  {
  if (sim_idle_rate_ms == 0)
-@@ -1857,6 +1907,20 @@ switch (sim_throt_state) {
+@@ -1857,6 +1915,47 @@ switch (sim_throt_state) {
                  sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) Deferring until stable (%d more seconds)\n", (int)(sim_throt_delay - rtc->calibrations));
                  return sim_activate (uptr, rtc->hz * rtc->currd);
                  }
++            if ((sim_throt_delay == 0) &&               /* no warm-up and a fixed rate? */
++                ((sim_throt_type == SIM_THROT_KCYC) || (sim_throt_type == SIM_THROT_MCYC))) {
++                /* Do not measure the host at full speed: a guest that is
++                   booting meanwhile calibrates its delay loops at the host
++                   speed (VMS EXE$GL_TENUSEC/UBDELAY: TIMEWAIT loops 10 to
++                   100 times too long, e.g. SYSGEN CONNECT CONSOLE on the
++                   VAX-11/750 for minutes).  Throttle at once: one sleep
++                   per 1/1000 of the wanted rate never exceeds that rate;
++                   the first recalibration after 1 s (instead of 10 s)
++                   corrects the time the instructions themselves take. */
++                double want = (sim_throt_type == SIM_THROT_MCYC) ? (double)sim_throt_val * 1000000.0
++                                                                 : (double)sim_throt_val * 1000.0;
++
++                if (sim_throt_sleep_time == 0)
++                    sim_throt_sleep_time = 1;
++                while ((sim_throt_wait = (int32)((want * (double)sim_throt_sleep_time) / 1000.0)) < SIM_THROT_WMIN)
++                    sim_throt_sleep_time += (sim_os_sleep_inc_ms ? sim_os_sleep_inc_ms : 1);
++                sim_throt_ms_start = sim_os_msec ();
++                sim_throt_inst_start = sim_gtime ();
++                sim_throt_cps = want;
++                sim_throt_quick = TRUE;
++                sim_throt_state = SIM_THROT_STATE_THROTTLE;
++                sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) No delay, throttling at once: wait = %d, sleep = %d ms\n",
++                                                    sim_throt_wait, sim_throt_sleep_time);
++                _sim_timer_adjust_cal ();               /* adjust timer calibrations */
++                return sim_activate (uptr, sim_throt_wait);
++                }
 +            if (sim_throt_delay == 0) {                 /* no warm-up wanted? */
 +                /* There is no "last second" to compute from: the start values
 +                   were never taken (or are stale, from when the throttle was
@@ -13710,7 +13750,7 @@ index 333d26a9..a4a8a400 100644
              sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) Computing Throttling values based on the last second's execution rate\n");
              sim_throt_state = SIM_THROT_STATE_TIME;
              if (sim_throt_peak_cps < (double)(rtc->hz * rtc->currd))
-@@ -1894,7 +1958,7 @@ switch (sim_throt_state) {
+@@ -1894,7 +1993,7 @@ switch (sim_throt_state) {
          sim_throt_ms_stop = sim_os_msec ();
          delta_ms = sim_throt_ms_stop - sim_throt_ms_start;
          delta_inst = sim_gtime () - sim_throt_inst_start;
@@ -13719,7 +13759,7 @@ index 333d26a9..a4a8a400 100644
              if (delta_inst >= 100000000.0) {            /* too many inst? */
                  sim_throt_state = SIM_THROT_STATE_INIT; /* fails in 32b! */
                  sim_printf ("Can't throttle.  Host CPU is too fast with a minimum sleep time of %d ms\n", sim_idle_rate_ms);
-@@ -1907,8 +1971,47 @@ switch (sim_throt_state) {
+@@ -1907,8 +2006,47 @@ switch (sim_throt_state) {
              sim_throt_inst_start = sim_gtime();
              sim_idle_ms_sleep (sim_idle_rate_ms);       /* start on a tick boundary to calibrate */
              sim_throt_ms_start = sim_os_msec ();
@@ -13767,7 +13807,20 @@ index 333d26a9..a4a8a400 100644
              a_cps = (((double) delta_inst) * 1000.0) / (double) delta_ms;
              if (sim_throt_type == SIM_THROT_MCYC)       /* calc desired cps */
                  d_cps = (double) sim_throt_val * 1000000.0;
-@@ -1987,6 +2090,8 @@ switch (sim_throt_state) {
+@@ -1968,9 +2106,11 @@ switch (sim_throt_state) {
+     case SIM_THROT_STATE_THROTTLE:                      /* throttling */
+         sim_idle_ms_sleep (sim_throt_sleep_time);
+         delta_ms = sim_os_msec () - sim_throt_ms_start;
+-        if (delta_ms >= 10000) {                        /* recompute every 10 sec */
++        if (delta_ms >= (sim_throt_quick ? 1000 : 10000)) {/* recompute every 10 sec */
+             double delta_insts = sim_gtime() - sim_throt_inst_start;
+ 
++            sim_throt_quick = FALSE;                    /* (the first time after 1 s, see INIT) */
++
+             a_cps = (delta_insts * 1000.0) / (double) delta_ms;
+             if (sim_throt_type != SIM_THROT_SPC) {      /* when not dynamic throttling */
+                 if (sim_throt_type == SIM_THROT_MCYC)   /* calc desired cps */
+@@ -1987,6 +2127,8 @@ switch (sim_throt_state) {
                          ((100.0 * (a_cps - d_cps) / d_cps) > (100 - sim_throt_drift_pct))) {
                          sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc() Restarting calibrating throttle going too fast: a_cps = %f, d_cps = %f deviating by %.2f%% from the desired value\n",
                                                              a_cps, d_cps, fabs(100.0 * (d_cps - a_cps) / d_cps));
