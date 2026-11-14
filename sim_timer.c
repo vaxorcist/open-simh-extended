@@ -23,6 +23,13 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   14-Nov-26    Ulli    Throttle without warm-up and a fixed rate (xK, xM):
+                        no measurement at full speed any more; it starts
+                        throttling at once with one sleep per 1/1000 of
+                        the wanted rate and corrects after 1 s.  The
+                        unthrottled measurement let a booting guest
+                        calibrate its delay loops at the host speed
+                        (VMS TIMEWAIT 10-100 times too long)
    09-Nov-26    Ulli    Throttle without warm-up (sound realism mode): a
                         measurement that the CPU spent idling, or that is
                         below the wanted rate, is repeated instead of
@@ -199,6 +206,7 @@ static uint32 sim_throt_idle_start = 0;                 /* sim_idle_ms_total at 
 static uint32 sim_throt_retries = 0;                    /* repeated measurements (no warm-up) */
 #define SIM_THROT_RETRY_WARN 30                         /* warn once after this many */
 #define SIM_THROT_MSMIN_NODELAY 100                     /* measurement without warm-up (ms) */
+static t_bool sim_throt_quick = FALSE;                  /* first recalibration after 1 s */
 #define CLK_TPS 100
 #define CLK_INIT (sim_precalibrate_ips/CLK_TPS)
 static int32 sim_int_clk_tps;
@@ -1907,6 +1915,33 @@ switch (sim_throt_state) {
                 sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) Deferring until stable (%d more seconds)\n", (int)(sim_throt_delay - rtc->calibrations));
                 return sim_activate (uptr, rtc->hz * rtc->currd);
                 }
+            if ((sim_throt_delay == 0) &&               /* no warm-up and a fixed rate? */
+                ((sim_throt_type == SIM_THROT_KCYC) || (sim_throt_type == SIM_THROT_MCYC))) {
+                /* Do not measure the host at full speed: a guest that is
+                   booting meanwhile calibrates its delay loops at the host
+                   speed (VMS EXE$GL_TENUSEC/UBDELAY: TIMEWAIT loops 10 to
+                   100 times too long, e.g. SYSGEN CONNECT CONSOLE on the
+                   VAX-11/750 for minutes).  Throttle at once: one sleep
+                   per 1/1000 of the wanted rate never exceeds that rate;
+                   the first recalibration after 1 s (instead of 10 s)
+                   corrects the time the instructions themselves take. */
+                double want = (sim_throt_type == SIM_THROT_MCYC) ? (double)sim_throt_val * 1000000.0
+                                                                 : (double)sim_throt_val * 1000.0;
+
+                if (sim_throt_sleep_time == 0)
+                    sim_throt_sleep_time = 1;
+                while ((sim_throt_wait = (int32)((want * (double)sim_throt_sleep_time) / 1000.0)) < SIM_THROT_WMIN)
+                    sim_throt_sleep_time += (sim_os_sleep_inc_ms ? sim_os_sleep_inc_ms : 1);
+                sim_throt_ms_start = sim_os_msec ();
+                sim_throt_inst_start = sim_gtime ();
+                sim_throt_cps = want;
+                sim_throt_quick = TRUE;
+                sim_throt_state = SIM_THROT_STATE_THROTTLE;
+                sim_debug (DBG_THR, &sim_timer_dev, "sim_throt_svc(INIT) No delay, throttling at once: wait = %d, sleep = %d ms\n",
+                                                    sim_throt_wait, sim_throt_sleep_time);
+                _sim_timer_adjust_cal ();               /* adjust timer calibrations */
+                return sim_activate (uptr, sim_throt_wait);
+                }
             if (sim_throt_delay == 0) {                 /* no warm-up wanted? */
                 /* There is no "last second" to compute from: the start values
                    were never taken (or are stale, from when the throttle was
@@ -2071,8 +2106,10 @@ switch (sim_throt_state) {
     case SIM_THROT_STATE_THROTTLE:                      /* throttling */
         sim_idle_ms_sleep (sim_throt_sleep_time);
         delta_ms = sim_os_msec () - sim_throt_ms_start;
-        if (delta_ms >= 10000) {                        /* recompute every 10 sec */
+        if (delta_ms >= (sim_throt_quick ? 1000 : 10000)) {/* recompute every 10 sec */
             double delta_insts = sim_gtime() - sim_throt_inst_start;
+
+            sim_throt_quick = FALSE;                    /* (the first time after 1 s, see INIT) */
 
             a_cps = (delta_insts * 1000.0) / (double) delta_ms;
             if (sim_throt_type != SIM_THROT_SPC) {      /* when not dynamic throttling */
