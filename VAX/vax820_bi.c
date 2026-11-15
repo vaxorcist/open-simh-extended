@@ -833,7 +833,10 @@ return SCPE_OK;
 
 t_stat cpu_print_model (FILE *st)
 {
-fprintf (st, "VAX %s", (sys_model ? "8250" : "8200"));
+extern DEVICE ka_dev[];
+t_bool dual = ((ka_dev[1].flags & DEV_DIS) == 0);       /* KA1 enabled: 8300/8350 */
+
+fprintf (st, "VAX %s", (sys_model ? (dual ? "8350" : "8250") : (dual ? "8300" : "8200")));
 return SCPE_OK;
 }
 
