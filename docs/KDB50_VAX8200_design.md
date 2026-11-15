@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v2, 2026-11-15 (v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v3, 2026-11-15 (v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
 # KDB50 on the VAX 8200/8300 (implementation plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **plan; questions answered by Ulli, decisions D1-D6 waiting** (section 9).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **in progress; all decisions made by Ulli** (section 9). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
 
 Sources:
 - EK-KDB50-UG-001 *KDB50 Controller User Guide*, supplied by Ulli. Chapter 3 is the programming information.
@@ -89,11 +89,13 @@ Estimated size: about 600-900 lines (BI front end, BI DMA layer, boot) plus the 
 
 ## 8. What this plan does not do
 
+- **Later (Ulli's wish, 2026-11-15):** `SET UBA DISABLE` on the 8200, which removes the DWBUA and with it all Unibus options (RQ, DZ, LP, DMF, ...). Not part of this patch.
+
 - No HSC/CI, no BVP storage ports (`BTD$K_BVPSSP`), no other BI models (D5 of the DMB32 plan applies: other VAX 8xxx models later).
 
 ## 9. Decisions
 
-| # | Decision | Proposal |
+| # | Decision | Decided (Ulli, 2026-11-15) |
 |---|---|---|
 | D1 | Device name | `KDB` (units KDB0-KDB3); VMS still calls the disks DUAn/DUBn |
 | D2 | Default node | 6, settable with `SET KDB NODE=` |
