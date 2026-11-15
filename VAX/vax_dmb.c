@@ -1256,9 +1256,11 @@ dmb_sreg[idx] = data;
 /* ---------------------------------------------------------------------------
    Self-test and resets (3.4.1).  Bus reset, BICSR NRST and MAINT
    PROG.RESET run the self-test; it takes SET DMB SELFTEST=ms of simulated
-   time (1 ms with SKIP.SELF.TEST).  Meanwhile STS is clear and
-   PROG.RESET and INIT read as set; afterwards the lines are in their
-   initial state, STS is set and BROKE tells the result.
+   time (1 ms with SKIP.SELF.TEST).  The BIIC's own test (STS) passes at
+   once; BROKE stays set while the module tests itself and is cleared when
+   it passes, which is what VMS waits for (a timed wait on BICSR<12>).
+   PROG.RESET and INIT read as set meanwhile; afterwards the lines are in
+   their initial state.
    --------------------------------------------------------------------------- */
 
 static void dmb_init_all (t_bool power)
@@ -1279,7 +1281,7 @@ int32 ms = (dmb_maint & MT_SKIP_ST) ? 1 : dmb_st_ms;
 sim_debug (DBG_INIT, &dmb_dev, "self-test started (%s), %d ms\n", why, ms);
 dmb_testing = TRUE;
 dmb_maint |= MT_PROG_RESET;
-dmb_biic.csr = (dmb_biic.csr & ~(BICSR_STS|BICSR_BRK)) | BICSR_INI;
+dmb_biic.csr = dmb_biic.csr | BICSR_STS | BICSR_BRK | BICSR_INI;
 dmb_init_all (FALSE);
 sim_cancel (DMB_ST_UNIT);
 if (ms <= 0)
