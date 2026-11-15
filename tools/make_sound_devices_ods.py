@@ -1,4 +1,4 @@
-# open-simh-extended/tools/make_sound_devices_ods.py  v17 (v17: Systems sheet: realism THROTTLE of every VAX simulator; v16: sheet TU58: TDC and the VAX-11/730/750 console TD; v15: VAX 8600 console RL02 (CS); v14: VAX 8200 console RX50; v13: RX50 (RQ); v12: RX01: RX device and the VAX-11/780 console floppy CS; v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
+# open-simh-extended/tools/make_sound_devices_ods.py  v18 (v18: RA drives also on the KDB50 (device KDB, VAX 8200); v17: Systems sheet: realism THROTTLE of every VAX simulator; v16: sheet TU58: TDC and the VAX-11/730/750 console TD; v15: VAX 8600 console RL02 (CS); v14: VAX 8200 console RX50; v13: RX50 (RQ); v12: RX01: RX device and the VAX-11/780 console floppy CS; v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
 #
 # Builds SIMH_Sound_devices.ods: the devices prepared for SIMH sound (realism
 # mode, SET SOUND ENABLED) with rotation speed, access times and spin times.
@@ -25,8 +25,8 @@ from odf.table import Table, TableColumn, TableRow, TableCell
 from odf.text import P
 from odf.dc import Title
 
-TABLE_VERSION = "v16"
-TABLE_DATE = "2026-11-14"
+TABLE_VERSION = "v17"
+TABLE_DATE = "2026-11-15"
 
 # ---------------------------------------------------------------- data
 # fit: "fixed" (exponent given, curve through t2t and max), "fit" (exponent
@@ -106,7 +106,7 @@ DISKS = [
        up=None, down=None, spin_src="fixed disk: no RUN/STOP button", s=40, m=230,
        regs="SEEKRP07S, SEEKRP07M", snd="rp07",
        src="Computer History Wiki", notes="maximum seek not published; ready as soon as attached"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA60", pack="removable", cyl=1600, sect=42, surf=6, rpm=3600,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA60", pack="removable", cyl=1600, sect=42, surf=6, rpm=3600,
        t2t=7.0, avg=42.0, mx=70.0, fit="fit", e=None, slots=43,
        up=35, down=35, spin_src="published (DEC brochure, Aug 1982)", s=100, m=600,
        regs="RQ: SPINUP, SPINDOWN, SEEKRA60S, SEEKRA60M", snd="ra60",
@@ -125,55 +125,55 @@ DISKS = [
        regs="as the RC25", snd="rc25",
        src="RC25 Disk Subsystem User Guide EK-ORC25-UG-002 (Sep 1983)",
        notes="realism mode: offline while no cartridge is loaded in the RC25 unit; normal mode: usable without one"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA70", pack="fixed (RUN/STOP button)", cyl=1507, sect=33, surf=11, rpm=4000,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA70", pack="fixed (RUN/STOP button)", cyl=1507, sect=33, surf=11, rpm=4000,
        t2t=4.0, avg=19.5, mx=35.0, fit="fit", e=None, slots=34,
        up=59, down=15, spin_src="Computer History Wiki (start 59 s avg., stop 15 s avg.)", s=90, m=550,
        regs="RQ: SPINUPRA70, SPINDOWNRA70, SEEKRA70S, SEEKRA70M", snd="ra70",
        src="RA7x/SA7x Pocket Reference Guide EK-RSA7X-PG-002 (4000 rpm); Computer History Wiki (average seek 19.5 ms)",
        notes="5.25-inch HDA; track-to-track 4 ms and maximum 35 ms provisional; spindle at speed within 15 s"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA71", pack="fixed (RUN/STOP button)", cyl=1921, sect=51, surf=14, rpm=3600,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA71", pack="fixed (RUN/STOP button)", cyl=1921, sect=51, surf=14, rpm=3600,
        t2t=3.0, avg=13.3, mx=26.0, fit="fit", e=None, slots=52,
        up=60, down=15, spin_src="provisional (RF72, same family: start < 60 s, stop < 15 s)", s=120, m=700,
        regs="RQ: SPINUPRA71, SPINDOWNRA71, SEEKRA71S, SEEKRA71M", snd="ra71",
        src="RA7x/SA7x Pocket Reference Guide EK-RSA7X-PG-002 (3600 rpm); seeks from the RF72 (Computer History Wiki: average 13.3 ms)",
        notes="5.25-inch HDA; all seek times provisional"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA72", pack="fixed (RUN/STOP button)", cyl=1921, sect=51, surf=20, rpm=3600,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA72", pack="fixed (RUN/STOP button)", cyl=1921, sect=51, surf=20, rpm=3600,
        t2t=3.0, avg=13.3, mx=26.0, fit="fit", e=None, slots=52,
        up=60, down=15, spin_src="provisional (RF72: start < 60 s, stop < 15 s)", s=120, m=700,
        regs="RQ: SPINUPRA72, SPINDOWNRA72, SEEKRA72S, SEEKRA72M", snd="ra72",
        src="RA7x/SA7x Pocket Reference Guide EK-RSA7X-PG-002; seeks from the RF72 (Computer History Wiki)",
        notes="5.25-inch HDA; rpm not stated in the guide (3600 as RA71/RA73); seek times provisional"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA73", pack="fixed (RUN/STOP button)", cyl=2667, sect=70, surf=21, rpm=3600,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA73", pack="fixed (RUN/STOP button)", cyl=2667, sect=70, surf=21, rpm=3600,
        t2t=3.0, avg=13.3, mx=26.0, fit="fit", e=None, slots=71,
        up=60, down=15, spin_src="provisional (RF72: start < 60 s, stop < 15 s)", s=160, m=980,
        regs="RQ: SPINUPRA73, SPINDOWNRA73, SEEKRA73S, SEEKRA73M", snd="ra73",
        src="RA7x/SA7x Pocket Reference Guide EK-RSA7X-PG-002 (3600 rpm); seeks from the RF72 (Computer History Wiki)",
        notes="5.25-inch HDA; seek times provisional"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA80", pack="fixed (RUN/STOP button)", cyl=546, sect=31, surf=14, rpm=3600,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA80", pack="fixed (RUN/STOP button)", cyl=546, sect=31, surf=14, rpm=3600,
        t2t=6.0, avg=25.0, mx=50.0, fit="fit", e=None, slots=32,
        up=40, down=20, spin_src="published (User Guide: start 40 s max., 15 s typical; stop 20 s from the brochure, which says start 50 s)", s=35, m=200,
        regs="RQ: SPINUPRA80, SPINDOWNRA80, SEEKRA80S, SEEKRA80M", snd="ra80",
        src="RA80 User Guide EK-0RA80-UG-001 (Jan 1982); DEC RA60/RA80/RA81 brochure, Aug 1982",
        notes="14-inch HDA; 31 + 1 spare sectors; SIMH's RA80 has 237212 LBNs, the User Guide 236,964 (known issues)"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA81", pack="fixed (RUN/STOP button)", cyl=1258, sect=51, surf=14, rpm=3600,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA81", pack="fixed (RUN/STOP button)", cyl=1258, sect=51, surf=14, rpm=3600,
        t2t=7.0, avg=28.0, mx=50.0, fit="fit", e=None, slots=52,
        up=20, down=20, spin_src="published (User Guide: start 20 s max., stop 20 s max.; the brochure says start 50 s)", s=75, m=460,
        regs="RQ: SPINUPRA81, SPINDOWNRA81, SEEKRA81S, SEEKRA81M", snd="ra81",
        src="RA81 User Guide EK-0RA81-UG-001 (1982; maxima 7/28/50 ms); brochure 6/28/52 ms",
        notes="14-inch HDA; 51 + 1 spare sectors"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA82", pack="fixed (RUN/STOP button)", cyl=1435, sect=57, surf=15, rpm=3600,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA82", pack="fixed (RUN/STOP button)", cyl=1435, sect=57, surf=15, rpm=3600,
        t2t=6.0, avg=24.0, mx=38.0, fit="fit", e=None, slots=58,
        up=50, down=20, spin_src="Computer History Wiki (start 50 s max., stop 20 s max.)", s=90, m=530,
        regs="RQ: SPINUPRA82, SPINDOWNRA82, SEEKRA82S, SEEKRA82M", snd="ra82",
        src="Computer History Wiki (RA82)",
        notes="14-inch HDA; 57 + 1 spare sectors"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA90", pack="fixed (RUN/STOP button)", cyl=2656, sect=69, surf=13, rpm=3600,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA90", pack="fixed (RUN/STOP button)", cyl=2656, sect=69, surf=13, rpm=3600,
        t2t=5.5, avg=18.5, mx=31.5, fit="fit", e=None, slots=70,
        up=40, down=30, spin_src="published start 40 s max. (RA90/RA92 User Guide); stop 30 s provisional", s=160, m=980,
        regs="RQ: SPINUPRA90, SPINDOWNRA90, SEEKRA90S, SEEKRA90M", snd="ra90",
        src="RA90/RA92 Disk Drive User Guide EK-ORA90-UG-002",
        notes="9-inch HDA; 69 + 1 spare sectors"),
-  dict(dev="RQ (MSCP: UDA50, KDA50, ...)", drive="RA92", pack="fixed (RUN/STOP button)", cyl=3101, sect=73, surf=13, rpm=3405,
+  dict(dev="RQ, KDB (MSCP: UDA50, KDA50, KDB50, ...)", drive="RA92", pack="fixed (RUN/STOP button)", cyl=3101, sect=73, surf=13, rpm=3405,
        t2t=3.0, avg=16.0, mx=29.0, fit="fit", e=None, slots=74,
        up=40, down=30, spin_src="published start 40 s max. (RA90/RA92 User Guide); stop 30 s provisional", s=190, m=1150,
        regs="RQ: SPINUPRA92, SPINDOWNRA92, SEEKRA92S, SEEKRA92M", snd="ra92",

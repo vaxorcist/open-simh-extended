@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v33, 2026-11-15 (v33: patch 7, VAX 8300 dual KA820; v32: patch 5 v38, realism THROTTLE for every VAX; v31: patch 5 v37, 780 BOOT CS unit; v30: patch 5 v36, realism throttle starts at once; v29: patch 3 third commit, BOOT CS on the VAX 8200; v28: patch 5 v35, TU58; v27: patch 5 v34, VAX 8200 console floppy track 0 fix; v26: patch 5 v33, VAX 8600 console RL02; v25: patch 5 v32, VAX 8200 console RX50; v24: patch 5 v31, RX50, RX50 controller rules; v23: patch 5 v30, RX01 (RX, 11/780 console floppy); v22: patch 5 v29, RX02 density error on Read Status (VMS MOUNT); v21: patch 5 v28, RY debug flags; v20: patch 5 v27, RX02 floppy; v19: patch 5 v26, RA81 start 20 s, RA80 40 s; v18: patch 5 v25, SDI bus rule; v17: patch 5 v24, SDI rules, RA80 capacity; v16: patch 5 v23, the fixed RA drives, RA facts; v15: patch 5 v22; next the RA disks; v14: patch 5 v21; v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v34, 2026-11-15 (v34: patches 8 (DMB32) and 9 (KDB50); v33: patch 7, VAX 8300 dual KA820; v32: patch 5 v38, realism THROTTLE for every VAX; v31: patch 5 v37, 780 BOOT CS unit; v30: patch 5 v36, realism throttle starts at once; v29: patch 3 third commit, BOOT CS on the VAX 8200; v28: patch 5 v35, TU58; v27: patch 5 v34, VAX 8200 console floppy track 0 fix; v26: patch 5 v33, VAX 8600 console RL02; v25: patch 5 v32, VAX 8200 console RX50; v24: patch 5 v31, RX50, RX50 controller rules; v23: patch 5 v30, RX01 (RX, 11/780 console floppy); v22: patch 5 v29, RX02 density error on Read Status (VMS MOUNT); v21: patch 5 v28, RY debug flags; v20: patch 5 v27, RX02 floppy; v19: patch 5 v26, RA81 start 20 s, RA80 40 s; v18: patch 5 v25, SDI bus rule; v17: patch 5 v24, SDI rules, RA80 capacity; v16: patch 5 v23, the fixed RA drives, RA facts; v15: patch 5 v22; next the RA disks; v14: patch 5 v21; v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -36,14 +36,16 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 | 6 | `opensimh_6_rb730_v2.patch` | RB730: DEC logical block order, SIMH disk library, status, seek and range fixes, at most one RB80 | 87eb7d5, independent |
 | 5 | `opensimh_5_sound_v38.patch` | common SDL2 sound support and the realism mode (RK07, RL01/02, Massbus packs, RA60, RA70–RA92, RC25/RCF25, RB02/RB80; tapes: TS11/TSV05, TK50 cartridge streamer; floppies: RX02, RX01, VAX-11/780 console RX01, RX50, VAX 8200 console RX50; VAX 8600 console RL02; TU58 (PDP-11 TDC, VAX-11/730/750 console); MicroVAX II THROTTLE 450K); without the Visual Studio project files | after 6 |
 | 7 | `opensimh_7_vax8300_mp_v1.patch` | VAX 8300: the second KA820 (SET KA1 ENABLE) runs; VMS V4.4+ START/CPU (attached processor); CPU core with one context per processor (8200 only) | after 5 |
+| 8 | `opensimh_8_dmb32_v1.patch` | VAX 8200/8300: DMB32 VAXBI communications interface (device DMB, node 5): 8 async lines, printer port (sync line: registers only, waits for SIDRIVER); BI nodes supply their own vector; DMF32 and DMB32 printers share `vax_combo_lib.c`; `BICSR_HES` fix | after 7 |
+| 9 | `opensimh_9_kdb50_v1.patch` | VAX 8200/8300: KDB50 VAXBI disk controller (device KDB, node 6, enabled by default; RQ on the DWBUA stays), BOOT KDBn; RQ memory access per controller; shared BI DMA (`vax_bi_dma.c`) | after 8 |
 
-Patch 6 comes before patch 5, patch 7 comes last. The whole series:
+Patch 6 comes before patch 5; patches 7, 8 and 9 come last, in that order. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
 git am --keep-cr opensimh_1_dmv11_v11.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
                  opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v38.patch \
-                 opensimh_7_vax8300_mp_v1.patch
+                 opensimh_7_vax8300_mp_v1.patch opensimh_8_dmb32_v1.patch opensimh_9_kdb50_v1.patch
 ```
 
 The same work as git branches of the fork:
@@ -58,7 +60,9 @@ The same work as git branches of the fork:
 | `rb730` | patch 6, as 5 separate commits | `master` |
 | `sound` | patch 5 (with the Visual Studio project changes): a root snapshot commit 2f3bbe8 (the `rb730` tree plus sound up to patch 5 v15), then one commit each for the TS tapes, the TS fixes, the TK50, the TQ position fix, the smooth TK50 sounds and the fixes of 2026-11-09 (sim_tape position, calibration marker, throttle), SHOW TRANSPORT during moves, the audible reposition and the STRSHIFT register, the fixed RA drives, the SDI rules, the SDI bus rule, the RA81/RA80 start times, the RX02 floppy; its tree is `rb730` + patch 5 | `rb730` (tree, not history) |
 | `vax8300-mp` | patch 7, as work commits | `integration` |
-| `integration` | patches 1, 2, 3, 4, 6, 5, 7 | `master` |
+| `dmb32` | patch 8, as work commits | `vax8300-mp` |
+| `kdb50` | patch 9, as work commits | `dmb32` |
+| `integration` | patches 1, 2, 3, 4, 6, 5, 7, 8, 9 (as work commits) | `master` |
 | `notes` | these docs, tools, tests and patch files (no SIMH code) | |
 
 A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`

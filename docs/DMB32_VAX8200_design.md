@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v4, 2026-11-15 (v4: section 10, results of P1-P3, P4a (printer) and P5; SIDRIVER missing; v3: all decisions D1–D6 made, Ulli's answers, VMS device names from the User Guide, ULTRIX phase; v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v5, 2026-11-15 (v5: patch 8, P5 corrected (the CPU loop really runs now), DMA engine moved to vax_bi_dma.c; v4: section 10, results of P1-P3, P4a (printer) and P5; SIDRIVER missing; v3: all decisions D1–D6 made, Ulli's answers, VMS device names from the User Guide, ULTRIX phase; v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
 # DMB32 on the VAX 8200/8300 (implementation plan)
 
 Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **in progress** (branch `dmb32`): P1, P2, P3, P4a (printer part) and P5 done; P4 waits for SIDRIVER (section 10).
@@ -153,7 +153,9 @@ Branch `dmb32` (on top of patch 7). Test scripts in `tests/dmb32/`.
 | P3 | **Pass.** COPY and DIRECTORY/OUTPUT to `LIA0:` and to `LPA0:` (LP11) give the same text (532 print transfers, no errors) (`p3.ini`) |
 | P4 | **Waiting:** `SIDRIVER.EXE` (DMB32 sync driver) is not on Ulli's VMS047_1.R81 (YIDRIVER, LIDRIVER and XGDRIVER are), so VMS does not configure `SIA0` and the sync line cannot be tested with VMS. Asked Ulli for the driver |
 | P4a (printer) | **Pass.** The DMF32 printer uses the shared formatter (`VAX/vax_combo_lib.c`); VMS print jobs with six printer settings on the vax780 give byte for byte the same `LCA0:` output before and after (`p4a_lp.ini`). The DDCMP engine part of P4a follows with P4 |
-| P5 | **Pass.** VAX 8300: after START/CPU and with a CPU loop running, the P2 checks pass. VMS sets INTRDES to KA0 only (`p5.ini`) |
+| P5 | **Pass.** VAX 8300: after START/CPU and with two CPU-bound loop processes (attached processor in the EXECUTE state), the P2 checks pass. VMS sets INTRDES to KA0 only (`p5.ini` v2). Correction: the first run (v1) assumed `LOOP.EXE` on the disk, where it was not, so the loop never ran; v2 builds it |
 | P5u, P6 | Open: ULTRIX V2.2 image from Ulli; UETP prompts from Ulli |
 
 Also found on the way (known issues): case 66, `BICSR_HES` had the value of `BICSR_SES` (fixed); case 67, BI nodes could not supply their own vector (fixed, section 3).
+
+Patch 8 `opensimh_8_dmb32_v1.patch` (after patch 7) holds the DMB32 work; the sync line's DDCMP engine follows when a SIDRIVER is available. With the KDB50 (patch 9) the DMA engine moved to `VAX/vax_bi_dma.c` (KDB50 plan D3); the DMB32 tests P2 and P3 pass unchanged.
