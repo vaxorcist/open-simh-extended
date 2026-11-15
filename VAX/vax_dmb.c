@@ -68,6 +68,7 @@
 #include "vax_defs.h"
 #include "vax_bi.h"
 #include "sim_tmxr.h"
+#include "vax_combo_lib.h"                     /* printer formatter (with DMF32) */
 
 /* ---------------------------------------------------------------------------
    Sizes
@@ -230,6 +231,18 @@
 #define DC_ERR          0x00FF0000
 #define LN_RW           (DC_START|DC_PTE|DC_PHYS|DC_ABORT|DC_ERR)
 
+/* printer PCTRL (3.3.25): DMA control as above, plus */
+#define PR_FORMAT       0x00000200              /* formatting on */
+#define PR_TAB          0x01000000              /* expand tabs */
+#define PR_TRUNC        0x02000000              /* truncate long lines */
+#define PR_AUTOCR       0x04000000              /* automatic CR insertion */
+#define PR_AUTOFF       0x08000000              /* form feed to line feeds */
+#define PR_NONPRINT     0x10000000              /* accept non printing */
+#define PR_DAVFU        0x20000000              /* DAVFU codes */
+#define PR_WRAP         0x40000000              /* line wrap */
+#define PR_UPPER        0x80000000              /* to upper case */
+#define PR_RW           (LN_RW|PR_FORMAT|0xFF000000)
+
 /* buffer count/offset registers (TBUFFCT and friends) */
 #define CT_OFF          0x000001FF              /* offset in the first page */
 #define CT_V_COUNT      16                      /* character count */
@@ -356,6 +369,9 @@ static uint32 dmb_acsr, dmb_scsr, dmb_pcsr;
 static uint32 dmb_acsr2, dmb_scsr2, dmb_pcsr2;
 static uint32 dmb_spte, dmb_spts, dmb_gpte, dmb_gpts;
 static uint32 dmb_pfix, dmb_pbuffad, dmb_pbuffct, dmb_pctrl, dmb_pcar, dmb_psize;
+static COMBO_LP dmb_lp;                         /* printer formatter state */
+static DMB_DMA dmb_pdma;                        /* printer DMA in progress */
+static t_bool dmb_p_active;                     /* printer DMA.START seen */
 static uint32 dmb_sreg[SY_NREGS];               /* sync line registers */
 static uint32 dmb_ram[DMB_RAM_LONGS];           /* on-board RAM (maintenance) */
 static DMB_LINE dmb_line[DMB_LINES];
@@ -1195,15 +1211,27 @@ for (ln = 0; ln < DMB_LINES; ln++) {
 }
 
 /* ---------------------------------------------------------------------------
-   Printer port and synchronous line: registers only in this version; the
-   functions come with the shared library (P3, P4).  A transfer started
-   now ends at once: the printer reports "not connected", the sync line a
-   modem error (no clock).
+   Printer port.  A print buffer is moved by DMA through the formatter
+   (vax_combo_lib.c) to the file attached to DMB-PRINT, with the prefix
+   and suffix characters of PFIX.  Without a file the printer is not
+   connected: a transfer ends at once with error 81 (3.4.8.8).
    --------------------------------------------------------------------------- */
+
+/* Formatter output: the character goes to the file. */
+static t_bool dmb_lp_put (COMBO_LP *lp, int32 c)
+{
+if (DMB_LP_UNIT->fileref)
+    fputc (c, DMB_LP_UNIT->fileref);
+return TRUE;
+}
 
 static void dmb_lp_init (void)
 {
 dmb_pfix = dmb_pbuffad = dmb_pbuffct = dmb_pctrl = dmb_pcar = dmb_psize = 0;
+dmb_p_active = FALSE;
+memset (&dmb_lp, 0, sizeof (dmb_lp));
+dmb_lp.put = &dmb_lp_put;
+combo_lp_reset (&dmb_lp);                       /* paper at top of form */
 sim_cancel (DMB_LP_UNIT);
 }
 
@@ -1214,24 +1242,91 @@ if (DMB_LP_UNIT->flags & UNIT_ATT)
 return PC_OFFLINE;
 }
 
+/* End of a print transfer: registers, counters, interrupt. */
+static void dmb_lp_done (int32 err)
+{
+dmb_dma_regs (&dmb_pdma, err, &dmb_pbuffad, &dmb_pbuffct);
+dmb_pcar = ((dmb_lp.chars & 0xFFFF) << 16) | (dmb_lp.lines & 0xFFFF);
+dmb_pctrl = (dmb_pctrl & ~(DC_START|DC_ERR)) | ((uint32)err << DC_V_ERR);
+dmb_p_active = FALSE;
+if (DMB_LP_UNIT->fileref) {
+    fflush (DMB_LP_UNIT->fileref);
+    DMB_LP_UNIT->pos = (t_addr)sim_ftell (DMB_LP_UNIT->fileref);
+    }
+sim_debug (DBG_LPT, &dmb_dev, "print done: %d of %d bytes, %d characters, %d lines, error %02X\n",
+           dmb_pdma.pos, dmb_pdma.count, dmb_lp.chars, dmb_lp.lines, err);
+dmb_event (CB_PRINT);
+}
+
+/* Print cycle (runs a short while after DMA.START, like the real board). */
 t_stat dmb_lp_svc (UNIT *uptr)
 {
-if (dmb_pctrl & DC_START) {
-    dmb_pctrl = (dmb_pctrl & ~(DC_START|DC_ERR)) | ((uint32)ER_NOPRINTER << DC_V_ERR);
-    sim_debug (DBG_LPT, &dmb_dev, "printer DMA: not connected (not implemented yet)\n");
-    dmb_event (CB_PRINT);
+uint8 buf[512];
+int32 err = 0, i, n;
+t_bool fmt = (dmb_pctrl & PR_FORMAT) != 0;
+
+if (!dmb_p_active)
+    return SCPE_OK;
+if (!(uptr->flags & UNIT_ATT)) {                /* no printer */
+    dmb_lp_done (ER_NOPRINTER);
+    return SCPE_OK;
     }
+dmb_lp.flags = ((dmb_pctrl & PR_TAB) ? CLP_TAB : 0) |
+               ((dmb_pctrl & PR_TRUNC) ? CLP_TRUNC : 0) |
+               ((dmb_pctrl & PR_AUTOCR) ? CLP_AUTOCR : 0) |
+               ((dmb_pctrl & PR_AUTOFF) ? CLP_FFCONV : 0) |
+               ((dmb_pctrl & PR_NONPRINT) ? CLP_NONPRINT : 0) |
+               ((dmb_pctrl & PR_DAVFU) ? CLP_DAVFU : 0) |
+               ((dmb_pctrl & PR_WRAP) ? CLP_WRAP : 0) |
+               ((dmb_pctrl & PR_UPPER) ? CLP_UPPER : 0);
+dmb_lp.width = (int32)(dmb_psize & 0xFFFF);
+dmb_lp.lpp = (int32)((dmb_psize >> 16) & 0xFFFF);
+dmb_lp.chars = dmb_lp.lines = 0;
+sim_debug (DBG_LPT, &dmb_dev, "print cycle: %d bytes, format %s, PCTRL %08X, PFIX %08X, PSIZE %08X\n",
+           dmb_pdma.count, fmt ? "on" : "off", dmb_pctrl, dmb_pfix, dmb_psize);
+if (fmt)                                        /* prefix */
+    combo_lp_fix (&dmb_lp, dmb_pfix & 0xFF, (dmb_pfix >> 8) & 0xFF);
+while (dmb_pdma.pos < dmb_pdma.count) {
+    n = (int32)(dmb_pdma.count - dmb_pdma.pos);
+    if (n > (int32)sizeof (buf))
+        n = (int32)sizeof (buf);
+    n = dmb_dma_xfer (&dmb_pdma, buf, n, FALSE, &err);
+    for (i = 0; i < n; i++) {
+        if (fmt)
+            combo_lp_format (&dmb_lp, buf[i]);
+        else
+            combo_lp_out (&dmb_lp, buf[i]);
+        }
+    if (err)
+        break;
+    }
+if (fmt && !err)                                /* suffix */
+    combo_lp_fix (&dmb_lp, (dmb_pfix >> 16) & 0xFF, (dmb_pfix >> 24) & 0xFF);
+dmb_lp_done (err);
 return SCPE_OK;
 }
 
+/* PCTRL write: start or abort a print transfer. */
 static void dmb_write_pctrl (uint32 data, uint32 bytes)
 {
-uint32 old = dmb_pctrl;
-
-dmb_pctrl = data;
-if ((bytes & 1) && (data & DC_START) && !(old & DC_START))
+dmb_pctrl = data & PR_RW;
+if ((bytes & 1) && (data & DC_START) && !dmb_p_active && !(data & DC_ABORT)) {
+    dmb_dma_setup (&dmb_pdma, dmb_pbuffad, dmb_pbuffct, data);
+    dmb_p_active = TRUE;
+    dmb_pctrl &= ~DC_ERR;
     sim_activate (DMB_LP_UNIT, DMB_LP_UNIT->wait);
+    }
+if ((data & DC_ABORT) && dmb_p_active) {        /* abort */
+    sim_cancel (DMB_LP_UNIT);
+    dmb_lp_done (ER_ABORT);
+    }
+if (dmb_p_active)
+    dmb_pctrl |= DC_START;
 }
+
+/* ---------------------------------------------------------------------------
+   Synchronous line: registers only in this version (comes with P4)
+   --------------------------------------------------------------------------- */
 
 static void dmb_sync_init (void)
 {
