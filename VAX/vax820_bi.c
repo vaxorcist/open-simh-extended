@@ -82,6 +82,7 @@ static struct boot_dev boot_tab[] = {
     { "RQC", BOOT_UDA, 1 << 24 },
     { "RQD", BOOT_UDA, 1 << 24 },
     { "CS", BOOT_CS, 0 },
+    { "KDB", BOOT_BDA, 0 },                             /* KDB50: its BI node in R1 */
     { NULL }
     };
 
@@ -699,8 +700,14 @@ else if (*regptr != 0)
 for (i = 0; boot_tab[i].name != NULL; i++) {
     if (strcmp (dptr->name, boot_tab[i].name) == 0) {
         R[0] = boot_tab[i].code;
-        R[1] = TR_UBA;
-        R[2] = boot_tab[i].let | (ba & UBADDRMASK);
+        if (boot_tab[i].code == BOOT_BDA) {             /* BI disk adapter: */
+            R[1] = (int32) (ba & 0xF);                  /* its node; no */
+            R[2] = 0;                                   /* Unibus address */
+            }
+        else {
+            R[1] = TR_UBA;
+            R[2] = boot_tab[i].let | (ba & UBADDRMASK);
+            }
         R[3] = unitno;
         R[4] = 0;
         R[5] = r5v;
