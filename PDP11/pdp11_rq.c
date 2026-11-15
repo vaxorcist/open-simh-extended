@@ -4816,7 +4816,7 @@ for (u = 0; u < n; u++) {
         return sim_messagef (SCPE_ARG, "%s%s: an %s needs a KLESI controller (SET %s KLESI)\n",
                              prefix, sim_uname (uptr), drv_tab[dt].name, dptr->name);
     if (!sdi && rq_is_sdi_type (dt))
-        return sim_messagef (SCPE_ARG, "%s%s: an %s is an SDI drive: it needs a UDA50, UDA50A or KDA50 controller (SET %s KDA50)\n",
+        return sim_messagef (SCPE_ARG, "%s%s: an %s is an SDI drive: it needs a UDA50, UDA50A, KDA50 or KDB50 controller (SET %s KDA50)\n",
                              prefix, sim_uname (uptr), drv_tab[dt].name, dptr->name);
     if (!rx50c && (dt == RX50_DTYPE))
         return sim_messagef (SCPE_ARG, "%s%s: an RX50 needs an RQDX1, RQDX3, RQDX4 (Qbus) or RUX50 (Unibus) controller\n",
