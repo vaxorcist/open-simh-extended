@@ -68,7 +68,7 @@
 #define BICSR_M_IR      0xFF
 #define BICSR_V_IF      16                              /* interface type */
 #define BICSR_M_IF      0xFF
-#define BICSR_HES       0x00004000                      /* hard error summary */
+#define BICSR_HES       0x00008000                      /* hard error summary */
 #define BICSR_SES       0x00004000                      /* soft error summary */
 #define BICSR_INI       0x00002000                      /* initialise */
 #define BICSR_BRK       0x00001000                      /* broke - NI */
