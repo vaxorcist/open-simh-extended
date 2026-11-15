@@ -198,7 +198,10 @@ int32 tmr_iccs = 0;                                     /* interval timer csr */
 uint32 tmr_icr = 0;                                     /* curr interval */
 uint32 tmr_nicr = 0;                                    /* next interval */
 uint32 tmr_inc = 0;                                     /* timer increment */
-int32 tmr_int = 0;                                      /* interrupt */
+int32 tmr_int = 0;                                      /* interrupt, bit per processor */
+int32 tmr1_iccs = 0;                                    /* KA1's interval timer csr */
+uint32 tmr1_nicr = 0;                                   /* KA1's next interval */
+extern int32 cur_cpu;
 int32 clk_tps = 100;                                    /* ticks/second */
 int32 tmxr_poll = CLK_DELAY * TMXR_MULT;                /* term mux poll */
 int32 tmr_poll = CLK_DELAY;                             /* pgm timer poll */
@@ -395,7 +398,9 @@ REG tmr_reg[] = {
     { HRDATADF (ICCS,         tmr_iccs, 32, "interval timer control and status", tmr_iccs_bits) },
     { HRDATAD  (ICR,           tmr_icr, 32, "interval count register") },
     { HRDATAD  (NICR,         tmr_nicr, 32, "next interval count register") },
-    { FLDATAD  (INT,           tmr_int,  0, "interrupt request") },
+    { HRDATAD  (INT,           tmr_int,  2, "interrupt request (bit per processor)") },
+    { HRDATAD  (ICCS1,       tmr1_iccs, 32, "KA1's interval timer control and status") },
+    { HRDATAD  (NICR1,       tmr1_nicr, 32, "KA1's next interval count") },
     { DRDATAD  (TPS,           clk_tps,  8, "ticks per second"), REG_NZ + PV_LEFT },
     { HRDATA   (INCR,          tmr_inc, 32), REG_HIDDEN },
     { NULL }
@@ -689,12 +694,24 @@ return "console terminal output";
 
 int32 iccs_rd (void)
 {
+if (cur_cpu != 0)                                       /* attached processor */
+    return tmr1_iccs & TMR_CSR_RD;
 sim_debug_bits_hdr (TMR_DB_REG, &tmr_dev, "iccs_rd()", tmr_iccs_bits, tmr_iccs, tmr_iccs, TRUE);
 return tmr_iccs & TMR_CSR_RD;
 }
 
 void iccs_wr (int32 val)
 {
+if (cur_cpu != 0) {                                     /* attached processor: */
+    /* KA1's interval timer.  It ticks with the primary's calibrated
+       timer (tmr_svc); VMS programs both for the same 10 ms interval.
+       Single step and ICR are taken from the primary's timer. */
+    tmr1_iccs = tmr1_iccs & ~(val & TMR_CSR_W1C);       /* W1C csr */
+    tmr1_iccs = (tmr1_iccs & ~TMR_CSR_WR) | (val & TMR_CSR_WR);
+    if ((tmr1_iccs & (TMR_CSR_DON | TMR_CSR_IE)) != (TMR_CSR_DON | TMR_CSR_IE))
+        tmr_int = tmr_int & ~2;                         /* no int req */
+    return;
+    }
 sim_debug_bits_hdr (TMR_DB_REG, &tmr_dev, "iccs_wr()", tmr_iccs_bits, tmr_iccs, val, TRUE);
 if ((val & TMR_CSR_RUN) == 0) {                         /* clearing run? */
     if (tmr_iccs & TMR_CSR_RUN)                         /* run 1 -> 0? */
@@ -726,7 +743,7 @@ else {
             else
                 tmr_iccs = tmr_iccs | TMR_CSR_DON;      /* set done */
             if (tmr_iccs & TMR_CSR_IE) {                /* ie? */
-                tmr_int = 3;                            /* set int req */
+                tmr_int = tmr_int | 1;                  /* set int req */
                 sim_debug (TMR_DB_INT, &tmr_dev, "tmr_incr() - INT=1\n");
                 }
             tmr_icr = tmr_nicr;                         /* reload tir */
@@ -735,8 +752,8 @@ else {
     }
 if ((tmr_iccs & (TMR_CSR_DON | TMR_CSR_IE)) !=          /* update int */
     (TMR_CSR_DON | TMR_CSR_IE)) {
-    if (tmr_int) {
-        tmr_int = 0;
+    if (tmr_int & 1) {
+        tmr_int = tmr_int & ~1;
         sim_debug (TMR_DB_INT, &tmr_dev, "iccs_wr() - INT=0\n");
         }
     }
@@ -759,12 +776,18 @@ return result;
 
 int32 nicr_rd (void)
 {
+if (cur_cpu != 0)
+    return tmr1_nicr;
 sim_debug (TMR_DB_REG, &tmr_dev, "nicr_rd() = 0x%08X\n", tmr_nicr);
 return tmr_nicr;
 }
 
 void nicr_wr (int32 val)
 {
+if (cur_cpu != 0) {
+    tmr1_nicr = val;
+    return;
+    }
 sim_debug (TMR_DB_REG, &tmr_dev, "nicr_wr(0x%08X)\n", val);
 tmr_nicr = val;
 }
@@ -782,11 +805,19 @@ else
 if (tmr_iccs & TMR_CSR_RUN)                         /* run? */
     tmr_sched (tmr_nicr);                           /* reactivate */
 if (tmr_iccs & TMR_CSR_IE) {                        /* ie? set int req */
-    tmr_int = 1;
+    tmr_int = tmr_int | 1;
     sim_debug (TMR_DB_INT, &tmr_dev, "tmr_svc() - INT=1\n");
     }
 else
-    tmr_int = 0;
+    tmr_int = tmr_int & ~1;
+if (tmr1_iccs & TMR_CSR_RUN) {                          /* KA1's timer runs: */
+    if (tmr1_iccs & TMR_CSR_DON)                        /* it ticks with ours */
+        tmr1_iccs = tmr1_iccs | TMR_CSR_ERR;
+    else
+        tmr1_iccs = tmr1_iccs | TMR_CSR_DON;
+    if (tmr1_iccs & TMR_CSR_IE)
+        tmr_int = tmr_int | 2;
+    }
 AIO_SET_INTERRUPT_LATENCY(tmr_poll*clk_tps);            /* set interrrupt latency */
 return SCPE_OK;
 }
@@ -940,6 +971,8 @@ t_stat tmr_reset (DEVICE *dptr)
 tmr_iccs = 0;
 tmr_nicr = 0;
 tmr_int = 0;
+tmr1_iccs = 0;                                          /* KA1's timer too */
+tmr1_nicr = 0;
 sim_cancel (&tmr_unit);                                 /* cancel timer */
 return SCPE_OK;
 }

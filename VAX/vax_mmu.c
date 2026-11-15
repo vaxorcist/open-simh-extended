@@ -56,7 +56,14 @@
 int32 d_p0br, d_p0lr;                                   /* dynamic copies */
 int32 d_p1br, d_p1lr;                                   /* altered per ucode */
 int32 d_sbr, d_slr;
+#if defined (VAX_MP)
+/* One translation buffer per processor; stlb/ptlb point to the running
+   processor's (switched with its context, see cpu_mp_switch). */
+TLBENT cpu_stlb[KA_NUM][VA_TBSIZE], cpu_ptlb[KA_NUM][VA_TBSIZE];
+TLBENT *stlb = cpu_stlb[0], *ptlb = cpu_ptlb[0];
+#else
 TLBENT stlb[VA_TBSIZE], ptlb[VA_TBSIZE];
+#endif
 static const int32 cvtacc[16] = { 0, 0,
     TLB_ACCW (KERN)+TLB_ACCR (KERN),
     TLB_ACCR (KERN),
@@ -297,9 +304,16 @@ return SCPE_OK;
 t_stat tlb_reset (DEVICE *dptr)
 {
 size_t i;
+#if defined (VAX_MP)
+int32 c;
 
+for (c = 0; c < KA_NUM; c++)                            /* every processor's TB */
+    for (i = 0; i < VA_TBSIZE; i++)
+        cpu_stlb[c][i].tag = cpu_ptlb[c][i].tag = cpu_stlb[c][i].pte = cpu_ptlb[c][i].pte = -1;
+#else
 for (i = 0; i < VA_TBSIZE; i++)
     stlb[i].tag = ptlb[i].tag = stlb[i].pte = ptlb[i].pte = -1;
+#endif
 return SCPE_OK;
 }
 

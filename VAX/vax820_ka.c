@@ -68,8 +68,8 @@
 #define PCSR_W1C        (PCSR_EVLCK | PCSR_PER | PCSR_TIMEOUT)
 
 int32 rxcd_count = 0;
-char rxcd_ibuf[20];
-char rxcd_obuf[20];
+char rxcd_ibuf[64];                                     /* command line to a secondary */
+char rxcd_obuf[64];                                     /* its echo / prompt / halt message */
 int32 rxcd_iptr = 0;
 int32 rxcd_optr = 0;
 char rxcd_char = '\0';
@@ -93,6 +93,9 @@ t_stat ka_svc (UNIT *uptr);
 #if defined (VAX_MP)
 extern void cpu_setreg (int32 cpu, int32 rg, int32 val);
 extern void cpu_start (int32 cpu, uint32 addr);
+extern t_bool cpu_mp_stop (int32 cpu, int32 code);
+
+void rxcd_halt (int32 cpu, int32 code, int32 pc);
 #endif
 
 /* KAx data structures
@@ -129,6 +132,17 @@ REG ka1_reg[] = {
     { NULL }
     };
 
+/* Debug flags (on KA1: the second processor and its console traffic) */
+
+#define DBG_RXCD        0x0001                          /* RXCD characters */
+#define DBG_MP          0x0002                          /* start, halt, IPI */
+
+DEBTAB ka_deb[] = {
+    { "RXCD",   DBG_RXCD,   "console characters between the processors (RXCD)" },
+    { "MP",     DBG_MP,     "secondary processor start/halt and interprocessor interrupts" },
+    { NULL, 0 }
+    };
+
 DEVICE ka_dev[] = {
     {
     "KA0", &ka0_unit, ka0_reg, ka0_mod,
@@ -142,7 +156,7 @@ DEVICE ka_dev[] = {
     1, 16, 16, 1, 16, 8,
     NULL, NULL, &ka_reset,
     NULL, NULL, NULL,
-    &ka1_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS
+    &ka1_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS | DEV_DEBUG, 0, ka_deb
     }
     };
 
@@ -181,11 +195,40 @@ switch (ofs) {
         *val = 0;
         break;
 
+    case BI_IMSK:                                       /* IPINTR mask (VMS: */
+        *val = ka_biic[ka].imsk;                        /* the processors that may */
+        break;                                          /* interrupt this one) */
+
+    case BI_FIDEST:                                     /* force IPINTR destination */
+        *val = ka_biic[ka].fidest;
+        break;
+
+    case BI_ISRC:                                       /* IPINTR source */
+        *val = ka_biic[ka].isrc;
+        break;
+
     default:
         return SCPE_NXM;
         }
 
 return SCPE_OK;
+}
+
+/* Node private space 2008 0000 - 2008 00FF: the local KA820's own BIIC
+   registers (VMS's secondary start code writes its IPINTR mask there) */
+
+int32 ka_priv_rd (int32 pa)
+{
+int32 val = 0;
+
+if (ka_rdreg (&val, REGBASE + ((TR_KA0 + cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), L_LONG) != SCPE_OK)
+    val = 0;
+return val;
+}
+
+void ka_priv_wr (int32 pa, int32 val, int32 lnt)
+{
+ka_wrreg (val, REGBASE + ((TR_KA0 + cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), lnt);
 }
 
 /* KA write */
@@ -215,7 +258,16 @@ switch (ofs) {
         ka_biic[ka].idest = val & BIID_RW;
         break;
 
-    case BI_IMSK:
+    case BI_IMSK:                                       /* IPINTR mask */
+        ka_biic[ka].imsk = val;
+        break;
+
+    case BI_FIDEST:                                     /* force IPINTR destination */
+        ka_biic[ka].fidest = val;
+        break;
+
+    case BI_ISRC:                                       /* IPINTR source */
+        ka_biic[ka].isrc = val;
         break;
 
     default:
@@ -261,6 +313,8 @@ int32 val;
 
 if (rxcd_count) {                                       /* data available? */
     val = rxcd_obuf[rxcd_optr] | (1 << 8);
+    sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MFPR RXCD: %02X '%c' from node 1\n", cur_cpu, val & 0xFF,
+               isprint (val & 0xFF) ? (val & 0xFF) : '.');
     rxcd_optr++;
     rxcd_count--;
     if (rxcd_count)
@@ -283,6 +337,8 @@ int32 rval;
 t_stat r;
 char conv[10];
 
+sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MTPR RXCD: %02X '%c' to node %d\n", cur_cpu, ch,
+           isprint (ch) ? ch : '.', cpu);
 if (ka_rxcd[cpu] & 0x8000) {                            /* busy? */
     mxpr_cc_vc |= CC_V;                                 /* set overflow */
     return;
@@ -292,7 +348,7 @@ switch (ch) {
 
     case 0x0D:                                          /* CR */
         rxcd_ibuf[rxcd_iptr++] = '\0';                  /* terminator */
-        printf (">>> %s\n", &rxcd_ibuf[0]);
+        sim_debug (DBG_MP, &ka_dev[1], "KA%d console command: %s\n", cpu, &rxcd_ibuf[0]);
         if (rxcd_ibuf[0] == 'D') {                      /* DEPOSIT */
             conv[0] = rxcd_ibuf[4];
             conv[1] = '\0';
@@ -322,6 +378,12 @@ switch (ch) {
         break;
 
     case 0x10:                                          /* CTRL-P */
+#if defined (VAX_MP)
+        if (cpu_mp_stop (cpu, 0x0200)) {                /* halts a running one: */
+            rxcd_iptr = 0;                              /* (the halt message is */
+            break;                                      /* the answer) */
+            }
+#endif
         rxcd_count = 3;                                 /* ready for next cmd */
         sprintf (&rxcd_obuf[0], ">>>");
         rxcd_optr = 0;
@@ -331,7 +393,8 @@ switch (ch) {
         rxcd_count = 1;
         rxcd_obuf[0] = ch;                              /* echo characters back */
         rxcd_optr = 0;
-        rxcd_ibuf[rxcd_iptr++] = ch;                    /* store incoming charactes */
+        if (rxcd_iptr < (int32)(sizeof (rxcd_ibuf) - 1))
+            rxcd_ibuf[rxcd_iptr++] = ch;                /* store incoming charactes */
         break;
         }
 if (rxcd_count) {
@@ -359,4 +422,21 @@ if (val & PCSR_CONCLR)
     rxcd_int = 0;
 if (val & PCSR_IPCLR)
     ipir &= ~(1u << cur_cpu);
-}
+}
+
+#if defined (VAX_MP)
+/* A secondary halted (HALT instruction, CTRL/P from the primary, error
+   halt): like the KA820 console microcode it sends its halt code, PC and
+   prompt to the primary's RXCD register ("?06", "  PC = xxxxxxxx", ">>>",
+   Owner's/Technical Manual).  The primary reads them with MFPR RXCD. */
+
+void rxcd_halt (int32 cpu, int32 code, int32 pc)
+{
+sprintf (rxcd_obuf, "\r\n?%02X\r\n  PC = %08X\r\n>>> ", (code >> 8) & 0xFF, pc);
+rxcd_count = (int32) strlen (rxcd_obuf);
+rxcd_optr = 0;
+rxcd_iptr = 0;
+sim_debug (DBG_MP, &ka_dev[1], "KA%d halted, code %02X, PC %08X\n", cpu, (code >> 8) & 0xFF, pc);
+sim_activate (&ka0_unit, 20);
+}
+#endif

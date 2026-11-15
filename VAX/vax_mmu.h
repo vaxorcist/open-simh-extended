@@ -62,7 +62,12 @@ extern DEVICE cpu_dev;
 extern int32 mapen;                                     /* map enable */
 
 extern int32 mchk_va, mchk_ref;                         /* for mcheck */
+#if defined (VAX_MP)
+extern TLBENT *stlb, *ptlb;                             /* the running CPU's TLB */
+extern TLBENT cpu_stlb[KA_NUM][VA_TBSIZE], cpu_ptlb[KA_NUM][VA_TBSIZE];
+#else
 extern TLBENT stlb[VA_TBSIZE], ptlb[VA_TBSIZE];
+#endif
 
 static const int32 insert[4] = {
     0x00000000, 0x000000FF, 0x0000FFFF, 0x00FFFFFF

@@ -315,6 +315,144 @@ const uint32 align[4] = {
  0xFFFFFFFF, 0x00FFFFFF, 0x0000FFFF, 0x000000FF
  };
 
+#if defined (VAX_MP)
+/* Multiprocessor support (VAX 8300: two KA820 on the VAXBI).
+
+   The CPU core keeps the state of the running processor in the usual
+   globals (R[], PSL, the IPR copies, ...), which the whole core uses.
+   The state of every other processor is kept in cpu_ctx[].  The
+   processors take turns on the host thread: after cpu_mp_quantum
+   instructions sim_instr switches to the next running processor with
+   cpu_mp_switch, always at an instruction boundary (so interlocked
+   instructions are atomic).  Outside sim_instr the globals always hold
+   processor 0 (EXAMINE, DEPOSIT, SAVE work on the primary as before).
+
+   cur_cpu (vax820_ka.c) is the number of the running processor. */
+
+typedef struct {
+    int32       R[16];                                  /* general registers */
+    int32       STK[5];                                 /* stack pointers */
+    int32       PSL;                                    /* PSL, with the cc's */
+    int32       SCBB, PCBB;
+    int32       P0BR, P0LR, P1BR, P1LR, SBR, SLR;
+    int32       SISR, ASTLVL, mapen, pme;
+    int32       trpirq, hlt_pin, mem_err, crd_err;
+    int32       p1, p2, mxpr_cc_vc, badabo;
+    int32       mchk_va, mchk_ref;
+    } CPU_CTX;
+
+int32 cur_cpu = 0;                                      /* running processor */
+CPU_CTX cpu_ctx[KA_NUM];                                /* parked processors */
+t_bool cpu_mp_run[KA_NUM] = { TRUE };                   /* processor executes */
+int32 cpu_mp_quantum = 100;                             /* instructions per turn */
+int32 cpu_mp_qleft = 100;                               /* left in this turn */
+int32 cpu_mp_test = 0;                                  /* switch even to self */
+
+/* Park the running processor's state, load processor 'to'.  The caller
+   splits/merges the condition codes and re-evaluates the derived state
+   (map registers, access mode, interrupts, prefetch). */
+
+void cpu_mp_switch (int32 to)
+{
+CPU_CTX *c = &cpu_ctx[cur_cpu];
+
+memcpy (c->R, R, sizeof (c->R));
+memcpy (c->STK, STK, sizeof (c->STK));
+c->PSL = PSL;
+c->SCBB = SCBB; c->PCBB = PCBB;
+c->P0BR = P0BR; c->P0LR = P0LR; c->P1BR = P1BR; c->P1LR = P1LR;
+c->SBR = SBR; c->SLR = SLR;
+c->SISR = SISR; c->ASTLVL = ASTLVL; c->mapen = mapen; c->pme = pme;
+c->trpirq = trpirq; c->hlt_pin = hlt_pin; c->mem_err = mem_err; c->crd_err = crd_err;
+c->p1 = p1; c->p2 = p2; c->mxpr_cc_vc = mxpr_cc_vc; c->badabo = badabo;
+c->mchk_va = mchk_va; c->mchk_ref = mchk_ref;
+c = &cpu_ctx[to];
+memcpy (R, c->R, sizeof (c->R));
+memcpy (STK, c->STK, sizeof (c->STK));
+PSL = c->PSL;
+SCBB = c->SCBB; PCBB = c->PCBB;
+P0BR = c->P0BR; P0LR = c->P0LR; P1BR = c->P1BR; P1LR = c->P1LR;
+SBR = c->SBR; SLR = c->SLR;
+SISR = c->SISR; ASTLVL = c->ASTLVL; mapen = c->mapen; pme = c->pme;
+trpirq = c->trpirq; hlt_pin = c->hlt_pin; mem_err = c->mem_err; crd_err = c->crd_err;
+p1 = c->p1; p2 = c->p2; mxpr_cc_vc = c->mxpr_cc_vc; badabo = c->badabo;
+mchk_va = c->mchk_va; mchk_ref = c->mchk_ref;
+cur_cpu = to;
+stlb = cpu_stlb[to];                                    /* its translation buffer */
+ptlb = cpu_ptlb[to];
+}
+
+/* The processor to run next: the next one after cur_cpu that runs */
+
+static int32 cpu_mp_next (void)
+{
+int32 i, n;
+
+for (i = 1; i <= KA_NUM; i++) {
+    n = (cur_cpu + i) % KA_NUM;
+    if (cpu_mp_run[n])
+        return n;
+    }
+return cur_cpu;
+}
+
+/* Console commands of a parked processor (from the RXCD console of the
+   primary, vax820_ka.c): deposit a general register, start */
+
+void cpu_setreg (int32 cpu, int32 rg, int32 val)
+{
+if ((cpu <= 0) || (cpu >= KA_NUM) || cpu_mp_run[cpu])   /* only a halted secondary */
+    return;
+cpu_ctx[cpu].R[rg & 0xF] = val;
+}
+
+void cpu_start (int32 cpu, uint32 addr)
+{
+if ((cpu <= 0) || (cpu >= KA_NUM) || cpu_mp_run[cpu])
+    return;
+cpu_ctx[cpu].R[nPC] = (int32) addr;
+cpu_ctx[cpu].PSL = PSL_IS | PSL_IPL1F;                  /* kernel, IS, IPL 31 */
+cpu_ctx[cpu].mapen = 0;                                 /* memory management off */
+cpu_mp_run[cpu] = TRUE;
+}
+
+/* Halt a secondary (console mode).  For the running one the switch to
+   the next processor follows at the next instruction boundary.  Returns
+   FALSE if it was not running. */
+
+extern void rxcd_halt (int32 cpu, int32 code, int32 pc);
+
+t_bool cpu_mp_stop (int32 cpu, int32 code)
+{
+int32 pc;
+
+if ((cpu <= 0) || (cpu >= KA_NUM) || !cpu_mp_run[cpu])
+    return FALSE;
+cpu_mp_run[cpu] = FALSE;
+if (cpu == cur_cpu) {                                   /* the running one */
+    pc = PC;
+    R[nAP] = (code >> 8) & 0xFF;                        /* halt code in AP */
+    cpu_mp_qleft = 0;                                   /* switch away now */
+    }
+else {
+    pc = cpu_ctx[cpu].R[nPC];
+    cpu_ctx[cpu].R[nAP] = (code >> 8) & 0xFF;
+    }
+rxcd_halt (cpu, code, pc);
+return TRUE;
+}
+
+/* Reset a parked processor to its power-up state (halted, console mode) */
+
+static void cpu_mp_reset_ctx (int32 n)
+{
+memset (&cpu_ctx[n], 0, sizeof (cpu_ctx[n]));
+cpu_ctx[n].PSL = PSL_IS | PSL_IPL1F;
+cpu_ctx[n].ASTLVL = 4;
+cpu_mp_run[n] = (n == 0);
+}
+#endif
+
 /* External and forward references */
 
 extern int32 sys_model;
@@ -429,6 +567,10 @@ REG cpu_reg[] = {
     { HRDATA (BADABO, badabo, 32), REG_HRO },
     { HRDATAD (WRU, sim_int_char, 8, "interrupt character") },
     { HRDATA (MODEL, sys_model, 32), REG_HRO },
+#if defined (VAX_MP)
+    { DRDATAD (QUANTUM, cpu_mp_quantum, 16, "multiprocessor: instructions per turn") },
+    { DRDATA (MPTEST, cpu_mp_test, 1), REG_HIDDEN },
+#endif
     { NULL }
     };
 
@@ -525,6 +667,14 @@ FLUSH_ISTR;                                             /* clear prefetch */
 abortval = setjmp (save_env);                           /* set abort hdlr */
 if (abortval > 0) {                                     /* sim stop? */
     PSL = PSL | cc;                                     /* put PSL together */
+#if defined (VAX_MP)
+    if (cur_cpu != 0) {                                 /* SCP sees processor 0 */
+        sim_printf ("\r\n%%SIM-INFO: stopped while KA%d was running: its PC=%08X, PSL=%08X\r\n",
+                    cur_cpu, PC, PSL);                  /* (SCP shows the primary) */
+        cpu_mp_switch (0);
+        set_map_reg ();
+        }
+#endif
     pcq_r->qptr = pcq_p;                                /* update pc q ptr */
     if (hst_log) {                                      /* auto logging history? */
         cpu_show_hist_records (hst_log, FALSE, hst_log_p, (hst_p < hst_log_p) ? hst_lnt - (hst_log_p - hst_p) : hst_p - hst_log_p);
@@ -668,6 +818,25 @@ for ( ;; ) {
         SET_IRQL;                                       /* update interrupts */
         }
 
+#if defined (VAX_MP)
+    if (--cpu_mp_qleft <= 0) {                          /* end of this turn? */
+        int32 nxt = cpu_mp_next ();
+
+        cpu_mp_qleft = cpu_mp_quantum;
+        if ((nxt != cur_cpu) || cpu_mp_test) {          /* switch processors */
+            PSL = PSL | cc;                             /* put PSL together */
+            cpu_mp_switch (nxt);
+            cc = PSL & CC_MASK;                         /* split the new one */
+            PSL = PSL & ~CC_MASK;
+            set_map_reg ();                             /* its map registers */
+            GET_CUR;                                    /* its access mode */
+            FLUSH_ISTR;                                 /* its instruction stream */
+            SET_IRQL;                                   /* its interrupts */
+            fault_PC = PC;                              /* its fault PC (set above for */
+            }                                           /* the previous processor) */
+        }
+#endif
+
 /* Test for non-instruction dispatches, in SRM order
 
         - trap or interrupt (trpirq != 0)
@@ -731,6 +900,9 @@ for ( ;; ) {
         ABORT (STOP_IBKPT);                             /* stop simulation */
         }
 
+#if defined (VAX_MP)
+    if (cur_cpu == 0)                                   /* simulated time runs with */
+#endif                                                  /* the primary's instructions */
     sim_interval = sim_interval - (1 + (extra_bytes>>cpu_str_shift));/* count instr */
     extra_bytes = 0;                                    /* digest string count */
     GET_ISTR (opc, L_BYTE);                             /* get opcode */
@@ -2644,6 +2816,12 @@ for ( ;; ) {
     case HALT:
         if (PSL & PSL_CUR)                              /* not kern? rsvd inst */
             RSVD_INST_FAULT(HALT);
+#if defined (VAX_MP)
+        else if (cur_cpu != 0) {                        /* attached processor: */
+            cpu_mp_stop (cur_cpu, CON_HLTINS);          /* only it halts */
+            break;
+            }
+#endif
         else {
             /* allow potentially pending I/O (console output, 
                or other devices) to complete before taking
@@ -3305,6 +3483,13 @@ return 0;                                               /* set new cc's */
 
 void cpu_idle (void)
 {
+#if defined (VAX_MP)
+int32 n;
+
+for (n = 1; n < KA_NUM; n++)                            /* a secondary runs: */
+    if (cpu_mp_run[n])                                  /* no host idling */
+        return;
+#endif
 sim_idle (TMR_CLK, TRUE);
 }
 
@@ -3335,6 +3520,15 @@ SISR = 0;
 ASTLVL = 4;
 mapen = 0;
 FLUSH_ISTR;                             /* init I-stream */
+#if defined (VAX_MP)
+if (1) {
+    int32 n;
+
+    for (n = 1; n < KA_NUM; n++)                        /* secondaries: halted */
+        cpu_mp_reset_ctx (n);
+    cpu_mp_qleft = cpu_mp_quantum;
+    }
+#endif
 if (M == NULL) {                        /* first time init? */
     vax_init();
     sim_brk_types = sim_brk_dflt = SWMASK ('E');
