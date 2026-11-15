@@ -97,7 +97,7 @@ extern void cpu_setreg (int32 cpu, int32 rg, int32 val);
 extern void cpu_start (int32 cpu, uint32 addr);
 extern t_bool cpu_mp_stop (int32 cpu, int32 code);
 
-void rxcd_halt (int32 cpu, int32 code, int32 pc);
+void rxcd_halt (int32 cpu, int32 code, int32 pc);
 #endif
 
 /* KAx data structures
@@ -519,9 +519,9 @@ if (val & PCSR_CONCLR)
     rxcd_int = 0;
 if (val & PCSR_IPCLR)
     ipir &= ~(1u << cur_cpu);
-}
-
-#if defined (VAX_MP)
+}
+
+#if defined (VAX_MP)
 /* A secondary halted (HALT instruction, CTRL/P from the primary, error
    halt): like the KA820 console microcode it sends its halt code, PC and
    prompt to the primary's RXCD register ("?06", "  PC = xxxxxxxx", ">>>",
@@ -535,5 +535,5 @@ rxcd_optr = 0;
 rxcd_iptr = 0;
 sim_debug (DBG_MP, &ka_dev[1], "KA%d halted, code %02X, PC %08X\n", cpu, (code >> 8) & 0xFF, pc);
 sim_activate (&ka0_unit, 20);
-}
-#endif
+}
+#endif
