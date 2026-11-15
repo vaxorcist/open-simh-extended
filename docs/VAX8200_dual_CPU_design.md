@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/VAX8200_dual_CPU_design.md  v1, 2026-11-14 (v1: first design plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/VAX8200_dual_CPU_design.md  v2, 2026-11-15 (v2: implemented, results, KA820 manual findings; v1: first design plan for Ulli's decision) -->
 # VAX 8200/8300: a running second KA820 (design plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-14. Status: **plan, waiting for Ulli's decisions** (section 9). Background: known issues case 65.
+Prepared with Claude for Ulli (vaxorcist), 2026-11-14. Status: **implemented 2026-11-15** (patch 7, branch `vax8300-mp`); Ulli accepted all proposals of section 9. Results in section 10. Background: known issues case 65.
 
 ## 1. Goal
 
@@ -140,3 +140,66 @@ The CPU core keeps its state in globals, used everywhere for speed. Instead of r
 - NetBSD `sys/arch/vax/vax/ka820.c` (`ka820_startslave`, `ka820_txrx`, IPI vector 0x80).
 - Sergey Oboguev, VAX MP (oboguev.net/vax_mp): multiprocessor SIMH VAX with host threads, MicroVAX 3900 based.
 - VAX 8200/8300 Owner's Manual AZ-GN4AC-TE (Sep 1986), chapter 5 "Multiprocessing with the VAX 8300".
+
+## 10. Implementation and results (2026-11-15)
+
+### What VMS V4.7 does (traced)
+
+- **Enabling:** `DEFINE/SYSTEM/EXEC MP MP8SS` (Ulli), and `SYS$SYSTEM:MP8SS.EXE` must exist (on Ulli's kit it was `MP_8SS.EXE`: copy it). Without the logical name `SHOW CPU` and `START/CPU` give `%SYSTEM-F-DEVOFFLINE`.
+- **START/CPU:** the primary sends to KA1's RXCD: CTRL/P, `I`, `D/G E 00000200` (SP), `D/G C 6` (AP), `S 00000100`.
+  - At physical 100 VMS has `JMP @FC`; FC holds the start of the attached processor's code.
+  - That code:
+    - writes `F03` to its own TXDB;
+    - sets bit 16+node in the primary's BIIC IPINTR mask (BBSSI on 2000 0014) and writes its own mask through node private space (2008 0014);
+    - takes the restart parameter block at SP − 200 (physical 0), loads SBR (RPB+AC), SLR (RPB+B8), SCBB, P0BR/P0LR, turns on memory management and jumps into system space.
+  - `SHOW CPU`: `Attached processor is in the IDLE state`; under load `EXECUTE`.
+- **STOP/CPU:** the attached processor executes HALT (halt code 06). VMS restarts it at once with the same command sequence into a park loop: `JMP @FC` with FC = 100, a jump to itself at IPL 31. The next `START/CPU` points FC at the start code again. While stopped, VMS V4.7 answers `SHOW CPU` with DEVOFFLINE.
+
+### KA820 Technical Manual (EK-KA820-TM-003) facts used
+
+- RXCD: bit 15 busy, bits 11:8 sender node, 7:0 data. MTPR RXCD writes the remote register (V set if busy); MFPR RXCD reads the local one (V set if empty).
+- An attached processor halts into console mode and sends "?nn", "PC = xxxxxxxx" and ">>>" to the logical console (the primary's RXCD); halt codes ?02 console halt, ?06 HALT instruction.
+- IPIR (IPR 16): write a node mask to send an inter-processor interrupt. PCSR bit 3 IP INTR, bit 4 clears it; delivered at IPL 14.
+- Every KA820 has its own interval clock (ICCS/NICR/ICR). RSTRT HLT (PCSR bit 31) is 1 on attached processors (halt, never auto-restart).
+
+### Implementation
+
+- `VAX/vax_defs.h`: `VAX_MP` for the 8200 (before the idle-loop macro); a secondary's jump to itself is no infinite-loop stop and no idle.
+- `VAX/vax_cpu.c` (all under `VAX_MP`):
+  - `CPU_CTX cpu_ctx[]` and `cpu_mp_switch` (registers, PSL, the IPR copies, the TLB pointers);
+  - the turn at the top of the instruction loop (register CPU QUANTUM, default 100), with `fault_PC` set for the processor switched to;
+  - the primary's instructions alone count simulated time;
+  - `cpu_setreg`/`cpu_start`/`cpu_mp_stop`;
+  - HALT on a secondary halts only it;
+  - no host idle while a secondary runs;
+  - SCP always gets processor 0 back; a stop during the secondary's turn prints its PC;
+  - hidden register MPTEST (switch even to itself, for testing).
+- `VAX/vax_mmu.c`, `vax_mmu.h`: one translation buffer per processor, `stlb`/`ptlb` point to the running one's.
+- `VAX/vax820_defs.h`: `CPU_CTX`.
+- `VAX/vax820_ka.c`:
+  - RXCD commands act on the secondary; halt message to the primary;
+  - BIIC IPINTR mask, destination and source registers; node private space 2008 0000-00FF maps the local BIIC;
+  - KA1 registers (EXAMINE KA1 PC ...), SHOW KA1 STATE, HELP KA1, SET KA1 DEBUG=RXCD;MP;
+  - the RXCD command echo `>>> ...` on the simulator console became debug output.
+- `VAX/vax820_bi.c`: a secondary only gets its own clock, IPI, console output and software interrupts (device, RXCD, floppy and terminal interrupts go to the primary); console output interrupt cleared per processor; console halt on a secondary never reboots; node private BIIC range.
+- `VAX/vax820_stddev.c`: KA1's own ICCS/NICR (registers ICCS1, NICR1), ticking with the primary's calibrated timer; timer interrupt bit per processor.
+
+### Tests (`tests/vax8300/`, Ulli's VMS V4.7 image with the multiprocessing key)
+
+| Test | Result |
+|---|---|
+| mp3 (normal mode): START/CPU, SHOW CPU, STOP/CPU, SHOW CPU, START/CPU, SHOW CPU (twice) | IDLE; DEVOFFLINE while stopped; IDLE again |
+| mp2 (realism mode, THROTTLE 400K): a CPU-bound loop (4,000,000 SOBGTR) | 10.6 s without, 10.8 s with the attached processor |
+| mp2: two loops at once (one in a subprocess) | 12.1 s and 13.1 s (one after the other: about 21 s); SHOW CPU: EXECUTE |
+| 8200 diagnostics, normal and with a switch after every instruction (MPTEST, QUANTUM 1) | passed |
+| VMS V4.7 boot with a switch every 3 instructions (no KA1) | boots, works |
+| SHOW CPU: model VAX 8200, with KA1 VAX 8300, with MODEL=8250 VAX 8350 | ok |
+| VAX 780, 750, 730, 8600 diagnostics, MicroVAX 3900 core test; all VAX simulators and pdp11 built | passed, no warnings |
+
+Normal mode (no throttle): both processors share one host thread, so two CPU-bound jobs take as long as one after the other. Only with a throttle (e.g. the realism mode) does the second processor add throughput.
+
+### Not done / open
+
+- KA1's interval timer ticks with the primary's (VMS uses 10 ms on both); single step and ICR reads come from the primary's timer.
+- No breakpoint per processor; the CPU history does not mark the processor.
+- Model name (decision 5): with KA1 enabled SHOW CPU says VAX 8300 (VAX 8350 with SET CPU MODEL=8250); the start-up banner is printed before the configuration and still says VAX 8200.

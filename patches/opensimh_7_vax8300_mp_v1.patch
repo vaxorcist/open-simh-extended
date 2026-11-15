@@ -1,0 +1,930 @@
+From aff069f294d004e5be0dafb86de513593c4d2db1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 11:09:47 +0100
+Subject: [PATCH] VAX8300: the second KA820 runs (VAX 8300/8350
+ multiprocessing)
+
+SET KA1 ENABLE adds a second KA820 at VAXBI node 1 that executes: VAX/VMS
+V4.4+ with the VMS/8300 multiprocessing key starts it with START/CPU
+(attached processor, asymmetric multiprocessing).  Before, KA1 was only a
+BI node; the RXCD start commands were stubs (#if VAX_MP, never defined),
+so START/CPU ended with %SYSTEM-F-DEVOFFLINE (known issues 65).
+
+CPU core (vax_cpu.c, vax_mmu.c/h, vax_defs.h; only with VAX_MP, which
+only the 8200 defines; every other VAX simulator compiles as before):
+- one context per processor (CPU_CTX: registers, PSL, the IPR copies),
+  switched every CPU QUANTUM instructions (default 100) at an instruction
+  boundary, so interlocked instructions stay atomic; one translation
+  buffer per processor;
+- simulated time runs with the primary's instructions only: in guest
+  time both processors run at full speed (with THROTTLE 400K each);
+- a secondary's HALT, CTRL/P or error halt stops only it (halt message
+  ?nn / PC / >>> to the primary's RXCD); its jump to itself at IPL 31
+  (VMS's park loop after STOP/CPU) is no infinite-loop stop; no host idle
+  while a secondary runs;
+- outside of execution the globals hold processor 0 (EXAMINE, DEPOSIT,
+  SAVE); a stop during the secondary's turn prints its PC.
+
+KA820 (vax820_ka.c, vax820_bi.c, vax820_stddev.c, vax820_defs.h):
+- RXCD console commands I, D/G, S act on the secondary;
+- BIIC IPINTR mask/destination/source registers; node private space
+  2008 0000 maps the local BIIC (VMS's start code uses both);
+- a secondary takes only its own clock, IPI, console output and
+  software interrupts; device, RXCD, floppy and terminal interrupts go
+  to the primary; KA1 has its own ICCS/NICR (ticking with the primary's
+  calibrated timer);
+- KA1 registers (EXAMINE KA1 PC, PSL, R0 ...), SHOW KA1 STATE, HELP KA1,
+  SET KA1 DEBUG=RXCD;MP; SHOW CPU model VAX 8300 (8350) with KA1.
+
+Tested with VMS V4.7 (DEFINE/SYSTEM/EXEC MP MP8SS): START/CPU, SHOW CPU
+IDLE / EXECUTE, STOP/CPU, START/CPU again; two CPU-bound jobs at THROTTLE
+400K in 12-13 s instead of 21 s; 8200 diagnostics (also with a switch
+after every instruction), console RX50 and standalone BACKUP boot on the
+single processor; diagnostics of the 780, 750, 730, 8600, 3900.
+
+Applies after patches 1, 2, 3, 4, 6 and 5.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
+---
+ VAX/vax820_bi.c     |  28 ++++++-
+ VAX/vax820_defs.h   |  21 +++++
+ VAX/vax820_ka.c     | 189 ++++++++++++++++++++++++++++++++++++++++++--
+ VAX/vax820_stddev.c |  47 +++++++++--
+ VAX/vax_cpu.c       | 184 ++++++++++++++++++++++++++++++++++++++++++
+ VAX/vax_defs.h      |  16 ++++
+ VAX/vax_mmu.c       |  14 ++++
+ VAX/vax_mmu.h       |   5 ++
+ 8 files changed, 488 insertions(+), 16 deletions(-)
+
+diff --git a/VAX/vax820_bi.c b/VAX/vax820_bi.c
+index da84a760..9217382d 100644
+--- a/VAX/vax820_bi.c
++++ b/VAX/vax820_bi.c
+@@ -187,8 +187,15 @@ if (hlt_pin)                                            /* hlt pin int */
+     return IPL_HLTPIN;
+ if ((ipl < IPL_CRDERR) && crd_err)                      /* crd err int */
+     return IPL_CRDERR;
+-if ((ipl < IPL_CLKINT) && tmr_int)                      /* clock int */
++if ((ipl < IPL_CLKINT) && (tmr_int & cpu_msk))          /* its clock int */
+     return IPL_CLKINT;
++if (cur_cpu != 0) {                                     /* attached processor: */
++    if ((ipl < IPL_IPRINT) && (ipir & cpu_msk))         /* only its IPI, its */
++        return IPL_IPRINT;                              /* console output and */
++    if ((ipl < IPL_TTINT) && (tto_int & cpu_msk))       /* software interrupts; */
++        return IPL_TTINT;                               /* device, RXCD, floppy */
++    goto swint;                                         /* and terminal interrupts */
++    }                                                   /* go to the primary */
+ uba_eval_int ();                                        /* update UBA */
+ for (i = IPL_HMAX; i >= IPL_HMIN; i--) {                /* chk hwre int */
+     if (i <= ipl)                                       /* at ipl? no int */
+@@ -206,6 +213,7 @@ if ((ipl < IPL_TTINT) && (tti_int && (cur_cpu == 0)))   /* console int */
+     return IPL_TTINT;
+ if ((ipl < IPL_TTINT) && (tto_int & cpu_msk))           /* console int */
+     return IPL_TTINT;
++swint:
+ if (ipl >= IPL_SMAX)                                    /* ipl >= sw max? */
+     return 0;
+ if ((t = SISR & sw_int_mask[ipl]) == 0)
+@@ -275,7 +283,7 @@ if (lvl == IPL_TTINT) {                                 /* console? */
+         return SCB_TTI;                                 /* return vector */
+         }
+     if (tto_int & cpu_msk) {                            /* output? */
+-        tto_int = 0;                                    /* clear req */
++        tto_int = tto_int & ~cpu_msk;                   /* clear its req */
+         return SCB_TTO;                                 /* return vector */
+         }
+     }
+@@ -490,8 +498,12 @@ struct reglink {                                        /* register linkage */
+     void        (*write)(int32 pa, int32 val, int32 lnt); /* write routine */
+     };
+ 
++extern int32 ka_priv_rd (int32 pa);
++extern void ka_priv_wr (int32 pa, int32 val, int32 lnt);
++
+ struct reglink regtable[] = {
+     { WATCHBASE, WATCHBASE+WATCHSIZE, &wtc_rd_pa, &wtc_wr_pa },
++    { 0x20080000, 0x20080100, &ka_priv_rd, &ka_priv_wr },  /* local BIIC */
+     { 0x20088000, 0x20088004, &pcsr_rd, &pcsr_wr },
+     { 0x200B0000, 0x200B0020, &fl_rd, &fl_wr },
+     { 0, 0, NULL, NULL }
+@@ -600,6 +612,13 @@ return cc;
+ 
+ int32 con_halt (int32 code, int32 cc)
+ {
++#if defined (VAX_MP)
++if (cur_cpu != 0) {                                     /* attached processor: */
++    extern t_bool cpu_mp_stop (int32 cpu, int32 code);  /* only it halts (console */
++    cpu_mp_stop (cur_cpu, code);                        /* mode); never a reboot */
++    return cc;
++    }
++#endif
+ if ((cpu_boot_cmd[0] == 0) ||                           /* saved boot cmd? */
+     (vax820_boot_parse (0, cpu_boot_cmd) != SCPE_OK) || /* reparse the boot cmd */ 
+     (reset_all (0) != SCPE_OK) ||                       /* reset the world */
+@@ -814,7 +833,10 @@ return SCPE_OK;
+ 
+ t_stat cpu_print_model (FILE *st)
+ {
+-fprintf (st, "VAX %s", (sys_model ? "8250" : "8200"));
++extern DEVICE ka_dev[];
++t_bool dual = ((ka_dev[1].flags & DEV_DIS) == 0);       /* KA1 enabled: 8300/8350 */
++
++fprintf (st, "VAX %s", (sys_model ? (dual ? "8350" : "8250") : (dual ? "8300" : "8200")));
+ return SCPE_OK;
+ }
+ 
+diff --git a/VAX/vax820_defs.h b/VAX/vax820_defs.h
+index f6d57693..f99bf2a4 100644
+--- a/VAX/vax820_defs.h
++++ b/VAX/vax820_defs.h
+@@ -80,6 +80,10 @@
+ 
+ #define NEXUS_NUM       16                              /* number of nexus */
+ #define KA_NUM          2                               /* number of CPU's */
++#ifndef VAX_MP
++#define VAX_MP          1                               /* CPU core keeps one context
++                                                           per KA820 (VAX 8300) */
++#endif
+ #define MCTL_NUM        2                               /* number of mem ctrl */
+ #define MBA_NUM         2                               /* number of MBA's */
+ #define TR_KA0          0                               /* nexus assignments */
+@@ -472,6 +476,23 @@ t_stat show_nexus (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ #define WriteIOU(p,v,l)     WriteIO (p, v, l)
+ #define WriteRegU(p,v,l)    WriteReg (p, v, l)
+ 
++#if defined (VAX_MP)
++/* The state of a processor that is not running (vax_cpu.c, cpu_mp_switch);
++   the KA1 device shows the secondary's (vax820_ka.c) */
++
++typedef struct {
++    int32       R[16];                                  /* general registers */
++    int32       STK[5];                                 /* stack pointers */
++    int32       PSL;                                    /* PSL, with the cc's */
++    int32       SCBB, PCBB;
++    int32       P0BR, P0LR, P1BR, P1LR, SBR, SLR;
++    int32       SISR, ASTLVL, mapen, pme;
++    int32       trpirq, hlt_pin, mem_err, crd_err;
++    int32       p1, p2, mxpr_cc_vc, badabo;
++    int32       mchk_va, mchk_ref;
++    } CPU_CTX;
++#endif
++
+ #include "pdp11_io_lib.h"
+ #include "vax_bi.h"
+ 
+diff --git a/VAX/vax820_ka.c b/VAX/vax820_ka.c
+index b03a1dd3..6d84b905 100644
+--- a/VAX/vax820_ka.c
++++ b/VAX/vax820_ka.c
+@@ -68,8 +68,8 @@
+ #define PCSR_W1C        (PCSR_EVLCK | PCSR_PER | PCSR_TIMEOUT)
+ 
+ int32 rxcd_count = 0;
+-char rxcd_ibuf[20];
+-char rxcd_obuf[20];
++char rxcd_ibuf[64];                                     /* command line to a secondary */
++char rxcd_obuf[64];                                     /* its echo / prompt / halt message */
+ int32 rxcd_iptr = 0;
+ int32 rxcd_optr = 0;
+ char rxcd_char = '\0';
+@@ -89,10 +89,15 @@ t_stat ka_reset (DEVICE *dptr);
+ t_stat ka_rdreg (int32 *val, int32 pa, int32 mode);
+ t_stat ka_wrreg (int32 val, int32 pa, int32 mode);
+ t_stat ka_svc (UNIT *uptr);
++t_stat ka1_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
++const char *ka1_description (DEVICE *dptr);
+ 
+ #if defined (VAX_MP)
+ extern void cpu_setreg (int32 cpu, int32 rg, int32 val);
+ extern void cpu_start (int32 cpu, uint32 addr);
++extern t_bool cpu_mp_stop (int32 cpu, int32 code);
++
++void rxcd_halt (int32 cpu, int32 code, int32 pc);
+ #endif
+ 
+ /* KAx data structures
+@@ -120,15 +125,120 @@ DIB ka1_dib[] = { { TR_KA1, 0, &ka_rdreg, &ka_wrreg, 0 } };
+ 
+ UNIT ka1_unit = { UDATA (&ka_svc, 0, 0) };
+ 
++#if defined (VAX_MP)
++t_stat ka_show_state (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++#endif
++
+ MTAB ka1_mod[] = {
+     { MTAB_XTD|MTAB_VDV, TR_KA1, "NEXUS", NULL,
+       NULL, &show_nexus },
++#if defined (VAX_MP)
++    { MTAB_XTD|MTAB_VDV, 0, "STATE", NULL,
++      NULL, &ka_show_state, NULL, "Display the attached processor's state" },
++#endif
+     { 0 }  };
+ 
++#if defined (VAX_MP)
++extern CPU_CTX cpu_ctx[];                               /* parked processors (vax_cpu.c) */
++extern t_bool cpu_mp_run[];
++
++/* KA1's registers: the attached processor's state (outside of execution
++   the secondary is always parked in cpu_ctx[1]) */
++
+ REG ka1_reg[] = {
++    { HRDATAD (R0,     cpu_ctx[1].R[0],  32, "general register 0") },
++    { HRDATAD (R1,     cpu_ctx[1].R[1],  32, "general register 1") },
++    { HRDATAD (R2,     cpu_ctx[1].R[2],  32, "general register 2") },
++    { HRDATAD (R3,     cpu_ctx[1].R[3],  32, "general register 3") },
++    { HRDATAD (R4,     cpu_ctx[1].R[4],  32, "general register 4") },
++    { HRDATAD (R5,     cpu_ctx[1].R[5],  32, "general register 5") },
++    { HRDATAD (R6,     cpu_ctx[1].R[6],  32, "general register 6") },
++    { HRDATAD (R7,     cpu_ctx[1].R[7],  32, "general register 7") },
++    { HRDATAD (R8,     cpu_ctx[1].R[8],  32, "general register 8") },
++    { HRDATAD (R9,     cpu_ctx[1].R[9],  32, "general register 9") },
++    { HRDATAD (R10,    cpu_ctx[1].R[10], 32, "general register 10") },
++    { HRDATAD (R11,    cpu_ctx[1].R[11], 32, "general register 11") },
++    { HRDATAD (AP,     cpu_ctx[1].R[12], 32, "argument pointer (R12)") },
++    { HRDATAD (FP,     cpu_ctx[1].R[13], 32, "frame pointer (R13)") },
++    { HRDATAD (SP,     cpu_ctx[1].R[14], 32, "stack pointer (R14)") },
++    { HRDATAD (PC,     cpu_ctx[1].R[15], 32, "program counter (R15)") },
++    { HRDATAD (PSL,    cpu_ctx[1].PSL,   32, "processor status longword") },
++    { HRDATAD (SCBB,   cpu_ctx[1].SCBB,  32, "system control block base") },
++    { HRDATAD (PCBB,   cpu_ctx[1].PCBB,  32, "process control block base") },
++    { HRDATAD (SBR,    cpu_ctx[1].SBR,   32, "system base register") },
++    { HRDATAD (SLR,    cpu_ctx[1].SLR,   22, "system length register") },
++    { HRDATAD (P0BR,   cpu_ctx[1].P0BR,  32, "P0 base register") },
++    { HRDATAD (P1BR,   cpu_ctx[1].P1BR,  32, "P1 base register") },
++    { FLDATAD (MAPEN,  cpu_ctx[1].mapen,  0, "memory management enable") },
++    { FLDATAD (RUN,    cpu_mp_run[1],     0, "processor runs (0 = halted, console mode)"), REG_RO },
+     { NULL }
+     };
+ 
++/* SHOW KA1 STATE */
++
++t_stat ka_show_state (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++if (cpu_mp_run[1])
++    fprintf (st, "running, PC=%08X, PSL=%08X", cpu_ctx[1].R[15], cpu_ctx[1].PSL);
++else
++    fprintf (st, "halted (console mode), PC=%08X", cpu_ctx[1].R[15]);
++return SCPE_OK;
++}
++#else
++REG ka1_reg[] = {
++    { NULL }
++    };
++#endif
++
++/* KA1 help */
++
++t_stat ka1_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
++{
++fprintf (st, "KA820 attached processor (KA1): a VAX 8300\n\n");
++fprintf (st, "SET KA1 ENABLE adds a second KA820 at VAXBI node 1.  The primary (KA0,\n");
++fprintf (st, "the CPU device) starts it through the console channel between the\n");
++fprintf (st, "processors (RXCD register) with the console commands I, D/G and S, as on\n");
++fprintf (st, "a real VAX 8300.  Both processors execute; they take turns on the host,\n");
++fprintf (st, "switching every CPU QUANTUM instructions (default 100) at an instruction\n");
++fprintf (st, "boundary.  Simulated time runs with the primary, so in guest time both run\n");
++fprintf (st, "at full speed; with SET SOUND ENABLED (THROTTLE 400K) each processor gets\n");
++fprintf (st, "400K instructions per second.  The host does not idle while KA1 runs.\n\n");
++fprintf (st, "VAX/VMS V4.4 and later (with the VMS/8300 multiprocessing key) run it as\n");
++fprintf (st, "an attached processor (asymmetric multiprocessing).  VMS V4.7, as tested:\n\n");
++fprintf (st, "   $ DEFINE/SYSTEM/EXEC MP MP8SS\n");
++fprintf (st, "   $ START/CPU\n");
++fprintf (st, "   $ SHOW CPU\n");
++fprintf (st, "           Attached processor is in the IDLE state.\n\n");
++fprintf (st, "(The image SYS$SYSTEM:MP8SS.EXE must exist; if the kit has it as\n");
++fprintf (st, "MP_8SS.EXE, copy it.)  STOP/CPU halts it; VMS then parks it until the next\n");
++fprintf (st, "START/CPU.  The attached processor takes only its own clock, inter-\n");
++fprintf (st, "processor and software interrupts; all device interrupts go to KA0.\n\n");
++fprintf (st, "SHOW KA1 STATE shows whether it runs; EXAMINE KA1 PC, PSL, R0 ... show its\n");
++fprintf (st, "registers (EXAMINE CPU ... and memory examines use KA0).  A stop while\n");
++fprintf (st, "KA1 runs prints KA1's PC first.  SET KA1 DEBUG=RXCD;MP traces the console\n");
++fprintf (st, "characters and the start/halt of the attached processor.\n\n");
++fprint_set_help (st, dptr);
++fprint_show_help (st, dptr);
++fprint_reg_help (st, dptr);
++return SCPE_OK;
++}
++
++const char *ka1_description (DEVICE *dptr)
++{
++return "KA820 attached processor";
++}
++
++/* Debug flags (on KA1: the second processor and its console traffic) */
++
++#define DBG_RXCD        0x0001                          /* RXCD characters */
++#define DBG_MP          0x0002                          /* start, halt, IPI */
++
++DEBTAB ka_deb[] = {
++    { "RXCD",   DBG_RXCD,   "console characters between the processors (RXCD)" },
++    { "MP",     DBG_MP,     "secondary processor start/halt and interprocessor interrupts" },
++    { NULL, 0 }
++    };
++
+ DEVICE ka_dev[] = {
+     {
+     "KA0", &ka0_unit, ka0_reg, ka0_mod,
+@@ -142,7 +252,8 @@ DEVICE ka_dev[] = {
+     1, 16, 16, 1, 16, 8,
+     NULL, NULL, &ka_reset,
+     NULL, NULL, NULL,
+-    &ka1_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS
++    &ka1_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS | DEV_DEBUG, 0, ka_deb,
++    NULL, NULL, &ka1_help, NULL, NULL, &ka1_description
+     }
+     };
+ 
+@@ -181,6 +292,18 @@ switch (ofs) {
+         *val = 0;
+         break;
+ 
++    case BI_IMSK:                                       /* IPINTR mask (VMS: */
++        *val = ka_biic[ka].imsk;                        /* the processors that may */
++        break;                                          /* interrupt this one) */
++
++    case BI_FIDEST:                                     /* force IPINTR destination */
++        *val = ka_biic[ka].fidest;
++        break;
++
++    case BI_ISRC:                                       /* IPINTR source */
++        *val = ka_biic[ka].isrc;
++        break;
++
+     default:
+         return SCPE_NXM;
+         }
+@@ -188,6 +311,23 @@ switch (ofs) {
+ return SCPE_OK;
+ }
+ 
++/* Node private space 2008 0000 - 2008 00FF: the local KA820's own BIIC
++   registers (VMS's secondary start code writes its IPINTR mask there) */
++
++int32 ka_priv_rd (int32 pa)
++{
++int32 val = 0;
++
++if (ka_rdreg (&val, REGBASE + ((TR_KA0 + cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), L_LONG) != SCPE_OK)
++    val = 0;
++return val;
++}
++
++void ka_priv_wr (int32 pa, int32 val, int32 lnt)
++{
++ka_wrreg (val, REGBASE + ((TR_KA0 + cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), lnt);
++}
++
+ /* KA write */
+ 
+ t_stat ka_wrreg (int32 val, int32 pa, int32 lnt)
+@@ -215,7 +355,16 @@ switch (ofs) {
+         ka_biic[ka].idest = val & BIID_RW;
+         break;
+ 
+-    case BI_IMSK:
++    case BI_IMSK:                                       /* IPINTR mask */
++        ka_biic[ka].imsk = val;
++        break;
++
++    case BI_FIDEST:                                     /* force IPINTR destination */
++        ka_biic[ka].fidest = val;
++        break;
++
++    case BI_ISRC:                                       /* IPINTR source */
++        ka_biic[ka].isrc = val;
+         break;
+ 
+     default:
+@@ -261,6 +410,8 @@ int32 val;
+ 
+ if (rxcd_count) {                                       /* data available? */
+     val = rxcd_obuf[rxcd_optr] | (1 << 8);
++    sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MFPR RXCD: %02X '%c' from node 1\n", cur_cpu, val & 0xFF,
++               isprint (val & 0xFF) ? (val & 0xFF) : '.');
+     rxcd_optr++;
+     rxcd_count--;
+     if (rxcd_count)
+@@ -283,6 +434,8 @@ int32 rval;
+ t_stat r;
+ char conv[10];
+ 
++sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MTPR RXCD: %02X '%c' to node %d\n", cur_cpu, ch,
++           isprint (ch) ? ch : '.', cpu);
+ if (ka_rxcd[cpu] & 0x8000) {                            /* busy? */
+     mxpr_cc_vc |= CC_V;                                 /* set overflow */
+     return;
+@@ -292,7 +445,7 @@ switch (ch) {
+ 
+     case 0x0D:                                          /* CR */
+         rxcd_ibuf[rxcd_iptr++] = '\0';                  /* terminator */
+-        printf (">>> %s\n", &rxcd_ibuf[0]);
++        sim_debug (DBG_MP, &ka_dev[1], "KA%d console command: %s\n", cpu, &rxcd_ibuf[0]);
+         if (rxcd_ibuf[0] == 'D') {                      /* DEPOSIT */
+             conv[0] = rxcd_ibuf[4];
+             conv[1] = '\0';
+@@ -322,6 +475,12 @@ switch (ch) {
+         break;
+ 
+     case 0x10:                                          /* CTRL-P */
++#if defined (VAX_MP)
++        if (cpu_mp_stop (cpu, 0x0200)) {                /* halts a running one: */
++            rxcd_iptr = 0;                              /* (the halt message is */
++            break;                                      /* the answer) */
++            }
++#endif
+         rxcd_count = 3;                                 /* ready for next cmd */
+         sprintf (&rxcd_obuf[0], ">>>");
+         rxcd_optr = 0;
+@@ -331,7 +490,8 @@ switch (ch) {
+         rxcd_count = 1;
+         rxcd_obuf[0] = ch;                              /* echo characters back */
+         rxcd_optr = 0;
+-        rxcd_ibuf[rxcd_iptr++] = ch;                    /* store incoming charactes */
++        if (rxcd_iptr < (int32)(sizeof (rxcd_ibuf) - 1))
++            rxcd_ibuf[rxcd_iptr++] = ch;                /* store incoming charactes */
+         break;
+         }
+ if (rxcd_count) {
+@@ -360,3 +520,20 @@ if (val & PCSR_CONCLR)
+ if (val & PCSR_IPCLR)
+     ipir &= ~(1u << cur_cpu);
+ }
++
++#if defined (VAX_MP)
++/* A secondary halted (HALT instruction, CTRL/P from the primary, error
++   halt): like the KA820 console microcode it sends its halt code, PC and
++   prompt to the primary's RXCD register ("?06", "  PC = xxxxxxxx", ">>>",
++   Owner's/Technical Manual).  The primary reads them with MFPR RXCD. */
++
++void rxcd_halt (int32 cpu, int32 code, int32 pc)
++{
++sprintf (rxcd_obuf, "\r\n?%02X\r\n  PC = %08X\r\n>>> ", (code >> 8) & 0xFF, pc);
++rxcd_count = (int32) strlen (rxcd_obuf);
++rxcd_optr = 0;
++rxcd_iptr = 0;
++sim_debug (DBG_MP, &ka_dev[1], "KA%d halted, code %02X, PC %08X\n", cpu, (code >> 8) & 0xFF, pc);
++sim_activate (&ka0_unit, 20);
++}
++#endif
+diff --git a/VAX/vax820_stddev.c b/VAX/vax820_stddev.c
+index 0e0f0626..1ef93da2 100644
+--- a/VAX/vax820_stddev.c
++++ b/VAX/vax820_stddev.c
+@@ -198,7 +198,10 @@ int32 tmr_iccs = 0;                                     /* interval timer csr */
+ uint32 tmr_icr = 0;                                     /* curr interval */
+ uint32 tmr_nicr = 0;                                    /* next interval */
+ uint32 tmr_inc = 0;                                     /* timer increment */
+-int32 tmr_int = 0;                                      /* interrupt */
++int32 tmr_int = 0;                                      /* interrupt, bit per processor */
++int32 tmr1_iccs = 0;                                    /* KA1's interval timer csr */
++uint32 tmr1_nicr = 0;                                   /* KA1's next interval */
++extern int32 cur_cpu;
+ int32 clk_tps = 100;                                    /* ticks/second */
+ int32 tmxr_poll = CLK_DELAY * TMXR_MULT;                /* term mux poll */
+ int32 tmr_poll = CLK_DELAY;                             /* pgm timer poll */
+@@ -395,7 +398,9 @@ REG tmr_reg[] = {
+     { HRDATADF (ICCS,         tmr_iccs, 32, "interval timer control and status", tmr_iccs_bits) },
+     { HRDATAD  (ICR,           tmr_icr, 32, "interval count register") },
+     { HRDATAD  (NICR,         tmr_nicr, 32, "next interval count register") },
+-    { FLDATAD  (INT,           tmr_int,  0, "interrupt request") },
++    { HRDATAD  (INT,           tmr_int,  2, "interrupt request (bit per processor)") },
++    { HRDATAD  (ICCS1,       tmr1_iccs, 32, "KA1's interval timer control and status") },
++    { HRDATAD  (NICR1,       tmr1_nicr, 32, "KA1's next interval count") },
+     { DRDATAD  (TPS,           clk_tps,  8, "ticks per second"), REG_NZ + PV_LEFT },
+     { HRDATA   (INCR,          tmr_inc, 32), REG_HIDDEN },
+     { NULL }
+@@ -689,12 +694,24 @@ return "console terminal output";
+ 
+ int32 iccs_rd (void)
+ {
++if (cur_cpu != 0)                                       /* attached processor */
++    return tmr1_iccs & TMR_CSR_RD;
+ sim_debug_bits_hdr (TMR_DB_REG, &tmr_dev, "iccs_rd()", tmr_iccs_bits, tmr_iccs, tmr_iccs, TRUE);
+ return tmr_iccs & TMR_CSR_RD;
+ }
+ 
+ void iccs_wr (int32 val)
+ {
++if (cur_cpu != 0) {                                     /* attached processor: */
++    /* KA1's interval timer.  It ticks with the primary's calibrated
++       timer (tmr_svc); VMS programs both for the same 10 ms interval.
++       Single step and ICR are taken from the primary's timer. */
++    tmr1_iccs = tmr1_iccs & ~(val & TMR_CSR_W1C);       /* W1C csr */
++    tmr1_iccs = (tmr1_iccs & ~TMR_CSR_WR) | (val & TMR_CSR_WR);
++    if ((tmr1_iccs & (TMR_CSR_DON | TMR_CSR_IE)) != (TMR_CSR_DON | TMR_CSR_IE))
++        tmr_int = tmr_int & ~2;                         /* no int req */
++    return;
++    }
+ sim_debug_bits_hdr (TMR_DB_REG, &tmr_dev, "iccs_wr()", tmr_iccs_bits, tmr_iccs, val, TRUE);
+ if ((val & TMR_CSR_RUN) == 0) {                         /* clearing run? */
+     if (tmr_iccs & TMR_CSR_RUN)                         /* run 1 -> 0? */
+@@ -726,7 +743,7 @@ else {
+             else
+                 tmr_iccs = tmr_iccs | TMR_CSR_DON;      /* set done */
+             if (tmr_iccs & TMR_CSR_IE) {                /* ie? */
+-                tmr_int = 3;                            /* set int req */
++                tmr_int = tmr_int | 1;                  /* set int req */
+                 sim_debug (TMR_DB_INT, &tmr_dev, "tmr_incr() - INT=1\n");
+                 }
+             tmr_icr = tmr_nicr;                         /* reload tir */
+@@ -735,8 +752,8 @@ else {
+     }
+ if ((tmr_iccs & (TMR_CSR_DON | TMR_CSR_IE)) !=          /* update int */
+     (TMR_CSR_DON | TMR_CSR_IE)) {
+-    if (tmr_int) {
+-        tmr_int = 0;
++    if (tmr_int & 1) {
++        tmr_int = tmr_int & ~1;
+         sim_debug (TMR_DB_INT, &tmr_dev, "iccs_wr() - INT=0\n");
+         }
+     }
+@@ -759,12 +776,18 @@ return result;
+ 
+ int32 nicr_rd (void)
+ {
++if (cur_cpu != 0)
++    return tmr1_nicr;
+ sim_debug (TMR_DB_REG, &tmr_dev, "nicr_rd() = 0x%08X\n", tmr_nicr);
+ return tmr_nicr;
+ }
+ 
+ void nicr_wr (int32 val)
+ {
++if (cur_cpu != 0) {
++    tmr1_nicr = val;
++    return;
++    }
+ sim_debug (TMR_DB_REG, &tmr_dev, "nicr_wr(0x%08X)\n", val);
+ tmr_nicr = val;
+ }
+@@ -782,11 +805,19 @@ else
+ if (tmr_iccs & TMR_CSR_RUN)                         /* run? */
+     tmr_sched (tmr_nicr);                           /* reactivate */
+ if (tmr_iccs & TMR_CSR_IE) {                        /* ie? set int req */
+-    tmr_int = 1;
++    tmr_int = tmr_int | 1;
+     sim_debug (TMR_DB_INT, &tmr_dev, "tmr_svc() - INT=1\n");
+     }
+ else
+-    tmr_int = 0;
++    tmr_int = tmr_int & ~1;
++if (tmr1_iccs & TMR_CSR_RUN) {                          /* KA1's timer runs: */
++    if (tmr1_iccs & TMR_CSR_DON)                        /* it ticks with ours */
++        tmr1_iccs = tmr1_iccs | TMR_CSR_ERR;
++    else
++        tmr1_iccs = tmr1_iccs | TMR_CSR_DON;
++    if (tmr1_iccs & TMR_CSR_IE)
++        tmr_int = tmr_int | 2;
++    }
+ AIO_SET_INTERRUPT_LATENCY(tmr_poll*clk_tps);            /* set interrrupt latency */
+ return SCPE_OK;
+ }
+@@ -940,6 +971,8 @@ t_stat tmr_reset (DEVICE *dptr)
+ tmr_iccs = 0;
+ tmr_nicr = 0;
+ tmr_int = 0;
++tmr1_iccs = 0;                                          /* KA1's timer too */
++tmr1_nicr = 0;
+ sim_cancel (&tmr_unit);                                 /* cancel timer */
+ return SCPE_OK;
+ }
+diff --git a/VAX/vax_cpu.c b/VAX/vax_cpu.c
+index a4a581d9..42f626f1 100644
+--- a/VAX/vax_cpu.c
++++ b/VAX/vax_cpu.c
+@@ -315,6 +315,134 @@ const uint32 align[4] = {
+  0xFFFFFFFF, 0x00FFFFFF, 0x0000FFFF, 0x000000FF
+  };
+ 
++#if defined (VAX_MP)
++/* Multiprocessor support (VAX 8300: two KA820 on the VAXBI).
++
++   The CPU core keeps the state of the running processor in the usual
++   globals (R[], PSL, the IPR copies, ...), which the whole core uses.
++   The state of every other processor is kept in cpu_ctx[].  The
++   processors take turns on the host thread: after cpu_mp_quantum
++   instructions sim_instr switches to the next running processor with
++   cpu_mp_switch, always at an instruction boundary (so interlocked
++   instructions are atomic).  Outside sim_instr the globals always hold
++   processor 0 (EXAMINE, DEPOSIT, SAVE work on the primary as before).
++
++   cur_cpu (vax820_ka.c) is the number of the running processor. */
++
++/* CPU_CTX (the parked state of a processor) is in vax_defs.h */
++
++int32 cur_cpu = 0;                                      /* running processor */
++CPU_CTX cpu_ctx[KA_NUM];                                /* parked processors */
++t_bool cpu_mp_run[KA_NUM] = { TRUE };                   /* processor executes */
++int32 cpu_mp_quantum = 100;                             /* instructions per turn */
++int32 cpu_mp_qleft = 100;                               /* left in this turn */
++int32 cpu_mp_test = 0;                                  /* switch even to self */
++
++/* Park the running processor's state, load processor 'to'.  The caller
++   splits/merges the condition codes and re-evaluates the derived state
++   (map registers, access mode, interrupts, prefetch). */
++
++void cpu_mp_switch (int32 to)
++{
++CPU_CTX *c = &cpu_ctx[cur_cpu];
++
++memcpy (c->R, R, sizeof (c->R));
++memcpy (c->STK, STK, sizeof (c->STK));
++c->PSL = PSL;
++c->SCBB = SCBB; c->PCBB = PCBB;
++c->P0BR = P0BR; c->P0LR = P0LR; c->P1BR = P1BR; c->P1LR = P1LR;
++c->SBR = SBR; c->SLR = SLR;
++c->SISR = SISR; c->ASTLVL = ASTLVL; c->mapen = mapen; c->pme = pme;
++c->trpirq = trpirq; c->hlt_pin = hlt_pin; c->mem_err = mem_err; c->crd_err = crd_err;
++c->p1 = p1; c->p2 = p2; c->mxpr_cc_vc = mxpr_cc_vc; c->badabo = badabo;
++c->mchk_va = mchk_va; c->mchk_ref = mchk_ref;
++c = &cpu_ctx[to];
++memcpy (R, c->R, sizeof (c->R));
++memcpy (STK, c->STK, sizeof (c->STK));
++PSL = c->PSL;
++SCBB = c->SCBB; PCBB = c->PCBB;
++P0BR = c->P0BR; P0LR = c->P0LR; P1BR = c->P1BR; P1LR = c->P1LR;
++SBR = c->SBR; SLR = c->SLR;
++SISR = c->SISR; ASTLVL = c->ASTLVL; mapen = c->mapen; pme = c->pme;
++trpirq = c->trpirq; hlt_pin = c->hlt_pin; mem_err = c->mem_err; crd_err = c->crd_err;
++p1 = c->p1; p2 = c->p2; mxpr_cc_vc = c->mxpr_cc_vc; badabo = c->badabo;
++mchk_va = c->mchk_va; mchk_ref = c->mchk_ref;
++cur_cpu = to;
++stlb = cpu_stlb[to];                                    /* its translation buffer */
++ptlb = cpu_ptlb[to];
++}
++
++/* The processor to run next: the next one after cur_cpu that runs */
++
++static int32 cpu_mp_next (void)
++{
++int32 i, n;
++
++for (i = 1; i <= KA_NUM; i++) {
++    n = (cur_cpu + i) % KA_NUM;
++    if (cpu_mp_run[n])
++        return n;
++    }
++return cur_cpu;
++}
++
++/* Console commands of a parked processor (from the RXCD console of the
++   primary, vax820_ka.c): deposit a general register, start */
++
++void cpu_setreg (int32 cpu, int32 rg, int32 val)
++{
++if ((cpu <= 0) || (cpu >= KA_NUM) || cpu_mp_run[cpu])   /* only a halted secondary */
++    return;
++cpu_ctx[cpu].R[rg & 0xF] = val;
++}
++
++void cpu_start (int32 cpu, uint32 addr)
++{
++if ((cpu <= 0) || (cpu >= KA_NUM) || cpu_mp_run[cpu])
++    return;
++cpu_ctx[cpu].R[nPC] = (int32) addr;
++cpu_ctx[cpu].PSL = PSL_IS | PSL_IPL1F;                  /* kernel, IS, IPL 31 */
++cpu_ctx[cpu].mapen = 0;                                 /* memory management off */
++cpu_mp_run[cpu] = TRUE;
++}
++
++/* Halt a secondary (console mode).  For the running one the switch to
++   the next processor follows at the next instruction boundary.  Returns
++   FALSE if it was not running. */
++
++extern void rxcd_halt (int32 cpu, int32 code, int32 pc);
++
++t_bool cpu_mp_stop (int32 cpu, int32 code)
++{
++int32 pc;
++
++if ((cpu <= 0) || (cpu >= KA_NUM) || !cpu_mp_run[cpu])
++    return FALSE;
++cpu_mp_run[cpu] = FALSE;
++if (cpu == cur_cpu) {                                   /* the running one */
++    pc = PC;
++    R[nAP] = (code >> 8) & 0xFF;                        /* halt code in AP */
++    cpu_mp_qleft = 0;                                   /* switch away now */
++    }
++else {
++    pc = cpu_ctx[cpu].R[nPC];
++    cpu_ctx[cpu].R[nAP] = (code >> 8) & 0xFF;
++    }
++rxcd_halt (cpu, code, pc);
++return TRUE;
++}
++
++/* Reset a parked processor to its power-up state (halted, console mode) */
++
++static void cpu_mp_reset_ctx (int32 n)
++{
++memset (&cpu_ctx[n], 0, sizeof (cpu_ctx[n]));
++cpu_ctx[n].PSL = PSL_IS | PSL_IPL1F;
++cpu_ctx[n].ASTLVL = 4;
++cpu_mp_run[n] = (n == 0);
++}
++#endif
++
+ /* External and forward references */
+ 
+ extern int32 sys_model;
+@@ -429,6 +557,10 @@ REG cpu_reg[] = {
+     { HRDATA (BADABO, badabo, 32), REG_HRO },
+     { HRDATAD (WRU, sim_int_char, 8, "interrupt character") },
+     { HRDATA (MODEL, sys_model, 32), REG_HRO },
++#if defined (VAX_MP)
++    { DRDATAD (QUANTUM, cpu_mp_quantum, 16, "multiprocessor: instructions per turn") },
++    { DRDATA (MPTEST, cpu_mp_test, 1), REG_HIDDEN },
++#endif
+     { NULL }
+     };
+ 
+@@ -525,6 +657,14 @@ FLUSH_ISTR;                                             /* clear prefetch */
+ abortval = setjmp (save_env);                           /* set abort hdlr */
+ if (abortval > 0) {                                     /* sim stop? */
+     PSL = PSL | cc;                                     /* put PSL together */
++#if defined (VAX_MP)
++    if (cur_cpu != 0) {                                 /* SCP sees processor 0 */
++        sim_printf ("\r\n%%SIM-INFO: stopped while KA%d was running: its PC=%08X, PSL=%08X\r\n",
++                    cur_cpu, PC, PSL);                  /* (SCP shows the primary) */
++        cpu_mp_switch (0);
++        set_map_reg ();
++        }
++#endif
+     pcq_r->qptr = pcq_p;                                /* update pc q ptr */
+     if (hst_log) {                                      /* auto logging history? */
+         cpu_show_hist_records (hst_log, FALSE, hst_log_p, (hst_p < hst_log_p) ? hst_lnt - (hst_log_p - hst_p) : hst_p - hst_log_p);
+@@ -668,6 +808,25 @@ for ( ;; ) {
+         SET_IRQL;                                       /* update interrupts */
+         }
+ 
++#if defined (VAX_MP)
++    if (--cpu_mp_qleft <= 0) {                          /* end of this turn? */
++        int32 nxt = cpu_mp_next ();
++
++        cpu_mp_qleft = cpu_mp_quantum;
++        if ((nxt != cur_cpu) || cpu_mp_test) {          /* switch processors */
++            PSL = PSL | cc;                             /* put PSL together */
++            cpu_mp_switch (nxt);
++            cc = PSL & CC_MASK;                         /* split the new one */
++            PSL = PSL & ~CC_MASK;
++            set_map_reg ();                             /* its map registers */
++            GET_CUR;                                    /* its access mode */
++            FLUSH_ISTR;                                 /* its instruction stream */
++            SET_IRQL;                                   /* its interrupts */
++            fault_PC = PC;                              /* its fault PC (set above for */
++            }                                           /* the previous processor) */
++        }
++#endif
++
+ /* Test for non-instruction dispatches, in SRM order
+ 
+         - trap or interrupt (trpirq != 0)
+@@ -731,6 +890,9 @@ for ( ;; ) {
+         ABORT (STOP_IBKPT);                             /* stop simulation */
+         }
+ 
++#if defined (VAX_MP)
++    if (cur_cpu == 0)                                   /* simulated time runs with */
++#endif                                                  /* the primary's instructions */
+     sim_interval = sim_interval - (1 + (extra_bytes>>cpu_str_shift));/* count instr */
+     extra_bytes = 0;                                    /* digest string count */
+     GET_ISTR (opc, L_BYTE);                             /* get opcode */
+@@ -2644,6 +2806,12 @@ for ( ;; ) {
+     case HALT:
+         if (PSL & PSL_CUR)                              /* not kern? rsvd inst */
+             RSVD_INST_FAULT(HALT);
++#if defined (VAX_MP)
++        else if (cur_cpu != 0) {                        /* attached processor: */
++            cpu_mp_stop (cur_cpu, CON_HLTINS);          /* only it halts */
++            break;
++            }
++#endif
+         else {
+             /* allow potentially pending I/O (console output, 
+                or other devices) to complete before taking
+@@ -3305,6 +3473,13 @@ return 0;                                               /* set new cc's */
+ 
+ void cpu_idle (void)
+ {
++#if defined (VAX_MP)
++int32 n;
++
++for (n = 1; n < KA_NUM; n++)                            /* a secondary runs: */
++    if (cpu_mp_run[n])                                  /* no host idling */
++        return;
++#endif
+ sim_idle (TMR_CLK, TRUE);
+ }
+ 
+@@ -3335,6 +3510,15 @@ SISR = 0;
+ ASTLVL = 4;
+ mapen = 0;
+ FLUSH_ISTR;                             /* init I-stream */
++#if defined (VAX_MP)
++if (1) {
++    int32 n;
++
++    for (n = 1; n < KA_NUM; n++)                        /* secondaries: halted */
++        cpu_mp_reset_ctx (n);
++    cpu_mp_qleft = cpu_mp_quantum;
++    }
++#endif
+ if (M == NULL) {                        /* first time init? */
+     vax_init();
+     sim_brk_types = sim_brk_dflt = SWMASK ('E');
+diff --git a/VAX/vax_defs.h b/VAX/vax_defs.h
+index ebf77812..bbcd2bc6 100644
+--- a/VAX/vax_defs.h
++++ b/VAX/vax_defs.h
+@@ -44,6 +44,10 @@
+ #ifndef VAX_DEFS_H
+ #define VAX_DEFS_H     0
+ 
++#if defined (VAX_820)                                   /* VAX 8200/8300: the core keeps */
++#define VAX_MP          1                               /* one context per KA820 */
++#endif
++
+ #ifndef VM_VAX
+ #define VM_VAX          0
+ #endif
+@@ -683,11 +687,23 @@ enum opcodes {
+ #define PCQ_MASK        (PCQ_SIZE - 1)
+ #define PCQ_ENTRY       pcq[pcq_p = (pcq_p - 1) & PCQ_MASK] = fault_PC
+ #define GET_ISTR(d,l)   d = get_istr (l, acc)
++#if defined (VAX_MP)
++/* A secondary jumping to itself at IPL 31 waits for the primary (VMS
++   parks a stopped attached processor in JMP @FC with FC = its own
++   address): no infinite loop stop, no idle for it */
++extern int32 cur_cpu;
++#define CHECK_FOR_IDLE_LOOP if ((PC == fault_PC) && (cur_cpu == 0)) {       /* to self? */ \
++                                if (PSL_GETIPL (PSL) == 0x1F)               /* int locked out? */ \
++                                    ABORT (STOP_LOOP);                      /* infinite loop */ \
++                                cpu_idle ();                                /* idle loop */ \
++                                }
++#else
+ #define CHECK_FOR_IDLE_LOOP if (PC == fault_PC) {                           /* to self? */ \
+                                 if (PSL_GETIPL (PSL) == 0x1F)               /* int locked out? */ \
+                                     ABORT (STOP_LOOP);                      /* infinite loop */ \
+                                 cpu_idle ();                                /* idle loop */ \
+                                 }
++#endif
+ /* Instructions which have side effects (ACB, AOBLSS, BBSC, BBCS, etc.) can't be an idle loop so avoid the idle check */
+ #define BRANCHB_ALWAYS(d)      do {PCQ_ENTRY; PC = PC + SXTB (d); FLUSH_ISTR; } while (0)
+ #define BRANCHW_ALWAYS(d)      do {PCQ_ENTRY; PC = PC + SXTW (d); FLUSH_ISTR; } while (0)
+diff --git a/VAX/vax_mmu.c b/VAX/vax_mmu.c
+index debc2936..ba910909 100644
+--- a/VAX/vax_mmu.c
++++ b/VAX/vax_mmu.c
+@@ -56,7 +56,14 @@
+ int32 d_p0br, d_p0lr;                                   /* dynamic copies */
+ int32 d_p1br, d_p1lr;                                   /* altered per ucode */
+ int32 d_sbr, d_slr;
++#if defined (VAX_MP)
++/* One translation buffer per processor; stlb/ptlb point to the running
++   processor's (switched with its context, see cpu_mp_switch). */
++TLBENT cpu_stlb[KA_NUM][VA_TBSIZE], cpu_ptlb[KA_NUM][VA_TBSIZE];
++TLBENT *stlb = cpu_stlb[0], *ptlb = cpu_ptlb[0];
++#else
+ TLBENT stlb[VA_TBSIZE], ptlb[VA_TBSIZE];
++#endif
+ static const int32 cvtacc[16] = { 0, 0,
+     TLB_ACCW (KERN)+TLB_ACCR (KERN),
+     TLB_ACCR (KERN),
+@@ -297,9 +304,16 @@ return SCPE_OK;
+ t_stat tlb_reset (DEVICE *dptr)
+ {
+ size_t i;
++#if defined (VAX_MP)
++int32 c;
+ 
++for (c = 0; c < KA_NUM; c++)                            /* every processor's TB */
++    for (i = 0; i < VA_TBSIZE; i++)
++        cpu_stlb[c][i].tag = cpu_ptlb[c][i].tag = cpu_stlb[c][i].pte = cpu_ptlb[c][i].pte = -1;
++#else
+ for (i = 0; i < VA_TBSIZE; i++)
+     stlb[i].tag = ptlb[i].tag = stlb[i].pte = ptlb[i].pte = -1;
++#endif
+ return SCPE_OK;
+ }
+ 
+diff --git a/VAX/vax_mmu.h b/VAX/vax_mmu.h
+index 809bb66b..8b1efa59 100644
+--- a/VAX/vax_mmu.h
++++ b/VAX/vax_mmu.h
+@@ -62,7 +62,12 @@ extern DEVICE cpu_dev;
+ extern int32 mapen;                                     /* map enable */
+ 
+ extern int32 mchk_va, mchk_ref;                         /* for mcheck */
++#if defined (VAX_MP)
++extern TLBENT *stlb, *ptlb;                             /* the running CPU's TLB */
++extern TLBENT cpu_stlb[KA_NUM][VA_TBSIZE], cpu_ptlb[KA_NUM][VA_TBSIZE];
++#else
+ extern TLBENT stlb[VA_TBSIZE], ptlb[VA_TBSIZE];
++#endif
+ 
+ static const int32 insert[4] = {
+     0x00000000, 0x000000FF, 0x0000FFFF, 0x00FFFFFF
+-- 
+2.43.0
+
