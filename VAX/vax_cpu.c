@@ -329,17 +329,7 @@ const uint32 align[4] = {
 
    cur_cpu (vax820_ka.c) is the number of the running processor. */
 
-typedef struct {
-    int32       R[16];                                  /* general registers */
-    int32       STK[5];                                 /* stack pointers */
-    int32       PSL;                                    /* PSL, with the cc's */
-    int32       SCBB, PCBB;
-    int32       P0BR, P0LR, P1BR, P1LR, SBR, SLR;
-    int32       SISR, ASTLVL, mapen, pme;
-    int32       trpirq, hlt_pin, mem_err, crd_err;
-    int32       p1, p2, mxpr_cc_vc, badabo;
-    int32       mchk_va, mchk_ref;
-    } CPU_CTX;
+/* CPU_CTX (the parked state of a processor) is in vax_defs.h */
 
 int32 cur_cpu = 0;                                      /* running processor */
 CPU_CTX cpu_ctx[KA_NUM];                                /* parked processors */

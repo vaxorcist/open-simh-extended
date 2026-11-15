@@ -89,6 +89,8 @@ t_stat ka_reset (DEVICE *dptr);
 t_stat ka_rdreg (int32 *val, int32 pa, int32 mode);
 t_stat ka_wrreg (int32 val, int32 pa, int32 mode);
 t_stat ka_svc (UNIT *uptr);
+t_stat ka1_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+const char *ka1_description (DEVICE *dptr);
 
 #if defined (VAX_MP)
 extern void cpu_setreg (int32 cpu, int32 rg, int32 val);
@@ -123,14 +125,108 @@ DIB ka1_dib[] = { { TR_KA1, 0, &ka_rdreg, &ka_wrreg, 0 } };
 
 UNIT ka1_unit = { UDATA (&ka_svc, 0, 0) };
 
+#if defined (VAX_MP)
+t_stat ka_show_state (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+#endif
+
 MTAB ka1_mod[] = {
     { MTAB_XTD|MTAB_VDV, TR_KA1, "NEXUS", NULL,
       NULL, &show_nexus },
+#if defined (VAX_MP)
+    { MTAB_XTD|MTAB_VDV, 0, "STATE", NULL,
+      NULL, &ka_show_state, NULL, "Display the attached processor's state" },
+#endif
     { 0 }  };
 
+#if defined (VAX_MP)
+extern CPU_CTX cpu_ctx[];                               /* parked processors (vax_cpu.c) */
+extern t_bool cpu_mp_run[];
+
+/* KA1's registers: the attached processor's state (outside of execution
+   the secondary is always parked in cpu_ctx[1]) */
+
+REG ka1_reg[] = {
+    { HRDATAD (R0,     cpu_ctx[1].R[0],  32, "general register 0") },
+    { HRDATAD (R1,     cpu_ctx[1].R[1],  32, "general register 1") },
+    { HRDATAD (R2,     cpu_ctx[1].R[2],  32, "general register 2") },
+    { HRDATAD (R3,     cpu_ctx[1].R[3],  32, "general register 3") },
+    { HRDATAD (R4,     cpu_ctx[1].R[4],  32, "general register 4") },
+    { HRDATAD (R5,     cpu_ctx[1].R[5],  32, "general register 5") },
+    { HRDATAD (R6,     cpu_ctx[1].R[6],  32, "general register 6") },
+    { HRDATAD (R7,     cpu_ctx[1].R[7],  32, "general register 7") },
+    { HRDATAD (R8,     cpu_ctx[1].R[8],  32, "general register 8") },
+    { HRDATAD (R9,     cpu_ctx[1].R[9],  32, "general register 9") },
+    { HRDATAD (R10,    cpu_ctx[1].R[10], 32, "general register 10") },
+    { HRDATAD (R11,    cpu_ctx[1].R[11], 32, "general register 11") },
+    { HRDATAD (AP,     cpu_ctx[1].R[12], 32, "argument pointer (R12)") },
+    { HRDATAD (FP,     cpu_ctx[1].R[13], 32, "frame pointer (R13)") },
+    { HRDATAD (SP,     cpu_ctx[1].R[14], 32, "stack pointer (R14)") },
+    { HRDATAD (PC,     cpu_ctx[1].R[15], 32, "program counter (R15)") },
+    { HRDATAD (PSL,    cpu_ctx[1].PSL,   32, "processor status longword") },
+    { HRDATAD (SCBB,   cpu_ctx[1].SCBB,  32, "system control block base") },
+    { HRDATAD (PCBB,   cpu_ctx[1].PCBB,  32, "process control block base") },
+    { HRDATAD (SBR,    cpu_ctx[1].SBR,   32, "system base register") },
+    { HRDATAD (SLR,    cpu_ctx[1].SLR,   22, "system length register") },
+    { HRDATAD (P0BR,   cpu_ctx[1].P0BR,  32, "P0 base register") },
+    { HRDATAD (P1BR,   cpu_ctx[1].P1BR,  32, "P1 base register") },
+    { FLDATAD (MAPEN,  cpu_ctx[1].mapen,  0, "memory management enable") },
+    { FLDATAD (RUN,    cpu_mp_run[1],     0, "processor runs (0 = halted, console mode)"), REG_RO },
+    { NULL }
+    };
+
+/* SHOW KA1 STATE */
+
+t_stat ka_show_state (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+if (cpu_mp_run[1])
+    fprintf (st, "running, PC=%08X, PSL=%08X", cpu_ctx[1].R[15], cpu_ctx[1].PSL);
+else
+    fprintf (st, "halted (console mode), PC=%08X", cpu_ctx[1].R[15]);
+return SCPE_OK;
+}
+#else
 REG ka1_reg[] = {
     { NULL }
     };
+#endif
+
+/* KA1 help */
+
+t_stat ka1_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+{
+fprintf (st, "KA820 attached processor (KA1): a VAX 8300\n\n");
+fprintf (st, "SET KA1 ENABLE adds a second KA820 at VAXBI node 1.  The primary (KA0,\n");
+fprintf (st, "the CPU device) starts it through the console channel between the\n");
+fprintf (st, "processors (RXCD register) with the console commands I, D/G and S, as on\n");
+fprintf (st, "a real VAX 8300.  Both processors execute; they take turns on the host,\n");
+fprintf (st, "switching every CPU QUANTUM instructions (default 100) at an instruction\n");
+fprintf (st, "boundary.  Simulated time runs with the primary, so in guest time both run\n");
+fprintf (st, "at full speed; with SET SOUND ENABLED (THROTTLE 400K) each processor gets\n");
+fprintf (st, "400K instructions per second.  The host does not idle while KA1 runs.\n\n");
+fprintf (st, "VAX/VMS V4.4 and later (with the VMS/8300 multiprocessing key) run it as\n");
+fprintf (st, "an attached processor (asymmetric multiprocessing).  VMS V4.7, as tested:\n\n");
+fprintf (st, "   $ DEFINE/SYSTEM/EXEC MP MP8SS\n");
+fprintf (st, "   $ START/CPU\n");
+fprintf (st, "   $ SHOW CPU\n");
+fprintf (st, "           Attached processor is in the IDLE state.\n\n");
+fprintf (st, "(The image SYS$SYSTEM:MP8SS.EXE must exist; if the kit has it as\n");
+fprintf (st, "MP_8SS.EXE, copy it.)  STOP/CPU halts it; VMS then parks it until the next\n");
+fprintf (st, "START/CPU.  The attached processor takes only its own clock, inter-\n");
+fprintf (st, "processor and software interrupts; all device interrupts go to KA0.\n\n");
+fprintf (st, "SHOW KA1 STATE shows whether it runs; EXAMINE KA1 PC, PSL, R0 ... show its\n");
+fprintf (st, "registers (EXAMINE CPU ... and memory examines use KA0).  A stop while\n");
+fprintf (st, "KA1 runs prints KA1's PC first.  SET KA1 DEBUG=RXCD;MP traces the console\n");
+fprintf (st, "characters and the start/halt of the attached processor.\n\n");
+fprint_set_help (st, dptr);
+fprint_show_help (st, dptr);
+fprint_reg_help (st, dptr);
+return SCPE_OK;
+}
+
+const char *ka1_description (DEVICE *dptr)
+{
+return "KA820 attached processor";
+}
 
 /* Debug flags (on KA1: the second processor and its console traffic) */
 
@@ -156,7 +252,8 @@ DEVICE ka_dev[] = {
     1, 16, 16, 1, 16, 8,
     NULL, NULL, &ka_reset,
     NULL, NULL, NULL,
-    &ka1_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS | DEV_DEBUG, 0, ka_deb
+    &ka1_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS | DEV_DEBUG, 0, ka_deb,
+    NULL, NULL, &ka1_help, NULL, NULL, &ka1_description
     }
     };
 
