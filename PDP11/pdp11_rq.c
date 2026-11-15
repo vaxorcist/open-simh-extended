@@ -153,9 +153,20 @@ extern int32 fault_PC;
 extern int32 MMR2;
 #endif
 
+/* VAX 8200/8300: a fifth controller, the KDB50 on the VAXBI (device KDB).
+   It runs the same MSCP server as the Unibus/Qbus controllers; its host
+   interface (BIIC registers, IP/SA in the BIIC general purpose registers,
+   BI interrupts, physical memory access) is at the end of this file. */
+
+#if defined (VAX_820) && !defined (RQ_NUMCT)
+#define RQ_KDB          1
+#define RQ_KDB_CIDX     4                               /* its controller index */
+#define RQ_NUMCT        5
+#endif
+
 #if !defined (RQ_NUMCT)
 #define RQ_NUMCT        4
-#elif (RQ_NUMCT > 4)
+#elif (RQ_NUMCT > 4) && !defined (RQ_KDB)
 #error "Assertion failure: RQ_NUMCT exceeds 4"
 #endif
 
@@ -977,6 +988,10 @@ x  RF75  ?    ?     ?     ?    ?    ?     ?
 #define UDA50_UQPM      2
 #define UDA50_MODEL     2
 
+#define KDB50_CTYPE     11              // VAXBI SDI (RAxx) controller (VAX 8200 only,
+#define KDB50_UQPM      18              //   device KDB; MSCP$K_CM_KDB50 = 18)
+#define KDB50_MODEL     18
+
 struct drvtyp {
     uint16      sect;                                   /* sectors */
     int32       surf;                                   /* surfaces */
@@ -1102,6 +1117,7 @@ static struct ctlrtyp ctlr_tab[] = {
     RQ_CTLR (KRU50),
     RQ_CTLR (RQDX4),
     RQ_CTLR (UDA50),
+    RQ_CTLR (KDB50),
     { 0 }
     };
 
@@ -1394,6 +1410,13 @@ t_stat rq_boot (int32 unitno, DEVICE *dptr);
 t_stat rq_set_wlk (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rq_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rq_set_ctype (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat rq_show_addr (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat rq_show_vec (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+#if defined (RQ_KDB)
+t_stat kdb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat kdb_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat kdb_show_node_nl (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+#endif
 t_stat rq_set_plug (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat rq_show_plug (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat rq_set_drives (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
@@ -1430,6 +1453,8 @@ static t_bool rq_unit_enabled (UNIT *uptr);
 static double rq_flp_xfer_us (UNIT *uptr, uint32 lbn, uint32 bc);
 
 t_bool rq_step4 (MSC *cp);
+void rq_ip_read (int32 cidx);
+void rq_sa_write (int32 cidx, int32 data);
 t_bool rq_mscp (MSC *cp, uint16 pkt, t_bool q);
 t_bool rq_abo (MSC *cp, uint16 pkt, t_bool q);
 t_bool rq_avl (MSC *cp, uint16 pkt, t_bool q);
@@ -1454,10 +1479,34 @@ t_bool rq_getdesc (MSC *cp, struct uq_ring *ring, uint32 *desc);
 t_bool rq_putdesc (MSC *cp, struct uq_ring *ring, uint32 desc);
 uint16 rq_rw_valid (MSC *cp, uint16 pkt, UNIT *uptr, uint16 cmd);
 t_bool rq_rw_end (MSC *cp, UNIT *uptr, uint16 flg, uint16 sts);
-uint32 rq_map_ba (uint32 ba, uint32 ma);
-int32 rq_readb (uint32 ba, int32 bc, uint32 ma, uint8 *buf);
-int32 rq_readw (uint32 ba, int32 bc, uint32 ma, uint16 *buf);
-int32 rq_writew (uint32 ba, int32 bc, uint32 ma, uint16 *buf);
+uint32 rq_map_ba (MSC *cp, uint32 ba, uint32 ma);
+int32 rq_readb (MSC *cp, uint32 ba, int32 bc, uint32 ma, uint8 *buf);
+int32 rq_readw (MSC *cp, uint32 ba, int32 bc, uint32 ma, uint16 *buf);
+int32 rq_writew (MSC *cp, uint32 ba, int32 bc, uint32 ma, uint16 *buf);
+
+/* Host memory access of a controller: through the Unibus/Qbus map, or
+   for the KDB50 straight to physical memory over the VAXBI.  Like the
+   Map_ routines they return the number of bytes NOT transferred. */
+
+#if defined (RQ_KDB)
+#define RQ_IS_KDB(cp)   ((cp)->cnum == RQ_KDB_CIDX)
+int32 kdb_readb (uint32 pa, int32 bc, uint8 *buf);
+int32 kdb_readw (uint32 pa, int32 bc, uint16 *buf);
+int32 kdb_writew (uint32 pa, int32 bc, uint16 *buf);
+t_bool kdb_read_pte (uint32 pa, uint32 *pte);
+void kdb_update_int (void);
+uint32 kdb_vector (void);
+#define RQ_RB(cp,a,n,b) (RQ_IS_KDB (cp) ? kdb_readb (a, n, b) : Map_ReadB (a, n, b))
+#define RQ_RW(cp,a,n,b) (RQ_IS_KDB (cp) ? kdb_readw (a, n, b) : Map_ReadW (a, n, b))
+#define RQ_WW(cp,a,n,b) (RQ_IS_KDB (cp) ? kdb_writew (a, n, b) : Map_WriteW (a, n, b))
+#define RQ_HAS_VEC(cp)  (((cp)->s1dat & SA_S1H_VEC) || (RQ_IS_KDB (cp) && kdb_vector ()))
+#else
+#define RQ_IS_KDB(cp)   FALSE
+#define RQ_RB(cp,a,n,b) Map_ReadB (a, n, b)
+#define RQ_RW(cp,a,n,b) Map_ReadW (a, n, b)
+#define RQ_WW(cp,a,n,b) Map_WriteW (a, n, b)
+#define RQ_HAS_VEC(cp)  ((cp)->s1dat & SA_S1H_VEC)
+#endif
 void rq_putr (MSC *cp, uint16 pkt, uint16 cmd, uint16 flg,
     uint16 sts, uint16 lnt, uint16 typ);
 void rq_putr_unit (MSC *cp, uint16 pkt, UNIT *uptr, uint16 lu, t_bool all);
@@ -1697,10 +1746,14 @@ MTAB rq_mod[] = {
       &set_addr_flt, NULL, NULL, "Enable autoconfiguration of address & vector" },
 #else
     { MTAB_XTD|MTAB_VDV, 004, "ADDRESS", NULL,
-      NULL, &show_addr, NULL, "Bus address" },
+      NULL, &rq_show_addr, NULL, "Bus address (KDB: VAXBI node)" },
+#endif
+#if defined (RQ_KDB)
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR|MTAB_NMO, 0, "NODE", "NODE=n",
+      &kdb_set_node, &kdb_show_node_nl, NULL, "KDB50: VAXBI node number (default 6)" },
 #endif
     { MTAB_XTD|MTAB_VDV, 0, "VECTOR", NULL,
-      NULL, &show_vec, NULL, "Interrupt vector" },
+      NULL, &rq_show_vec, NULL, "Interrupt vector" },
     { MTAB_XTD | MTAB_VDV, 0, "TYPE", NULL,
       NULL, &rq_show_ctype, NULL, "Display controller type" },
     { 0 }
@@ -1935,12 +1988,23 @@ DEVICE rqd_dev = {
     &rq_description
     };
 
+#if defined (RQ_KDB)
+extern DEVICE kdb_dev;
+extern MSC kdb_ctx;
+#endif
+
 static DEVICE *rq_devmap[RQ_NUMCT] = {
     &rq_dev, &rqb_dev, &rqc_dev, &rqd_dev
+#if defined (RQ_KDB)
+    , &kdb_dev
+#endif
     };
 
 static MSC *rq_ctxmap[RQ_NUMCT] = {
     &rq_ctx, &rqb_ctx, &rqc_ctx, &rqd_ctx
+#if defined (RQ_KDB)
+    , &kdb_ctx
+#endif
     };
 
 /* I/O dispatch routines, I/O addresses 17772150 - 17772152
@@ -1966,13 +2030,7 @@ switch ((PA >> 1) & 01) {                               /* decode PA<1> */
 
     case 0:                                             /* IP */
         *data = 0;                                      /* reads zero */
-        if (cp->csta == CST_S3_PPB)                     /* waiting for poll? */
-            rq_step4 (cp);
-        else if (cp->csta == CST_UP) {                  /* if up */
-            sim_debug (DBG_REQ, dptr, "poll started, PC=%X\n", OLDPC);
-            cp->pip = 1;                                /* poll host */
-            sim_activate (dptr->units + RQ_QUEUE, rq_qtime);
-            }
+        rq_ip_read (cidx);
         break;
 
     case 1:                                             /* SA */
@@ -2003,15 +2061,42 @@ switch ((PA >> 1) & 01) {                               /* decode PA<1> */
         break;
 
     case 1:                                             /* SA */
-        cp->saw = data;
-        if (cp->csta < CST_S4)                          /* stages 1-3 */
-            sim_activate (dptr->units + RQ_QUEUE, rq_itime);
-        else if (cp->csta == CST_S4)                    /* stage 4 (fast) */
-            sim_activate (dptr->units + RQ_QUEUE, rq_itime4);
+        rq_sa_write (cidx, data);
         break;
         }
 
 return SCPE_OK;
+}
+
+/* IP read: start the purge/poll test's step 4, or poll the host's
+   command ring (shared by all controllers, KDB50 included). */
+
+void rq_ip_read (int32 cidx)
+{
+MSC *cp = rq_ctxmap[cidx];
+DEVICE *dptr = rq_devmap[cidx];
+
+if (cp->csta == CST_S3_PPB)                             /* waiting for poll? */
+    rq_step4 (cp);
+else if (cp->csta == CST_UP) {                          /* if up */
+    sim_debug (DBG_REQ, dptr, "poll started, PC=%X\n", OLDPC);
+    cp->pip = 1;                                        /* poll host */
+    sim_activate (dptr->units + RQ_QUEUE, rq_qtime);
+    }
+}
+
+/* SA write: host data for the initialization steps. */
+
+void rq_sa_write (int32 cidx, int32 data)
+{
+MSC *cp = rq_ctxmap[cidx];
+DEVICE *dptr = rq_devmap[cidx];
+
+cp->saw = data;
+if (cp->csta < CST_S4)                                  /* stages 1-3 */
+    sim_activate (dptr->units + RQ_QUEUE, rq_itime);
+else if (cp->csta == CST_S4)                            /* stage 4 (fast) */
+    sim_activate (dptr->units + RQ_QUEUE, rq_itime4);
 }
 
 /* Map physical address to device context */
@@ -2055,7 +2140,7 @@ if (lnt > SA_COMM_MAX)                                  /* paranoia */
     lnt = SA_COMM_MAX;
 for (i = 0; i < (lnt >> 1); i++)                        /* clr buffer */
     zero[i] = 0;
-if (Map_WriteW (base, lnt, zero))                       /* zero comm area */
+if (RQ_WW (cp, base, lnt, zero))                        /* zero comm area */
     return rq_fatal (cp, PE_QWE);                       /* error? */
 cp->sa = SA_S4 |                                        /* send step 4 */
     (ctlr_tab[cp->ctype].uqpm << SA_S4C_V_MOD) |
@@ -2688,13 +2773,20 @@ sim_activate_notbefore (uptr, uptr->iostarttime+rq_xtime);
 
 /* Map buffer address */
 
-uint32 rq_map_ba (uint32 ba, uint32 ma)
+uint32 rq_map_ba (MSC *cp, uint32 ba, uint32 ma)
 {
 #if defined (VM_VAX)                                    /* VAX version */
 int32 idx;
 uint32 rg;
 
 idx = (VA_GETVPN(ba) << 2);                            /* map register index */
+#if defined (RQ_KDB)
+if (RQ_IS_KDB (cp)) {                                  /* KDB50: map base is the */
+    if (!kdb_read_pte (ma + idx, &rg))                 /* physical address of PTEs */
+        return 0;
+    }
+else
+#endif
 rg = ReadL (ma + idx);                                 /* map register */
 if (rg & PTE_V)                                        /* valid? */
     return ((rg & RQ_M_PFN) << VA_N_OFF) | (ba & VA_M_OFF);
@@ -2704,7 +2796,7 @@ return 0;
 
 /* Read byte buffer from memory */
 
-int32 rq_readb (uint32 ba, int32 bc, uint32 ma, uint8 *buf)
+int32 rq_readb (MSC *cp, uint32 ba, int32 bc, uint32 ma, uint8 *buf)
 {
 #if defined (VM_VAX)                                    /* VAX version */
 int32 lbc, t, tbc = 0;
@@ -2712,11 +2804,11 @@ uint32 pba;
 
 if (ba & RQ_MAPXFER) {                                  /* mapped xfer? */
     while (tbc < bc) {
-        if (!(pba = rq_map_ba (ba, ma)))                /* get physical ba */
+        if (!(pba = rq_map_ba (cp, ba, ma)))                /* get physical ba */
             return (bc - tbc);
         lbc = 0x200 - (ba & VA_M_OFF);                  /* bc for this tx */
         if (lbc > (bc - tbc)) lbc = (bc - tbc);
-        t = Map_ReadB (pba, lbc, buf);
+        t = RQ_RB (cp, pba, lbc, buf);
         tbc += (lbc - t);                               /* bytes xfer'd so far */
         if (t) return (bc - tbc);                       /* incomplete xfer? */
         ba += lbc;
@@ -2725,12 +2817,12 @@ if (ba & RQ_MAPXFER) {                                  /* mapped xfer? */
     return 0;
     }
 #endif
-return Map_ReadB (ba, bc, buf);                         /* unmapped xfer */
+return RQ_RB (cp, ba, bc, buf);                         /* unmapped xfer */
 }
 
 /* Read word buffer from memory */
 
-int32 rq_readw (uint32 ba, int32 bc, uint32 ma, uint16 *buf)
+int32 rq_readw (MSC *cp, uint32 ba, int32 bc, uint32 ma, uint16 *buf)
 {
 #if defined (VM_VAX)                                    /* VAX version */
 int32 lbc, t, tbc = 0;
@@ -2738,11 +2830,11 @@ uint32 pba;
 
 if (ba & RQ_MAPXFER) {                                  /* mapped xfer? */
     while (tbc < bc) {
-        if (!(pba = rq_map_ba (ba, ma)))                /* get physical ba */
+        if (!(pba = rq_map_ba (cp, ba, ma)))                /* get physical ba */
             return (bc - tbc);
         lbc = 0x200 - (ba & VA_M_OFF);                  /* bc for this tx */
         if (lbc > (bc - tbc)) lbc = (bc - tbc);
-        t = Map_ReadW (pba, lbc, buf);
+        t = RQ_RW (cp, pba, lbc, buf);
         tbc += (lbc - t);                               /* bytes xfer'd so far */
         if (t) return (bc - tbc);                       /* incomplete xfer? */
         ba += lbc;
@@ -2751,12 +2843,12 @@ if (ba & RQ_MAPXFER) {                                  /* mapped xfer? */
     return 0;
     }
 #endif
-return Map_ReadW (ba, bc, buf);                         /* unmapped xfer */
+return RQ_RW (cp, ba, bc, buf);                         /* unmapped xfer */
 }
 
 /* Write word buffer to memory */
 
-int32 rq_writew (uint32 ba, int32 bc, uint32 ma, uint16 *buf)
+int32 rq_writew (MSC *cp, uint32 ba, int32 bc, uint32 ma, uint16 *buf)
 {
 #if defined (VM_VAX)                                    /* VAX version */
 int32 lbc, t, tbc = 0;
@@ -2764,11 +2856,11 @@ uint32 pba;
 
 if (ba & RQ_MAPXFER) {                                  /* mapped xfer? */
     while (tbc < bc) {
-        if (!(pba = rq_map_ba (ba, ma)))                /* get physical ba */
+        if (!(pba = rq_map_ba (cp, ba, ma)))                /* get physical ba */
             return (bc - tbc);
         lbc = 0x200 - (ba & VA_M_OFF);                  /* bc for this tx */
         if (lbc > (bc - tbc)) lbc = (bc - tbc);
-        t = Map_WriteW (pba, lbc, buf);
+        t = RQ_WW (cp, pba, lbc, buf);
         tbc += (lbc - t);                               /* bytes xfer'd so far */
         if (t) return (bc - tbc);                       /* incomplete xfer? */
         ba += lbc;
@@ -2777,7 +2869,7 @@ if (ba & RQ_MAPXFER) {                                  /* mapped xfer? */
     return 0;
     }
 #endif
-return Map_WriteW (ba, bc, buf);                        /* unmapped xfer */
+return RQ_WW (cp, ba, bc, buf);                        /* unmapped xfer */
 }
 
 /* Unit service for data transfer commands */
@@ -2834,7 +2926,7 @@ if (!uptr->io_complete) { /* Top End (I/O Initiation) Processing */
         }
 
     else if (cmd == OP_WR) {                            /* write? */
-        t = rq_readw (ba, tbc, ma, (uint16 *)uptr->rqxb);/* fetch buffer */
+        t = rq_readw (cp, ba, tbc, ma, (uint16 *)uptr->rqxb);/* fetch buffer */
         if ((abc = tbc - t)) {                          /* any xfer? */
             wwc = ((abc + (RQ_NUMBY - 1)) & ~(RQ_NUMBY - 1)) >> 1;
             for (i = (abc >> 1); i < wwc; i++)
@@ -2856,7 +2948,7 @@ else { /* Bottom End (After I/O processing) */
         }
 
     else if (cmd == OP_WR) {                            /* write? */
-        t = rq_readw (ba, tbc, ma, (uint16 *)uptr->rqxb);/* fetch buffer */
+        t = rq_readw (cp, ba, tbc, ma, (uint16 *)uptr->rqxb);/* fetch buffer */
         abc = tbc - t;                                  /* any xfer? */
         if (t) {                                        /* nxm? */
             PUTP32 (pkt, RW_WBCL, bc - abc);            /* adj bc */
@@ -2870,7 +2962,7 @@ else { /* Bottom End (After I/O processing) */
     else {
         sim_disk_data_trace(uptr, (uint8 *)uptr->rqxb, bl, tbc, "sim_disk_rdsect", DBG_DAT & rq_devmap[cp->cnum]->dctrl, DBG_REQ);
         if ((cmd == OP_RD) && !err) {                   /* read? */
-            if ((t = rq_writew (ba, tbc, ma, (uint16 *)uptr->rqxb))) {/* store, nxm? */
+            if ((t = rq_writew (cp, ba, tbc, ma, (uint16 *)uptr->rqxb))) {/* store, nxm? */
                 PUTP32 (pkt, RW_WBCL, bc - (tbc - t));  /* adj bc */
                 PUTP32 (pkt, RW_WBAL, ba + (tbc - t));  /* adj ba */
                 if (rq_hbe (cp, uptr))                  /* post err log */
@@ -2881,7 +2973,7 @@ else { /* Bottom End (After I/O processing) */
         else if ((cmd == OP_CMP) && !err) {             /* compare? */
             uint8 dby, mby;
             for (i = 0; i < tbc; i++) {                 /* loop */
-                if (rq_readb (ba + i, 1, ma, &mby)) {   /* fetch, nxm? */
+                if (rq_readb (cp, ba + i, 1, ma, &mby)) {   /* fetch, nxm? */
                     PUTP32 (pkt, RW_WBCL, bc - i);      /* adj bc */
                     PUTP32 (pkt, RW_WBAL, bc - i);      /* adj ba */
                     if (rq_hbe (cp, uptr))              /* post err log */
@@ -3154,7 +3246,7 @@ if (!rq_deqf (cp, pkt))                                 /* get cmd pkt */
     return ERR;
 cp->hat = 0;                                            /* dsbl hst timer */
 addr = desc & UQ_ADDR;                                  /* get Q22 addr */
-if (Map_ReadW (addr + UQ_HDR_OFF, RQ_PKT_SIZE, cp->pak[*pkt].d))
+if (RQ_RW (cp, addr + UQ_HDR_OFF, RQ_PKT_SIZE, cp->pak[*pkt].d))
     return rq_fatal (cp, PE_PRE);                       /* read pkt */
 return rq_putdesc (cp, &cp->cq, desc);                  /* release desc */
 }
@@ -3191,7 +3283,7 @@ if ((GETP (pkt, UQ_HCTC, TYP) == UQ_TYP_SEQ) &&         /* seq packet? */
     cp->credits = cp->credits - cr;                     /* decr credits */
     cp->pak[pkt].d[UQ_HCTC] |= ((cr + 1) << UQ_HCTC_V_CR);
     }
-if (Map_WriteW (addr + UQ_HDR_OFF, lnt, cp->pak[pkt].d))
+if (RQ_WW (cp, addr + UQ_HDR_OFF, lnt, cp->pak[pkt].d))
     return rq_fatal (cp, PE_PWE);                       /* write pkt */
 rq_enqh (cp, &cp->freq, pkt);                           /* pkt is free */
 cp->pbsy = cp->pbsy - 1;                                /* decr busy cnt */
@@ -3208,7 +3300,7 @@ uint32 addr = ring->ba + ring->idx;
 uint16 d[2];
 
 *desc = 0;
-if (Map_ReadW (addr, 4, d))                             /* fetch desc */
+if (RQ_RW (cp, addr, 4, d))                             /* fetch desc */
     return rq_fatal (cp, PE_QRE);                       /* err? dead */
 *desc = ((uint32) d[0]) | (((uint32) d[1]) << 16);
 return OK;
@@ -3228,14 +3320,14 @@ uint16 d[2];
 
 d[0] = newd & 0xFFFF;                                   /* 32b to 16b */
 d[1] = (newd >> 16) & 0xFFFF;
-if (Map_WriteW (addr, 4, d))                            /* store desc */
+if (RQ_WW (cp, addr, 4, d))                             /* store desc */
     return rq_fatal (cp, PE_QWE);                       /* err? dead */
 if (desc & UQ_DESC_F) {                                 /* was F set? */
     if (ring->lnt <= 4)                                 /* lnt = 1? intr */
         rq_ring_int (cp, ring);
     else {                                              /* prv desc */
         prva = ring->ba + ((ring->idx - 4) & (ring->lnt - 1));
-        if (Map_ReadW (prva, 4, d))                     /* read prv */
+        if (RQ_RW (cp, prva, 4, d))                     /* read prv */
             return rq_fatal (cp, PE_QRE);
         prvd = ((uint32) d[0]) | (((uint32) d[1]) << 16);
         if (prvd & UQ_DESC_OWN)
@@ -3317,7 +3409,7 @@ return;
 void rq_init_int (MSC *cp)
 {
 if ((cp->s1dat & SA_S1H_IE) &&                          /* int enab & */
-    (cp->s1dat & SA_S1H_VEC))                           /* ved set? int */
+    RQ_HAS_VEC (cp))                                    /* vec set? int */
     rq_setint (cp);
 return;
 }
@@ -3329,8 +3421,8 @@ void rq_ring_int (MSC *cp, struct uq_ring *ring)
 uint32 iadr = cp->comm + ring->ioff;                    /* addr intr wd */
 uint16 flag = 1;
 
-(void)Map_WriteW (iadr, 2, &flag);                      /* write flag */
-if (cp->s1dat & SA_S1H_VEC)                             /* if enb, intr */
+(void)RQ_WW (cp, iadr, 2, &flag);                       /* write flag */
+if (RQ_HAS_VEC (cp))                                    /* if enb, intr */
     rq_setint (cp);
 return;
 }
@@ -3342,6 +3434,12 @@ void rq_setint (MSC *cp)
 sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_setint\n");
 
 cp->irq = 1;                                            /* set ctrl int */
+#if defined (RQ_KDB)
+if (RQ_IS_KDB (cp)) {                                   /* KDB50: a BI interrupt */
+    kdb_update_int ();
+    return;
+    }
+#endif
 SET_INT (RQ);                                           /* set master int */
 return;
 }
@@ -3356,8 +3454,16 @@ MSC *ncp;
 sim_debug (DBG_TRC, rq_devmap[cp->cnum], "rq_clrint\n");
 
 cp->irq = 0;                                            /* clr ctrl int */
+#if defined (RQ_KDB)
+if (RQ_IS_KDB (cp)) {                                   /* KDB50: a BI interrupt */
+    kdb_update_int ();
+    return;
+    }
+#endif
 for (i = 0; i < RQ_NUMCT; i++) {                        /* loop thru ctrls */
     ncp = rq_ctxmap[i];                                 /* get context */
+    if (RQ_IS_KDB (ncp))                                /* not on the Unibus */
+        continue;
     if (ncp->irq) {                                     /* other interrupt? */
         SET_INT (RQ);                                   /* yes, set master */
         return;
@@ -3378,6 +3484,8 @@ DIB *dibp;
 
 for (i = 0; i < RQ_NUMCT; i++) {                        /* loop thru ctrl */
     ncp = rq_ctxmap[i];                                 /* get context */
+    if (RQ_IS_KDB (ncp))                                /* not on the Unibus */
+        continue;
     if (ncp->irq) {                                     /* ctrl int set? */
         dptr = rq_devmap[i];                            /* get device */
         dibp = (DIB *) dptr->ctxt;                      /* get DIB */
@@ -3556,6 +3664,8 @@ MSC *cp = rq_ctxmap[uptr->cnum];
 
 if (val < 0)
     return SCPE_ARG;
+if (RQ_IS_KDB (cp))                                     /* fixed type */
+    return sim_messagef (SCPE_NOFNC, "The KDB is a KDB50; its type cannot be changed\n");
 if (sim_sound_enabled ())                               /* realism: units follow */
     return rq_rlz_set_ctype (uptr, val);
 cp->ctype = val;
@@ -3691,7 +3801,7 @@ cp->csta = CST_S1;                                      /* init stage 1 */
 cp->s1dat = 0;                                          /* no S1 data */
 dibp->vec = 0;                                          /* no vector */
 cp->comm = 0;                                           /* no comm region */
-if (UNIBUS)                                             /* Unibus? */
+if (UNIBUS || RQ_IS_KDB (cp))                           /* Unibus or VAXBI? */
     cp->sa = SA_S1 | SA_S1C_DI | SA_S1C_MP;
 else
     cp->sa = SA_S1 | SA_S1C_Q22 | SA_S1C_DI | SA_S1C_MP;/* init SA val */
@@ -4663,11 +4773,12 @@ for (u = 0; u < n; u++) {
     }
 }
 
-/* An SDI controller: UDA50, UDA50A (Unibus), KDA50 (Qbus) */
+/* An SDI controller: UDA50, UDA50A (Unibus), KDA50 (Qbus), KDB50 (VAXBI) */
 
 static t_bool rq_is_sdi_ctype (int32 ct)
 {
-return ((ct == UDA50_CTYPE) || (ct == UDA50A_CTYPE) || (ct == KDA50_CTYPE));
+return ((ct == UDA50_CTYPE) || (ct == UDA50A_CTYPE) || (ct == KDA50_CTYPE) ||
+        (ct == KDB50_CTYPE));
 }
 
 /* Check the rules for one controller.  Returns SCPE_OK, or prints the
@@ -5172,3 +5283,410 @@ static char buf[80];
 sprintf (buf, "%s MSCP disk controller", ctlr_tab[rq_ctxmap[dptr->units->cnum]->ctype].name);
 return buf;
 }
+
+/* Bus address and vector: the KDB50 has a BI node instead of an I/O page
+   address, and its vector is the one the host set (UINTRCSR or step 1) */
+
+t_stat rq_show_addr (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+#if defined (RQ_KDB)
+if (RQ_IS_KDB (rq_ctxmap[uptr->cnum]))
+    return kdb_show_node (st, uptr, val, desc);
+#endif
+#if defined (VM_PDP11)
+return show_addr (st, uptr, val, desc);
+#else
+return show_addr (st, uptr, val, desc);
+#endif
+}
+
+t_stat rq_show_vec (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+#if defined (RQ_KDB)
+if (RQ_IS_KDB (rq_ctxmap[uptr->cnum])) {
+    fprintf (st, "vector=%X", kdb_vector ());
+    return SCPE_OK;
+    }
+#endif
+return show_vec (st, uptr, val, desc);
+}
+
+#if defined (RQ_KDB)
+
+/* ---------------------------------------------------------------------------
+   KDB50: the VAXBI host interface (VAX 8200/8300)
+
+   References: EK-KDB50-UG-001 KDB50 Controller User Guide, chapter 3;
+   VMS V4.7 (MSCP$K_CM_KDB50 = 18, BTD$K_BDA = 33).
+
+   The KDB50 is a VAXBI node with the usual BIIC registers (DTYPE 010E).
+   Its UQSSP registers are the BIIC general purpose registers:
+
+     bb+F2   IP     upper half of GPR0: a read polls the command ring
+                    (writing it has no effect, unlike the UDA50)
+     bb+F4   SAr    lower half of GPR1, read only
+     bb+F6   SAw    upper half of GPR1, write only
+
+   A node reset (BICSR NRST) restarts the controller: self-test (BROKE set
+   until it passes, which VMS waits for), then step 1 in SA.  The host
+   sets the interrupt vector in UINTRCSR (a step 1 vector is used if
+   UINTRCSR has none); the controller interrupts at BR5 through the node's
+   request bit (vector supplied through nexusA, vax820_bi.c).
+
+   Memory: the KDB50 is a BI master and reads and writes physical memory.
+   A mapped buffer descriptor (bit 31 set) has the physical address of the
+   buffer's PTEs in its map field (rq_map_ba).
+   --------------------------------------------------------------------------- */
+
+#include "vax_bi.h"
+#include "vax_bi_dma.h"
+
+#define KDB_DEF_NODE    6                               /* decision D2 */
+#define KDB_DTYPE       0x0511010E                      /* microcode 05, SDI 1, proc 1, KDB50 */
+#define KDB_IPL         0x15                            /* BR5 */
+
+#define KOF_DTYPE       0x000                           /* BIIC registers */
+#define KOF_BICSR       0x004
+#define KOF_BER         0x008
+#define KOF_EICR        0x00C
+#define KOF_IDEST       0x010
+#define KOF_IMSK        0x014
+#define KOF_FIDEST      0x018
+#define KOF_ISRC        0x01C
+#define KOF_SADR        0x020
+#define KOF_EADR        0x024
+#define KOF_BCICSR      0x028
+#define KOF_UINTRCSR    0x040
+#define KOF_GPR0        0x0F0                           /* IP in <31:16> */
+#define KOF_GPR1        0x0F4                           /* SAr <15:0>, SAw <31:16> */
+#define KOF_GPR2        0x0F8
+#define KOF_GPR3        0x0FC
+
+extern uint32 nexus_req[NEXUS_HLVL];
+
+int32 kdb_ack (void);
+t_stat kdb_rd (int32 *val, int32 pa, int32 lnt);
+t_stat kdb_wr (int32 val, int32 pa, int32 lnt);
+t_stat kdb_reset (DEVICE *dptr);
+
+static BIIC kdb_biic;                                   /* BIIC registers */
+
+MSC kdb_ctx = { RQ_KDB_CIDX };
+
+DIB kdb_dib = { KDB_DEF_NODE, 0, &kdb_rd, &kdb_wr, 0, 0, 0, { &kdb_ack } };
+
+UNIT kdb_unit[RQ_MAXDR + 2] = {
+    { UDATA (&rq_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE+
+            (RA81_DTYPE << UNIT_V_DTYPE), RQ_SIZE (RA81)) },
+    { UDATA (&rq_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE+
+            (RA81_DTYPE << UNIT_V_DTYPE), RQ_SIZE (RA81)) },
+    { UDATA (&rq_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE+
+            (RA81_DTYPE << UNIT_V_DTYPE), RQ_SIZE (RA81)) },
+    { UDATA (&rq_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE+
+            (RA81_DTYPE << UNIT_V_DTYPE), RQ_SIZE (RA81)) },
+    };
+
+REG kdb_reg[] = {
+    { GRDATAD (SA,      kdb_ctx.sa,      DEV_RDX, 16, 0, "status/address register") },
+    { GRDATAD (SAW,     kdb_ctx.saw,     DEV_RDX, 16, 0, "written data") },
+    { GRDATAD (S1DAT,   kdb_ctx.s1dat,   DEV_RDX, 16, 0, "step 1 init host data") },
+    { GRDATAD (COMM,    kdb_ctx.comm,    DEV_RDX, 32, 0, "comm region") },
+    { GRDATAD (CQIOFF,  kdb_ctx.cq.ioff, DEV_RDX, 32, 0, "command queue intr offset") },
+    { GRDATAD (CQBA,    kdb_ctx.cq.ba,   DEV_RDX, 32, 0, "command queue base address") },
+    { GRDATAD (CQLNT,   kdb_ctx.cq.lnt,  DEV_RDX,  8, 2, "command queue length"), REG_NZ },
+    { GRDATAD (CQIDX,   kdb_ctx.cq.idx,  DEV_RDX,  8, 2, "command queue index") },
+    { GRDATAD (RQIOFF,  kdb_ctx.rq.ioff, DEV_RDX, 32, 0, "request queue intr offset") },
+    { GRDATAD (RQBA,    kdb_ctx.rq.ba,   DEV_RDX, 32, 0, "request queue base address") },
+    { GRDATAD (RQLNT,   kdb_ctx.rq.lnt,  DEV_RDX,  8, 2, "request queue length"), REG_NZ },
+    { GRDATAD (RQIDX,   kdb_ctx.rq.idx,  DEV_RDX,  8, 2, "request queue index") },
+    { DRDATAD (FREE,    kdb_ctx.freq,                 5, "head of free packet list") },
+    { DRDATAD (RESP,    kdb_ctx.rspq,                 5, "head of response packet list") },
+    { DRDATAD (PBSY,    kdb_ctx.pbsy,                 5, "number of busy packets") },
+    { GRDATAD (CFLGS,   kdb_ctx.cflgs,   DEV_RDX, 16, 0, "controller flags") },
+    { GRDATAD (CSTA,    kdb_ctx.csta,    DEV_RDX,  4, 0, "controller state") },
+    { GRDATAD (PERR,    kdb_ctx.perr,    DEV_RDX,  9, 0, "port error number") },
+    { DRDATAD (CRED,    kdb_ctx.credits,              5, "host credits") },
+    { DRDATAD (HAT,     kdb_ctx.hat,                 17, "host available timer") },
+    { DRDATAD (HTMO,    kdb_ctx.htmo,                17, "host timeout value") },
+    { FLDATA  (PRGI,    kdb_ctx.prgi,                 0), REG_HIDDEN },
+    { FLDATA  (PIP,     kdb_ctx.pip,                  0), REG_HIDDEN },
+    { FLDATA  (IRQ,     kdb_ctx.irq,                  0), REG_HIDDEN },
+    { BINRDATA(CTYPE,   kdb_ctx.ctype,               32), REG_HIDDEN },
+    { VBRDATAD (PKTS,   kdb_ctx.pak,     DEV_RDX,    16, sizeof(rq_ctx.pak)/2, "packet buffers, 33W each, 32 entries") },
+    { URDATAD (CPKT,    kdb_unit[0].cpkt, 10, 5, 0, RQ_NUMDR, 0, "current packet, units 0 to 3") },
+    { URDATAD (UCNUM,   kdb_unit[0].cnum, 10, 5, 0, RQ_NUMDR, 0, "ctrl number, units 0 to 3") },
+    { URDATAD (PKTQ,    kdb_unit[0].pktq, 10, 5, 0, RQ_NUMDR, 0, "packet queue, units 0 to 3") },
+    { URDATAD (UFLG,    kdb_unit[0].uf,  DEV_RDX, 16, 0, RQ_NUMDR, 0, "unit flags, units 0 to 3") },
+    { URDATA  (CAPAC,   kdb_unit[0].capac, 10, T_ADDR_W, 0, RQ_NUMDR, PV_LEFT | REG_HRO) },
+    { URDATAD (PLUG,    kdb_unit[0].unit_plug, 10, 32, 0, RQ_NUMDR, PV_LEFT | REG_RO, "unit plug value, units 0 to 3") },
+    { HRDATAD (BICSR,   kdb_biic.csr,   32, "BI control and status") },
+    { HRDATAD (BER,     kdb_biic.ber,   32, "BI bus error") },
+    { HRDATAD (EINTRCSR, kdb_biic.eicr, 32, "BI error interrupt control") },
+    { HRDATAD (INTRDES, kdb_biic.idest, 16, "BI interrupt destination") },
+    { HRDATAD (BCICSR,  kdb_biic.bcic,  32, "BCI control and status") },
+    { HRDATAD (UINTRCSR, kdb_biic.uiic, 32, "BI user interrupt control (vector)") },
+    { GRDATA  (NODE,    kdb_dib.ba,     DEV_RDX, 4, 0), REG_HRO },
+    { NULL }
+    };
+
+DEVICE kdb_dev = {
+    "KDB", kdb_unit, kdb_reg, rq_mod,
+    RQ_MAXDR + 2, DEV_RDX, T_ADDR_W, 2, DEV_RDX, 16,
+    NULL, NULL, &kdb_reset,
+    &rq_boot, &rq_attach, &rq_detach,
+    &kdb_dib, DEV_NEXUS | DEV_DISABLE | DEV_DEBUG | DEV_DISK | DEV_SECTORS,
+    0, rq_debug, NULL, NULL, &rq_help, NULL, NULL,
+    &rq_description
+    };
+
+/* Physical memory, as a VAXBI master.  Return the bytes not moved. */
+
+static int32 kdb_xfer (uint32 pa, int32 bc, uint8 *buf, t_bool wr)
+{
+BI_DMA d;
+int32 err, n;
+
+bi_dma_setup (&d, pa, 0, (uint32) bc, BIDMA_PHYS, NULL, &kdb_dev, DBG_DAT);
+n = bi_dma_xfer (&d, buf, bc, wr, &err);
+if (err)
+    sim_debug (DBG_DAT, &kdb_dev, "non-existent memory at %08X\n", d.err_addr);
+return bc - n;
+}
+
+int32 kdb_readb (uint32 pa, int32 bc, uint8 *buf)
+{
+return kdb_xfer (pa, bc, buf, FALSE);
+}
+
+int32 kdb_readw (uint32 pa, int32 bc, uint16 *buf)
+{
+uint8 b[2];
+int32 i, n = bc & ~1;
+
+for (i = 0; i < n; i += 2) {                            /* little endian words */
+    if (kdb_xfer (pa + i, 2, b, FALSE))
+        return bc - i;
+    buf[i >> 1] = (uint16) (b[0] | (b[1] << 8));
+    }
+return 0;
+}
+
+int32 kdb_writew (uint32 pa, int32 bc, uint16 *buf)
+{
+uint8 b[2];
+int32 i, n = bc & ~1;
+
+for (i = 0; i < n; i += 2) {
+    b[0] = (uint8) buf[i >> 1];
+    b[1] = (uint8) (buf[i >> 1] >> 8);
+    if (kdb_xfer (pa + i, 2, b, TRUE))
+        return bc - i;
+    }
+return 0;
+}
+
+t_bool kdb_read_pte (uint32 pa, uint32 *pte)
+{
+return bi_mem_rl (pa, pte);
+}
+
+/* Interrupts */
+
+uint32 kdb_vector (void)
+{
+uint32 v = kdb_biic.uiic & BIICR_VEC;                   /* set by the host */
+
+if (v == 0)                                             /* else from step 1 */
+    v = (kdb_ctx.s1dat & SA_S1H_VEC) << 2;
+return v;
+}
+
+static int32 kdb_node (void)
+{
+return (int32) (kdb_dib.ba & 0xF);
+}
+
+void kdb_update_int (void)
+{
+if (kdb_ctx.irq && !(kdb_dev.flags & DEV_DIS))
+    nexus_req[KDB_IPL - IPL_HMIN] |= (1u << kdb_node ());
+else
+    nexus_req[KDB_IPL - IPL_HMIN] &= ~(1u << kdb_node ());
+}
+
+int32 kdb_ack (void)
+{
+if (!kdb_ctx.irq)
+    return 0;                                           /* passive release */
+rq_clrint (&kdb_ctx);
+sim_debug (DBG_REQ, &kdb_dev, "interrupt acknowledge, vector %03X\n", kdb_vector ());
+return (int32) kdb_vector ();
+}
+
+/* Node reset (BICSR NRST, power-up): the controller restarts; the
+   self-test passes at once (BROKE clear, STS set), then SA shows step 1. */
+
+static void kdb_node_reset (const char *why)
+{
+sim_debug (DBG_INI, &kdb_dev, "node reset (%s)\n", why);
+kdb_ctx.ctype = KDB50_CTYPE;
+rq_reset (&kdb_dev);
+kdb_biic.csr = (kdb_biic.csr & ~(BICSR_BRK|BICSR_INI)) | BICSR_STS;
+kdb_update_int ();
+}
+
+/* Register access (longword registers; the CPU picks bytes and words) */
+
+t_stat kdb_rd (int32 *val, int32 pa, int32 lnt)
+{
+int32 ofs = pa & 0x1FFC;
+uint32 v;
+
+switch (ofs) {
+    case KOF_DTYPE:    v = KDB_DTYPE; break;
+    case KOF_BICSR:    v = kdb_biic.csr & BICSR_RD; break;
+    case KOF_BER:      v = kdb_biic.ber; break;
+    case KOF_EICR:     v = kdb_biic.eicr & BIECR_RD; break;
+    case KOF_IDEST:    v = kdb_biic.idest & BIID_RD; break;
+    case KOF_IMSK:     v = kdb_biic.imsk & 0xFFFF0000; break;
+    case KOF_FIDEST:   v = kdb_biic.fidest & 0xFFFF0000; break;
+    case KOF_ISRC:     v = kdb_biic.isrc & 0xFFFF0000; break;
+    case KOF_SADR:     v = kdb_biic.sa & 0x3FFC0000; break;
+    case KOF_EADR:     v = kdb_biic.ea & 0x3FFC0000; break;
+    case KOF_BCICSR:   v = kdb_biic.bcic; break;
+    case KOF_UINTRCSR: v = kdb_biic.uiic & BIICR_RD; break;
+    case KOF_GPR0:                                      /* IP: a read polls */
+        v = 0;
+        if ((pa & 3) <= 2)                              /* covers bytes 2-3 */
+            rq_ip_read (RQ_KDB_CIDX);
+        break;
+    case KOF_GPR1:     v = kdb_ctx.sa & 0xFFFF; break;  /* SAr; SAw reads 0 */
+    case KOF_GPR2:
+    case KOF_GPR3:     v = 0; break;
+    default:
+        if (ofs < 0x100)                                /* other BIIC registers */
+            v = 0;
+        else
+            return SCPE_NXM;                            /* no user registers */
+        break;
+    }
+*val = (int32) v;
+sim_debug (DBG_REG, &kdb_dev, "kdb_rd (%03X) = %08X\n", pa & 0x1FFF, v);
+return SCPE_OK;
+}
+
+t_stat kdb_wr (int32 val, int32 pa, int32 lnt)
+{
+int32 ofs = pa & 0x1FFC;
+uint32 data = (uint32) val;
+
+sim_debug (DBG_REG, &kdb_dev, "kdb_wr (%03X, %d bytes) = %08X\n", pa & 0x1FFF,
+           (lnt == L_BYTE) ? 1 : ((lnt == L_WORD) ? 2 : 4), data);
+if (lnt != L_LONG) {                                    /* to a longword */
+    int32 sc = (pa & 3) << 3;
+
+    if (ofs == KOF_GPR1) {                              /* SAw is the upper word */
+        if ((lnt == L_WORD) && ((pa & 3) == 2)) {
+            rq_sa_write (RQ_KDB_CIDX, (int32) (data & 0xFFFF));
+            }
+        return SCPE_OK;
+        }
+    data = data << sc;                                  /* other registers: merge */
+    if (ofs == KOF_BICSR)
+        data = (kdb_biic.csr & ~(((lnt == L_BYTE) ? 0xFFu : 0xFFFFu) << sc)) | data;
+    }
+switch (ofs) {
+    case KOF_BICSR:
+        if (data & BICSR_RST) {                         /* node reset */
+            kdb_biic.csr = (kdb_biic.csr & ~BICSR_RW) | (data & BICSR_RW & ~BICSR_RST);
+            kdb_node_reset ("BICSR NRST");
+            break;
+            }
+        kdb_biic.csr = (kdb_biic.csr & ~BICSR_RW) | (data & BICSR_RW);
+        kdb_biic.csr &= ~(data & (BICSR_UWP|BICSR_BRK));/* write 1 to clear */
+        break;
+    case KOF_BER:      kdb_biic.ber &= ~(data & BIBER_W1C); break;
+    case KOF_EICR:
+        kdb_biic.eicr = (kdb_biic.eicr & ~BIECR_RW) | (data & BIECR_RW);
+        kdb_biic.eicr &= ~(data & BIECR_W1C);
+        break;
+    case KOF_IDEST:    kdb_biic.idest = data & BIID_RW; break;
+    case KOF_IMSK:     kdb_biic.imsk = data & 0xFFFF0000; break;
+    case KOF_FIDEST:   kdb_biic.fidest = data & 0xFFFF0000; break;
+    case KOF_ISRC:     kdb_biic.isrc &= ~(data & 0xFFFF0000); break;
+    case KOF_SADR:     kdb_biic.sa = data & 0x3FFC0000; break;
+    case KOF_EADR:     kdb_biic.ea = data & 0x3FFC0000; break;
+    case KOF_BCICSR:   kdb_biic.bcic = data; break;
+    case KOF_UINTRCSR:
+        kdb_biic.uiic = ((kdb_biic.uiic & ~BIICR_RW) | (data & BIICR_RW)) & ~(data & BIICR_W1C);
+        sim_debug (DBG_INI, &kdb_dev, "vector %03X (UINTRCSR)\n", kdb_biic.uiic & BIICR_VEC);
+        break;
+    case KOF_GPR0:                                      /* IP: writing has no effect */
+        break;
+    case KOF_GPR1:                                      /* SAw: upper word */
+        rq_sa_write (RQ_KDB_CIDX, (int32) ((data >> 16) & 0xFFFF));
+        break;
+    default:
+        if (ofs >= 0x100)
+            return SCPE_NXM;
+        break;
+    }
+return SCPE_OK;
+}
+
+/* Device reset (power-up, RESET): BIIC registers to their state after the
+   self-test, then the controller as after a node reset */
+
+t_stat kdb_reset (DEVICE *dptr)
+{
+memset (&kdb_biic, 0, sizeof (kdb_biic));
+kdb_biic.csr = (1u << BICSR_V_IF) | BICSR_STS | (kdb_node () & BICSR_NODE);
+kdb_ctx.cnum = RQ_KDB_CIDX;
+kdb_ctx.ctype = KDB50_CTYPE;
+nexus_req[KDB_IPL - IPL_HMIN] &= ~(1u << kdb_node ());
+return rq_reset (dptr);
+}
+
+/* SET KDB NODE=n */
+
+t_stat kdb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+t_stat r;
+int32 node;
+
+if (!RQ_IS_KDB (rq_ctxmap[uptr->cnum]))
+    return SCPE_NOFNC;
+if (cptr == NULL)
+    return SCPE_ARG;
+node = (int32) get_uint (cptr, 10, 15, &r);
+if (r != SCPE_OK)
+    return r;
+if (node < 2)                                           /* 0, 1: the KA820s */
+    return sim_messagef (SCPE_ARG, "Node %d is a KA820 node\n", node);
+nexus_req[KDB_IPL - IPL_HMIN] &= ~(1u << kdb_node ());
+kdb_dib.ba = (uint32) node;
+kdb_biic.csr = (kdb_biic.csr & ~BICSR_NODE) | (uint32) node;
+kdb_update_int ();
+return SCPE_OK;
+}
+
+t_stat kdb_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+if (!RQ_IS_KDB (rq_ctxmap[uptr->cnum]))
+    return SCPE_NOFNC;
+fprintf (st, "node=%d", kdb_node ());
+return SCPE_OK;
+}
+
+/* SHOW KDB NODE (an MTAB_NMO entry: SCP adds no line end) */
+
+t_stat kdb_show_node_nl (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+t_stat r = kdb_show_node (st, uptr, val, desc);
+
+if (r == SCPE_OK)
+    fprintf (st, "\n");
+return r;
+}
+
+#endif /* RQ_KDB */
