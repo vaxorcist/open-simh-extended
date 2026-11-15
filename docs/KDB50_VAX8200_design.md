@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v1, 2026-11-15 (v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v2, 2026-11-15 (v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
 # KDB50 on the VAX 8200/8300 (implementation plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **plan, waiting for Ulli's decisions** (section 9).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **plan; questions answered by Ulli, decisions D1-D6 waiting** (section 9).
 
 Sources:
 - EK-KDB50-UG-001 *KDB50 Controller User Guide*, supplied by Ulli. Chapter 3 is the programming information.
@@ -53,6 +53,7 @@ Ulli's rule: no long trial and error. Each open point gets a short, targeted tra
 | BI node | BIIC block (DTYPE 010E, BICSR, BER, EINTRCSR, INTRDES, BCICSR, UINTRCSR), node reset/self-test (BROKE while testing, as the DMB32), IP/SA in GPR0/GPR1 |
 | Interrupt | `nexusA` acknowledge (case 67) returns the host-set vector; IPL from the host's level setting (BR4/5 as set in step 1 or UINTRCSR) |
 | Boot | `vax820_bi.c` boot table: `{ "KDB", BOOT_BDA (33), ... }` with the node in the boot registers as VMB expects |
+| Default configuration | **KDB enabled by default** on the `vax8200` (system disk on the KDB50, as on a real 8200). The UDA50 behind the DWBUA (`RQ`) stays available as the alternative (decision D6) |
 
 ## 4. Sound
 
@@ -81,10 +82,10 @@ Estimated size: about 600-900 lines (BI front end, BI DMA layer, boot) plus the 
 - **RQ regression:** `pdp11_rq.c` is large and well tested; the bus layer is small, but every RQ controller on every simulator uses it (P6).
 - **Diagnostics** (EVRLF/EVRLG etc. in the User Guide) may check KDB50 details that are not documented here; not a goal.
 
-## 7. Questions for Ulli
+## 7. Questions for Ulli (answered 2026-11-15)
 
-1. Should the KDB50 also be a test target for ULTRIX later (postponed like the DMB32)?
-2. Your usual 8200 configuration: system disk on the KDB50 (as on a real 8200) or keep the RQ on the DWBUA as the default, with the KDB50 as an option?
+1. ULTRIX on the KDB50: postponed, as with the DMB32.
+2. 8200 configuration: both options; the default puts the system disk on the KDB50 (as on a real 8200), the alternative is the UDA50 behind the DWBUA.
 
 ## 8. What this plan does not do
 
@@ -99,3 +100,4 @@ Estimated size: about 600-900 lines (BI front end, BI DMA layer, boot) plus the 
 | D3 | Shared BI DMA helper | Move the DMB32's page-table walk into `VAX/vax_bi_dma.c` and use it in both (DRY; DMB32 tests P2/P3 rerun) |
 | D4 | Implementation place | Inside `pdp11_rq.c` as a controller type, not a separate copy of the MSCP server |
 | D5 | Patch number and branch | Patch 9 after patch 8 (DMB32), branch `kdb50`; also on `integration` after each tested step |
+| D6 | How "KDB50 by default" is done | `KDB` enabled by default; `RQ` (UDA50 on the DWBUA) **stays enabled** too, so existing 8200 scripts with `ATTACH RQ0` keep working; `HELP KDB`, the docs and the test scripts show the KDB50 as the standard. Alternative: disable `RQ` by default (then `SET RQ ENABLE` is needed for the DWBUA disk) |
