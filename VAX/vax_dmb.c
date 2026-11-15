@@ -69,6 +69,7 @@
 #include "vax_bi.h"
 #include "sim_tmxr.h"
 #include "vax_combo_lib.h"                     /* printer formatter (with DMF32) */
+#include "vax_bi_dma.h"                         /* DMA with VAX address translation (with KDB50) */
 
 /* ---------------------------------------------------------------------------
    Sizes
@@ -286,7 +287,7 @@
 #define RB_VALID        0x80000000
 
 /* error codes, bits <23:16> of the completion entries (3.4.8) */
-#define ER_DMA          0x10                    /* + reason<3:2> + table<1:0> */
+#define ER_DMA          BIDMA_ERR               /* + reason<3:2> + table<1:0> */
 #define  ER_T_SYS        0                      /* a system PTE */
 #define  ER_T_GBL        1                      /* a global PTE */
 #define  ER_T_PRC        2                      /* a process PTE */
@@ -304,13 +305,6 @@
 #define IT_PRINT        3
 #define DMB_IPL         0x14                    /* BR4 */
 
-/* VAX page table entries (TD 2.2.2.3) */
-#define DPTE_V           0x80000000              /* valid */
-#define DPTE_V_PROT      27
-#define DPTE_TYP0        0x04000000              /* bit 26 */
-#define DPTE_TYP1        0x00400000              /* bit 22 */
-#define DPTE_PFN         0x001FFFFF
-#define DPTE_GPTX        0x003FFFFF              /* global page table index */
 
 /* debug flags */
 #define DBG_REG         0x0001                  /* register accesses */
@@ -325,23 +319,12 @@
 #define DBG_CON         TMXR_DBG_CON
 #define DBG_TRC         TMXR_DBG_TRC
 
-/* ---------------------------------------------------------------------------
-   DMA descriptor: what the host wrote into the address, count/offset and
-   control registers of one channel.  The DMA engine moves through it; the
-   registers are updated from it when the transfer ends (the manual says
-   they are undefined while DMA.START is set).
-   --------------------------------------------------------------------------- */
+/* DMA descriptor of a channel: BI_DMA (vax_bi_dma.h), set up from what
+   the host wrote into the address, count/offset and control registers;
+   the registers are updated from it when the transfer ends (the manual
+   says they are undefined while DMA.START is set). */
 
-typedef struct {
-    uint32  addr;                               /* buffer or PTE address */
-    uint32  off;                                /* offset in the first page (PTE modes) */
-    uint32  count;                              /* characters left */
-    uint32  ctrl;                               /* DMA.PTE, DMA.PHYS */
-    uint32  pos;                                /* characters done */
-    uint32  page;                               /* translated page (pos >> 9) + 1, 0 = none */
-    uint32  pbase;                              /* its physical base */
-    uint32  err_addr;                           /* address reported with an error */
-    } DMB_DMA;
+#define DMB_DMA         BI_DMA
 
 /* ---------------------------------------------------------------------------
    State
@@ -367,7 +350,11 @@ static BIIC dmb_biic;                           /* BIIC registers */
 static uint32 dmb_maint;
 static uint32 dmb_acsr, dmb_scsr, dmb_pcsr;
 static uint32 dmb_acsr2, dmb_scsr2, dmb_pcsr2;
-static uint32 dmb_spte, dmb_spts, dmb_gpte, dmb_gpts;
+static BI_PT dmb_pt;                            /* SPTE, SPTS, GPTE, GPTS for DMA */
+#define dmb_spte        dmb_pt.spte
+#define dmb_spts        dmb_pt.spts
+#define dmb_gpte        dmb_pt.gpte
+#define dmb_gpts        dmb_pt.gpts
 static uint32 dmb_pfix, dmb_pbuffad, dmb_pbuffct, dmb_pctrl, dmb_pcar, dmb_psize;
 static COMBO_LP dmb_lp;                         /* printer formatter state */
 static DMB_DMA dmb_pdma;                        /* printer DMA in progress */
@@ -724,194 +711,15 @@ if (--dmb_scnt == 0)
    translation of the current page is kept in the descriptor.
    --------------------------------------------------------------------------- */
 
-static t_bool dmb_mem_rl (uint32 pa, uint32 *val)
-{
-if (!ADDR_IS_MEM (pa))
-    return FALSE;
-*val = M[pa >> 2];
-return TRUE;
-}
-
-/* Protection check of the first PTE that describes a page (kernel mode). */
-static t_bool dmb_prot_ok (uint32 pte, t_bool wr)
-{
-uint32 prot = (pte >> DPTE_V_PROT) & 0xF;
-
-if ((prot == 0) || (prot == 1))
-    return FALSE;
-if (wr && ((prot == 3) || (prot == 7) || (prot == 11) || (prot == 15)))
-    return FALSE;
-return TRUE;
-}
-
-/* System PTE of system virtual address va: physical address of the page,
-   or an error (table ER_T_SYS or the table of the caller). */
-static int32 dmb_sys_xlate (uint32 va, t_bool wr, t_bool chk, uint32 *pa, uint32 *eaddr)
-{
-uint32 vpn = (va >> 9) & 0x1FFFFF;
-uint32 pteaddr, pte;
-
-if (((va & 0xC0000000) != 0x80000000) || (vpn >= dmb_spts)) {
-    *eaddr = va;
-    return ER_DMA | ER_R_INV | ER_T_SYS;        /* not a system address, too long */
-    }
-pteaddr = dmb_spte + (vpn << 2);
-if (!dmb_mem_rl (pteaddr, &pte)) {
-    *eaddr = pteaddr;
-    return ER_DMA | ER_R_NXM | ER_T_SYS;
-    }
-if (!(pte & DPTE_V) && ((pte & (DPTE_TYP0|DPTE_TYP1)) != 0)) {  /* valid or transition */
-    *eaddr = pteaddr;
-    return ER_DMA | ER_R_INV | ER_T_SYS;
-    }
-if (chk && !dmb_prot_ok (pte, wr)) {
-    *eaddr = pteaddr;
-    return ER_DMA | ER_R_ACC | ER_T_SYS;
-    }
-*pa = ((pte & DPTE_PFN) << 9) | (va & 0x1FF);
-return 0;
-}
-
-/* Interpret a process PTE (or a physical-mode PTE): physical page base.
-   A global page is looked up once in the global page table. */
-static int32 dmb_prc_pte (uint32 pte, uint32 pteaddr, t_bool wr, uint32 *pbase, uint32 *eaddr)
-{
-int32 r;
-uint32 gva, gpa, gpte;
-
-if (!(pte & DPTE_V) && (pte & DPTE_TYP0) && !(pte & DPTE_TYP1)) {      /* global page */
-    uint32 gptx = pte & DPTE_GPTX;
-
-    if (gptx >= dmb_gpts) {
-        *eaddr = pteaddr;
-        return ER_DMA | ER_R_INV | ER_T_GBL;
-        }
-    gva = dmb_gpte + (gptx << 2);
-    if ((r = dmb_sys_xlate (gva, FALSE, FALSE, &gpa, eaddr)) != 0)
-        return r;
-    if (!dmb_mem_rl (gpa, &gpte)) {
-        *eaddr = gpa;
-        return ER_DMA | ER_R_NXM | ER_T_GBL;
-        }
-    if (!(gpte & DPTE_V) && ((gpte & (DPTE_TYP0|DPTE_TYP1)) != 0)) {
-        *eaddr = gva;
-        return ER_DMA | ER_R_INV | ER_T_GBL;
-        }
-    if (!dmb_prot_ok (pte, wr)) {               /* protection of the first PTE */
-        *eaddr = pteaddr;
-        return ER_DMA | ER_R_ACC | ER_T_PRC;
-        }
-    *pbase = (gpte & DPTE_PFN) << 9;
-    return 0;
-    }
-if (!(pte & DPTE_V) && ((pte & (DPTE_TYP0|DPTE_TYP1)) != 0)) {
-    *eaddr = pteaddr;
-    return ER_DMA | ER_R_INV | ER_T_PRC;
-    }
-if (!dmb_prot_ok (pte, wr)) {
-    *eaddr = pteaddr;
-    return ER_DMA | ER_R_ACC | ER_T_PRC;
-    }
-*pbase = (pte & DPTE_PFN) << 9;
-return 0;
-}
-
-/* Physical address of character d->pos; 0 = ok, else an error code. */
-static int32 dmb_xlate (DMB_DMA *d, t_bool wr, uint32 *pa)
-{
-uint32 byte, page, pte, pteaddr, ptepa;
-int32 r;
-
-if ((d->ctrl & (DC_PHYS|DC_PTE)) == DC_PHYS) {  /* physical buffer */
-    *pa = d->addr + d->pos;
-    return 0;
-    }
-if (!(d->ctrl & DC_PHYS) && !(dmb_maint & MT_PTE_VALID)) {
-    d->err_addr = d->addr;                      /* virtual without page tables */
-    return ER_DMA | ER_R_INV | ER_T_SYS;
-    }
-if (!(d->ctrl & DC_PTE)) {                      /* system virtual buffer */
-    uint32 va = d->addr + d->pos;
-
-    page = (va >> 9) + 1;
-    if (d->page != page) {
-        if ((r = dmb_sys_xlate (va, wr, TRUE, &d->pbase, &d->err_addr)) != 0)
-            return r;
-        d->pbase &= ~0x1FF;
-        d->page = page;
-        }
-    *pa = d->pbase | (va & 0x1FF);
-    return 0;
-    }
-byte = (d->off & CT_OFF) + d->pos;              /* PTE modes */
-page = (byte >> 9) + 1;
-if (d->page != page) {
-    pteaddr = d->addr + ((byte >> 9) << 2);
-    if (d->ctrl & DC_PHYS) {                    /* physical page table */
-        if (!dmb_mem_rl (pteaddr, &pte)) {
-            d->err_addr = pteaddr;
-            return ER_DMA | ER_R_NXM | ER_T_PRC;
-            }
-        d->pbase = (pte & DPTE_PFN) << 9;        /* other bits ignored (2.2.2.2) */
-        }
-    else {                                      /* virtual process page table */
-        if ((r = dmb_sys_xlate (pteaddr, FALSE, FALSE, &ptepa, &d->err_addr)) != 0)
-            return r;
-        if (!dmb_mem_rl (ptepa, &pte)) {
-            d->err_addr = ptepa;
-            return ER_DMA | ER_R_NXM | ER_T_PRC;
-            }
-        if ((r = dmb_prc_pte (pte, pteaddr, wr, &d->pbase, &d->err_addr)) != 0)
-            return r;
-        }
-    d->page = page;
-    }
-*pa = d->pbase | (byte & 0x1FF);
-return 0;
-}
-
-/* Read or write up to n characters at the descriptor's position.  Returns
-   the number moved; *err is the error code that stopped it (0 = none). */
-static int32 dmb_dma_xfer (DMB_DMA *d, uint8 *buf, int32 n, t_bool wr, int32 *err)
-{
-int32 i;
-uint32 pa;
-
-*err = 0;
-for (i = 0; i < n; i++) {
-    if ((*err = dmb_xlate (d, wr, &pa)) != 0)
-        break;
-    if (!ADDR_IS_MEM (pa)) {
-        d->err_addr = pa & ~0xF;                /* rounded to the octaword */
-        *err = ER_DMA | ER_R_NXM | ER_T_BUF;
-        break;
-        }
-    if (wr) {
-        int32 sc = (pa & 3) << 3;
-
-        M[pa >> 2] = (M[pa >> 2] & ~(0xFFu << sc)) | ((uint32)buf[i] << sc);
-        }
-    else
-        buf[i] = (uint8)(M[pa >> 2] >> ((pa & 3) << 3));
-    d->pos++;
-    }
-if (*err)
-    sim_debug (DBG_DMA, &dmb_dev, "DMA error %02X at %08X (addr %08X, pos %d)\n",
-               *err, d->err_addr, d->addr, d->pos);
-return i;
-}
+/* The translation and memory access are in vax_bi_dma.c. */
 
 /* Set up a descriptor from the registers. */
 static void dmb_dma_setup (DMB_DMA *d, uint32 addr, uint32 ct, uint32 ctrl)
 {
-d->addr = addr;
-d->off = ct & CT_OFF;
-d->count = (ct >> CT_V_COUNT) & 0xFFFF;
-d->ctrl = ctrl & (DC_PTE|DC_PHYS);
-d->pos = 0;
-d->page = 0;
-d->pbase = 0;
-d->err_addr = 0;
+dmb_pt.valid = (dmb_maint & MT_PTE_VALID) != 0; /* page tables loaded? */
+bi_dma_setup (d, addr, ct & CT_OFF, (ct >> CT_V_COUNT) & 0xFFFF,
+              ((ctrl & DC_PTE) ? BIDMA_PTE : 0) | ((ctrl & DC_PHYS) ? BIDMA_PHYS : 0),
+              &dmb_pt, &dmb_dev, DBG_DMA);
 }
 
 /* Registers after the end of a transfer: the rest of the buffer, so that a
@@ -926,7 +734,7 @@ if (err & ER_DMA) {
     *ct = (left << CT_V_COUNT) | (*ct & CT_OFF);
     return;
     }
-if (d->ctrl & DC_PTE) {                         /* PTE address, offset */
+if (d->mode & BIDMA_PTE) {                         /* PTE address, offset */
     uint32 byte = (d->off & CT_OFF) + d->pos;
 
     *addr = d->addr + ((byte >> 9) << 2);
@@ -1088,7 +896,7 @@ for (;;) {
             dmb_tx_dma_done (ln, 0);
             continue;
             }
-        if (dmb_dma_xfer (&l->dma, &b, 1, FALSE, &err) != 1) {
+        if (bi_dma_xfer (&l->dma, &b, 1, FALSE, &err) != 1) {
             dmb_tx_dma_done (ln, err);
             continue;
             }
@@ -1290,7 +1098,7 @@ while (dmb_pdma.pos < dmb_pdma.count) {
     n = (int32)(dmb_pdma.count - dmb_pdma.pos);
     if (n > (int32)sizeof (buf))
         n = (int32)sizeof (buf);
-    n = dmb_dma_xfer (&dmb_pdma, buf, n, FALSE, &err);
+    n = bi_dma_xfer (&dmb_pdma, buf, n, FALSE, &err);
     for (i = 0; i < n; i++) {
         if (fmt)
             combo_lp_format (&dmb_lp, buf[i]);
