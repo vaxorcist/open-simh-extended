@@ -72,6 +72,7 @@ char cpu_boot_cmd[CBUFSIZE]  = { 0 };                   /* boot command */
 
 static t_stat (*nexusR[NEXUS_NUM])(int32 *dat, int32 ad, int32 md);
 static t_stat (*nexusW[NEXUS_NUM])(int32 dat, int32 ad, int32 md);
+static int32 (*nexusA[NEXUS_NUM])(void);                /* BI node supplies its vector */
 
 static struct boot_dev boot_tab[] = {
     { "HK", BOOT_HK, 0 },
@@ -254,6 +255,8 @@ if ((lvl <= IPL_HMAX) && (lvl >= IPL_HMIN)) {           /* nexus? */
     for (i = 0; nexus_req[l] && (i < NEXUS_NUM); i++) {
         if ((nexus_req[l] >> i) & 1) {
             nexus_req[l] = nexus_req[l] & ~(1u << i);
+            if (nexusA[i])                              /* BI node (DMB32): */
+                return nexusA[i] ();                    /* its own vector */
             vec = SCB_NEXUS + (l << 6) + (i << 2);
             return vec;                                 /* return vector */
             }
@@ -751,6 +754,7 @@ uint32 i;
 for (i = 0; i < NEXUS_NUM; i++) {
     nexusR[i] = NULL;
     nexusW[i] = NULL;
+    nexusA[i] = NULL;
     }
 return;
 }
@@ -784,6 +788,8 @@ if (dibp->rd)                                           /* set rd dispatch */
     nexusR[idx] = dibp->rd;
 if (dibp->wr)                                           /* set wr dispatch */
     nexusW[idx] = dibp->wr;
+if (dibp->ack[0])                                       /* device vector */
+    nexusA[idx] = dibp->ack[0];
 return SCPE_OK;
 }
 

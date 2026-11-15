@@ -65,6 +65,7 @@ extern DEVICE ts_dev;
 extern DEVICE tq_dev;
 extern DEVICE dz_dev;
 extern DEVICE dmf_dev;
+extern DEVICE dmb_dev;
 extern DEVICE vh_dev;
 extern DEVICE xu_dev, xub_dev;
 extern DEVICE dmc_dev;
@@ -96,6 +97,7 @@ DEVICE *sim_devices[] = {
     &tdc_dev,
     &dz_dev,
     &dmf_dev,                                   /* DMF32 (async + LP) */
+    &dmb_dev,                                   /* DMB32 (VAXBI node) */
     &vh_dev,
     &cr_dev,
     &lpt_dev,
