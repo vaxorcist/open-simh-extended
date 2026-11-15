@@ -109,6 +109,7 @@
 #include "vax_defs.h"
 #include "sim_tmxr.h"
 #include "pdp11_ddcmp.h"                       /* DDCMP framing and CRC */
+#include "vax_combo_lib.h"                     /* printer formatter (with DMB32) */
 
 /* ---------------------------------------------------------------------------
    Register layout
@@ -294,9 +295,7 @@ static DMF_LINE dmf_line[DMF_LINES];
 
 static uint16 dmf_lcsr;                         /* line printer CSR */
 static uint16 dmf_lind[8];                      /* line printer indirect registers */
-static int32 dmf_lp_col;                        /* printer column */
-static int32 dmf_lp_row;                        /* printer line on the page */
-static t_bool dmf_lp_crpend;                    /* data CR held (see dmf_lp_format) */
+static COMBO_LP dmf_lp;                         /* printer formatter (vax_combo_lib.c) */
 static int32 dmf_lp_wait = 200;                 /* print cycle completion delay (instr) */
 
 extern int32 tmxr_poll;                         /* calibrated poll delay */
@@ -389,8 +388,8 @@ REG dmf_reg[] = {
     { ORDATAD (TXDONE, dmf_tx_done, 8, "lines waiting to report transmit ready") },
     { ORDATAD (LCSR,  dmf_lcsr, 16, "line printer CSR") },
     { BRDATAD (LIND,  dmf_lind,  8, 16, 8, "line printer indirect registers") },
-    { DRDATAD (LPCOL, dmf_lp_col, 16, "printer column") },
-    { DRDATAD (LPROW, dmf_lp_row, 16, "printer line on page") },
+    { DRDATAD (LPCOL, dmf_lp.col, 16, "printer column") },
+    { DRDATAD (LPROW, dmf_lp.row, 16, "printer line on page") },
     { DRDATAD (LPTIME, dmf_lp_wait, 24, "print cycle delay"), PV_LEFT },
     { ORDATAD (SRCSR, dmf_srcsr, 16, "synchronous receive CSR") },
     { ORDATAD (STCSR, dmf_stcsr, 16, "synchronous transmit CSR") },
@@ -926,129 +925,48 @@ static void dmf_lp_reset (void)
 {
 dmf_lcsr = LC_DONE;                             /* print done after reset */
 dmf_lind[7] &= 0177400;                         /* lines per page cleared */
-dmf_lp_col = 0;
-dmf_lp_crpend = FALSE;
+dmf_lp.col = 0;                                 /* (the paper stays where it is) */
+dmf_lp.crpend = FALSE;
 sim_cancel (DMF_LP_UNIT);
 CLR_INT (DMFLP);
 dmf_lp_update_status ();
 }
 
-/* Put one character to the printer, counting columns and lines. */
-static void dmf_lp_out (int32 c)
+/* Formatter output (vax_combo_lib.c): one character to the printer,
+   counted in indirect register 0 (bytes) and 1 (lines).  In maintenance
+   mode it loops into CSR1 (7:0) instead and the carriage does not move. */
+static t_bool dmf_lp_put (COMBO_LP *lp, int32 c)
 {
 dmf_lind[0]++;                                  /* bytes transmitted */
 if (dmf_lcsr & LC_MAINTM) {                     /* maintenance: loop into CSR1 */
     dmf_csr1 = (dmf_csr1 & 0177400) | (c & 0377);
-    return;
+    return FALSE;
     }
 if (DMF_LP_UNIT->fileref)
     fputc (c, DMF_LP_UNIT->fileref);
-if (c == 012) {                                 /* line feed: paper moves */
+if (c == 012)                                   /* line feed: paper moves */
     dmf_lind[1]++;
-    dmf_lp_row++;
-    }
-else if (c == 014)
-    dmf_lp_row = 0;
-if ((c == 015) || (c == 012) || (c == 014))
-    dmf_lp_col = (c == 015) ? 0 : dmf_lp_col;
+return TRUE;
 }
 
-/* "New line" (prefix/suffix character 0, line wrap): carriage return and
-   line feed.  Table 4-34 sends the CR explicitly when the automatic CR
-   insertion bit is set ("not active"); when it is clear the insertion
-   puts the CR before the LF.  Either way the printer gets CR LF. */
-static void dmf_lp_newline (void)
+/* Formatter options from indirect registers 6 and 7 (Table 4-34; most
+   bits are active when clear).  The DMF32 "new line" is always CR LF. */
+static void dmf_lp_options (void)
 {
-dmf_lp_crpend = FALSE;
-dmf_lp_out (015);
-dmf_lp_col = 0;
-dmf_lp_out (012);
-}
+uint16 r6 = dmf_lind[6];
 
-/* One data character through the formatting functions (format control set). */
-static void dmf_lp_format (int32 c)
-{
-int32 width = (dmf_lind[7] >> 8) & 0377;
-int32 lpp = dmf_lind[7] & 0377;
-
-if (c & 0200) {                                 /* MSB set: non printable */
-    t_bool vfu_code = (dmf_lind[6] & LF_DAVFU) && (c <= 0237);
-
-    if (!(dmf_lind[6] & LF_NONPRINT) && !vfu_code)
-        return;
-    dmf_lp_out (c);
-    return;
-    }
-if (!(dmf_lind[6] & LF_NOUPPER) && (c >= 'a') && (c <= 'z'))
-    c = c - 'a' + 'A';                          /* lower to upper case */
-/* Automatic carriage return insertion, indirect register 6 bit 8
-   (Table 4-34).  The bit is active when clear: a CR is inserted before
-   every LF and FF, and a CR in the data that precedes an LF or FF is
-   stripped, so the printer sees exactly one.  When the bit is set the
-   data passes unchanged.  A data CR is therefore held until the next
-   character shows whether it precedes an LF or FF. */
-if (dmf_lp_crpend) {
-    dmf_lp_crpend = FALSE;
-    if (((c != 012) && (c != 014)) || (dmf_lind[6] & LF_NOAUTOCR))
-        dmf_lp_out (015);
-    }
-switch (c) {
-    case 011:                                   /* tab */
-        if (!(dmf_lind[6] & LF_NOTAB)) {
-            do
-                dmf_lp_format (' ');
-            while (dmf_lp_col & 7);
-            return;
-            }
-        break;
-    case 012:                                   /* line feed */
-        if (!(dmf_lind[6] & LF_NOAUTOCR))       /* automatic CR before LF */
-            dmf_lp_out (015);
-        dmf_lp_col = 0;
-        dmf_lp_out (012);
-        return;
-    case 014:                                   /* form feed */
-        if (!(dmf_lind[6] & LF_NOAUTOCR))       /* automatic CR before FF */
-            dmf_lp_out (015);
-        dmf_lp_col = 0;
-        if (!(dmf_lind[6] & LF_NOFFCONV) && lpp && !(dmf_lind[6] & LF_DAVFU)) {
-            do                                  /* line feeds to the next page */
-                dmf_lp_out (012);
-            while (dmf_lp_row % lpp);
-            dmf_lp_row = 0;
-            }
-        else
-            dmf_lp_out (014);
-        return;
-    case 015:                                   /* carriage return: held until */
-        dmf_lp_crpend = TRUE;                   /* the next character shows */
-        dmf_lp_col = 0;                         /* whether it precedes LF/FF */
-        return;
-    default:
-        break;
-    }
-if ((c >= 040) && width && (dmf_lp_col >= width)) {
-    if (dmf_lind[6] & LF_WRAP)                  /* wrap to the next line */
-        dmf_lp_newline ();
-    else if (!(dmf_lind[6] & LF_NOTRUNC))       /* truncate */
-        return;
-    }
-dmf_lp_out (c);
-if (c >= 040)
-    dmf_lp_col++;
-}
-
-/* Prefix or suffix characters: a count and a character, 0 = new line. */
-static void dmf_lp_fix (uint16 reg)
-{
-int32 n = reg & 0377, c = (reg >> 8) & 0377;
-
-while (n-- > 0) {
-    if (c == 0)
-        dmf_lp_newline ();
-    else
-        dmf_lp_format (c);
-    }
+dmf_lp.put = &dmf_lp_put;
+dmf_lp.flags = CLP_NLCR |
+               ((r6 & LF_NOTAB) ? 0 : CLP_TAB) |
+               ((r6 & LF_NOTRUNC) ? 0 : CLP_TRUNC) |
+               ((r6 & LF_NOAUTOCR) ? 0 : CLP_AUTOCR) |
+               ((r6 & LF_NOFFCONV) ? 0 : CLP_FFCONV) |
+               ((r6 & LF_NONPRINT) ? CLP_NONPRINT : 0) |
+               ((r6 & LF_DAVFU) ? CLP_DAVFU : 0) |
+               ((r6 & LF_WRAP) ? CLP_WRAP : 0) |
+               ((r6 & LF_NOUPPER) ? 0 : CLP_UPPER);
+dmf_lp.width = (dmf_lind[7] >> 8) & 0377;
+dmf_lp.lpp = dmf_lind[7] & 0377;
 }
 
 /* Print cycle: runs when print enable has been set (the delay gives the
@@ -1069,8 +987,9 @@ if (dmf_lcsr & LC_OFFLINE) {                    /* started while offline: error 
     }
 sim_debug (DBG_LPT, &dmf_dev, "print cycle: %d bytes at %06o, format %s, options %06o\n",
            count, addr, (dmf_lcsr & LC_FMT) ? "on" : "off", dmf_lind[6]);
-if (dmf_lcsr & LC_FMT)
-    dmf_lp_fix (dmf_lind[2]);                   /* prefix */
+dmf_lp_options ();
+if (dmf_lcsr & LC_FMT)                          /* prefix */
+    combo_lp_fix (&dmf_lp, dmf_lind[2] & 0377, (dmf_lind[2] >> 8) & 0377);
 while (count > 0) {
     int32 n = (count > (int32)sizeof (buf)) ? (int32)sizeof (buf) : count;
     int32 rest = Map_ReadB (addr, n, buf);
@@ -1078,9 +997,9 @@ while (count > 0) {
 
     for (i = 0; i < n - rest; i++) {
         if (dmf_lcsr & LC_FMT)
-            dmf_lp_format (buf[i]);
+            combo_lp_format (&dmf_lp, buf[i]);
         else
-            dmf_lp_out (buf[i]);
+            combo_lp_out (&dmf_lp, buf[i]);
         }
     addr += n - rest;
     count -= n - rest;
@@ -1090,7 +1009,7 @@ while (count > 0) {
         }
     }
 if ((dmf_lcsr & LC_FMT) && !(dmf_lcsr & LC_DMAERR))
-    dmf_lp_fix (dmf_lind[3]);                   /* suffix */
+    combo_lp_fix (&dmf_lp, dmf_lind[3] & 0377, (dmf_lind[3] >> 8) & 0377);   /* suffix */
 if (uptr->fileref) {
     fflush (uptr->fileref);
     uptr->pos = (t_addr)sim_ftell (uptr->fileref);

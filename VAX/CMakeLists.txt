@@ -424,6 +424,7 @@ add_simulator(vax730
         vax_uw.c
         vax730_syslist.c
         vax_dmf.c
+        vax_combo_lib.c
         ${PDP11D}/pdp11_rl.c
         ${PDP11D}/pdp11_rq.c
         ${PDP11D}/pdp11_ts.c
@@ -474,6 +475,7 @@ add_simulator(vax750
         vax_uw.c
         vax750_syslist.c
         vax_dmf.c
+        vax_combo_lib.c
         ${PDP11D}/pdp11_rl.c
         ${PDP11D}/pdp11_rq.c
         ${PDP11D}/pdp11_ts.c
@@ -527,6 +529,7 @@ add_simulator(vax780
         vax_uw.c
         vax780_syslist.c
         vax_dmf.c
+        vax_combo_lib.c
         ${PDP11D}/pdp11_rl.c
         ${PDP11D}/pdp11_rq.c
         ${PDP11D}/pdp11_ts.c
@@ -580,6 +583,8 @@ add_simulator(vax8200
         vax_uw.c
         vax820_syslist.c
         vax_dmf.c
+        vax_combo_lib.c
+        vax_dmb.c
         ${PDP11D}/pdp11_rl.c
         ${PDP11D}/pdp11_rq.c
         ${PDP11D}/pdp11_ts.c
@@ -630,6 +635,7 @@ add_simulator(vax8600
         vax_uw.c
         vax860_syslist.c
         vax_dmf.c
+        vax_combo_lib.c
         ${PDP11D}/pdp11_rl.c
         ${PDP11D}/pdp11_rq.c
         ${PDP11D}/pdp11_ts.c
