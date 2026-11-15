@@ -5152,12 +5152,31 @@ return rq_snap_check (dptr, s);
 
 t_stat rq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
-fprintf (st, "UDA50A MSCP Disk Controller (%s)\n\n", dptr->name);
-fprintf (st, "The simulator implements four MSCP disk controllers, RQ, RQB, RQC, RQD.\n");
-fprintf (st, "Initially, RQB, RQC, and RQD are disabled.  Each RQ controller simulates\n");
-fprintf (st, "an MSCP disk controller with four drives.  The MSCP controller type can be\n");
-fprintf (st, "specified as one of RQDX1, RQDX3, RQDX4, KDA50, UDA50, UDA50A, KRQ50,\n");
-fprintf (st, "KRU50, KLESI or RUX50.\n");
+#if defined (RQ_KDB)
+if (dptr == &kdb_dev) {
+    fprintf (st, "KDB50 VAXBI MSCP Disk Controller (KDB)\n\n");
+    fprintf (st, "The KDB50 is the disk controller of a real VAX 8200/8300: a VAXBI node with\n");
+    fprintf (st, "four SDI drives (KDB0-KDB3, RA81 by default).  It is enabled by default at\n");
+    fprintf (st, "BI node 6; the UDA50 behind the Unibus adapter (RQ) remains available as\n");
+    fprintf (st, "the alternative.  Its type cannot be changed.\n\n");
+    fprintf (st, "   sim> SET KDB NODE=7       (another BI node, 2-15)\n");
+    fprintf (st, "   sim> ATTACH KDB0 vms.dsk\n");
+    fprintf (st, "   sim> BOOT KDB0\n\n");
+    fprintf (st, "BOOT KDBn starts VMB with the BI disk adapter boot code (R0 = 33) and the\n");
+    fprintf (st, "KDB50's node in R1.  VMS names the disks DUAn, or DUBn when the UDA50's\n");
+    fprintf (st, "port is configured first.  After its node reset VMS (PUDRIVER) waits about\n");
+    fprintf (st, "20 seconds for the KDB50's self-test before it uses the controller.\n\n");
+    }
+else
+#endif
+    {
+    fprintf (st, "UDA50A MSCP Disk Controller (%s)\n\n", dptr->name);
+    fprintf (st, "The simulator implements four MSCP disk controllers, RQ, RQB, RQC, RQD.\n");
+    fprintf (st, "Initially, RQB, RQC, and RQD are disabled.  Each RQ controller simulates\n");
+    fprintf (st, "an MSCP disk controller with four drives.  The MSCP controller type can be\n");
+    fprintf (st, "specified as one of RQDX1, RQDX3, RQDX4, KDA50, UDA50, UDA50A, KRQ50,\n");
+    fprintf (st, "KRU50, KLESI or RUX50.\n");
+    }
 fprintf (st, "RQ options include the ability to set units write enabled or write locked,\n");
 fprintf (st, "and to set the drive type to one of many disk types:\n");
 fprint_set_help (st, dptr);
