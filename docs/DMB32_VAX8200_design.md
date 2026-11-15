@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v3, 2026-11-15 (v3: all decisions D1–D6 made, Ulli's answers, VMS device names from the User Guide, ULTRIX phase; v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v4, 2026-11-15 (v4: section 10, results of P1-P3, P4a (printer) and P5; SIDRIVER missing; v3: all decisions D1–D6 made, Ulli's answers, VMS device names from the User Guide, ULTRIX phase; v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
 # DMB32 on the VAX 8200/8300 (implementation plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **plan; all decisions made by Ulli** (section 9). Ready to start with P1.
+Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **in progress** (branch `dmb32`): P1, P2, P3, P4a (printer part) and P5 done; P4 waits for SIDRIVER (section 10).
 
 Sources:
 - EK-DMB32-TD-001 *DMB32 Technical Description* and EK-DMB32-UG-001 *DMB32 User Guide*, both supplied by Ulli.
@@ -141,3 +141,19 @@ The DMB32 itself makes no noise. The printer port could use the line-printer sou
 | D4 | Self-test time | **Decided:** about 50 ms simulated time by default, configurable (`SET DMB SELFTEST=<ms>`, register `STTIME`) |
 | D5 | Only the 8200 simulator (and 8300 via KA1) | **Decided:** yes; other VAX 8xxx models later, separately |
 | D6 | Patch number and branch | **Decided:** patch 8 after patch 7, branch `dmb32` |
+
+## 10. Results (2026-11-15)
+
+Branch `dmb32` (on top of patch 7). Test scripts in `tests/dmb32/`.
+
+| Phase | Result |
+|---|---|
+| P1 | **Pass.** VMS V4.7 configures the DMB32 at node 5: `TXA0`–`TXA7` and `LIA0`; `SYSGEN SHOW/ADAPTER`: "5 BI Combo Board (DMB32)". One fix: VMS resets the node (BICSR NRST) and then waits for **BROKE** (BICSR<12>) to clear, not for STS; the self-test now sets BROKE and clears it at the end (`p1.ini`) |
+| P2 | **Pass.** Telnet login on `TXA0`, SHOW TERMINAL, DIRECTORY (237 files: 2927 DMA transfers, no errors), XOFF/XON, LOGOUT (`p2.ini` + `p2.py`). VMS uses only the system virtual DMA mode; the other three modes wait for ULTRIX (P5u) |
+| P3 | **Pass.** COPY and DIRECTORY/OUTPUT to `LIA0:` and to `LPA0:` (LP11) give the same text (532 print transfers, no errors) (`p3.ini`) |
+| P4 | **Waiting:** `SIDRIVER.EXE` (DMB32 sync driver) is not on Ulli's VMS047_1.R81 (YIDRIVER, LIDRIVER and XGDRIVER are), so VMS does not configure `SIA0` and the sync line cannot be tested with VMS. Asked Ulli for the driver |
+| P4a (printer) | **Pass.** The DMF32 printer uses the shared formatter (`VAX/vax_combo_lib.c`); VMS print jobs with six printer settings on the vax780 give byte for byte the same `LCA0:` output before and after (`p4a_lp.ini`). The DDCMP engine part of P4a follows with P4 |
+| P5 | **Pass.** VAX 8300: after START/CPU and with a CPU loop running, the P2 checks pass. VMS sets INTRDES to KA0 only (`p5.ini`) |
+| P5u, P6 | Open: ULTRIX V2.2 image from Ulli; UETP prompts from Ulli |
+
+Also found on the way (known issues): case 66, `BICSR_HES` had the value of `BICSR_SES` (fixed); case 67, BI nodes could not supply their own vector (fixed, section 3).
