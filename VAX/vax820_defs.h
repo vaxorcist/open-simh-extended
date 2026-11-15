@@ -80,8 +80,10 @@
 
 #define NEXUS_NUM       16                              /* number of nexus */
 #define KA_NUM          2                               /* number of CPU's */
+#ifndef VAX_MP
 #define VAX_MP          1                               /* CPU core keeps one context
                                                            per KA820 (VAX 8300) */
+#endif
 #define MCTL_NUM        2                               /* number of mem ctrl */
 #define MBA_NUM         2                               /* number of MBA's */
 #define TR_KA0          0                               /* nexus assignments */
