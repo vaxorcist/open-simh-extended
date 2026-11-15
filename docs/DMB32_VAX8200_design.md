@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v1, 2026-11-15 (v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v2, 2026-11-15 (v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
 # DMB32 on the VAX 8200/8300 (implementation plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **plan, waiting for Ulli's decision** (section 9).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **plan; D1 decided by Ulli (shared library, middle way), D2–D6 open** (section 9).
 
 Sources:
 - EK-DMB32-TD-001 *DMB32 Technical Description* and EK-DMB32-UG-001 *DMB32 User Guide*, both supplied by Ulli.
@@ -40,11 +40,11 @@ The functions are the same, but the host interface is new:
 
 | Item | Plan |
 |---|---|
-| New file | `VAX/vax_dmb.c` (about 2500 lines), compiled only into `vax8200` (makefile, CMakeLists, VAX8200.vcproj) |
+| New files | `VAX/vax_dmb.c` (about 1900 lines), compiled only into `vax8200`; `VAX/vax_combo_lib.c` + `VAX/vax_combo_lib.h` (about 700 lines, name open), compiled into every simulator that has the DMF32 or the DMB32 (makefile, CMakeLists, .vcproj files) |
 | Device name | `DMB`. Units `DMB-ASYNC` (TMXR, 8 lines), `DMB-SYNC`, `DMB-PRINT`, and a hidden timer unit, named the same way as the DMF32 units |
 | Default | Disabled (`SET DMB ENABLE`), node 5 (`SET DMB NODE=5..15`; it must not collide with KA0/KA1 = 0/1, the memory nodes 2/3 or the DWBUA 4) |
-| Reused DMF32 logic | TMXR line handling and modem bits, line parameter → `tmxr_set_config_line`, async DMA fill and transmit loop, printer formatting (PFIX, PCAR, PSIZE, TAB, AUTO.RETURN, UPPER, DAVFU), DDCMP framing and CRC with the same peer protocol as DMF-SYNC and the DMC |
-| Reuse method | **Copy and adapt** (proposal). A shared library with `vax_dmf.c` would put the tested DMF32 at risk, so it is left as a later clean-up (decision D1) |
+| Shared library (D1) | `vax_combo_lib.c` holds (a) the printer formatter (PFIX, PCAR, PSIZE, TAB, AUTO.RETURN, UPPER, DAVFU, column/row state) and (b) the DDCMP sync engine (receive, deliver, hold, transmit, modem, the peer protocol shared with DMF-SYNC and the DMC). Both work on a per-device state struct (`COMBO_LP`, `COMBO_SYNC`) and call back into the device for DMA, buffer completion and interrupts. DDCMP framing and CRC stay in `PDP11/pdp11_ddcmp.h` |
+| Kept per device | Register access, indexing, FIFOs, interrupts and DMA addressing; async line handling (too little in common: DMF silo vs DMB RBUF/TBUF/PREEMPT) |
 | Sync protocols | DDCMP only, as on the DMF32. HDLC, SDLC, BISYNC and general byte are accepted in LPR1, but a buffer completes with an error code (decision D3) |
 
 ## 3. Changes to the 8200 bus code (`VAX/vax820_bi.c`, `vax820_defs.h`)
@@ -98,6 +98,8 @@ An invalid PTE, a length beyond SPTS/GPTS or non-existent memory ends the transf
 
 ## 6. Phases and tests
 
+Order for D1: the library is built with the DMB32 (P3, P4) and used by the DMB32 from the start. The DMF32 is switched to it afterwards in its own commit and patch step (P4a), with its own regression test, so a DMB32 problem and a DMF32 regression can never be mixed up.
+
 Ulli's rule: tests are systematic, with the prompts supplied by Ulli and no long trial and error. The DMB32 is not bootable, so every phase includes a VMS V4.7 boot of the `vax8200` with `DMB` enabled as the regression test.
 
 | Phase | Content | Test (VMS V4.7 on `vax8200`, Ulli's VMS047_1.R81) |
@@ -105,14 +107,15 @@ Ulli's rule: tests are systematic, with the prompts supplied by Ulli and no long
 | P0 | Ulli confirms the expected SYSGEN output and device names (section 8) | none |
 | P1 | BI plumbing (section 3), BIIC block, self-test, CONFIG, MAINT, empty FIFOs | The boot autoconfigures; `SHOW DEVICE` lists the DMB units; `SYSGEN SHOW/BUS` or `/CONFIG` shows DMB at node 5; no `BROKE`, no machine check |
 | P2 | Async lines: LPR, LNCTRL, LSTAT, RBUF, TBUF, PREEMPT, DMA in all four modes, modem, XON/XOFF | Telnet to line 1 and log in; `TYPE` a large file (DMA, virtual modes); `SET TERM/SPEED`; `SET TERM/MODEM` with hang-up; XOFF during output; two lines at once |
-| P3 | Printer port | `PRINT` to the LI device attached to a file; compare it with the same job on an LP11; form feed, tabs, lower case; offline when detached |
-| P4 | Sync port with DDCMP, 2+2 buffers, SBUF | DECnet circuit `DMB-0` between two `vax8200` instances; then `vax8200` DMB32 ↔ `vax780` DMF32, and ↔ DMC/DMV (patches 1, 2, 4). `NCP SHOW CIRCUIT`, file copy both ways, loop tests |
+| P3 | Printer port, via the library's printer formatter | `PRINT` to the LI device attached to a file; compare it with the same job on an LP11; form feed, tabs, lower case; offline when detached |
+| P4 | Sync port with DDCMP, 2+2 buffers, SBUF, via the library's sync engine | DECnet circuit `DMB-0` between two `vax8200` instances; then `vax8200` DMB32 ↔ `vax780` DMF32, and ↔ DMC/DMV (patches 1, 2, 4). `NCP SHOW CIRCUIT`, file copy both ways, loop tests |
+| P4a | Switch `vax_dmf.c` to the library (printer formatter, sync engine); separate commit, patch 2 rebuilt as v7 on top of it or a separate patch step (decided when the patch series is rebuilt) | DMF32 regression on `vax780` with Ulli's prompts: async login and `TYPE`, `PRINT` to the DMF printer, DECnet over DMF-SYNC to DMC and DMV, the existing DMF/DMC test harness; byte-for-byte compare of printer output before/after |
 | P5 | 8300: INTRDES routing with KA1 enabled | `START/CPU`, then telnet sessions and DECnet traffic while both CPUs are busy; `STOP/CPU`, `START/CPU` again |
 | P6 | Maintenance and loopback (internal UART loopback via LPR, `SET DMB LOOPBACK`) | UETP DMB test (UETDMBS00); DCLT if available; EVDAJ/EVDAL/EVAAA only if Ulli has them |
 | P7 | Help text, SHOW commands, `SHOW DMB-SYNC PEER`, debug flags (REG, INT, DMA, ASYNC, SYNC, LP, TRC) | `HELP DMB` |
-| P8 | Patch 8 (`opensimh_8_dmb32_v1.patch`), branch `dmb32`, then into integration; docs: known issues, overview, sound device table (DMB32 = "without sound" row), handover | `git am` on 87eb7d5 with the full series 1–8; build vax8200 plus the representatives vax780 (DMF32 unchanged) and microvax3900 |
+| P8 | Patch 8 (`opensimh_8_dmb32_v1.patch`), branch `dmb32`, then into integration; docs: known issues, overview, sound device table (DMB32 = "without sound" row), handover | `git am` on 87eb7d5 with the full series 1–8; build vax8200 plus all simulators with the DMF32 (vax780, vax750, vax730, vax8600; the library is linked there now) and microvax3900 |
 
-Estimated size: `vax_dmb.c` is about 2500 lines; `vax820_bi.c`, `vax820_defs.h` and the build files take about 80 lines. P1–P3 can be tested with your VMS image alone. P4 needs two simulator instances, so I would use the existing DMF/DMC test harness.
+Estimated size: `vax_dmb.c` about 1900 lines, the library about 700 lines (mostly moved out of `vax_dmf.c`, which shrinks by about the same amount); `vax820_bi.c`, `vax820_defs.h` and the build files take about 80 lines. P1–P3 can be tested with your VMS image alone. P4 needs two simulator instances, so I would use the existing DMF/DMC test harness.
 
 ## 7. Sound (optional)
 
@@ -129,7 +132,7 @@ The DMB32 itself makes no noise. The printer port could use the line-printer sou
 
 | # | Decision | Proposal |
 |---|---|---|
-| D1 | Copy and adapt from `vax_dmf.c`, or factor the shared parts into a library | Copy and adapt now; the library is a later clean-up |
+| D1 | Copy and adapt from `vax_dmf.c`, or factor the shared parts into a library | **Decided (Ulli, 2026-11-15): middle way.** Shared library for the printer formatter and the DDCMP sync engine, used by the DMB32 from the start; the DMF32 is switched in a separate commit with a DMF32 regression test (P4a); async register handling stays per device. Reasons: one copy of the risky DDCMP code, guaranteed identical behaviour of DMB32/DMF32 sync lines; cost about one extra day and one DMF32 regression run |
 | D2 | Default node | 5, settable with `SET DMB NODE=` |
 | D3 | Sync protocols | DDCMP only, others end with an error code |
 | D4 | Self-test time | About 50 ms simulated time (real board: several seconds; too long for scripts) |
