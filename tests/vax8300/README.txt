@@ -1,4 +1,4 @@
-open-simh-extended/tests/vax8300/README.txt  v1
+open-simh-extended/tests/vax8300/README.txt  v2 (v2: reboot1.ini)
 
 Tests of the second KA820 (patch 7, VAX 8300: SET KA1 ENABLE).
 
@@ -22,6 +22,10 @@ mp2.ini   realism mode (SET SOUND ENABLED, THROTTLE 400K per processor):
           subprocess (12-13 s; one after the other they need 21 s);
           SHOW CPU during the run: EXECUTE; then STOP/CPU and START/CPU.
           About 10 minutes.
+reboot1.ini  realism mode, SET CPU CONHALT: SHUTDOWN with automatic reboot
+          while the attached processor runs; VMS stops it, halts, SIMH
+          reboots ("Rebooting..."), VMS asks for the date again.  Without
+          SET CPU CONHALT (default SIMHALT) the HALT stops the simulator.
 stab8200.ini  single processor regression: boot standalone BACKUP from the
           console RX50 (three diskettes) to the $ prompt.
 
