@@ -187,8 +187,15 @@ if (hlt_pin)                                            /* hlt pin int */
     return IPL_HLTPIN;
 if ((ipl < IPL_CRDERR) && crd_err)                      /* crd err int */
     return IPL_CRDERR;
-if ((ipl < IPL_CLKINT) && tmr_int)                      /* clock int */
+if ((ipl < IPL_CLKINT) && (tmr_int & cpu_msk))          /* its clock int */
     return IPL_CLKINT;
+if (cur_cpu != 0) {                                     /* attached processor: */
+    if ((ipl < IPL_IPRINT) && (ipir & cpu_msk))         /* only its IPI, its */
+        return IPL_IPRINT;                              /* console output and */
+    if ((ipl < IPL_TTINT) && (tto_int & cpu_msk))       /* software interrupts; */
+        return IPL_TTINT;                               /* device, RXCD, floppy */
+    goto swint;                                         /* and terminal interrupts */
+    }                                                   /* go to the primary */
 uba_eval_int ();                                        /* update UBA */
 for (i = IPL_HMAX; i >= IPL_HMIN; i--) {                /* chk hwre int */
     if (i <= ipl)                                       /* at ipl? no int */
@@ -206,6 +213,7 @@ if ((ipl < IPL_TTINT) && (tti_int && (cur_cpu == 0)))   /* console int */
     return IPL_TTINT;
 if ((ipl < IPL_TTINT) && (tto_int & cpu_msk))           /* console int */
     return IPL_TTINT;
+swint:
 if (ipl >= IPL_SMAX)                                    /* ipl >= sw max? */
     return 0;
 if ((t = SISR & sw_int_mask[ipl]) == 0)
@@ -275,7 +283,7 @@ if (lvl == IPL_TTINT) {                                 /* console? */
         return SCB_TTI;                                 /* return vector */
         }
     if (tto_int & cpu_msk) {                            /* output? */
-        tto_int = 0;                                    /* clear req */
+        tto_int = tto_int & ~cpu_msk;                   /* clear its req */
         return SCB_TTO;                                 /* return vector */
         }
     }
@@ -490,8 +498,12 @@ struct reglink {                                        /* register linkage */
     void        (*write)(int32 pa, int32 val, int32 lnt); /* write routine */
     };
 
+extern int32 ka_priv_rd (int32 pa);
+extern void ka_priv_wr (int32 pa, int32 val, int32 lnt);
+
 struct reglink regtable[] = {
     { WATCHBASE, WATCHBASE+WATCHSIZE, &wtc_rd_pa, &wtc_wr_pa },
+    { 0x20080000, 0x20080100, &ka_priv_rd, &ka_priv_wr },  /* local BIIC */
     { 0x20088000, 0x20088004, &pcsr_rd, &pcsr_wr },
     { 0x200B0000, 0x200B0020, &fl_rd, &fl_wr },
     { 0, 0, NULL, NULL }
@@ -600,6 +612,13 @@ return cc;
 
 int32 con_halt (int32 code, int32 cc)
 {
+#if defined (VAX_MP)
+if (cur_cpu != 0) {                                     /* attached processor: */
+    extern t_bool cpu_mp_stop (int32 cpu, int32 code);  /* only it halts (console */
+    cpu_mp_stop (cur_cpu, code);                        /* mode); never a reboot */
+    return cc;
+    }
+#endif
 if ((cpu_boot_cmd[0] == 0) ||                           /* saved boot cmd? */
     (vax820_boot_parse (0, cpu_boot_cmd) != SCPE_OK) || /* reparse the boot cmd */ 
     (reset_all (0) != SCPE_OK) ||                       /* reset the world */
@@ -814,7 +833,10 @@ return SCPE_OK;
 
 t_stat cpu_print_model (FILE *st)
 {
-fprintf (st, "VAX %s", (sys_model ? "8250" : "8200"));
+extern DEVICE ka_dev[];
+t_bool dual = ((ka_dev[1].flags & DEV_DIS) == 0);       /* KA1 enabled: 8300/8350 */
+
+fprintf (st, "VAX %s", (sys_model ? (dual ? "8350" : "8250") : (dual ? "8300" : "8200")));
 return SCPE_OK;
 }
 

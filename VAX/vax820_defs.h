@@ -80,6 +80,10 @@
 
 #define NEXUS_NUM       16                              /* number of nexus */
 #define KA_NUM          2                               /* number of CPU's */
+#ifndef VAX_MP
+#define VAX_MP          1                               /* CPU core keeps one context
+                                                           per KA820 (VAX 8300) */
+#endif
 #define MCTL_NUM        2                               /* number of mem ctrl */
 #define MBA_NUM         2                               /* number of MBA's */
 #define TR_KA0          0                               /* nexus assignments */
@@ -471,6 +475,23 @@ t_stat show_nexus (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 #define ReadRegU(p,l)       ReadReg (p,l)
 #define WriteIOU(p,v,l)     WriteIO (p, v, l)
 #define WriteRegU(p,v,l)    WriteReg (p, v, l)
+
+#if defined (VAX_MP)
+/* The state of a processor that is not running (vax_cpu.c, cpu_mp_switch);
+   the KA1 device shows the secondary's (vax820_ka.c) */
+
+typedef struct {
+    int32       R[16];                                  /* general registers */
+    int32       STK[5];                                 /* stack pointers */
+    int32       PSL;                                    /* PSL, with the cc's */
+    int32       SCBB, PCBB;
+    int32       P0BR, P0LR, P1BR, P1LR, SBR, SLR;
+    int32       SISR, ASTLVL, mapen, pme;
+    int32       trpirq, hlt_pin, mem_err, crd_err;
+    int32       p1, p2, mxpr_cc_vc, badabo;
+    int32       mchk_va, mchk_ref;
+    } CPU_CTX;
+#endif
 
 #include "pdp11_io_lib.h"
 #include "vax_bi.h"

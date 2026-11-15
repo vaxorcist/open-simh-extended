@@ -44,6 +44,10 @@
 #ifndef VAX_DEFS_H
 #define VAX_DEFS_H     0
 
+#if defined (VAX_820)                                   /* VAX 8200/8300: the core keeps */
+#define VAX_MP          1                               /* one context per KA820 */
+#endif
+
 #ifndef VM_VAX
 #define VM_VAX          0
 #endif
@@ -683,11 +687,23 @@ enum opcodes {
 #define PCQ_MASK        (PCQ_SIZE - 1)
 #define PCQ_ENTRY       pcq[pcq_p = (pcq_p - 1) & PCQ_MASK] = fault_PC
 #define GET_ISTR(d,l)   d = get_istr (l, acc)
+#if defined (VAX_MP)
+/* A secondary jumping to itself at IPL 31 waits for the primary (VMS
+   parks a stopped attached processor in JMP @FC with FC = its own
+   address): no infinite loop stop, no idle for it */
+extern int32 cur_cpu;
+#define CHECK_FOR_IDLE_LOOP if ((PC == fault_PC) && (cur_cpu == 0)) {       /* to self? */ \
+                                if (PSL_GETIPL (PSL) == 0x1F)               /* int locked out? */ \
+                                    ABORT (STOP_LOOP);                      /* infinite loop */ \
+                                cpu_idle ();                                /* idle loop */ \
+                                }
+#else
 #define CHECK_FOR_IDLE_LOOP if (PC == fault_PC) {                           /* to self? */ \
                                 if (PSL_GETIPL (PSL) == 0x1F)               /* int locked out? */ \
                                     ABORT (STOP_LOOP);                      /* infinite loop */ \
                                 cpu_idle ();                                /* idle loop */ \
                                 }
+#endif
 /* Instructions which have side effects (ACB, AOBLSS, BBSC, BBCS, etc.) can't be an idle loop so avoid the idle check */
 #define BRANCHB_ALWAYS(d)      do {PCQ_ENTRY; PC = PC + SXTB (d); FLUSH_ISTR; } while (0)
 #define BRANCHW_ALWAYS(d)      do {PCQ_ENTRY; PC = PC + SXTW (d); FLUSH_ISTR; } while (0)
