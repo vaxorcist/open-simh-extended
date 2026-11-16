@@ -26,6 +26,9 @@
 
    rq           MSCP disk controller
 
+   16-Nov-26    Ulli    KDB50: ring descriptors carry 30-bit VAXBI physical
+                        addresses, not 22-bit Qbus addresses (VMS V5.5
+                        boot driver's packets above 4 MB)
    10-Nov-26    Ulli    Sound realism mode: SDI drives (RA, ESE, RA8U) only on
                         a UDA50, UDA50A or KDA50, at most 4 drives there;
                         UDA50/UDA50A only on the Unibus, KDA50 only on Qbus;
@@ -1500,12 +1503,17 @@ uint32 kdb_vector (void);
 #define RQ_RW(cp,a,n,b) (RQ_IS_KDB (cp) ? kdb_readw (a, n, b) : Map_ReadW (a, n, b))
 #define RQ_WW(cp,a,n,b) (RQ_IS_KDB (cp) ? kdb_writew (a, n, b) : Map_WriteW (a, n, b))
 #define RQ_HAS_VEC(cp)  (((cp)->s1dat & SA_S1H_VEC) || (RQ_IS_KDB (cp) && kdb_vector ()))
+/* Packet address in a ring descriptor: a VAXBI address has 30 bits
+   (<29:0>; <31> is OWN, <30> FLAG), a Qbus/Unibus address 22 bits. */
+#define KDB_DESC_ADDR   0x3FFFFFFE                      /* 30 bits, word aligned */
+#define RQ_DESC_ADDR(cp,d) ((d) & (RQ_IS_KDB (cp) ? KDB_DESC_ADDR : UQ_ADDR))
 #else
 #define RQ_IS_KDB(cp)   FALSE
 #define RQ_RB(cp,a,n,b) Map_ReadB (a, n, b)
 #define RQ_RW(cp,a,n,b) Map_ReadW (a, n, b)
 #define RQ_WW(cp,a,n,b) Map_WriteW (a, n, b)
 #define RQ_HAS_VEC(cp)  ((cp)->s1dat & SA_S1H_VEC)
+#define RQ_DESC_ADDR(cp,d) ((d) & UQ_ADDR)
 #endif
 void rq_putr (MSC *cp, uint16 pkt, uint16 cmd, uint16 flg,
     uint16 sts, uint16 lnt, uint16 typ);
@@ -3245,7 +3253,7 @@ if ((desc & UQ_DESC_OWN) == 0) {                        /* none */
 if (!rq_deqf (cp, pkt))                                 /* get cmd pkt */
     return ERR;
 cp->hat = 0;                                            /* dsbl hst timer */
-addr = desc & UQ_ADDR;                                  /* get Q22 addr */
+addr = RQ_DESC_ADDR (cp, desc);                         /* Q22 or BI addr */
 if (RQ_RW (cp, addr + UQ_HDR_OFF, RQ_PKT_SIZE, cp->pak[*pkt].d))
     return rq_fatal (cp, PE_PRE);                       /* read pkt */
 return rq_putdesc (cp, &cp->cq, desc);                  /* release desc */
@@ -3275,7 +3283,7 @@ if ((desc & UQ_DESC_OWN) == 0) {                        /* not valid? */
     sim_activate (dptr->units + RQ_QUEUE, rq_qtime);    /* activate q thrd */
     return OK;
     }
-addr = desc & UQ_ADDR;                                  /* get Q22 addr */
+addr = RQ_DESC_ADDR (cp, desc);                         /* Q22 or BI addr */
 lnt = cp->pak[pkt].d[UQ_HLNT] - UQ_HDR_OFF;             /* size, with hdr */
 if ((GETP (pkt, UQ_HCTC, TYP) == UQ_TYP_SEQ) &&         /* seq packet? */
     (GETP (pkt, CMD_OPC, OPC) & OP_END)) {              /* end packet? */
