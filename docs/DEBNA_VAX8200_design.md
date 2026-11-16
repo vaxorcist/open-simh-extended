@@ -1,12 +1,12 @@
-<!-- open-simh-extended/docs/DEBNA_VAX8200_design.md  v1, 2026-11-16 (v1: first implementation plan for Ulli's decision: DEBNA or DEBNK, sources, phases, open points) -->
-# DEBNA (and later DEBNK) on the VAX 8200/8300 (implementation plan)
+<!-- open-simh-extended/docs/DEBNA_VAX8200_design.md  v2, 2026-11-16 (v2: decisions D1-D6 accepted by Ulli; section 9, results P0-P4, P6, VMS findings, network boot (P5) open; v1: first implementation plan for Ulli's decision: DEBNA or DEBNK, sources, phases, open points) -->
+# DEBNA (and later DEBNK) on the VAX 8200/8300 (implementation plan and results)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-16. Status: **plan, waiting for Ulli's decisions** (section 8).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-16. Status: **done for VMS** (patch 10 `opensimh_10_debna_v1.patch`, branch `debna`, on `integration`); network boot (P5) open, see section 9; the DEBNK tape port maybe later (Ulli).
 
 Sources:
 - EK-DEBNX-IN-001 *DEBNA/DEBNK Installation Guide* (Aug 1987), supplied by Ulli. Appendix B has the registers, appendix C the network boot, appendix D the Ethernet address.
 - NetBSD `sys/dev/bi/if_ni.c` and `if_nireg.h` (Ludd, 2000; BSD licence with advertising clause): the BVP NI port as a host driver uses it. These are used only for interface facts, and the code is not copied (the same rule as for the DMV11 and the KDB50).
-- The VMS V4.7 disk: `ETDRIVER.EXE` (the DEBNA/DEBNK Ethernet port, VMS device `ETA0`, DECnet line `ET-0`), `PBDRIVER.EXE` (BVP port), the SDL names `AT$_BVP`, `AT$_BVP_NIP`, `ADP$L_BVP...`, and the message "BVP failure - Status/Error/Data". Traced on a running VMS where the NetBSD driver does not settle a point.
+- The VMS V4.7 disk: `ETDRIVER.EXE` (the DEBNA/DEBNK Ethernet port, VMS device `ETA0`, DECnet line `BNT-0`, see section 9), `PBDRIVER.EXE` (BVP port), the SDL names `AT$_BVP`, `AT$_BVP_NIP`, `ADP$L_BVP...`, and the message "BVP failure - Status/Error/Data". Traced on a running VMS where the NetBSD driver does not settle a point.
 - In SIMH: the BI node and DMA groundwork of the DMB32 and KDB50 (`VAX/vax_bi_dma.c`, per-node vectors, node reset with BROKE), and SIMH's Ethernet layer `sim_ether.c` (as used by the DEUNA/DELUA `XU` and the DEQNA/DELQA `XQ`).
 
 There is no DEBNA technical manual and no BVP specification at hand.
@@ -91,13 +91,43 @@ Tests run VMS V4.7 on the `vax8200` (Ulli's VMS047_1.R81, system disk on the KDB
 - No ULTRIX (postponed as for the DMB32 and KDB50; ULTRIX has a DEBNA driver, `ni`, so a later test is possible).
 - No other BI models than the 8200/8300.
 
-## 8. Decisions for Ulli
+## 8. Decisions (all accepted by Ulli, 2026-11-16)
 
-| # | Question | Proposal |
+| # | Question | Decision |
 |---|---|---|
-| D1 | DEBNA or DEBNK | **DEBNA** now; the DEBNK tape port as a later separate step (or never) |
+| D1 | DEBNA or DEBNK | **DEBNA** now; the DEBNK tape port maybe later |
 | D2 | Device name | `ET` (VMS ETA0, console boot device ET) |
 | D3 | Default node | 7, settable with `SET ET NODE=` |
 | D4 | Enabled by default | no (`SET ET ENABLE`) |
 | D5 | Patch and branch | patch 10 after patch 9 (KDB50), branch `debna` on `kdb50`; also on `integration` after each tested step |
-| D6 | Network boot (P5) | optional, last; do you want it, and do you have a MOP load host (VMS DECnet with a downline-load database, or a host tool)? |
+| D6 | Network boot (P5) | optional, last. Ulli doubted that the big VAXen could boot from the network; checked: the 8200 family can (the guide's own example `B ET50` on a VAX 8250, VMB code `BTD$K_AIE_NI` = 98 in VMS V4.7, the ET boot program in the 8350's EEPROM, port-vax mailing list); see section 9 for what SIMH would need |
+
+## 9. Results (2026-11-16)
+
+Branch `debna` (on `kdb50`), also on `integration`; patch 10 `opensimh_10_debna_v1.patch` (after patch 9 v2). Tests in `tests/debna/` (README there).
+
+| Phase | Result |
+|---|---|
+| P0 | Settled with short VMS traces and a disassembly of ETDRIVER (SIMH `EXAMINE -V -M` of the loaded driver, 801F79B0-801FD2F0), see the findings below |
+| P1 | **Pass** (`p1.ini`). `SYSGEN SHOW/ADAPTER`: "7  BI - AIE Adapter with NI port only"; `ETA0` online; DECnet line/circuit **BNT-0** (VMS V4.7 names the DEBNA line after the DEBNT; `ET-0` is refused with "invalid device name"); hardware address = `SHOW ET MAC`; circuit up, hellos sent, no failures, also without a partner |
+| P2 | **Pass** (`p2.sh` with `p2_8200.ini` and `p2_mv2.ini`). VAX 8200 (MV1 = 1.1, BNT-0) and MicroVAX II with DELQA (MV2 = 1.2, QNA-0) over a SIMH UDP link: adjacency up, MV2 reachable, `HELPLIB.HLB` (2235 blocks) to MV2 and back with 0 differences, remote DIRECTORY, `NCP LOOP NODE MV2` 50 x 1000 bytes, `SET HOST MV2` (login, LOGOUT), line counters on both sides consistent (about 3400 frames, 1.4 MB each way, no failures) |
+| P3 | **Pass** (`p2.sh ... p3_8300.ini`). VAX 8300: `START/CPU`, two CPU-bound loop processes (60 s CPU each, attached processor in the EXECUTE state), the P2 DECnet test at the same time |
+| P4 | **Pass.** KDB50 boot test (`tests/kdb50/p3.ini`): system disk DUB0, 0 differences; DMB32 printer test (`tests/dmb32/p3.ini`, boot from the UDA50 on the DWBUA): DMB32 and LP11 output identical; the DELQA (unchanged SIMH code) was the partner of every P2/P3 run. `vax8200` and `microvax2` build without warnings |
+| P5 | **Open (decision for Ulli).** SIMH's built-in VMB of the 8200 has no DEBNA driver: VMB halts at once with R0/R2 = 98. A real 8200 boots from the network with its console EEPROM boot program "ET", which SIMH does not have. Ways: (a) VMS V4.7's own `VMB.EXE` (if it has the AIE_NI driver; it has to be taken off the disk image first) with SIMH's external VMB loading, or (b) a MOP client in SIMH; both need a MOP load host and an image to load. `BOOT ET` is therefore not in the boot table yet (known issues case 69) |
+| P6 | `HELP ET`; this document, the overview, known issues (case 69); patch 10 verified: the series 1, 2, 3, 4, 6, 5, 7, 8, 9 v2, 10 on 87eb7d5 gives the `integration` sources. No ODS change (the DEBNA makes no sound) |
+
+**Findings with VMS V4.7 (where the NetBSD driver left a point open or was misleading):**
+
+| Point | Finding |
+|---|---|
+| PQB vector and level word (0x28) | `<15:2>` vector, `<1:0>` level; VMS writes 0572: vector 15C (the BR5 slot of node 7), level 2 = BR5 |
+| Free queues | 4 free queues; the FQB gives each its entry length: messages 96 bytes, datagrams 80 bytes. The port must not write past them (a 512-byte write-back corrupted VMS pool) |
+| Port instruction timing | VMS gives PS OWN back right after it writes PC, so the port takes an instruction a little later (50 instructions), as the board's MicroVAX does; otherwise the ENABLE status interrupt is lost and VMS gives up after 10 s |
+| PTDB index | any longword (VMS: an address in its UCB); received datagrams carry it back |
+| WPARAM | the second address field (offset 8) is the address to use (DECnet AA-00-04-00-01-04), the first stays zero; the answer carries the hardware address in the first field (NetBSD reads it from there) |
+| Transmit status | VMS reads a transmit's completion status from **byte 12** of the entry (0 = success) and does not clear it when it reuses an entry (a former receive entry came back with 31 there): the port must write it. A missing write was the cause of "circuit down, circuit fault, Line synchronization lost" |
+| Receive status | byte 0D; byte 13 selects the VMS user of the entry |
+| Counters | READ COUNTERS returns the 64-byte DEC Ethernet counter block (layout found with a byte pattern and NCP SHOW LINE COUNTERS; in `vax_debna.c`) |
+| Host transport errors | `eth_write` fails on a UDP link while the partner is not listening; reporting that as a send failure made VMS drop the circuit. A real DEBNA on an empty cable sends successfully, so such errors are only traced |
+| Frames | VMS builds the whole frame including DECnet's length word; the port adds nothing but the padding to 60 bytes |
+
