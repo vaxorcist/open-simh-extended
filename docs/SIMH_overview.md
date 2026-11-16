@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v36, 2026-11-16 (v36: patch 10, DEBNA; v35: patch 9 v2, SDI rule (known issues 68); v34: patches 8 (DMB32) and 9 (KDB50); v33: patch 7, VAX 8300 dual KA820; v32: patch 5 v38, realism THROTTLE for every VAX; v31: patch 5 v37, 780 BOOT CS unit; v30: patch 5 v36, realism throttle starts at once; v29: patch 3 third commit, BOOT CS on the VAX 8200; v28: patch 5 v35, TU58; v27: patch 5 v34, VAX 8200 console floppy track 0 fix; v26: patch 5 v33, VAX 8600 console RL02; v25: patch 5 v32, VAX 8200 console RX50; v24: patch 5 v31, RX50, RX50 controller rules; v23: patch 5 v30, RX01 (RX, 11/780 console floppy); v22: patch 5 v29, RX02 density error on Read Status (VMS MOUNT); v21: patch 5 v28, RY debug flags; v20: patch 5 v27, RX02 floppy; v19: patch 5 v26, RA81 start 20 s, RA80 40 s; v18: patch 5 v25, SDI bus rule; v17: patch 5 v24, SDI rules, RA80 capacity; v16: patch 5 v23, the fixed RA drives, RA facts; v15: patch 5 v22; next the RA disks; v14: patch 5 v21; v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v37, 2026-11-16 (v37: patch 11, KLESI-B (TB) and SET UBA DISABLE; v36: patch 10, DEBNA; v35: patch 9 v2, SDI rule (known issues 68); v34: patches 8 (DMB32) and 9 (KDB50); v33: patch 7, VAX 8300 dual KA820; v32: patch 5 v38, realism THROTTLE for every VAX; v31: patch 5 v37, 780 BOOT CS unit; v30: patch 5 v36, realism throttle starts at once; v29: patch 3 third commit, BOOT CS on the VAX 8200; v28: patch 5 v35, TU58; v27: patch 5 v34, VAX 8200 console floppy track 0 fix; v26: patch 5 v33, VAX 8600 console RL02; v25: patch 5 v32, VAX 8200 console RX50; v24: patch 5 v31, RX50, RX50 controller rules; v23: patch 5 v30, RX01 (RX, 11/780 console floppy); v22: patch 5 v29, RX02 density error on Read Status (VMS MOUNT); v21: patch 5 v28, RY debug flags; v20: patch 5 v27, RX02 floppy; v19: patch 5 v26, RA81 start 20 s, RA80 40 s; v18: patch 5 v25, SDI bus rule; v17: patch 5 v24, SDI rules, RA80 capacity; v16: patch 5 v23, the fixed RA drives, RA facts; v15: patch 5 v22; next the RA disks; v14: patch 5 v21; v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -39,15 +39,16 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 | 8 | `opensimh_8_dmb32_v1.patch` | VAX 8200/8300: DMB32 VAXBI communications interface (device DMB, node 5): 8 async lines, printer port (sync line: registers only, waits for SIDRIVER); BI nodes supply their own vector; DMF32 and DMB32 printers share `vax_combo_lib.c`; `BICSR_HES` fix | after 7 |
 | 9 | `opensimh_9_kdb50_v2.patch` | VAX 8200/8300: KDB50 VAXBI disk controller (device KDB, node 6, enabled by default; RQ on the DWBUA stays), BOOT KDBn; RQ memory access per controller; shared BI DMA (`vax_bi_dma.c`) | after 8 |
 | 10 | `opensimh_10_debna_v1.patch` | VAX 8200/8300: DEBNA VAXBI Ethernet adapter (device ET, node 7, disabled by default; VMS ETA0, DECnet line BNT-0); BI VAX Port (BVP) NI port through sim_ether | after 9 |
+| 11 | `opensimh_11_klesib_v1.patch` | VAX 8200/8300: KLESI-B VAXBI tape adapter (device TB, node 8, disabled by default, TU81; VMS "BI - LESI Adapter"); TQ code shared by several TMSCP controllers; SET UBA DISABLE (VAXBI-only mode) | after 10 |
 
-Patch 6 comes before patch 5; patches 7, 8, 9 and 10 come last, in that order. The whole series:
+Patch 6 comes before patch 5; patches 7, 8, 9, 10 and 11 come last, in that order. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
 git am --keep-cr opensimh_1_dmv11_v11.patch opensimh_2_dmf32_v6.patch opensimh_3_vax8200_uba_fix.patch \
                  opensimh_4_dmc_ultrix_v8.patch opensimh_6_rb730_v2.patch opensimh_5_sound_v38.patch \
                  opensimh_7_vax8300_mp_v1.patch opensimh_8_dmb32_v1.patch opensimh_9_kdb50_v2.patch \
-                 opensimh_10_debna_v1.patch
+                 opensimh_10_debna_v1.patch opensimh_11_klesib_v1.patch
 ```
 
 The same work as git branches of the fork:
@@ -65,7 +66,8 @@ The same work as git branches of the fork:
 | `dmb32` | patch 8, as work commits | `vax8300-mp` |
 | `kdb50` | patch 9, as work commits | `dmb32` |
 | `debna` | patch 10 | `kdb50` |
-| `integration` | patches 1, 2, 3, 4, 6, 5, 7, 8, 9, 10 (as work commits) | `master` |
+| `klesib` | patch 11 | `debna` |
+| `integration` | patches 1, 2, 3, 4, 6, 5, 7, 8, 9, 10, 11 (as work commits) | `master` |
 | `notes` | these docs, tools, tests and patch files (no SIMH code) | |
 
 A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
@@ -80,6 +82,7 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
 - **VAX 8600 console RL02 (CS):** an RL02 on the RLV12 of the console processor (a T-11); the VAX moves one 512-byte block per transfer, a word at a time, through STXCS/STXDB; VMS calls it CSA1 (SYSGEN CONNECT CONSOLE). Standard RL02 pack format (4.3BSD crl(4)). In the realism mode it has the RL02's LOAD button (SET CS ONLINE/OFFLINE, 40 s / 30 s); with the drive stopped VMS MOUNT asks the operator and completes when it comes up.
 - **TU58 (TDC, VAX-11/730/750 console TD):** 512 blocks on two tracks of 1024 records of 128 bytes, read/write 30 in/s, search 60 in/s, 38.4 kbaud (TU58 User's Guide EK-0TU58-UG-004); in the realism mode a random block takes about 9 s, an RT-11 boot from TU58 about 3 min (record order inferred: 1:2 interleave). VMS V4.7 reaches the console TU58 as CSA1 after SYSGEN CONNECT CONSOLE. RT-11 needs DD.SYS (in the V5.3 kit, not in Ulli's V5.7 RX02 kit); `tests/tu58/mkdd.ini` builds a bootable RT-11 TU58.
 - **DEBNA (ET, VAX 8200/8300)**, EK-DEBNX-IN-001 and the NetBSD driver, settled with VMS V4.7 (`docs/DEBNA_VAX8200_design.md` section 9): DTYPE 410F, BVP NI port; VMS shows "BI - AIE Adapter with NI port only", device ETA0, DECnet line/circuit **BNT-0** (not ET-0). Tested with DECnet to a MicroVAX II (DELQA) over a SIMH UDP link (`tests/debna/`). The 8200 family can boot from the network (`B ETx0`, console EEPROM boot program ET), but SIMH's built-in VMB has no DEBNA driver (known issues 69).
+- **KLESI-B (TB, VAX 8200/8300)**, from the ULTRIX V2.0 sources (`bla.c`, `buareg.h`), settled with VMS V4.7 (`docs/KLESIB_VAX8200_design.md`): BI type 0103, the DWBUA's registers and map, a TMSCP port at 774500 on its internal Unibus, interrupt vector = vector offset register | port vector. VMS V4.7 shows "BI - LESI Adapter"; its port is PTB (MUB, TQ stays PTA/MUA) or, without the DWBUA, PTA/MUA. The TQ code serves both controllers (TQ = controller 0, TB = controller 1). **SET UBA DISABLE** (VAXBI-only mode) removes the DWBUA and disables every enabled Unibus device (refused while one is attached); SET UBA ENABLE restores them (Ulli, 2026-11-16). No boot from TB (the 8200's VMB has no tape driver).
 - **DMV11** only on Qbus (MicroVAX I, MicroVAX II, MicroVAX 3900, Qbus PDP-11): `SET DMV ENABLE`.
 - **Test CPUs (Ulli, 2026-11-07):** Qbus changes are tested on the **microvax2** (the one Ulli uses most); a change for specific CPUs (e.g. the DMV11 on the MicroVAX I) is tested on the affected CPU(s).
   **DMP11** only on Unibus (VAX-11/730/750/780, 8200, 8600, Unibus PDP-11):
@@ -133,6 +136,7 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
 
 | File | What it is |
 |---|---|
+| `docs/KLESIB_VAX8200_design.md`, `tests/klesib/` | the KLESI-B (TB) and the VAXBI-only mode: design, decisions, VMS V4.7 tests (b1-b4) |
 | `docs/SIMH_known_issues.md` | the numbered list of known bugs and suspicious code (DONE cases kept) |
 | `docs/SIMH_Sound_design.md`, `docs/SIMH_Sound_handover.md` | the sound system: design and current state |
 | `docs/SIMH_Sound_devices.ods` | the devices prepared for sound, with rotation speed and access times; sheet Tapes (generated by `tools/make_sound_devices_ods.py`) |

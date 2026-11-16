@@ -1,10 +1,10 @@
-open-simh-extended/tests/tk50/README.txt  v3
+open-simh-extended/tests/tk50/README.txt  v4
 
 TK50 tests of the sound realism mode (TQ device, TQK50 on the Qbus,
 TUK50 on the Unibus; 2026-11-08), see docs/SIMH_Sound_handover.md,
 "Phase D, step 2".
 
-tktest.py v2    VMS V4.7 tests with Ulli's image VMS047-1.R81 (RA81, VHD,
+tktest.py v4    VMS V4.7 tests with Ulli's image VMS047-1.R81 (RA81, VHD,
                 SYSTEM/MANAGER; not part of the repository):
                   K1  normal mode, MicroVAX II (TQK50): INITIALIZE,
                       BACKUP, BACKUP/LIST, DISMOUNT (regression: nothing
@@ -17,6 +17,7 @@ tktest.py v2    VMS V4.7 tests with Ulli's image VMS047-1.R81 (RA81, VHD,
                   K3  realism mode, VAX-11/750 (TUK50; SET TQ TK50 first,
                       the Unibus VAXen default to the TU81): the K2 tape,
                       load without calibration, BACKUP/LIST, unload, reload
+                v4: RQ types before SET SOUND ENABLED (the SDI rule).
                 Usage: python3 -I tktest.py <BIN dir> <VMS047-1.R81> <work dir> [K1|K2|K3 ...]
                 AUDIO=1 renders the audio with the SDL disk driver to
                 <work dir>/<test>.raw (float mono 44100 Hz).

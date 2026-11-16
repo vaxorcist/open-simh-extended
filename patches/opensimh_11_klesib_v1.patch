@@ -1,0 +1,1992 @@
+From fcdc9417d7674352cea030dfa7d8fb1298588de5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 17:55:52 +0100
+Subject: [PATCH] VAX8200: KLESI-B VAXBI tape adapter (device TB) and SET UBA
+ DISABLE
+
+KLESI-B (BI type 0103, ULTRIX V2.0 bla.c): a VAXBI node with the DWBUA's
+registers and map in front of a TMSCP port at 774500 on its internal
+Unibus.  New device TB (node 8, disabled by default, TU81 drives); VMS
+V4.7 shows it as "BI - LESI Adapter" with the port PTB (MUB) next to the
+TQ, or PTA (MUA) without the DWBUA.
+
+- PDP11/pdp11_tq.c: the per-controller state is a context (TQ_CTX); the
+  code serves several TMSCP controllers: TQ (controller 0, unchanged) and,
+  on the VAX 8200, TB (controller 1).  Memory access and interrupts go
+  through hooks of the context.
+- VAX/vax820_klesib.c (new): the adapter (BIIC and DWBUA registers, map,
+  window with the port, interrupts: vector offset | port vector).
+- VAX/vax820_uba.c: the buffer routines take the adapter's map function
+  (shared by DWBUA and KLESI-B); ReadIO/WriteIO pass the KLESI-B window on;
+  SET UBA DISABLE (VAXBI-only mode) removes the DWBUA and disables every
+  enabled Unibus device (refused while one is attached), SET UBA ENABLE
+  restores them.
+- VAX/vax820_defs.h: ADDR_IS_IO covers the DWBUA window only while the
+  UBA is enabled, plus the KLESI-B window.
+- makefile, VAX/CMakeLists.txt, VAX/vax820_syslist.c: the new file and
+  device.
+
+Tested with VMS V4.7: TU81 on the KLESI-B with and without the DWBUA, on
+the 8200 and the 8300 (BACKUP, BACKUP/LIST, restore, DIFFERENCES); TK50
+on TQ (MicroVAX II, VAX-11/750, realism mode); TU81 on TQ and the UDA50
+boot on the DWBUA (8200).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
+---
+ PDP11/pdp11_tq.c     | 630 +++++++++++++++++++++++++++++++++++++------
+ VAX/CMakeLists.txt   |   1 +
+ VAX/vax820_defs.h    |  12 +-
+ VAX/vax820_klesib.c  | 574 +++++++++++++++++++++++++++++++++++++++
+ VAX/vax820_syslist.c |   2 +
+ VAX/vax820_uba.c     | 166 +++++++++++-
+ makefile             |   1 +
+ 7 files changed, 1287 insertions(+), 99 deletions(-)
+ create mode 100644 VAX/vax820_klesib.c
+
+diff --git a/PDP11/pdp11_tq.c b/PDP11/pdp11_tq.c
+index 85121ffb..51f12385 100644
+--- a/PDP11/pdp11_tq.c
++++ b/PDP11/pdp11_tq.c
+@@ -24,6 +24,7 @@
+    in this Software without prior written authorization from Robert M Supnik.
+ 
+    tq           TQK50 tape controller
++   tb           KLESI-B TMSCP port (VAX 8200, VAXBI; adapter in vax820_klesib.c)
+ 
+    09-Nov-26    Ulli    Realism mode: a calibrated new cartridge gets an
+                         end-of-medium marker (no calibration after the next
+@@ -290,24 +291,50 @@ static struct drvtyp drv_tab[] = {
+ 
+ /* Data */
+ 
+-uint32 tq_sa = 0;                                       /* status, addr */
+-uint32 tq_saw = 0;                                      /* written data */
+-uint32 tq_s1dat = 0;                                    /* S1 data */
+-uint32 tq_csta = 0;                                     /* ctrl state */
+-uint32 tq_perr = 0;                                     /* last error */
+-uint16 tq_cflgs = 0;                                    /* ctrl flags */
+-uint32 tq_prgi = 0;                                     /* purge int */
+-uint32 tq_pip = 0;                                      /* poll in progress */
+-struct uq_ring tq_cq = { 0 };                           /* cmd ring */
+-struct uq_ring tq_rq = { 0 };                           /* rsp ring */
+-struct tqpkt tq_pkt[TQ_NPKTS];                          /* packet queue */
+-uint16 tq_freq = 0;                                     /* free list */
+-uint16 tq_rspq = 0;                                     /* resp list */
+-uint16 tq_max_plug;                                     /* highest unit plug number */
+-uint32 tq_pbsy = 0;                                     /* #busy pkts */
+-uint32 tq_credits = 0;                                  /* credits */
+-uint32 tq_hat = 0;                                      /* host timer */
+-uint32 tq_htmo = TQ_DHTMO;                              /* host timeout */
++/* Controller context.  The TQ code serves several TMSCP controllers: the
++   TQ device (controller 0, Unibus or Qbus) and, on the VAX 8200, the
++   KLESI-B's port (controller 1, KLESIB device, VAXBI).  Each controller's
++   state is a TQ_CTX; the code below uses the old names (tq_sa, tq_cq,
++   tq_unit, tq_dev, ...), which are macros for the current controller's
++   fields (tqc).  Every entry point (register access, unit services,
++   interrupt acknowledge, reset, attach/detach, SET/SHOW, callbacks) sets
++   tqc first.  Memory access and interrupts go through the context's hooks,
++   so a controller on another bus brings its own. */
++
++typedef struct tq_ctx TQ_CTX;
++struct tq_ctx {
++    uint32      sa;                                     /* status, addr */
++    uint32      saw;                                    /* written data */
++    uint32      s1dat;                                  /* S1 data */
++    uint32      csta;                                   /* ctrl state */
++    uint32      perr;                                   /* last error */
++    uint16      cflgs;                                  /* ctrl flags */
++    uint32      prgi;                                   /* purge int */
++    uint32      pip;                                    /* poll in progress */
++    struct uq_ring cq;                                  /* cmd ring */
++    struct uq_ring rq;                                  /* rsp ring */
++    struct tqpkt pkt[TQ_NPKTS];                         /* packet queue */
++    uint16      freq;                                   /* free list */
++    uint16      rspq;                                   /* resp list */
++    uint16      max_plug;                               /* highest unit plug number */
++    uint32      pbsy;                                   /* #busy pkts */
++    uint32      credits;                                /* credits */
++    uint32      hat;                                    /* host timer */
++    uint32      htmo;                                   /* host timeout */
++    int32       typ;                                    /* drive type */
++    t_bool      inited;                                 /* context set up */
++    t_bool      plugs_inited;                           /* unit plugs numbered */
++    t_bool      unibus;                                 /* Unibus port (SA step 1) */
++    DEVICE      *dev;                                   /* the device */
++    UNIT        *unit;                                  /* its units */
++    DIB         *dib;                                   /* its DIB (vector) */
++    int32       (*rb) (uint32 ba, int32 bc, uint8 *buf);        /* memory access */
++    int32       (*rw) (uint32 ba, int32 bc, uint16 *buf);
++    int32       (*wb) (uint32 ba, int32 bc, const uint8 *buf);
++    int32       (*ww) (uint32 ba, int32 bc, const uint16 *buf);
++    void        (*setint) (void);                       /* interrupt request */
++    void        (*clrint) (void);                       /* and its release */
++    };
+ int32 tq_itime = 200;                                   /* init time, except */
+ int32 tq_itime4 = 10;                                   /* stage 4 */
+ int32 tq_qtime = 200;                                   /* queue time */
+@@ -326,11 +353,10 @@ static const SND_STRM_TYPE tq_tk50 = {
+     10000, 15000, 120000, 9000,                         /* load, calibrate, unload */
+     32768, 60, 1420                                     /* buffer, backup, reposition */
+     };
+-SND_STREAMER tq_strm[TQ_NUMDR];                         /* the drives */
+-SND_STRM_REGS tq_sregs;                                 /* their registers */
+-static t_bool tq_sregs_set = FALSE;
+-static t_addr tq_pos0[TQ_NUMDR];                        /* position at a command's start */
+-int32 tq_typ = INIT_TYPE;                               /* device type */
++SND_STRM_REGS tq_sregs;                                 /* the drives' registers */
++static t_bool tq_sregs_set = FALSE;                     /* (all controllers) */
++static SND_STREAMER tq_strm_tab[2][TQ_NUMDR];           /* the drives (per controller) */
++static t_addr tq_pos0_tab[2][TQ_NUMDR];                 /* position at a command's start */
+ 
+ /* Command table - legal modifiers (low 16b) and flags (high 16b) */
+ 
+@@ -497,34 +523,45 @@ UNIT tq_unit[] = {
+ #define TQ_TIMER        (TQ_NUMDR)
+ #define TQ_QUEUE        (TQ_TIMER + 1)
+ 
++static int32 tq0_rb (uint32 ba, int32 bc, uint8 *buf) { return Map_ReadB (ba, bc, buf); }
++static int32 tq0_rw (uint32 ba, int32 bc, uint16 *buf) { return Map_ReadW (ba, bc, buf); }
++static int32 tq0_wb (uint32 ba, int32 bc, const uint8 *buf) { return Map_WriteB (ba, bc, buf); }
++static int32 tq0_ww (uint32 ba, int32 bc, const uint16 *buf) { return Map_WriteW (ba, bc, buf); }
++static void tq0_setint (void) { SET_INT (TQ); }
++static void tq0_clrint (void) { CLR_INT (TQ); }
++
++extern DEVICE tq_dev;
++TQ_CTX tq_ctx0;                                         /* the TQ device */
++static TQ_CTX *tqc = &tq_ctx0;                          /* current controller */
++
+ REG tq_reg[] = {
+-    { GRDATAD (SA,                     tq_sa, DEV_RDX, 16, 0, "status/address register") },
+-    { GRDATAD (SAW,                   tq_saw, DEV_RDX, 16, 0, "written data") },
+-    { GRDATAD (S1DAT,               tq_s1dat, DEV_RDX, 16, 0, "step 1 init host data") },
+-    { GRDATAD (CQIOFF,            tq_cq.ioff, DEV_RDX, 32, 0, "command queue intr offset") },
+-    { GRDATAD (CQBA,                tq_cq.ba, DEV_RDX, 22, 0, "command queue base address") },
+-    { GRDATAD (CQLNT,              tq_cq.lnt, DEV_RDX,  8, 2, "command queue length"), REG_NZ },
+-    { GRDATAD (CQIDX,              tq_cq.idx, DEV_RDX,  8, 2, "command queue index") },
+-    { GRDATAD (TQIOFF,            tq_rq.ioff, DEV_RDX, 32, 0, "request queue intr offset") },
+-    { GRDATAD (TQBA,                tq_rq.ba, DEV_RDX, 22, 0, "request queue base address") },
+-    { GRDATAD (TQLNT,              tq_rq.lnt, DEV_RDX,  8, 2, "request queue length"), REG_NZ },
+-    { GRDATAD (TQIDX,              tq_rq.idx, DEV_RDX,  8, 2, "request queue index") },
+-    { DRDATAD (FREE,                 tq_freq, 5,              "head of free packet list") },
+-    { DRDATAD (RESP,                 tq_rspq, 5,              "head of response packet list") },
+-    { DRDATAD (PBSY,                 tq_pbsy, 5,              "number of busy packets") },
+-    { GRDATAD (CFLGS,               tq_cflgs, DEV_RDX, 16, 0, "controller flags") },
+-    { GRDATAD (CSTA,                 tq_csta, DEV_RDX,  4, 0, "controller state") },
+-    { GRDATAD (PERR,                 tq_perr, DEV_RDX,  9, 0, "port error number") },
+-    { DRDATAD (CRED,              tq_credits, 5,              "host credits") },
+-    { DRDATAD (HAT,                   tq_hat, 17,             "host available timer") },
+-    { DRDATAD (HTMO,                 tq_htmo, 17,             "host timeout value") },
++    { GRDATAD (SA,                     tq_ctx0.sa, DEV_RDX, 16, 0, "status/address register") },
++    { GRDATAD (SAW,                   tq_ctx0.saw, DEV_RDX, 16, 0, "written data") },
++    { GRDATAD (S1DAT,               tq_ctx0.s1dat, DEV_RDX, 16, 0, "step 1 init host data") },
++    { GRDATAD (CQIOFF,            tq_ctx0.cq.ioff, DEV_RDX, 32, 0, "command queue intr offset") },
++    { GRDATAD (CQBA,                tq_ctx0.cq.ba, DEV_RDX, 22, 0, "command queue base address") },
++    { GRDATAD (CQLNT,              tq_ctx0.cq.lnt, DEV_RDX,  8, 2, "command queue length"), REG_NZ },
++    { GRDATAD (CQIDX,              tq_ctx0.cq.idx, DEV_RDX,  8, 2, "command queue index") },
++    { GRDATAD (TQIOFF,            tq_ctx0.rq.ioff, DEV_RDX, 32, 0, "request queue intr offset") },
++    { GRDATAD (TQBA,                tq_ctx0.rq.ba, DEV_RDX, 22, 0, "request queue base address") },
++    { GRDATAD (TQLNT,              tq_ctx0.rq.lnt, DEV_RDX,  8, 2, "request queue length"), REG_NZ },
++    { GRDATAD (TQIDX,              tq_ctx0.rq.idx, DEV_RDX,  8, 2, "request queue index") },
++    { DRDATAD (FREE,                 tq_ctx0.freq, 5,              "head of free packet list") },
++    { DRDATAD (RESP,                 tq_ctx0.rspq, 5,              "head of response packet list") },
++    { DRDATAD (PBSY,                 tq_ctx0.pbsy, 5,              "number of busy packets") },
++    { GRDATAD (CFLGS,               tq_ctx0.cflgs, DEV_RDX, 16, 0, "controller flags") },
++    { GRDATAD (CSTA,                 tq_ctx0.csta, DEV_RDX,  4, 0, "controller state") },
++    { GRDATAD (PERR,                 tq_ctx0.perr, DEV_RDX,  9, 0, "port error number") },
++    { DRDATAD (CRED,              tq_ctx0.credits, 5,              "host credits") },
++    { DRDATAD (HAT,                   tq_ctx0.hat, 17,             "host available timer") },
++    { DRDATAD (HTMO,                 tq_ctx0.htmo, 17,             "host timeout value") },
+     { URDATAD (CPKT,         tq_unit[0].cpkt, 10, 5, 0, TQ_NUMDR, 0, "current packet, units 0 to 3") },
+     { URDATAD (PKTQ,         tq_unit[0].pktq, 10, 5, 0, TQ_NUMDR, 0, "packet queue, units 0 to 3") },
+     { URDATAD (UFLG,           tq_unit[0].uf, DEV_RDX, 16, 0, TQ_NUMDR, 0, "unit flags, units 0 to 3") },
+     { URDATAD (POS,           tq_unit[0].pos, 10, T_ADDR_W, 0, TQ_NUMDR, 0, "position, units 0 to 3") },
+     { URDATAD (OBJP,         tq_unit[0].objp, 10, 32, 0, TQ_NUMDR, 0, "object position, units 0 to 3") },
+-    { FLDATA  (PRGI,                 tq_prgi, 0), REG_HIDDEN },
+-    { FLDATA  (PIP,                   tq_pip, 0), REG_HIDDEN },
++    { FLDATA  (PRGI,                 tq_ctx0.prgi, 0), REG_HIDDEN },
++    { FLDATA  (PIP,                   tq_ctx0.pip, 0), REG_HIDDEN },
+     { FLDATAD (INT,                IREQ (TQ), INT_V_TQ,       "interrupt pending flag") },
+     { DRDATAD (ITIME,               tq_itime, 24,             "init time delay, except stage 4"), PV_LEFT + REG_NZ },
+     { DRDATAD (I4TIME,             tq_itime4, 24,             "init stage 4 delay"), PV_LEFT + REG_NZ },
+@@ -538,9 +575,9 @@ REG tq_reg[] = {
+     { DRDATAD (LOADMAX, tq_sregs.load_max_ms, 24,         "realism mode: longest load (ms)"), PV_LEFT },
+     { DRDATAD (CALTIME,     tq_sregs.cal_ms, 24,          "realism mode: calibration of a new cartridge (ms)"), PV_LEFT },
+     { DRDATAD (UNLOADTIME, tq_sregs.unload_ms, 24,        "realism mode: unload after the rewind (ms)"), PV_LEFT },
+-    { VBRDATAD (PKTS,                 tq_pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
++    { VBRDATAD (PKTS,                 tq_ctx0.pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
+     { URDATAD (PLUG,    tq_unit[0].unit_plug, 10, 32, 0, TQ_NUMDR, PV_LEFT | REG_RO, "unit plug value, units 0 to 3") },
+-    { DRDATA  (DEVTYPE,               tq_typ, 2), REG_HRO },
++    { DRDATA  (DEVTYPE,               tq_ctx0.typ, 2), REG_HRO },
+     { DRDATA  (DEVCAP, drv_tab[TQU_TYPE].cap, T_ADDR_W), PV_LEFT | REG_HRO },
+     { GRDATA  (DEVADDR,            tq_dib.ba, DEV_RDX, 32, 0), REG_HRO },
+     { GRDATA  (DEVVEC,            tq_dib.vec, DEV_RDX, 16, 0), REG_HRO },
+@@ -633,6 +670,94 @@ DEVICE tq_dev = {
+     &tq_description
+     };
+ 
++/* From here on the names refer to the current controller (tqc) */
++
++#define tq_sa           (tqc->sa)
++#define tq_saw          (tqc->saw)
++#define tq_s1dat        (tqc->s1dat)
++#define tq_csta         (tqc->csta)
++#define tq_perr         (tqc->perr)
++#define tq_cflgs        (tqc->cflgs)
++#define tq_prgi         (tqc->prgi)
++#define tq_pip          (tqc->pip)
++#define tq_cq           (tqc->cq)
++#define tq_rq           (tqc->rq)
++#define tq_pkt          (tqc->pkt)
++#define tq_freq         (tqc->freq)
++#define tq_rspq         (tqc->rspq)
++#define tq_max_plug     (tqc->max_plug)
++#define tq_pbsy         (tqc->pbsy)
++#define tq_credits      (tqc->credits)
++#define tq_hat          (tqc->hat)
++#define tq_htmo         (tqc->htmo)
++#define tq_typ          (tqc->typ)
++#define tq_unit         (tqc->unit)
++#define tq_dev          (*tqc->dev)
++#define tq_dib          (*tqc->dib)
++#define tq_strm         (tq_strm_tab[(tqc == &tq_ctx0) ? 0 : 1])
++#define tq_pos0         (tq_pos0_tab[(tqc == &tq_ctx0) ? 0 : 1])
++#define TQ_RB(a,b,c)    (tqc->rb (a, b, c))
++#define TQ_RW(a,b,c)    (tqc->rw (a, b, c))
++#define TQ_WB(a,b,c)    (tqc->wb (a, b, c))
++#define TQ_WW(a,b,c)    (tqc->ww (a, b, c))
++#define TQ_SETINT       (tqc->setint ())
++#define TQ_CLRINT       (tqc->clrint ())
++
++/* Set the current controller: from a unit, a device, or directly.
++   Controller 1 is the KLESI-B's port (TB, VAX 8200 only). */
++
++#if defined (VAX_820)
++extern UNIT tb_unit[];
++extern DEVICE tb_dev;
++TQ_CTX tq_ctx1;                                         /* the KLESI-B's port */
++#endif
++
++static void tq_ctx_init (TQ_CTX *c, DEVICE *dptr, int32 typ, t_bool unibus);
++
++static void tq_set_ctx_dev (DEVICE *dptr)
++{
++#if defined (VAX_820)
++if (dptr == &tb_dev) {
++    tqc = &tq_ctx1;
++    return;
++    }
++#endif
++tqc = &tq_ctx0;
++}
++
++static void tq_set_ctx_unit (UNIT *uptr)
++{
++#if defined (VAX_820)
++if ((uptr >= tb_unit) && (uptr < tb_unit + TQ_NUMDR + 2)) {
++    tqc = &tq_ctx1;
++    return;
++    }
++#endif
++tqc = &tq_ctx0;
++}
++
++/* Set up a controller's context (once) */
++
++static void tq_ctx_init (TQ_CTX *c, DEVICE *dptr, int32 typ, t_bool unibus)
++{
++if (c->inited)
++    return;
++c->dev = dptr;
++c->unit = dptr->units;
++c->dib = (DIB *) dptr->ctxt;
++c->htmo = TQ_DHTMO;
++c->typ = typ;
++c->unibus = unibus;
++if (c->rb == NULL) {                                    /* bus hooks: Unibus/Qbus map */
++    c->rb = &tq0_rb;
++    c->rw = &tq0_rw;
++    c->wb = &tq0_wb;
++    c->ww = &tq0_ww;
++    c->setint = &tq0_setint;
++    c->clrint = &tq0_clrint;
++    }
++c->inited = TRUE;
++}
+ 
+ struct tq_req_results {           /* intermediate State during tape motion commands */
+     t_stat io_status;
+@@ -652,7 +777,7 @@ struct tq_req_results {           /* intermediate State during tape motion comma
+    17774502     SA      read/write
+ */
+ 
+-t_stat tq_rd (int32 *data, int32 PA, int32 access)
++static t_stat tq_rd_body (int32 *data, int32 PA, int32 access)
+ {
+ sim_debug(DBG_REG, &tq_dev, "tq_rd(PA=0x%08X [%s], access=%d)=0x%04X\n", PA, ((PA >> 1) & 01) ? "SA" : "IP", access, ((PA >> 1) & 01) ? tq_sa : 0);
+ 
+@@ -675,7 +800,13 @@ switch ((PA >> 1) & 01) {                               /* decode PA<1> */
+ return SCPE_OK;
+ }
+ 
+-t_stat tq_wr (int32 data, int32 PA, int32 access)
++t_stat tq_rd (int32 *data, int32 PA, int32 access)
++{
++tqc = &tq_ctx0;
++return tq_rd_body (data, PA, access);
++}
++
++static t_stat tq_wr_body (int32 data, int32 PA, int32 access)
+ {
+ sim_debug(DBG_REG, &tq_dev, "tq_wr(PA=0x%08X [%s], access=%d, data=0x%04X)\n", PA, ((PA >> 1) & 01) ? "SA" : "IP", access, data);
+ 
+@@ -698,6 +829,12 @@ switch ((PA >> 1) & 01) {                               /* decode PA<1> */
+ return SCPE_OK;
+ }
+ 
++t_stat tq_wr (int32 data, int32 PA, int32 access)
++{
++tqc = &tq_ctx0;
++return tq_wr_body (data, PA, access);
++}
++
+ /* Transition to step 4 - init communications region */
+ 
+ t_bool tq_step4 (void)
+@@ -721,7 +858,7 @@ if (lnt > SA_COMM_MAX)                                  /* paranoia */
+     lnt = SA_COMM_MAX;
+ for (i = 0; i < (lnt >> 1); i++)                        /* clr buffer */
+     zero[i] = 0;
+-if (Map_WriteW (base, lnt, zero))                       /* zero comm area */
++if (TQ_WW (base, lnt, zero))                       /* zero comm area */
+     return tq_fatal (PE_QWE);                           /* error? */
+ tq_sa = SA_S4 | (drv_tab[tq_typ].uqpm << SA_S4C_V_MOD) |/* send step 4 */
+     ((drv_tab[tq_typ].cver & 0xFF) << SA_S4C_V_VER);
+@@ -741,7 +878,7 @@ return OK;
+    If all queues are idle, terminate thread
+ */
+ 
+-t_stat tq_quesvc (UNIT *uptr)
++static t_stat tq_quesvc_body (UNIT *uptr)
+ {
+ int32 i, cnid;
+ uint16 pkt = 0;
+@@ -869,9 +1006,15 @@ if (pkt)                                                /* more to do? */
+ return SCPE_OK;                                         /* done */
+ }
+ 
++t_stat tq_quesvc (UNIT *uptr)
++{
++tq_set_ctx_unit (uptr);
++return tq_quesvc_body (uptr);
++}
++
+ /* Clock service (roughly once per second) */
+ 
+-t_stat tq_tmrsvc (UNIT *uptr)
++static t_stat tq_tmrsvc_body (UNIT *uptr)
+ {
+ int32 i;
+ UNIT *nuptr;
+@@ -894,6 +1037,12 @@ if ((tq_hat > 0) && (--tq_hat == 0))                    /* host timeout? */
+ return SCPE_OK;
+ }
+ 
++t_stat tq_tmrsvc (UNIT *uptr)
++{
++tq_set_ctx_unit (uptr);
++return tq_tmrsvc_body (uptr);
++}
++
+ /* MSCP packet handling */
+ 
+ t_bool tq_mscp (uint16 pkt, t_bool q)
+@@ -1391,7 +1540,7 @@ return TRUE;
+ 
+ /* The drive has loaded (the host sees the unit available) or unloaded */
+ 
+-static void tq_strm_done (UNIT *uptr, int32 what)
++static void tq_strm_done_body (UNIT *uptr, int32 what)
+ {
+ if (what == SND_STRM_DONE_LOAD) {
+     sim_tape_rewind (uptr);
+@@ -1416,9 +1565,16 @@ else if (what == SND_STRM_DONE_UNLOAD) {
+     }
+ }
+ 
++static void tq_strm_done (UNIT *uptr, int32 what)
++{
++tq_set_ctx_unit (uptr);
++tq_strm_done_body (uptr, what);
++return;
++}
++
+ /* Operator panel: the Load/Unload button (realism mode) */
+ 
+-static t_stat tq_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++static t_stat tq_set_panel_body (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ {
+ SND_STREAMER *sp;
+ int32 st;
+@@ -1456,7 +1612,13 @@ if (!(sim_switches & SWMASK ('N')))                     /* at the prompt: wait *
+ return SCPE_OK;
+ }
+ 
+-static t_stat tq_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++static t_stat tq_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++tq_set_ctx_unit (uptr);
++return tq_set_panel_body (uptr, val, cptr, desc);
++}
++
++static t_stat tq_show_transport_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ {
+ if (!tq_real ()) {
+     fprintf (st, "no transport model (sound realism mode of the TK50 only%s)\n", tq_hint ());
+@@ -1468,6 +1630,12 @@ fprintf (st, "\n");
+ return SCPE_OK;
+ }
+ 
++static t_stat tq_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++tq_set_ctx_unit (uptr);
++return tq_show_transport_body (st, uptr, val, desc);
++}
++
+ uint16 tq_mot_valid (UNIT *uptr, uint32 cmd)
+ {
+ sim_debug(DBG_TRC, &tq_dev, "tq_mot_valid\n");
+@@ -1495,7 +1663,7 @@ return ST_SUC;                                          /* success! */
+ 
+ /* I/O completion callback */
+ 
+-void tq_io_complete (UNIT *uptr, t_stat status)
++static void tq_io_complete_body (UNIT *uptr, t_stat status)
+ {
+ struct tq_req_results *res = (struct tq_req_results *)uptr->results;
+ 
+@@ -1550,8 +1718,15 @@ if (tq_real ()) {                                       /* realism: the tape's t
+ sim_activate_notbefore (uptr, uptr->iostarttime+tq_xtime);
+ }
+ 
++void tq_io_complete (UNIT *uptr, t_stat status)
++{
++tq_set_ctx_unit (uptr);
++tq_io_complete_body (uptr, status);
++return;
++}
+ 
+-t_stat tq_svc (UNIT *uptr)
++
++static t_stat tq_svc_body (UNIT *uptr)
+ {
+ uint32 t;
+ t_mtrlnt wbc;
+@@ -1625,7 +1800,7 @@ switch (cmd) {                                          /* case on command */
+             }
+         else wbc = res->tbc;
+         if (cmd == OP_RD) {                             /* read? */
+-            if ((t = Map_WriteB (ba, wbc, res->tqxb))) {/* store, nxm? */
++            if ((t = TQ_WB (ba, wbc, res->tqxb))) {/* store, nxm? */
+                 PUTP32 (pkt, RW_BCL, wbc - t);          /* adj bc */
+                 if (tq_hbe (uptr, ba + wbc - t))        /* post err log */
+                     tq_mot_end (uptr, EF_LOG, ST_HST | SB_HST_NXM, res->tbc);        
+@@ -1645,7 +1820,7 @@ switch (cmd) {                                          /* case on command */
+                     mba = ba + i;
+                     dby = ((uint8 *)res->tqxb)[i];
+                     }
+-                if (Map_ReadB (mba, 1, &mby)) {         /* fetch, nxm? */
++                if (TQ_RB (mba, 1, &mby)) {         /* fetch, nxm? */
+                     PUTP32 (pkt, RW_BCL, i);            /* adj bc */
+                     if (tq_hbe (uptr, mba))             /* post err log */
+                         tq_mot_end (uptr, EF_LOG, ST_HST | SB_HST_NXM, res->tbc);
+@@ -1664,7 +1839,7 @@ switch (cmd) {                                          /* case on command */
+ 
+     case OP_WR:                                         /* write */
+         if (!io_complete) { /* Top half processing */
+-            if ((t = Map_ReadB (ba, bc, res->tqxb))) {  /* fetch buf, nxm? */
++            if ((t = TQ_RB (ba, bc, res->tqxb))) {  /* fetch buf, nxm? */
+                 PUTP32 (pkt, RW_BCL, 0);                /* no bytes xfer'd */
+                 if (tq_hbe (uptr, ba + bc - t))         /* post err log */
+                     tq_mot_end (uptr, EF_LOG, ST_HST | SB_HST_NXM, bc);     
+@@ -1753,6 +1928,12 @@ tq_mot_end (uptr, 0, (uint16)res->sts, res->tbc);       /* done */
+ return SCPE_OK;
+ }
+ 
++t_stat tq_svc (UNIT *uptr)
++{
++tq_set_ctx_unit (uptr);
++return tq_svc_body (uptr);
++}
++
+ /* Motion command drive error */
+ 
+ t_stat tq_mot_err (UNIT *uptr, uint32 rsiz)
+@@ -2071,7 +2252,7 @@ if (!tq_deqf (pkt))                                     /* get cmd pkt */
+     return ERR;
+ tq_hat = 0;                                             /* dsbl hst timer */
+ addr = desc & UQ_ADDR;                                  /* get Q22 addr */
+-if (Map_ReadW (addr + UQ_HDR_OFF, TQ_PKT_SIZE, tq_pkt[*pkt].d))
++if (TQ_RW (addr + UQ_HDR_OFF, TQ_PKT_SIZE, tq_pkt[*pkt].d))
+     return tq_fatal (PE_PRE);                           /* read pkt */
+ return tq_putdesc (&tq_cq, desc);                       /* release desc */
+ }
+@@ -2112,7 +2293,7 @@ if ((GETP (pkt, UQ_HCTC, TYP) == UQ_TYP_SEQ) &&         /* seq packet? */
+     tq_credits = tq_credits - cr;                       /* decr credits */
+     tq_pkt[pkt].d[UQ_HCTC] |= ((cr + 1) << UQ_HCTC_V_CR);
+     }
+-if (Map_WriteW (addr + UQ_HDR_OFF, lnt, tq_pkt[pkt].d))
++if (TQ_WW (addr + UQ_HDR_OFF, lnt, tq_pkt[pkt].d))
+     return tq_fatal (PE_PWE);                           /* write pkt */
+ tq_enqh (&tq_freq, pkt);                                /* pkt is free */
+ tq_pbsy = tq_pbsy - 1;                                  /* decr busy cnt */
+@@ -2128,7 +2309,7 @@ t_bool tq_getdesc (struct uq_ring *ring, uint32 *desc)
+ uint32 addr = ring->ba + ring->idx;
+ uint16 d[2];
+ 
+-if (Map_ReadW (addr, 4, d))                             /* fetch desc */
++if (TQ_RW (addr, 4, d))                             /* fetch desc */
+     return tq_fatal (PE_QRE);                           /* err? dead */
+ *desc = ((uint32) d[0]) | (((uint32) d[1]) << 16);
+ return OK;
+@@ -2148,7 +2329,7 @@ uint16 d[2];
+ 
+ d[0] = newd & 0xFFFF;                                   /* 32b to 16b */
+ d[1] = (newd >> 16) & 0xFFFF;
+-if (Map_WriteW (addr, 4, d))                            /* store desc */
++if (TQ_WW (addr, 4, d))                            /* store desc */
+     return tq_fatal (PE_QWE);                           /* err? dead */
+ if (desc & UQ_DESC_F) {                                 /* was F set? */
+     if (ring->lnt <= 4)                                 /* lnt = 1? intr */
+@@ -2156,7 +2337,7 @@ if (desc & UQ_DESC_F) {                                 /* was F set? */
+     else {
+         prva = ring->ba +                               /* prv desc */
+             ((ring->idx - 4) & (ring->lnt - 1));
+-        if (Map_ReadW (prva, 4, d))                     /* read prv */
++        if (TQ_RW (prva, 4, d))                     /* read prv */
+             return tq_fatal (PE_QRE);
+         prvd = ((uint32) d[0]) | (((uint32) d[1]) << 16);
+         if (prvd & UQ_DESC_OWN)
+@@ -2254,7 +2435,7 @@ return;
+ void tq_init_int (void)
+ {
+ if ((tq_s1dat & SA_S1H_IE) && tq_dib.vec)
+-    SET_INT (TQ);
++    TQ_SETINT;
+ return;
+ }
+ 
+@@ -2265,19 +2446,25 @@ void tq_ring_int (struct uq_ring *ring)
+ uint32 iadr = tq_comm + ring->ioff;                     /* addr intr wd */
+ uint16 flag = 1;
+ 
+-(void)Map_WriteW (iadr, 2, &flag);                      /* write flag */
++(void)TQ_WW (iadr, 2, &flag);                      /* write flag */
+ if (tq_dib.vec)                                         /* if enb, intr */
+-    SET_INT (TQ);
++    TQ_SETINT;
+ return;
+ }
+ 
+ /* Return interrupt vector */
+ 
+-int32 tq_inta (void)
++static int32 tq_inta_body (void)
+ {
+ return tq_dib.vec;                                      /* prog vector */
+ }
+ 
++int32 tq_inta (void)
++{
++tqc = &tq_ctx0;
++return tq_inta_body ();
++}
++
+ /* Fatal error */
+ 
+ t_bool tq_fatal (uint32 err)
+@@ -2294,7 +2481,7 @@ return ERR;
+ 
+ /* Device attach */
+ 
+-t_stat tq_attach (UNIT *uptr, CONST char *cptr)
++static t_stat tq_attach_body (UNIT *uptr, CONST char *cptr)
+ {
+ t_stat r;
+ 
+@@ -2312,9 +2499,15 @@ if (tq_csta == CST_UP)
+ return SCPE_OK;
+ }
+ 
++t_stat tq_attach (UNIT *uptr, CONST char *cptr)
++{
++tq_set_ctx_unit (uptr);
++return tq_attach_body (uptr, cptr);
++}
++
+ /* Device detach */
+ 
+-t_stat tq_detach (UNIT *uptr)
++static t_stat tq_detach_body (UNIT *uptr)
+ {
+ t_stat r;
+ 
+@@ -2330,16 +2523,15 @@ return SCPE_OK;
+ 
+ /* Device reset */
+ 
+-t_stat tq_reset (DEVICE *dptr)
++static t_stat tq_reset_body (DEVICE *dptr)
+ {
+ int32 i, j;
+ UNIT *uptr;
+-static t_bool plugs_inited = FALSE;
+ 
+ for (i=tq_max_plug=0; i<TQ_NUMDR; i++)
+     if (dptr->units[i].unit_plug > tq_max_plug)
+         tq_max_plug = (uint16)dptr->units[i].unit_plug;
+-if (!plugs_inited ) {
++if (!tqc->plugs_inited) {
+     uint32 d;
+     char uname[16];
+ 
+@@ -2347,7 +2539,7 @@ if (!plugs_inited ) {
+     sim_set_uname (&dptr->units[4], uname);
+     sprintf (uname, "%s-QUESVC", dptr->name);
+     sim_set_uname (&dptr->units[5], uname);
+-    plugs_inited  = TRUE;
++    tqc->plugs_inited = TRUE;
+     for (d = 0; d < tq_dev.numunits - 2; d++)
+         tq_unit[d].unit_plug = d;
+     }
+@@ -2364,7 +2556,7 @@ for (i = 0; i < TQ_NUMDR; i++) {
+ tq_csta = CST_S1;                                       /* init stage 1 */
+ tq_s1dat = 0;                                           /* no S1 data */
+ tq_dib.vec = 0;                                         /* no vector */
+-if (UNIBUS)                                             /* Unibus? */
++if (UNIBUS || (tqc != &tq_ctx0))                        /* Unibus (KLESI-B too)? */
+     tq_sa = SA_S1 | SA_S1C_DI | SA_S1C_MP;
+ else tq_sa = SA_S1 | SA_S1C_Q22 | SA_S1C_DI | SA_S1C_MP; /* init SA val */
+ tq_cflgs = CF_RPL;                                      /* ctrl flgs off */
+@@ -2384,7 +2576,7 @@ for (i = 0; i < TQ_NPKTS; i++) {                        /* all pkts free */
+ tq_rspq = 0;                                            /* no q'd rsp pkts */
+ tq_pbsy = 0;                                            /* all pkts free */
+ tq_pip = 0;                                             /* not polling */
+-CLR_INT (TQ);                                           /* clr intr req */
++TQ_CLRINT;                                           /* clr intr req */
+ for (i = 0; i < TQ_NUMDR + 2; i++) {                    /* init units */
+     uptr = tq_dev.units + i;
+     sim_cancel (uptr);                                  /* clr activity */
+@@ -2401,6 +2593,20 @@ for (i = 0; i < TQ_NUMDR + 2; i++) {                    /* init units */
+ return SCPE_OK;
+ }
+ 
++t_stat tq_reset (DEVICE *dptr)
++{
++tq_set_ctx_dev (dptr);
++if (!tqc->inited)                                       /* first time: */
++    tq_ctx_init (tqc, dptr, INIT_TYPE, TRUE);           /* TQ or TB (hooks set) */
++return tq_reset_body (dptr);
++}
++
++t_stat tq_detach (UNIT *uptr)
++{
++tq_set_ctx_unit (uptr);
++return tq_detach_body (uptr);
++}
++
+ /* Device bootstrap */
+ 
+ #if defined (VM_PDP11)
+@@ -2515,6 +2721,7 @@ t_stat tq_boot (int32 unitno, DEVICE *dptr)
+ size_t i;
+ UNIT *uptr = &dptr->units[unitno];
+ 
++tq_set_ctx_dev (dptr);
+ for (i = 0; i < BOOT_LEN; i++)
+     WrMemW (BOOT_START + (2 * i), boot_rom[i]);
+ WrMemW (BOOT_UNIT, (uint16)uptr->unit_plug);
+@@ -2547,7 +2754,7 @@ fprintf (st, "ring, base = %x, index = %d, length = %d\n",
+      rp->ba, rp->idx >> 2, rp->lnt >> 2);
+ #endif
+ for (i = 0; i < (rp->lnt >> 2); i++) {
+-    if (Map_ReadW (rp->ba + (i << 2), 4, d)) {
++    if (TQ_RW (rp->ba + (i << 2), 4, d)) {
+         fprintf (st, " %3d: non-existent memory\n", i);
+         break;
+         }
+@@ -2583,7 +2790,7 @@ for (i = 0; i < TQ_SH_MAX; i = i + TQ_SH_PPL) {
+ return;
+ }
+ 
+-t_stat tq_show_unitq (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++static t_stat tq_show_unitq_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ {
+ int32 pkt, u = uptr - tq_dev.units;
+ 
+@@ -2611,7 +2818,13 @@ else fprintf (st, "Unit %d queues are empty\n", u);
+ return SCPE_OK;
+ }
+ 
+-t_stat tq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++t_stat tq_show_unitq (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++tq_set_ctx_unit (uptr);
++return tq_show_unitq_body (st, uptr, val, desc);
++}
++
++static t_stat tq_show_ctrl_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ {
+ int32 i, pkt;
+ 
+@@ -2657,9 +2870,15 @@ if (val & TQ_SH_UN) {
+ return SCPE_OK;
+ }
+ 
++t_stat tq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++tq_set_ctx_unit (uptr);
++return tq_show_ctrl_body (st, uptr, val, desc);
++}
++
+ /* Set controller type (and capacity for user-defined type) */
+ 
+-t_stat tq_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++static t_stat tq_set_type_body (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ {
+ uint32 i, cap;
+ uint32 max = sim_taddr_64? TQU_EMAXC: TQU_MAXC;
+@@ -2683,14 +2902,26 @@ for (i = 0; i < TQ_NUMDR; i++)
+ return SCPE_OK;
+ }
+ 
++t_stat tq_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++tq_set_ctx_unit (uptr);
++return tq_set_type_body (uptr, val, cptr, desc);
++}
++
+ /* Show controller type and capacity */
+ 
+-t_stat tq_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++static t_stat tq_show_type_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ {
+ fprintf (st, "%s (%dMB)", drv_tab[tq_typ].name, (uint32) (drv_tab[tq_typ].cap >> 20));
+ return SCPE_OK;
+ }
+ 
++t_stat tq_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++tq_set_ctx_unit (uptr);
++return tq_show_type_body (st, uptr, val, desc);
++}
++
+ /* Show unit plug */
+ 
+ t_stat tq_show_plug (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+@@ -2701,7 +2932,7 @@ return SCPE_OK;
+ 
+ /* Set unit plug */
+ 
+-t_stat tq_set_plug (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++static t_stat tq_set_plug_body (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ {
+ int32 plug;
+ uint32 i;
+@@ -2722,6 +2953,12 @@ uptr->unit_plug = plug;
+ return SCPE_OK;
+ }
+ 
++t_stat tq_set_plug (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++tq_set_ctx_unit (uptr);
++return tq_set_plug_body (uptr, val, cptr, desc);
++}
++
+ static t_stat tq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+ {
+ const char *devtype = UNIBUS ? "TUK50" : "TQK50";
+@@ -2766,4 +3003,231 @@ const char *tq_description (DEVICE *dptr)
+ {
+ return (UNIBUS) ? "TUK50 TMSCP magnetic tape controller" :
+                   "TQK50 TMSCP magnetic tape controller";
++}
++
++/* KLESI-B TMSCP port (TB): controller 1 on the VAX 8200
++
++   The KLESI-B is a VAXBI node with a DWBUA-like adapter and a TMSCP port
++   (KLESI) on its internal Unibus at 774500 (ULTRIX V2.0 bla.c).  The port
++   and its drives are this TQ code with the context tq_ctx1; the adapter is
++   VAX/vax820_klesib.c, which supplies the memory access through its map
++   and the interrupt (vector offset register | port vector).  TB is
++   disabled by default; its drives are TU81s (SET TB TK50 etc. work as for
++   TQ).  The node defaults to 8 (SET TB NODE=n). */
++
++#if defined (VAX_820)
++
++extern DIB tb_dib;                                      /* vax820_klesib.c */
++extern int32 kb_rb (uint32 ba, int32 bc, uint8 *buf);
++extern int32 kb_rw (uint32 ba, int32 bc, uint16 *buf);
++extern int32 kb_wb (uint32 ba, int32 bc, const uint8 *buf);
++extern int32 kb_ww (uint32 ba, int32 bc, const uint16 *buf);
++extern void kb_setint (void);
++extern void kb_clrint (void);
++extern t_stat kb_reset (DEVICE *dptr);
++extern t_stat kb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++extern t_stat kb_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++extern t_stat kb_show_vec (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++extern BIIC kb_biic;
++extern uint32 kb_csr, kb_vo, kb_int, kb_pint, kb_fubar, kb_bifa, kb_map[];
++
++t_stat tb_reset (DEVICE *dptr);
++t_stat tb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
++const char *tb_description (DEVICE *dptr);
++
++UNIT tb_unit[] = {
++    { UDATA (&tq_svc, UNIT_IDLE|UNIT_ATTABLE|UNIT_DISABLE|UNIT_ROABLE, TQ8_CAP) },
++    { UDATA (&tq_svc, UNIT_IDLE|UNIT_ATTABLE|UNIT_DISABLE|UNIT_ROABLE, TQ8_CAP) },
++    { UDATA (&tq_svc, UNIT_IDLE|UNIT_ATTABLE|UNIT_DISABLE|UNIT_ROABLE, TQ8_CAP) },
++    { UDATA (&tq_svc, UNIT_IDLE|UNIT_ATTABLE|UNIT_DISABLE|UNIT_ROABLE, TQ8_CAP) },
++    { UDATA (&tq_tmrsvc, UNIT_IDLE|UNIT_DIS, 0) },
++    { UDATA (&tq_quesvc, UNIT_IDLE|UNIT_DIS, 0) }
++    };
++
++REG tb_reg[] = {
++    { GRDATAD (SA,                     tq_ctx1.sa, DEV_RDX, 16, 0, "status/address register") },
++    { GRDATAD (SAW,                   tq_ctx1.saw, DEV_RDX, 16, 0, "written data") },
++    { GRDATAD (S1DAT,               tq_ctx1.s1dat, DEV_RDX, 16, 0, "step 1 init host data") },
++    { GRDATAD (CQIOFF,            tq_ctx1.cq.ioff, DEV_RDX, 32, 0, "command queue intr offset") },
++    { GRDATAD (CQBA,                tq_ctx1.cq.ba, DEV_RDX, 22, 0, "command queue base address") },
++    { GRDATAD (CQLNT,              tq_ctx1.cq.lnt, DEV_RDX,  8, 2, "command queue length"), REG_NZ },
++    { GRDATAD (CQIDX,              tq_ctx1.cq.idx, DEV_RDX,  8, 2, "command queue index") },
++    { GRDATAD (TQIOFF,            tq_ctx1.rq.ioff, DEV_RDX, 32, 0, "response queue intr offset") },
++    { GRDATAD (TQBA,                tq_ctx1.rq.ba, DEV_RDX, 22, 0, "response queue base address") },
++    { GRDATAD (TQLNT,              tq_ctx1.rq.lnt, DEV_RDX,  8, 2, "response queue length"), REG_NZ },
++    { GRDATAD (TQIDX,              tq_ctx1.rq.idx, DEV_RDX,  8, 2, "response queue index") },
++    { DRDATAD (FREE,                 tq_ctx1.freq, 5,              "head of free packet list") },
++    { DRDATAD (RESP,                 tq_ctx1.rspq, 5,              "head of response packet list") },
++    { DRDATAD (PBSY,                 tq_ctx1.pbsy, 5,              "number of busy packets") },
++    { GRDATAD (CFLGS,               tq_ctx1.cflgs, DEV_RDX, 16, 0, "controller flags") },
++    { GRDATAD (CSTA,                 tq_ctx1.csta, DEV_RDX,  4, 0, "controller state") },
++    { GRDATAD (PERR,                 tq_ctx1.perr, DEV_RDX,  9, 0, "port error number") },
++    { DRDATAD (CRED,              tq_ctx1.credits, 5,              "host credits") },
++    { DRDATAD (HAT,                   tq_ctx1.hat, 17,             "host available timer") },
++    { DRDATAD (HTMO,                 tq_ctx1.htmo, 17,             "host timeout value") },
++    { URDATAD (CPKT,         tb_unit[0].cpkt, 10, 5, 0, TQ_NUMDR, 0, "current packet, units 0 to 3") },
++    { URDATAD (PKTQ,         tb_unit[0].pktq, 10, 5, 0, TQ_NUMDR, 0, "packet queue, units 0 to 3") },
++    { URDATAD (UFLG,           tb_unit[0].uf, DEV_RDX, 16, 0, TQ_NUMDR, 0, "unit flags, units 0 to 3") },
++    { URDATAD (POS,           tb_unit[0].pos, 10, T_ADDR_W, 0, TQ_NUMDR, 0, "position, units 0 to 3") },
++    { URDATAD (OBJP,         tb_unit[0].objp, 10, 32, 0, TQ_NUMDR, 0, "object position, units 0 to 3") },
++    { FLDATA  (PRGI,                 tq_ctx1.prgi, 0), REG_HIDDEN },
++    { FLDATA  (PIP,                   tq_ctx1.pip, 0), REG_HIDDEN },
++    { VBRDATAD (PKTS,                 tq_ctx1.pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
++    { URDATAD (PLUG,    tb_unit[0].unit_plug, 10, 32, 0, TQ_NUMDR, PV_LEFT | REG_RO, "unit plug value, units 0 to 3") },
++    { DRDATA  (DEVTYPE,               tq_ctx1.typ, 2), REG_HRO },
++    { FLDATAD (PINT,                  kb_pint, 0,              "adapter: port interrupt request") },
++    { FLDATAD (AINT,                   kb_int, 0,              "adapter: error interrupt request") },
++    { HRDATAD (CSR,                    kb_csr, 32,             "adapter: control/status") },
++    { HRDATAD (VO,                      kb_vo, 32,             "adapter: vector offset") },
++    { HRDATAD (FUBAR,                kb_fubar, 32,             "adapter: failed Unibus address") },
++    { HRDATAD (BIFA,                  kb_bifa, 32,             "adapter: failed BI address") },
++    { HRDATAD (BICSR,             kb_biic.csr, 32,             "adapter: BIIC control/status") },
++    { HRDATAD (BIBER,             kb_biic.ber, 32,             "adapter: BIIC bus error") },
++    { HRDATAD (BIECR,            kb_biic.eicr, 32,             "adapter: BIIC error interrupt control") },
++    { HRDATAD (BIDEST,          kb_biic.idest, 32,             "adapter: BIIC interrupt destination") },
++    { BRDATAD (MAP,                    kb_map, 16, 32, 512,    "adapter: map registers") },
++    { GRDATA  (NODE,               tb_dib.ba, 16, 4, 0), REG_HRO },
++    { NULL }
++    };
++
++MTAB tb_mod[] = {
++    { MTAB_XTD|MTAB_VUN, 0, "write enabled", "WRITEENABLED",
++        &set_writelock, &show_writelock,   NULL, "Write enable tape drive" },
++    { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED",
++        &set_writelock, NULL,   NULL, "Write lock tape drive" },
++    { MTAB_XTD|MTAB_VDV,  TQ8_TYPE,           NULL,  "TU81",
++        &tq_set_type, NULL, NULL, "Set TU81 Device Type (default)"  },
++    { MTAB_XTD|MTAB_VDV,  TQ5_TYPE,           NULL,   "TK50",
++        &tq_set_type, NULL, NULL, "Set TK50 Device Type" },
++    { MTAB_XTD|MTAB_VDV,  TQ7_TYPE,           NULL,   "TK70",
++        &tq_set_type, NULL, NULL, "Set TK70 Device Type"  },
++    { MTAB_XTD|MTAB_VDV,  TQU_TYPE,           NULL,  "TKUSER",
++        &tq_set_type, NULL, NULL, "Set TKUSER=size Device Type"  },
++    { MTAB_XTD|MTAB_VDV,         0,         "TYPE",  NULL,
++        NULL, &tq_show_type, NULL, "Display device type" },
++    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "UNIT", "UNIT=val (0-65534)",
++      &tq_set_plug, &tq_show_plug, NULL, "Set/Display Unit plug value" },
++    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_RI, "RINGS", NULL,
++        NULL, &tq_show_ctrl, NULL, "Display command and response rings" },
++    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_FR, "FREEQ", NULL,
++        NULL, &tq_show_ctrl, NULL, "Display free queue" },
++    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_RS, "RESPQ", NULL,
++        NULL, &tq_show_ctrl, NULL, "Display response queue" },
++    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_UN, "UNITQ", NULL,
++        NULL, &tq_show_ctrl, NULL, "Display all unit queues" },
++    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_ALL, "ALL", NULL,
++        NULL, &tq_show_ctrl, NULL, "Display complete controller state" },
++    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "UNITQ", NULL,
++        NULL, &tq_show_unitq, NULL, "Display unit queue" },
++    { MTAB_XTD|MTAB_VUN, 1,                 NULL, "LOAD",
++        &tq_set_panel, NULL, NULL, "Realism mode (TK50): Load/Unload button in" },
++    { MTAB_XTD|MTAB_VUN, 0,                 NULL, "UNLOAD",
++        &tq_set_panel, NULL, NULL, "Realism mode (TK50): Load/Unload button out" },
++    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "TRANSPORT", NULL,
++        NULL, &tq_show_transport, NULL, "Display the TK50 drive state (realism mode)" },
++    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
++        &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
++    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
++        &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set/Display capacity" },
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
++        &kb_set_node, &kb_show_node, NULL, "VAXBI node number (2-15, default 8)" },
++    { MTAB_XTD|MTAB_VDV, 0,                 "VECTOR", NULL,
++        NULL, &kb_show_vec, NULL, "Adapter vector offset" },
++    { 0 }
++    };
++
++DEBTAB tb_debug[] = {
++  {"TRACE",   DBG_TRC,   "trace routine calls"},
++  {"INIT",    DBG_INI,   "display setup/init sequence info"},
++  {"REG",     DBG_REG,   "trace read/write port registers"},
++  {"REQ",     DBG_REQ,   "display transfer requests"},
++  {"TAPE",    DBG_TAP,   "display sim_tape activities, adapter transfers"},
++  {"STR",     DBG_STR,   "display tape structure detail"},
++  {"POS",     DBG_POS,   "display position activities"},
++  {"DATA",    DBG_DAT,   "display transfer data"},
++  {"AREG",    0x0100,    "adapter registers"},
++  {"AMAP",    0x0200,    "adapter map registers"},
++  {"AINT",    0x0400,    "adapter interrupts"},
++  {"AERR",    0x0800,    "adapter errors"},
++  {0}
++};
++
++DEVICE tb_dev = {
++    "TB", tb_unit, tb_reg, tb_mod,
++    TQ_NUMDR + 2, 10, T_ADDR_W, 1, DEV_RDX, 8,
++    NULL, NULL, &tb_reset,
++    NULL, &tq_attach, &tq_detach,
++    &tb_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS | DEV_DEBUG | DEV_TAPE,
++    0, tb_debug,
++    NULL, NULL, &tb_help, NULL, NULL,
++    &tb_description
++    };
++
++/* Port register access and interrupt acknowledge (from the adapter) */
++
++t_stat tb_rd (int32 *data, int32 PA, int32 access)
++{
++tqc = &tq_ctx1;
++return tq_rd_body (data, PA, access);
+ }
++
++t_stat tb_wr (int32 data, int32 PA, int32 access)
++{
++tqc = &tq_ctx1;
++return tq_wr_body (data, PA, access);
++}
++
++int32 tb_inta (void)
++{
++tqc = &tq_ctx1;
++return tq_inta_body ();
++}
++
++/* Port reset (adapter self-test, Unibus power init) and device reset */
++
++t_stat tb_port_reset (void)
++{
++return tq_reset (&tb_dev);
++}
++
++t_stat tb_reset (DEVICE *dptr)
++{
++if (!tq_ctx1.inited) {                                  /* the adapter's hooks */
++    tq_ctx1.rb = &kb_rb;
++    tq_ctx1.rw = &kb_rw;
++    tq_ctx1.wb = &kb_wb;
++    tq_ctx1.ww = &kb_ww;
++    tq_ctx1.setint = &kb_setint;
++    tq_ctx1.clrint = &kb_clrint;
++    tq_ctx_init (&tq_ctx1, dptr, TQ8_TYPE, TRUE);
++    }
++kb_reset (dptr);
++return tq_reset (dptr);
++}
++
++t_stat tb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
++{
++fprintf (st, "KLESI-B VAXBI Tape Adapter (TB)\n\n");
++fprintf (st, "The KLESI-B is a VAXBI node with a TMSCP port (KLESI) on an internal\n");
++fprintf (st, "Unibus, for up to four TU81 tape drives (units TB0 to TB3).  It is a\n");
++fprintf (st, "second TMSCP tape controller next to TQ (TUK50, TU81 on the DWBUA's\n");
++fprintf (st, "Unibus) and works without the DWBUA, so also in the VAXBI-only mode\n");
++fprintf (st, "(SET UBA DISABLE).  TB is disabled by default:\n\n");
++fprintf (st, "    SET TB ENABLE\n");
++fprintf (st, "    SET TB NODE=8          VAXBI node (2-15, default 8)\n");
++fprintf (st, "    ATTACH TB0 tape.tap\n\n");
++fprintf (st, "The adapter has the DWBUA's registers (vector offset, map registers);\n");
++fprintf (st, "the port's IP and SA registers are at Unibus address 774500 in the\n");
++fprintf (st, "node's window.  ULTRIX supports it (V2.0: bla.c, tmscp.c).\n\n");
++fprint_set_help (st, dptr);
++fprint_show_help (st, dptr);
++fprint_reg_help (st, dptr);
++return SCPE_OK;
++}
++
++const char *tb_description (DEVICE *dptr)
++{
++return "KLESI-B VAXBI TMSCP tape adapter";
++}
++
++#endif
+diff --git a/VAX/CMakeLists.txt b/VAX/CMakeLists.txt
+index a1e3c60f..65dca329 100644
+--- a/VAX/CMakeLists.txt
++++ b/VAX/CMakeLists.txt
+@@ -587,6 +587,7 @@ add_simulator(vax8200
+         vax_dmb.c
+         vax_bi_dma.c
+         vax_debna.c
++        vax820_klesib.c
+         ${PDP11D}/pdp11_rl.c
+         ${PDP11D}/pdp11_rq.c
+         ${PDP11D}/pdp11_ts.c
+diff --git a/VAX/vax820_defs.h b/VAX/vax820_defs.h
+index 288320c6..417c35ad 100644
+--- a/VAX/vax820_defs.h
++++ b/VAX/vax820_defs.h
+@@ -199,8 +199,16 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
+ #define IOPAGEMASK      (IOPAGESIZE - 1)                /* IO addr mask */
+ #define UBADDRBASE      WINADDR(TR_UBA)                 /* Unibus addr base */
+ #define IOPAGEBASE      (UBADDRBASE + 0x3E000)          /* IO page base */
+-#define ADDR_IS_IO(x)   ((((uint32) (x)) >= UBADDRBASE) && \
+-                        (((uint32) (x)) < (UBADDRBASE + UBADDRSIZE)))
++/* I/O space: the DWBUA's Unibus window (not while SET UBA DISABLE, the
++   VAXBI-only mode) and the KLESI-B's internal Unibus window (kb_winbase:
++   its node's window, 0 while the KLESI-B (TB) is disabled) */
++extern uint32 uba_win_ena;                              /* DWBUA window enabled */
++extern uint32 kb_winbase;                               /* KLESI-B window, 0 = none */
++#define ADDR_IS_KB(x)   ((kb_winbase != 0) && \
++                        ((((uint32) (x)) - kb_winbase) < UBADDRSIZE))
++#define ADDR_IS_IO(x)   (((uba_win_ena != 0) && \
++                        ((((uint32) (x)) - UBADDRBASE) < UBADDRSIZE)) || \
++                        ADDR_IS_KB (x))
+ #define ADDR_IS_IOP(x)  (((uint32) (x)) >= IOPAGEBASE)
+ 
+ /* Nexus register space */
+diff --git a/VAX/vax820_klesib.c b/VAX/vax820_klesib.c
+new file mode 100644
+index 00000000..9705a0bf
+--- /dev/null
++++ b/VAX/vax820_klesib.c
+@@ -0,0 +1,574 @@
++/* vax820_klesib.c: KLESI-B VAXBI tape adapter (TB), adapter part
++
++   Incorporates the DWBUA model of vax820_uba.c, Copyright (c) 2019,
++   Matt Burke, and code from SimH, Copyright (c) 2004-2008, Robert M Supnik
++
++   Permission is hereby granted, free of charge, to any person obtaining a
++   copy of this software and associated documentation files (the "Software"),
++   to deal in the Software without restriction, including without limitation
++   the rights to use, copy, modify, merge, publish, distribute, sublicense,
++   and/or sell copies of the Software, and to permit persons to whom the
++   Software is furnished to do so, subject to the following conditions:
++
++   The above copyright notice and this permission notice shall be included in
++   all copies or substantial portions of the Software.
++
++   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++   THE AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
++   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
++   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++
++   Except as contained in this notice, the name(s) of the author(s) shall not be
++   used in advertising or otherwise to promote the sale, use or other dealings
++   in this Software without prior written authorization from the author(s).
++
++   tb           KLESI-B VAXBI tape adapter
++
++   16-Nov-26    Ulli/Claude  First version (VAX 8200/8300)
++
++   The KLESI-B (BI device type 0103) is a VAXBI node with a DWBUA-like
++   adapter in front of a KLESI TMSCP port on a private, internal Unibus
++   (ULTRIX V2.0 sys/vaxbi/bla.c: "looks alot like BUA").  The node has the
++   DWBUA's registers (BIIC, control/status at 0x720, vector offset at 0x724,
++   failed Unibus address, data path registers, 512 map registers at 0x800),
++   its node window is the internal Unibus, and the TMSCP port's IP and SA
++   registers are at Unibus address 774500 in it (the only device there).
++
++   This file is the adapter: the BIIC and DWBUA registers, the map for the
++   port's transfers (with the DWBUA's buffer routines, vax820_uba.c), the
++   window, and the interrupts.  The TMSCP port and its drives (TU81) are
++   the TQ code (pdp11_tq.c, controller 1, device TB), which calls kb_rb,
++   kb_rw, kb_wb, kb_ww for memory and kb_setint, kb_clrint for its
++   interrupt, and calls kb_reset from the TB reset.
++
++   Interrupts: the port's interrupt is requested at IPL 15 (BR5) for the
++   adapter's node; the vector is the vector offset register ORed with the
++   port's vector (TMSCP step 1), as on the DWBUA.  The adapter's error
++   interrupt uses the BIIC's error interrupt control register.
++
++   The KLESI-B works with or without the DWBUA (SET UBA DISABLE: the
++   VAXBI-only mode); the two adapters have separate windows and maps.
++*/
++
++#include "vax_defs.h"
++
++#define DTYPE_KLESIB    0x0103                          /* KLESI-B (BI_BLA) */
++#define KB_DEF_NODE     8                               /* default node */
++#define KB_NDPATH       6                               /* data paths */
++#define KB_NMAPR        512                             /* map registers */
++#define KB_NMAPU        496                             /* usable */
++#define KB_IPL          (0x15 - IPL_HMIN)               /* port: BR5 */
++#define KB_PORT_OFS     (0x3E000 + 0x1940)              /* 774500 in the window */
++
++/* Register offsets (longwords) and bits, as the DWBUA (vax820_uba.c) */
++
++#define BIGPR0_UPU      0x00000001                      /* Unibus power up */
++#define KBCSR_OF        0x1C8
++#define KBCSR_ERR       0x80000000
++#define KBCSR_BIF       0x10000000
++#define KBCSR_TO        0x08000000
++#define KBCSR_UIE       0x04000000
++#define KBCSR_IMR       0x02000000
++#define KBCSR_BDP       0x01000000
++#define KBCSR_EIE       0x00100000
++#define KBCSR_UPI       0x00020000
++#define KBCSR_MBO       0x00008000
++#define KBCSR_WR        (KBCSR_EIE)
++#define KBCSR_ERRS      (KBCSR_BIF | KBCSR_TO | KBCSR_UIE | KBCSR_IMR | KBCSR_BDP)
++#define KBCSR_W1C       (KBCSR_ERRS)
++#define KBVO_OF         0x1C9
++#define KBVO_VEC        0x00003E00
++#define KBFUBAR_OF      0x1CA
++#define KBBIFA_OF       0x1CB
++#define KBDR_OF         0x1CC
++#define KBDPR_OF        0x1D4
++#define KBDPR_V_SEL     21
++#define KBDPR_M_SEL     0x7
++#define KBDPR_RD        (KBDPR_M_SEL << KBDPR_V_SEL)
++#define KBBDPS_OF       0x1E4
++#define KBMAP_OF        0x200
++#define KBMAP_VLD       0x80000000
++#define KBMAP_IOAD      0x40000000
++#define KBMAP_LWAE      0x04000000
++#define KBMAP_ODD       0x02000000
++#define KBMAP_V_DP      21
++#define KBMAP_M_DP      0x7
++#define KBMAP_DP        (KBMAP_M_DP << KBMAP_V_DP)
++#define KBMAP_PAG       0x001FFFFF
++#define KBMAP_RW        (0xC6000000 | KBMAP_DP | KBMAP_PAG)
++
++/* Debug: the TB device's flags (the TQ code uses 0x01-0x10 and the top
++   four bits) */
++
++#define DBG_KREG        0x00000100                      /* adapter registers */
++#define DBG_KMAP        0x00000200                      /* map registers */
++#define DBG_KINT        0x00000400                      /* interrupts */
++#define DBG_KERR        0x00000800                      /* errors */
++
++typedef t_bool (*BUA_MAPF) (uint32 ua, uint32 *ma);
++extern int32 bua_rb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint8 *buf);
++extern int32 bua_rw (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint16 *buf);
++extern int32 bua_wb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint8 *buf);
++extern int32 bua_ww (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint16 *buf);
++extern uint32 nexus_req[NEXUS_HLVL];
++extern DEVICE tb_dev;                                   /* pdp11_tq.c */
++extern t_stat tb_rd (int32 *data, int32 PA, int32 access);
++extern t_stat tb_wr (int32 data, int32 PA, int32 access);
++extern int32 tb_inta (void);
++extern t_stat tb_port_reset (void);
++
++t_stat kb_rdreg (int32 *val, int32 pa, int32 lnt);
++t_stat kb_wrreg (int32 val, int32 pa, int32 lnt);
++int32 kb_ack (void);
++t_stat kb_reset (DEVICE *dptr);
++void kb_clrint (void);
++
++/* Adapter state */
++
++DIB tb_dib = { KB_DEF_NODE, 0, &kb_rdreg, &kb_wrreg, 0, 0, 0, { &kb_ack } };
++uint32 kb_winbase = 0;                                  /* window, 0 = disabled */
++BIIC kb_biic;                                           /* BIIC registers */
++uint32 kb_csr = 0;                                      /* control/status */
++uint32 kb_vo = 0;                                       /* vector offset */
++uint32 kb_int = 0;                                      /* adapter (error) int */
++uint32 kb_pint = 0;                                     /* port int request */
++uint32 kb_fubar = 0;                                    /* failed Unibus addr */
++uint32 kb_bifa = 0;                                     /* failed BI addr */
++uint32 kb_dpr[KB_NDPATH] = { 0 };                       /* data paths */
++uint32 kb_map[KB_NMAPR] = { 0 };                        /* map registers */
++static int32 kb_node_req = -1;                          /* node of the requests */
++
++static t_bool kb_map_addr (uint32 ua, uint32 *ma);
++
++/* Node, interrupts */
++
++static int32 kb_node (void)
++{
++return (int32) (tb_dib.ba & 0xF);
++}
++
++/* Present the requests: the adapter interrupt at the levels in the BIIC's
++   error interrupt control register, the port's at IPL 15 */
++
++static void kb_eval_int (void)
++{
++int32 i, lvl, node = kb_node ();
++
++for (i = 0; i < NEXUS_HLVL; i++) {                      /* clear our requests */
++    if (kb_node_req >= 0)
++        nexus_req[i] &= ~(1u << kb_node_req);
++    nexus_req[i] &= ~(1u << node);
++    }
++kb_node_req = node;
++if (tb_dev.flags & DEV_DIS)
++    return;
++if (kb_int) {
++    lvl = (kb_biic.eicr >> BIECR_V_LVL) & BIECR_M_LVL;
++    for (i = 0; i < NEXUS_HLVL; i++)
++        if (lvl & (1u << i))
++            nexus_req[i] |= (1u << node);
++    }
++if (kb_pint)
++    nexus_req[KB_IPL] |= (1u << node);
++}
++
++/* Interrupt acknowledge (nexusA): the request at the highest level wins */
++
++int32 kb_ack (void)
++{
++int32 lvl, i, elvl = -1;
++int32 vec;
++
++if (kb_int) {
++    lvl = (kb_biic.eicr >> BIECR_V_LVL) & BIECR_M_LVL;
++    for (i = NEXUS_HLVL - 1; i >= 0; i--)
++        if (lvl & (1u << i)) {
++            elvl = i;
++            break;
++            }
++    }
++if (kb_int && (!kb_pint || (elvl >= KB_IPL))) {         /* adapter error */
++    vec = kb_biic.eicr & BIECR_VEC;
++    kb_int = 0;
++    }
++else if (kb_pint) {                                     /* the port */
++    kb_pint = 0;
++    vec = (kb_vo & KBVO_VEC) | tb_inta ();
++    }
++else vec = 0;
++sim_debug (DBG_KINT, &tb_dev, "interrupt acknowledge, vector %03X\n", vec);
++kb_eval_int ();                                         /* others stay */
++return vec;
++}
++
++void kb_setint (void)
++{
++kb_pint = 1;
++kb_eval_int ();
++}
++
++void kb_clrint (void)
++{
++kb_pint = 0;
++kb_eval_int ();
++}
++
++static void kb_adap_set_int (void)
++{
++if (kb_csr & KBCSR_EIE) {
++    kb_int = 1;
++    kb_eval_int ();
++    }
++}
++
++/* Memory access of the port through the map */
++
++int32 kb_rb (uint32 ba, int32 bc, uint8 *buf)
++{
++return bua_rb (&kb_map_addr, &tb_dev, ba, bc, buf);
++}
++
++int32 kb_rw (uint32 ba, int32 bc, uint16 *buf)
++{
++return bua_rw (&kb_map_addr, &tb_dev, ba, bc, buf);
++}
++
++int32 kb_wb (uint32 ba, int32 bc, const uint8 *buf)
++{
++return bua_wb (&kb_map_addr, &tb_dev, ba, bc, buf);
++}
++
++int32 kb_ww (uint32 ba, int32 bc, const uint16 *buf)
++{
++return bua_ww (&kb_map_addr, &tb_dev, ba, bc, buf);
++}
++
++/* Map a Unibus address (as the DWBUA, uba_map_addr) */
++
++static t_bool kb_map_addr (uint32 ua, uint32 *ma)
++{
++uint32 ublk = ua >> VA_V_VPN, umap;
++
++if (ublk >= KB_NMAPR)
++    return FALSE;
++umap = kb_map[ublk];
++if (umap == 0xFFFFFFFF)
++    return FALSE;
++if (umap & KBMAP_VLD) {
++    *ma = ((umap & KBMAP_PAG) << VA_V_VPN) + VA_GETOFF (ua);
++    if ((umap & KBMAP_DP) && (umap & KBMAP_ODD))        /* buffered dp, odd */
++        *ma = *ma + 1;
++    if (ADDR_IS_MEM (*ma))
++        return TRUE;
++    if ((kb_biic.ber & BIBER_BTO) == 0) {
++        kb_biic.ber |= BIBER_BTO;
++        kb_bifa = *ma;
++        kb_adap_set_int ();
++        }
++    sim_debug (DBG_KERR, &tb_dev, "BI nxm, ba = %X\n", *ma);
++    return FALSE;
++    }
++if ((kb_csr & KBCSR_IMR) == 0) {
++    kb_csr |= KBCSR_IMR;
++    kb_adap_set_int ();
++    }
++sim_debug (DBG_KERR, &tb_dev, "invalid map register, ua = %X\n", ua);
++return FALSE;
++}
++
++/* The window: the internal Unibus.  Only the port's IP (774500) and SA
++   (774502) respond; byte or aligned word accesses, as the DWBUA. */
++
++static void kb_ub_nxm (uint32 ua)
++{
++if ((kb_csr & KBCSR_TO) == 0) {
++    kb_csr |= KBCSR_TO;
++    kb_fubar = (ua >> 2) & 0xFFFF;
++    kb_adap_set_int ();
++    }
++sim_debug (DBG_KERR, &tb_dev, "Unibus nxm, ua = %X\n", ua);
++}
++
++int32 kb_rdio (uint32 pa, int32 lnt)
++{
++uint32 ua = pa - kb_winbase;
++int32 val = 0;
++
++if ((lnt == L_BYTE) || ((lnt == L_WORD) && ((pa & 1) == 0))) {
++    if ((ua & ~3u) == KB_PORT_OFS)
++        tb_rd (&val, (int32) ua, READ);
++    else {
++        kb_biic.ber |= BIBER_RDS;
++        kb_ub_nxm (ua);
++        }
++    if (pa & 2)
++        val = val << 16;
++    }
++else sim_debug (DBG_KERR, &tb_dev, "invalid read, pa = %X, lnt = %d\n", pa, lnt);
++SET_IRQL;
++return val;
++}
++
++void kb_wrio (uint32 pa, int32 val, int32 lnt)
++{
++uint32 ua = pa - kb_winbase;
++int32 mode;
++
++if (lnt == L_BYTE)
++    mode = WRITEB;
++else if (((lnt == L_WORD) || (lnt == L_LONG)) && ((pa & 1) == 0))
++    mode = WRITE;
++else {
++    sim_debug (DBG_KERR, &tb_dev, "invalid write, pa = %X, lnt = %d\n", pa, lnt);
++    return;
++    }
++if ((ua & ~3u) == KB_PORT_OFS)
++    tb_wr (val, (int32) ua, mode);
++else kb_ub_nxm (ua);
++SET_IRQL;
++}
++
++/* Adapter registers (aligned longwords), as the DWBUA */
++
++t_stat kb_rdreg (int32 *val, int32 pa, int32 lnt)
++{
++int32 idx, ofs = NEXUS_GETOFS (pa);
++
++if ((ofs >= KBBDPS_OF) && (ofs < KBBDPS_OF + 0x10)) {
++    *val = 0;
++    return SCPE_OK;
++    }
++if (ofs >= KBMAP_OF) {
++    idx = ofs - KBMAP_OF;
++    if (idx >= KB_NMAPR)
++        return SCPE_NXM;
++    *val = kb_map[idx] & KBMAP_RW;
++    sim_debug (DBG_KMAP, &tb_dev, "map %d read, value = %X\n", idx, *val);
++    return SCPE_OK;
++    }
++switch (ofs) {
++
++    case BI_DTYPE:
++        *val = DTYPE_KLESIB;
++        break;
++
++    case BI_CSR:
++        *val = kb_biic.csr & BICSR_RD;
++        break;
++
++    case BI_BER:
++        *val = kb_biic.ber & BIBER_RD;
++        break;
++
++    case BI_EICR:
++        *val = kb_biic.eicr & BIECR_RD;
++        break;
++
++    case BI_IDEST:
++        *val = kb_biic.idest & BIID_RD;
++        break;
++
++    case BI_IMSK:
++    case BI_FIDEST:
++    case BI_ISRC:
++    case BI_GPR1:
++    case BI_GPR2:
++    case BI_GPR3:
++        *val = 0;
++        break;
++
++    case BI_SA:
++        *val = kb_biic.sa;
++        break;
++
++    case BI_EA:
++        *val = kb_biic.ea;
++        break;
++
++    case BI_BCIC:
++        *val = kb_biic.bcic & BIBCI_RD;
++        break;
++
++    case BI_UIIC:
++        *val = kb_biic.uiic;
++        break;
++
++    case BI_GPR0:
++        *val = kb_biic.gpr0;
++        break;
++
++    case KBCSR_OF:
++        *val = kb_csr | KBCSR_MBO;
++        if (kb_csr & KBCSR_ERRS)
++            *val |= KBCSR_ERR;
++        break;
++
++    case KBVO_OF:
++        *val = kb_vo & KBVO_VEC;
++        break;
++
++    case KBFUBAR_OF:
++        *val = kb_fubar & 0xFFFF;
++        break;
++
++    case KBBIFA_OF:
++        *val = kb_bifa;
++        break;
++
++    case KBDR_OF + 0: case KBDR_OF + 1: case KBDR_OF + 2:
++    case KBDR_OF + 3: case KBDR_OF + 4:
++        *val = 0;
++        break;
++
++    case KBDPR_OF + 0: case KBDPR_OF + 1: case KBDPR_OF + 2:
++    case KBDPR_OF + 3: case KBDPR_OF + 4: case KBDPR_OF + 5:
++        *val = kb_dpr[ofs - KBDPR_OF] & KBDPR_RD;
++        break;
++
++    default:
++        return SCPE_NXM;
++        }
++sim_debug (DBG_KREG, &tb_dev, "reg %X read, value = %X\n", ofs, *val);
++return SCPE_OK;
++}
++
++t_stat kb_wrreg (int32 val, int32 pa, int32 lnt)
++{
++int32 idx, ofs = NEXUS_GETOFS (pa);
++
++if (ofs >= KBMAP_OF) {
++    idx = ofs - KBMAP_OF;
++    if (idx >= KB_NMAPR)
++        return SCPE_NXM;
++    kb_map[idx] = val & KBMAP_RW;
++    sim_debug (DBG_KMAP, &tb_dev, "map %d write, value = %X\n", idx, val);
++    return SCPE_OK;
++    }
++switch (ofs) {
++
++    case BI_CSR:
++        /* Start self-test (ULTRIX bisst, buainit): the adapter and the
++           port are initialized, as the DWBUA does with its Unibus */
++        if (val & BICSR_RST) {
++            kb_reset (&tb_dev);
++            tb_port_reset ();
++            }
++        kb_biic.csr = (kb_biic.csr & ~BICSR_RW) | (val & BICSR_RW);
++        break;
++
++    case BI_BER:
++        kb_biic.ber = kb_biic.ber & ~(val & BIBER_W1C);
++        break;
++
++    case BI_EICR:
++        kb_biic.eicr = (kb_biic.eicr & ~BIECR_RW) | (val & BIECR_RW);
++        kb_biic.eicr = kb_biic.eicr & ~(val & BIECR_W1C);
++        kb_eval_int ();
++        break;
++
++    case BI_IDEST:
++        kb_biic.idest = val & BIID_RW;
++        break;
++
++    case BI_BCIC:
++        kb_biic.bcic = val & BIBCI_RW;
++        break;
++
++    case BI_UIIC:
++    case BI_GPR0: case BI_GPR1: case BI_GPR2: case BI_GPR3:
++        break;
++
++    case KBCSR_OF:
++        if (val & KBCSR_UPI)                            /* Unibus power init */
++            tb_port_reset ();
++        kb_csr = (kb_csr & ~KBCSR_WR) | (val & KBCSR_WR);
++        kb_csr = kb_csr & ~(val & KBCSR_W1C);
++        if (!(kb_csr & KBCSR_EIE))
++            kb_int = 0;
++        kb_eval_int ();
++        break;
++
++    case KBVO_OF:
++        kb_vo = val & KBVO_VEC;
++        break;
++
++    case KBDPR_OF + 0: case KBDPR_OF + 1: case KBDPR_OF + 2:
++    case KBDPR_OF + 3: case KBDPR_OF + 4: case KBDPR_OF + 5:
++        break;
++
++    default:
++        return SCPE_NXM;
++        }
++sim_debug (DBG_KREG, &tb_dev, "reg %X write, value = %X\n", ofs, val);
++return SCPE_OK;
++}
++
++/* Reset the adapter (TB reset, self-test); the window follows the node
++   and the enable state */
++
++t_stat kb_reset (DEVICE *dptr)
++{
++int32 i, node = kb_node ();
++
++kb_int = kb_pint = 0;
++for (i = 0; i < KB_NMAPR; i++)
++    kb_map[i] = (i < KB_NMAPU) ? 0 : 0xFFFFFFFF;
++for (i = 0; i < KB_NDPATH; i++)
++    kb_dpr[i] = (i << KBDPR_V_SEL);
++kb_csr = 0;
++kb_fubar = kb_bifa = 0;
++kb_biic.csr = (1u << BICSR_V_IF) | BICSR_STS | (node & BICSR_NODE);
++kb_biic.ber = 0;
++kb_biic.eicr = 0;
++kb_biic.idest = 0;
++kb_biic.sa = WINADDR (node);
++kb_biic.ea = WINADDR (node) + WINSIZE;
++kb_biic.uiic = BIICR_EXV;
++kb_biic.gpr0 = BIGPR0_UPU;
++kb_winbase = (dptr->flags & DEV_DIS) ? 0 : WINADDR (node);
++kb_eval_int ();
++return SCPE_OK;
++}
++
++/* SET/SHOW TB NODE */
++
++t_stat kb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++t_stat r;
++int32 node;
++
++if (cptr == NULL)
++    return SCPE_ARG;
++DEVICE *dptr;
++DIB *dibp;
++int32 i;
++
++node = (int32) get_uint (cptr, 10, 15, &r);
++if ((r != SCPE_OK) || (node < 2))
++    return sim_messagef (SCPE_ARG, "TB: the BI node is 2 to 15\n");
++for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {    /* node in use? */
++    dibp = (DIB *) dptr->ctxt;
++    if ((dptr == &tb_dev) || !(dptr->flags & DEV_NEXUS) ||
++        (dptr->flags & DEV_DIS) || (dibp == NULL))
++        continue;
++    if ((int32) (dibp->ba & 0xF) == node)
++        return sim_messagef (SCPE_ARG, "TB: BI node %d is %s's\n", node, dptr->name);
++    }
++kb_clrint ();
++tb_dib.ba = (uint32) node;
++return kb_reset (&tb_dev);
++}
++
++t_stat kb_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++fprintf (st, "node=%d", kb_node ());
++return SCPE_OK;
++}
++
++t_stat kb_show_vec (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++fprintf (st, "vector offset=%X", kb_vo & KBVO_VEC);
++return SCPE_OK;
++}
+diff --git a/VAX/vax820_syslist.c b/VAX/vax820_syslist.c
+index fdbb7242..f9f3f8ff 100644
+--- a/VAX/vax820_syslist.c
++++ b/VAX/vax820_syslist.c
+@@ -68,6 +68,7 @@ extern DEVICE dmf_dev;
+ extern DEVICE dmb_dev;
+ extern DEVICE kdb_dev;
+ extern DEVICE et_dev;
++extern DEVICE tb_dev;
+ extern DEVICE vh_dev;
+ extern DEVICE xu_dev, xub_dev;
+ extern DEVICE dmc_dev;
+@@ -102,6 +103,7 @@ DEVICE *sim_devices[] = {
+     &dmb_dev,                                   /* DMB32 (VAXBI node) */
+     &kdb_dev,                                   /* KDB50 (VAXBI node) */
+     &et_dev,                                    /* DEBNA (VAXBI node) */
++    &tb_dev,                                    /* KLESI-B (VAXBI node) */
+     &vh_dev,
+     &cr_dev,
+     &lpt_dev,
+diff --git a/VAX/vax820_uba.c b/VAX/vax820_uba.c
+index 762c2b67..a221aef2 100644
+--- a/VAX/vax820_uba.c
++++ b/VAX/vax820_uba.c
+@@ -25,6 +25,14 @@
+    in this Software without prior written authorization from the author(s).
+ 
+    uba                  DWBUA Unibus adapter
++
++   16-Nov-26    Ulli/Claude  VAXBI-only mode: SET UBA DISABLE disables the
++                             DWBUA (its node and window are gone) and every
++                             enabled Unibus device, SET UBA ENABLE brings
++                             them back; the buffer routines take the
++                             adapter's map function, so the KLESI-B (TB,
++                             vax820_klesib.c) uses them too, and ReadIO and
++                             WriteIO pass the KLESI-B's window to it
+ */
+ 
+ #include "vax_defs.h"
+@@ -127,6 +135,14 @@ uint32 uba_uiip = 0;                                    /* Unibus init in prog *
+ uint32 uba_aitime = 250;                                /* adapter init time */
+ uint32 uba_uitime = 12250;                              /* Unibus init time */
+ int32 autcon_enb = 1;                                   /* autoconfig enable */
++uint32 uba_win_ena = 1;                                 /* window enabled (ADDR_IS_IO) */
++static t_bool uba_was_dis = FALSE;                      /* SET UBA DISABLE in effect */
++#define UBA_MAXOFF      64
++static DEVICE *uba_off[UBA_MAXOFF];                     /* Unibus devices it disabled */
++static int32 uba_noff = 0;
++
++extern int32 kb_rdio (uint32 pa, int32 lnt);            /* the KLESI-B's window */
++extern void kb_wrio (uint32 pa, int32 val, int32 lnt);
+ 
+ extern uint32 nexus_req[NEXUS_HLVL];
+ 
+@@ -147,6 +163,12 @@ void uba_adap_set_int ();
+ void uba_adap_clr_int ();
+ void uba_ubpdn (int32 time);
+ t_bool uba_map_addr (uint32 ua, uint32 *ma);
++typedef t_bool (*BUA_MAPF) (uint32 ua, uint32 *ma);
++int32 bua_rb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint8 *buf);
++int32 bua_rw (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint16 *buf);
++int32 bua_wb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint8 *buf);
++int32 bua_ww (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint16 *buf);
++static t_stat uba_enbdis (void);
+ t_stat uba_show_virt (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ t_stat uba_show_map (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ 
+@@ -233,7 +255,7 @@ DEVICE uba_dev = {
+     1, 16, UBADDRWIDTH, 2, 16, 16,
+     &uba_ex, &uba_dep, &uba_reset,
+     NULL, NULL, NULL,
+-    &uba_dib, DEV_NEXUS | DEV_DEBUG, 0,
++    &uba_dib, DEV_NEXUS | DEV_DEBUG | DEV_DISABLE, 0,
+     uba_deb, NULL, NULL, &uba_help, NULL, NULL,
+     &uba_description
+     };
+@@ -507,6 +529,8 @@ int32 ReadIO (uint32 pa, int32 lnt)
+ {
+ uint32 iod;
+ 
++if (ADDR_IS_KB (pa))                                    /* KLESI-B window? */
++    return kb_rdio (pa, lnt);
+ if ((lnt == L_BYTE) ||                                  /* byte? */
+     ((lnt == L_WORD) && ((pa & 1) == 0))) {             /* aligned word? */
+     iod = ReadUb (pa);                                  /* DATI from Unibus */
+@@ -534,6 +558,10 @@ return iod;
+ 
+ void WriteIO (uint32 pa, int32 val, int32 lnt)
+ {
++if (ADDR_IS_KB (pa)) {                                  /* KLESI-B window? */
++    kb_wrio (pa, val, lnt);
++    return;
++    }
+ if (lnt == L_BYTE)                                      /* byte? DATOB */
+     WriteUb (pa, val, WRITEB);
+ else if (((lnt == L_WORD) || (lnt == L_LONG)) && ((pa & 1) == 0))/* aligned word? */
+@@ -610,21 +638,45 @@ return vec;
+    Map_ReadW    -       fetch word buffer from memory
+    Map_WriteB   -       store byte buffer into memory
+    Map_WriteW   -       store word buffer into memory
+-*/
++
++   The work is done by bua_rb, bua_rw, bua_wb and bua_ww with the adapter's
++   map function and device (debug): the DWBUA's for the Unibus devices
++   (Map_*), the KLESI-B's for its TMSCP port (vax820_klesib.c); both
++   adapters have the same map registers. */
+ 
+ int32 Map_ReadB (uint32 ba, int32 bc, uint8 *buf)
+ {
++return bua_rb (&uba_map_addr, &uba_dev, ba, bc, buf);
++}
++
++int32 Map_ReadW (uint32 ba, int32 bc, uint16 *buf)
++{
++return bua_rw (&uba_map_addr, &uba_dev, ba, bc, buf);
++}
++
++int32 Map_WriteB (uint32 ba, int32 bc, const uint8 *buf)
++{
++return bua_wb (&uba_map_addr, &uba_dev, ba, bc, buf);
++}
++
++int32 Map_WriteW (uint32 ba, int32 bc, const uint16 *buf)
++{
++return bua_ww (&uba_map_addr, &uba_dev, ba, bc, buf);
++}
++
++int32 bua_rb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint8 *buf)
++{
+ int32 i, j, pbc;
+ uint32 ma, dat;
+ 
+ ba = ba & UBADDRMASK;                                   /* mask UB addr */
+ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
+-    if (!uba_map_addr (ba + i, &ma))                    /* page inv or NXM? */
++    if (!mapf (ba + i, &ma))                    /* page inv or NXM? */
+         return (bc - i);
+     pbc = VA_PAGSIZE - VA_GETOFF (ma);                  /* left in page */
+     if (pbc > (bc - i))                                  /* limit to rem xfr */
+         pbc = bc - i;
+-    sim_debug (UBA_DEB_XFR, &uba_dev, "8b read, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
++    sim_debug (UBA_DEB_XFR, dptr, "8b read, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
+     if ((ma | pbc) & 3) {                               /* aligned LW? */
+         for (j = 0; j < pbc; ma++, j++) {               /* no, do by bytes */
+             *buf++ = ReadB (ma);
+@@ -643,7 +695,7 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
+ return 0;
+ }
+ 
+-int32 Map_ReadW (uint32 ba, int32 bc, uint16 *buf)
++int32 bua_rw (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint16 *buf)
+ {
+ int32 i, j, pbc;
+ uint32 ma, dat;
+@@ -651,12 +703,12 @@ uint32 ma, dat;
+ ba = ba & UBADDRMASK;                                   /* mask UB addr */
+ bc = bc & ~01;
+ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
+-    if (!uba_map_addr (ba + i, &ma))                    /* page inv or NXM? */
++    if (!mapf (ba + i, &ma))                    /* page inv or NXM? */
+         return (bc - i);
+     pbc = VA_PAGSIZE - VA_GETOFF (ma);                  /* left in page */
+     if (pbc > (bc - i))                                 /* limit to rem xfr */
+         pbc = bc - i;
+-    sim_debug (UBA_DEB_XFR, &uba_dev, "16b read, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
++    sim_debug (UBA_DEB_XFR, dptr, "16b read, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
+     if ((ma | pbc) & 1) {                               /* aligned word? */
+         for (j = 0; j < pbc; ma++, j++) {               /* no, do by bytes */
+             if ((i + j) & 1) {                          /* odd byte? */
+@@ -682,19 +734,19 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
+ return 0;
+ }
+ 
+-int32 Map_WriteB (uint32 ba, int32 bc, const uint8 *buf)
++int32 bua_wb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint8 *buf)
+ {
+ int32 i, j, pbc;
+ uint32 ma, dat;
+ 
+ ba = ba & UBADDRMASK;                                   /* mask UB addr */
+ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
+-    if (!uba_map_addr (ba + i, &ma))                    /* page inv or NXM? */
++    if (!mapf (ba + i, &ma))                    /* page inv or NXM? */
+         return (bc - i);
+     pbc = VA_PAGSIZE - VA_GETOFF (ma);                  /* left in page */
+     if (pbc > (bc - i))                                 /* limit to rem xfr */
+         pbc = bc - i;
+-    sim_debug (UBA_DEB_XFR, &uba_dev, "8b write, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
++    sim_debug (UBA_DEB_XFR, dptr, "8b write, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
+     if ((ma | pbc) & 3) {                               /* aligned LW? */
+         for (j = 0; j < pbc; ma++, j++) {               /* no, do by bytes */
+             WriteB (ma, *buf);
+@@ -714,7 +766,7 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
+ return 0;
+ }
+ 
+-int32 Map_WriteW (uint32 ba, int32 bc, const uint16 *buf)
++int32 bua_ww (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint16 *buf)
+ {
+ int32 i, j, pbc;
+ uint32 ma, dat;
+@@ -722,12 +774,12 @@ uint32 ma, dat;
+ ba = ba & UBADDRMASK;                                   /* mask UB addr */
+ bc = bc & ~01;
+ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
+-    if (!uba_map_addr (ba + i, &ma))                    /* page inv or NXM? */
++    if (!mapf (ba + i, &ma))                    /* page inv or NXM? */
+         return (bc - i);
+     pbc = VA_PAGSIZE - VA_GETOFF (ma);                  /* left in page */
+     if (pbc > (bc - i))                                 /* limit to rem xfr */
+         pbc = bc - i;
+-    sim_debug (UBA_DEB_XFR, &uba_dev, "16b write, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
++    sim_debug (UBA_DEB_XFR, dptr, "16b write, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
+     if ((ma | pbc) & 1) {                               /* aligned word? */
+         for (j = 0; j < pbc; ma++, j++) {               /* no, bytes */
+             if ((i + j) & 1) {
+@@ -907,7 +959,10 @@ return;
+ t_stat uba_reset (DEVICE *dptr)
+ {
+ int32 i;
++t_stat r;
+ 
++if ((r = uba_enbdis ()) != SCPE_OK)                     /* SET UBA DISABLE/ENABLE */
++    return r;
+ uba_int = 0;
+ uba_aiip = uba_uiip = 0;
+ sim_cancel (&uba_unit);
+@@ -935,10 +990,93 @@ uba_biic.gpr0 = BIGPR0_UPU;
+ return SCPE_OK;
+ }
+ 
++/* SET UBA DISABLE and ENABLE: the VAXBI-only mode
++
++   Called by every reset; acts on a change of the UBA's DEV_DIS flag.
++   Disabling: refused while a unit of an enabled Unibus device is
++   attached (SCP has set DEV_DIS already, so it is cleared again);
++   otherwise every enabled Unibus device is disabled and remembered, and
++   the DWBUA's window leaves the I/O space (ADDR_IS_IO).  The DWBUA's node
++   leaves the BI (build_nexus_tab skips disabled devices).  Enabling: the
++   remembered devices are enabled again. */
++
++static t_stat uba_enbdis (void)
++{
++DEVICE *dptr;
++UNIT *up;
++int32 i;
++uint32 j;
++t_bool dis = (uba_dev.flags & DEV_DIS) != 0;
++char names[CBUFSIZE] = "";
++
++if (dis && !uba_was_dis) {                              /* being disabled */
++    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
++        if (!(dptr->flags & DEV_UBUS) || (dptr->flags & DEV_DIS))
++            continue;
++        for (j = 0; j < dptr->numunits; j++) {
++            up = dptr->units + j;
++            if (up->flags & UNIT_ATT) {
++                uba_dev.flags &= ~DEV_DIS;              /* stays enabled */
++                return sim_messagef (SCPE_NOFNC,
++                    "UBA: %s is attached; detach the Unibus devices first\n",
++                    sim_uname (up));
++                }
++            }
++        if (!(dptr->flags & DEV_DISABLE)) {
++            uba_dev.flags &= ~DEV_DIS;
++            return sim_messagef (SCPE_NOFNC,
++                "UBA: the Unibus device %s cannot be disabled\n", dptr->name);
++            }
++        }
++    uba_noff = 0;
++    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
++        if (!(dptr->flags & DEV_UBUS) || (dptr->flags & DEV_DIS))
++            continue;
++        if (uba_noff < UBA_MAXOFF)
++            uba_off[uba_noff++] = dptr;
++        dptr->flags |= DEV_DIS;
++        if (dptr->reset)
++            dptr->reset (dptr);
++        if ((strlen (names) + strlen (dptr->name) + 2) < sizeof (names)) {
++            strcat (names, " ");
++            strcat (names, dptr->name);
++            }
++        }
++    uba_was_dis = TRUE;
++    uba_win_ena = 0;
++    sim_messagef (SCPE_OK, "UBA disabled (VAXBI-only mode)%s%s\n",
++                  names[0] ? ", Unibus devices disabled:" : "", names);
++    }
++else if (!dis && uba_was_dis) {                         /* being enabled */
++    for (i = 0; i < uba_noff; i++) {
++        dptr = uba_off[i];
++        dptr->flags &= ~DEV_DIS;
++        if (dptr->reset)
++            dptr->reset (dptr);
++        if ((strlen (names) + strlen (dptr->name) + 2) < sizeof (names)) {
++            strcat (names, " ");
++            strcat (names, dptr->name);
++            }
++        }
++    uba_noff = 0;
++    uba_was_dis = FALSE;
++    uba_win_ena = 1;
++    sim_messagef (SCPE_OK, "UBA enabled%s%s\n",
++                  names[0] ? ", Unibus devices enabled again:" : "", names);
++    }
++uba_win_ena = dis ? 0 : 1;
++return SCPE_OK;
++}
++
+ t_stat uba_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+ {
+ fprintf (st, "Unibus Adapter (UBA)\n\n");
+-fprintf (st, "The Unibus adapter (UBA) simulates the DWBUA.\n");
++fprintf (st, "The Unibus adapter (UBA) simulates the DWBUA (VAXBI node 4).\n\n");
++fprintf (st, "VAXBI-only mode: SET UBA DISABLE removes the DWBUA from the VAXBI.\n");
++fprintf (st, "It is refused while a unit of a Unibus device is attached; otherwise\n");
++fprintf (st, "every enabled Unibus device (RQ, TQ, DZ, XU, ...) is disabled with it\n");
++fprintf (st, "and listed.  SET UBA ENABLE enables the DWBUA and those devices again.\n");
++fprintf (st, "The VAXBI devices (KDB50, DEBNA, DMB32, KLESI-B) work without it.\n\n");
+ fprint_set_help (st, dptr);
+ fprint_show_help (st, dptr);
+ fprintf (st, "\nThe UBA implements main memory examination and modification via the Unibus\n");
+diff --git a/makefile b/makefile
+index 4372774e..f423552c 100644
+--- a/makefile
++++ b/makefile
+@@ -1746,6 +1746,7 @@ VAX8200 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
+ 	${VAXD}/vax820_mem.c ${VAXD}/vax820_uba.c ${VAXD}/vax820_ka.c \
+ 	${VAXD}/vax_uw.c ${VAXD}/vax820_syslist.c ${VAXD}/vax_dmf.c \
+ 	${VAXD}/vax_dmb.c ${VAXD}/vax_combo_lib.c ${VAXD}/vax_bi_dma.c ${VAXD}/vax_debna.c \
++	${VAXD}/vax820_klesib.c \
+ 	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \
+ 	${PDP11D}/pdp11_dz.c ${PDP11D}/pdp11_lp.c ${PDP11D}/pdp11_tq.c \
+ 	${PDP11D}/pdp11_xu.c ${PDP11D}/pdp11_ry.c ${PDP11D}/pdp11_cr.c \
+-- 
+2.43.0
+
