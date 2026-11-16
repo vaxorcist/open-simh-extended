@@ -29,6 +29,8 @@
    16-Nov-26    Ulli    KDB50: ring descriptors carry 30-bit VAXBI physical
                         addresses, not 22-bit Qbus addresses (VMS V5.5
                         boot driver's packets above 4 MB)
+   16-Nov-26    Ulli    Compare host data: a memory error stored the byte
+                        count as the bad host address (ba + i, not bc - i)
    10-Nov-26    Ulli    Sound realism mode: SDI drives (RA, ESE, RA8U) only on
                         a UDA50, UDA50A or KDA50, at most 4 drives there;
                         UDA50/UDA50A only on the Unibus, KDA50 only on Qbus;
@@ -2983,7 +2985,7 @@ else { /* Bottom End (After I/O processing) */
             for (i = 0; i < tbc; i++) {                 /* loop */
                 if (rq_readb (cp, ba + i, 1, ma, &mby)) {   /* fetch, nxm? */
                     PUTP32 (pkt, RW_WBCL, bc - i);      /* adj bc */
-                    PUTP32 (pkt, RW_WBAL, bc - i);      /* adj ba */
+                    PUTP32 (pkt, RW_WBAL, ba + i);      /* adj ba */
                     if (rq_hbe (cp, uptr))              /* post err log */
                         rq_rw_end (cp, uptr, EF_LOG, ST_HST | SB_HST_NXM);
                     return SCPE_OK;
