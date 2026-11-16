@@ -25,6 +25,14 @@
    in this Software without prior written authorization from the author(s).
 
    uba                  DWBUA Unibus adapter
+
+   16-Nov-26    Ulli/Claude  VAXBI-only mode: SET UBA DISABLE disables the
+                             DWBUA (its node and window are gone) and every
+                             enabled Unibus device, SET UBA ENABLE brings
+                             them back; the buffer routines take the
+                             adapter's map function, so the KLESI-B (TB,
+                             vax820_klesib.c) uses them too, and ReadIO and
+                             WriteIO pass the KLESI-B's window to it
 */
 
 #include "vax_defs.h"
@@ -127,6 +135,14 @@ uint32 uba_uiip = 0;                                    /* Unibus init in prog *
 uint32 uba_aitime = 250;                                /* adapter init time */
 uint32 uba_uitime = 12250;                              /* Unibus init time */
 int32 autcon_enb = 1;                                   /* autoconfig enable */
+uint32 uba_win_ena = 1;                                 /* window enabled (ADDR_IS_IO) */
+static t_bool uba_was_dis = FALSE;                      /* SET UBA DISABLE in effect */
+#define UBA_MAXOFF      64
+static DEVICE *uba_off[UBA_MAXOFF];                     /* Unibus devices it disabled */
+static int32 uba_noff = 0;
+
+extern int32 kb_rdio (uint32 pa, int32 lnt);            /* the KLESI-B's window */
+extern void kb_wrio (uint32 pa, int32 val, int32 lnt);
 
 extern uint32 nexus_req[NEXUS_HLVL];
 
@@ -147,6 +163,12 @@ void uba_adap_set_int ();
 void uba_adap_clr_int ();
 void uba_ubpdn (int32 time);
 t_bool uba_map_addr (uint32 ua, uint32 *ma);
+typedef t_bool (*BUA_MAPF) (uint32 ua, uint32 *ma);
+int32 bua_rb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint8 *buf);
+int32 bua_rw (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint16 *buf);
+int32 bua_wb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint8 *buf);
+int32 bua_ww (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint16 *buf);
+static t_stat uba_enbdis (void);
 t_stat uba_show_virt (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat uba_show_map (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
@@ -233,7 +255,7 @@ DEVICE uba_dev = {
     1, 16, UBADDRWIDTH, 2, 16, 16,
     &uba_ex, &uba_dep, &uba_reset,
     NULL, NULL, NULL,
-    &uba_dib, DEV_NEXUS | DEV_DEBUG, 0,
+    &uba_dib, DEV_NEXUS | DEV_DEBUG | DEV_DISABLE, 0,
     uba_deb, NULL, NULL, &uba_help, NULL, NULL,
     &uba_description
     };
@@ -507,6 +529,8 @@ int32 ReadIO (uint32 pa, int32 lnt)
 {
 uint32 iod;
 
+if (ADDR_IS_KB (pa))                                    /* KLESI-B window? */
+    return kb_rdio (pa, lnt);
 if ((lnt == L_BYTE) ||                                  /* byte? */
     ((lnt == L_WORD) && ((pa & 1) == 0))) {             /* aligned word? */
     iod = ReadUb (pa);                                  /* DATI from Unibus */
@@ -534,6 +558,10 @@ return iod;
 
 void WriteIO (uint32 pa, int32 val, int32 lnt)
 {
+if (ADDR_IS_KB (pa)) {                                  /* KLESI-B window? */
+    kb_wrio (pa, val, lnt);
+    return;
+    }
 if (lnt == L_BYTE)                                      /* byte? DATOB */
     WriteUb (pa, val, WRITEB);
 else if (((lnt == L_WORD) || (lnt == L_LONG)) && ((pa & 1) == 0))/* aligned word? */
@@ -610,21 +638,45 @@ return vec;
    Map_ReadW    -       fetch word buffer from memory
    Map_WriteB   -       store byte buffer into memory
    Map_WriteW   -       store word buffer into memory
-*/
+
+   The work is done by bua_rb, bua_rw, bua_wb and bua_ww with the adapter's
+   map function and device (debug): the DWBUA's for the Unibus devices
+   (Map_*), the KLESI-B's for its TMSCP port (vax820_klesib.c); both
+   adapters have the same map registers. */
 
 int32 Map_ReadB (uint32 ba, int32 bc, uint8 *buf)
+{
+return bua_rb (&uba_map_addr, &uba_dev, ba, bc, buf);
+}
+
+int32 Map_ReadW (uint32 ba, int32 bc, uint16 *buf)
+{
+return bua_rw (&uba_map_addr, &uba_dev, ba, bc, buf);
+}
+
+int32 Map_WriteB (uint32 ba, int32 bc, const uint8 *buf)
+{
+return bua_wb (&uba_map_addr, &uba_dev, ba, bc, buf);
+}
+
+int32 Map_WriteW (uint32 ba, int32 bc, const uint16 *buf)
+{
+return bua_ww (&uba_map_addr, &uba_dev, ba, bc, buf);
+}
+
+int32 bua_rb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint8 *buf)
 {
 int32 i, j, pbc;
 uint32 ma, dat;
 
 ba = ba & UBADDRMASK;                                   /* mask UB addr */
 for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
-    if (!uba_map_addr (ba + i, &ma))                    /* page inv or NXM? */
+    if (!mapf (ba + i, &ma))                    /* page inv or NXM? */
         return (bc - i);
     pbc = VA_PAGSIZE - VA_GETOFF (ma);                  /* left in page */
     if (pbc > (bc - i))                                  /* limit to rem xfr */
         pbc = bc - i;
-    sim_debug (UBA_DEB_XFR, &uba_dev, "8b read, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
+    sim_debug (UBA_DEB_XFR, dptr, "8b read, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
     if ((ma | pbc) & 3) {                               /* aligned LW? */
         for (j = 0; j < pbc; ma++, j++) {               /* no, do by bytes */
             *buf++ = ReadB (ma);
@@ -643,7 +695,7 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
 return 0;
 }
 
-int32 Map_ReadW (uint32 ba, int32 bc, uint16 *buf)
+int32 bua_rw (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, uint16 *buf)
 {
 int32 i, j, pbc;
 uint32 ma, dat;
@@ -651,12 +703,12 @@ uint32 ma, dat;
 ba = ba & UBADDRMASK;                                   /* mask UB addr */
 bc = bc & ~01;
 for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
-    if (!uba_map_addr (ba + i, &ma))                    /* page inv or NXM? */
+    if (!mapf (ba + i, &ma))                    /* page inv or NXM? */
         return (bc - i);
     pbc = VA_PAGSIZE - VA_GETOFF (ma);                  /* left in page */
     if (pbc > (bc - i))                                 /* limit to rem xfr */
         pbc = bc - i;
-    sim_debug (UBA_DEB_XFR, &uba_dev, "16b read, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
+    sim_debug (UBA_DEB_XFR, dptr, "16b read, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
     if ((ma | pbc) & 1) {                               /* aligned word? */
         for (j = 0; j < pbc; ma++, j++) {               /* no, do by bytes */
             if ((i + j) & 1) {                          /* odd byte? */
@@ -682,19 +734,19 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
 return 0;
 }
 
-int32 Map_WriteB (uint32 ba, int32 bc, const uint8 *buf)
+int32 bua_wb (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint8 *buf)
 {
 int32 i, j, pbc;
 uint32 ma, dat;
 
 ba = ba & UBADDRMASK;                                   /* mask UB addr */
 for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
-    if (!uba_map_addr (ba + i, &ma))                    /* page inv or NXM? */
+    if (!mapf (ba + i, &ma))                    /* page inv or NXM? */
         return (bc - i);
     pbc = VA_PAGSIZE - VA_GETOFF (ma);                  /* left in page */
     if (pbc > (bc - i))                                 /* limit to rem xfr */
         pbc = bc - i;
-    sim_debug (UBA_DEB_XFR, &uba_dev, "8b write, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
+    sim_debug (UBA_DEB_XFR, dptr, "8b write, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
     if ((ma | pbc) & 3) {                               /* aligned LW? */
         for (j = 0; j < pbc; ma++, j++) {               /* no, do by bytes */
             WriteB (ma, *buf);
@@ -714,7 +766,7 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
 return 0;
 }
 
-int32 Map_WriteW (uint32 ba, int32 bc, const uint16 *buf)
+int32 bua_ww (BUA_MAPF mapf, DEVICE *dptr, uint32 ba, int32 bc, const uint16 *buf)
 {
 int32 i, j, pbc;
 uint32 ma, dat;
@@ -722,12 +774,12 @@ uint32 ma, dat;
 ba = ba & UBADDRMASK;                                   /* mask UB addr */
 bc = bc & ~01;
 for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
-    if (!uba_map_addr (ba + i, &ma))                    /* page inv or NXM? */
+    if (!mapf (ba + i, &ma))                    /* page inv or NXM? */
         return (bc - i);
     pbc = VA_PAGSIZE - VA_GETOFF (ma);                  /* left in page */
     if (pbc > (bc - i))                                 /* limit to rem xfr */
         pbc = bc - i;
-    sim_debug (UBA_DEB_XFR, &uba_dev, "16b write, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
+    sim_debug (UBA_DEB_XFR, dptr, "16b write, ba = %X, ma = %X, bc = %X\n", ba, ma, pbc);
     if ((ma | pbc) & 1) {                               /* aligned word? */
         for (j = 0; j < pbc; ma++, j++) {               /* no, bytes */
             if ((i + j) & 1) {
@@ -907,7 +959,10 @@ return;
 t_stat uba_reset (DEVICE *dptr)
 {
 int32 i;
+t_stat r;
 
+if ((r = uba_enbdis ()) != SCPE_OK)                     /* SET UBA DISABLE/ENABLE */
+    return r;
 uba_int = 0;
 uba_aiip = uba_uiip = 0;
 sim_cancel (&uba_unit);
@@ -935,10 +990,93 @@ uba_biic.gpr0 = BIGPR0_UPU;
 return SCPE_OK;
 }
 
+/* SET UBA DISABLE and ENABLE: the VAXBI-only mode
+
+   Called by every reset; acts on a change of the UBA's DEV_DIS flag.
+   Disabling: refused while a unit of an enabled Unibus device is
+   attached (SCP has set DEV_DIS already, so it is cleared again);
+   otherwise every enabled Unibus device is disabled and remembered, and
+   the DWBUA's window leaves the I/O space (ADDR_IS_IO).  The DWBUA's node
+   leaves the BI (build_nexus_tab skips disabled devices).  Enabling: the
+   remembered devices are enabled again. */
+
+static t_stat uba_enbdis (void)
+{
+DEVICE *dptr;
+UNIT *up;
+int32 i;
+uint32 j;
+t_bool dis = (uba_dev.flags & DEV_DIS) != 0;
+char names[CBUFSIZE] = "";
+
+if (dis && !uba_was_dis) {                              /* being disabled */
+    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+        if (!(dptr->flags & DEV_UBUS) || (dptr->flags & DEV_DIS))
+            continue;
+        for (j = 0; j < dptr->numunits; j++) {
+            up = dptr->units + j;
+            if (up->flags & UNIT_ATT) {
+                uba_dev.flags &= ~DEV_DIS;              /* stays enabled */
+                return sim_messagef (SCPE_NOFNC,
+                    "UBA: %s is attached; detach the Unibus devices first\n",
+                    sim_uname (up));
+                }
+            }
+        if (!(dptr->flags & DEV_DISABLE)) {
+            uba_dev.flags &= ~DEV_DIS;
+            return sim_messagef (SCPE_NOFNC,
+                "UBA: the Unibus device %s cannot be disabled\n", dptr->name);
+            }
+        }
+    uba_noff = 0;
+    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+        if (!(dptr->flags & DEV_UBUS) || (dptr->flags & DEV_DIS))
+            continue;
+        if (uba_noff < UBA_MAXOFF)
+            uba_off[uba_noff++] = dptr;
+        dptr->flags |= DEV_DIS;
+        if (dptr->reset)
+            dptr->reset (dptr);
+        if ((strlen (names) + strlen (dptr->name) + 2) < sizeof (names)) {
+            strcat (names, " ");
+            strcat (names, dptr->name);
+            }
+        }
+    uba_was_dis = TRUE;
+    uba_win_ena = 0;
+    sim_messagef (SCPE_OK, "UBA disabled (VAXBI-only mode)%s%s\n",
+                  names[0] ? ", Unibus devices disabled:" : "", names);
+    }
+else if (!dis && uba_was_dis) {                         /* being enabled */
+    for (i = 0; i < uba_noff; i++) {
+        dptr = uba_off[i];
+        dptr->flags &= ~DEV_DIS;
+        if (dptr->reset)
+            dptr->reset (dptr);
+        if ((strlen (names) + strlen (dptr->name) + 2) < sizeof (names)) {
+            strcat (names, " ");
+            strcat (names, dptr->name);
+            }
+        }
+    uba_noff = 0;
+    uba_was_dis = FALSE;
+    uba_win_ena = 1;
+    sim_messagef (SCPE_OK, "UBA enabled%s%s\n",
+                  names[0] ? ", Unibus devices enabled again:" : "", names);
+    }
+uba_win_ena = dis ? 0 : 1;
+return SCPE_OK;
+}
+
 t_stat uba_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 fprintf (st, "Unibus Adapter (UBA)\n\n");
-fprintf (st, "The Unibus adapter (UBA) simulates the DWBUA.\n");
+fprintf (st, "The Unibus adapter (UBA) simulates the DWBUA (VAXBI node 4).\n\n");
+fprintf (st, "VAXBI-only mode: SET UBA DISABLE removes the DWBUA from the VAXBI.\n");
+fprintf (st, "It is refused while a unit of a Unibus device is attached; otherwise\n");
+fprintf (st, "every enabled Unibus device (RQ, TQ, DZ, XU, ...) is disabled with it\n");
+fprintf (st, "and listed.  SET UBA ENABLE enables the DWBUA and those devices again.\n");
+fprintf (st, "The VAXBI devices (KDB50, DEBNA, DMB32, KLESI-B) work without it.\n\n");
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprintf (st, "\nThe UBA implements main memory examination and modification via the Unibus\n");

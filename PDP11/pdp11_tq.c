@@ -24,6 +24,7 @@
    in this Software without prior written authorization from Robert M Supnik.
 
    tq           TQK50 tape controller
+   tb           KLESI-B TMSCP port (VAX 8200, VAXBI; adapter in vax820_klesib.c)
 
    09-Nov-26    Ulli    Realism mode: a calibrated new cartridge gets an
                         end-of-medium marker (no calibration after the next
@@ -290,24 +291,50 @@ static struct drvtyp drv_tab[] = {
 
 /* Data */
 
-uint32 tq_sa = 0;                                       /* status, addr */
-uint32 tq_saw = 0;                                      /* written data */
-uint32 tq_s1dat = 0;                                    /* S1 data */
-uint32 tq_csta = 0;                                     /* ctrl state */
-uint32 tq_perr = 0;                                     /* last error */
-uint16 tq_cflgs = 0;                                    /* ctrl flags */
-uint32 tq_prgi = 0;                                     /* purge int */
-uint32 tq_pip = 0;                                      /* poll in progress */
-struct uq_ring tq_cq = { 0 };                           /* cmd ring */
-struct uq_ring tq_rq = { 0 };                           /* rsp ring */
-struct tqpkt tq_pkt[TQ_NPKTS];                          /* packet queue */
-uint16 tq_freq = 0;                                     /* free list */
-uint16 tq_rspq = 0;                                     /* resp list */
-uint16 tq_max_plug;                                     /* highest unit plug number */
-uint32 tq_pbsy = 0;                                     /* #busy pkts */
-uint32 tq_credits = 0;                                  /* credits */
-uint32 tq_hat = 0;                                      /* host timer */
-uint32 tq_htmo = TQ_DHTMO;                              /* host timeout */
+/* Controller context.  The TQ code serves several TMSCP controllers: the
+   TQ device (controller 0, Unibus or Qbus) and, on the VAX 8200, the
+   KLESI-B's port (controller 1, KLESIB device, VAXBI).  Each controller's
+   state is a TQ_CTX; the code below uses the old names (tq_sa, tq_cq,
+   tq_unit, tq_dev, ...), which are macros for the current controller's
+   fields (tqc).  Every entry point (register access, unit services,
+   interrupt acknowledge, reset, attach/detach, SET/SHOW, callbacks) sets
+   tqc first.  Memory access and interrupts go through the context's hooks,
+   so a controller on another bus brings its own. */
+
+typedef struct tq_ctx TQ_CTX;
+struct tq_ctx {
+    uint32      sa;                                     /* status, addr */
+    uint32      saw;                                    /* written data */
+    uint32      s1dat;                                  /* S1 data */
+    uint32      csta;                                   /* ctrl state */
+    uint32      perr;                                   /* last error */
+    uint16      cflgs;                                  /* ctrl flags */
+    uint32      prgi;                                   /* purge int */
+    uint32      pip;                                    /* poll in progress */
+    struct uq_ring cq;                                  /* cmd ring */
+    struct uq_ring rq;                                  /* rsp ring */
+    struct tqpkt pkt[TQ_NPKTS];                         /* packet queue */
+    uint16      freq;                                   /* free list */
+    uint16      rspq;                                   /* resp list */
+    uint16      max_plug;                               /* highest unit plug number */
+    uint32      pbsy;                                   /* #busy pkts */
+    uint32      credits;                                /* credits */
+    uint32      hat;                                    /* host timer */
+    uint32      htmo;                                   /* host timeout */
+    int32       typ;                                    /* drive type */
+    t_bool      inited;                                 /* context set up */
+    t_bool      plugs_inited;                           /* unit plugs numbered */
+    t_bool      unibus;                                 /* Unibus port (SA step 1) */
+    DEVICE      *dev;                                   /* the device */
+    UNIT        *unit;                                  /* its units */
+    DIB         *dib;                                   /* its DIB (vector) */
+    int32       (*rb) (uint32 ba, int32 bc, uint8 *buf);        /* memory access */
+    int32       (*rw) (uint32 ba, int32 bc, uint16 *buf);
+    int32       (*wb) (uint32 ba, int32 bc, const uint8 *buf);
+    int32       (*ww) (uint32 ba, int32 bc, const uint16 *buf);
+    void        (*setint) (void);                       /* interrupt request */
+    void        (*clrint) (void);                       /* and its release */
+    };
 int32 tq_itime = 200;                                   /* init time, except */
 int32 tq_itime4 = 10;                                   /* stage 4 */
 int32 tq_qtime = 200;                                   /* queue time */
@@ -326,11 +353,10 @@ static const SND_STRM_TYPE tq_tk50 = {
     10000, 15000, 120000, 9000,                         /* load, calibrate, unload */
     32768, 60, 1420                                     /* buffer, backup, reposition */
     };
-SND_STREAMER tq_strm[TQ_NUMDR];                         /* the drives */
-SND_STRM_REGS tq_sregs;                                 /* their registers */
-static t_bool tq_sregs_set = FALSE;
-static t_addr tq_pos0[TQ_NUMDR];                        /* position at a command's start */
-int32 tq_typ = INIT_TYPE;                               /* device type */
+SND_STRM_REGS tq_sregs;                                 /* the drives' registers */
+static t_bool tq_sregs_set = FALSE;                     /* (all controllers) */
+static SND_STREAMER tq_strm_tab[2][TQ_NUMDR];           /* the drives (per controller) */
+static t_addr tq_pos0_tab[2][TQ_NUMDR];                 /* position at a command's start */
 
 /* Command table - legal modifiers (low 16b) and flags (high 16b) */
 
@@ -497,34 +523,45 @@ UNIT tq_unit[] = {
 #define TQ_TIMER        (TQ_NUMDR)
 #define TQ_QUEUE        (TQ_TIMER + 1)
 
+static int32 tq0_rb (uint32 ba, int32 bc, uint8 *buf) { return Map_ReadB (ba, bc, buf); }
+static int32 tq0_rw (uint32 ba, int32 bc, uint16 *buf) { return Map_ReadW (ba, bc, buf); }
+static int32 tq0_wb (uint32 ba, int32 bc, const uint8 *buf) { return Map_WriteB (ba, bc, buf); }
+static int32 tq0_ww (uint32 ba, int32 bc, const uint16 *buf) { return Map_WriteW (ba, bc, buf); }
+static void tq0_setint (void) { SET_INT (TQ); }
+static void tq0_clrint (void) { CLR_INT (TQ); }
+
+extern DEVICE tq_dev;
+TQ_CTX tq_ctx0;                                         /* the TQ device */
+static TQ_CTX *tqc = &tq_ctx0;                          /* current controller */
+
 REG tq_reg[] = {
-    { GRDATAD (SA,                     tq_sa, DEV_RDX, 16, 0, "status/address register") },
-    { GRDATAD (SAW,                   tq_saw, DEV_RDX, 16, 0, "written data") },
-    { GRDATAD (S1DAT,               tq_s1dat, DEV_RDX, 16, 0, "step 1 init host data") },
-    { GRDATAD (CQIOFF,            tq_cq.ioff, DEV_RDX, 32, 0, "command queue intr offset") },
-    { GRDATAD (CQBA,                tq_cq.ba, DEV_RDX, 22, 0, "command queue base address") },
-    { GRDATAD (CQLNT,              tq_cq.lnt, DEV_RDX,  8, 2, "command queue length"), REG_NZ },
-    { GRDATAD (CQIDX,              tq_cq.idx, DEV_RDX,  8, 2, "command queue index") },
-    { GRDATAD (TQIOFF,            tq_rq.ioff, DEV_RDX, 32, 0, "request queue intr offset") },
-    { GRDATAD (TQBA,                tq_rq.ba, DEV_RDX, 22, 0, "request queue base address") },
-    { GRDATAD (TQLNT,              tq_rq.lnt, DEV_RDX,  8, 2, "request queue length"), REG_NZ },
-    { GRDATAD (TQIDX,              tq_rq.idx, DEV_RDX,  8, 2, "request queue index") },
-    { DRDATAD (FREE,                 tq_freq, 5,              "head of free packet list") },
-    { DRDATAD (RESP,                 tq_rspq, 5,              "head of response packet list") },
-    { DRDATAD (PBSY,                 tq_pbsy, 5,              "number of busy packets") },
-    { GRDATAD (CFLGS,               tq_cflgs, DEV_RDX, 16, 0, "controller flags") },
-    { GRDATAD (CSTA,                 tq_csta, DEV_RDX,  4, 0, "controller state") },
-    { GRDATAD (PERR,                 tq_perr, DEV_RDX,  9, 0, "port error number") },
-    { DRDATAD (CRED,              tq_credits, 5,              "host credits") },
-    { DRDATAD (HAT,                   tq_hat, 17,             "host available timer") },
-    { DRDATAD (HTMO,                 tq_htmo, 17,             "host timeout value") },
+    { GRDATAD (SA,                     tq_ctx0.sa, DEV_RDX, 16, 0, "status/address register") },
+    { GRDATAD (SAW,                   tq_ctx0.saw, DEV_RDX, 16, 0, "written data") },
+    { GRDATAD (S1DAT,               tq_ctx0.s1dat, DEV_RDX, 16, 0, "step 1 init host data") },
+    { GRDATAD (CQIOFF,            tq_ctx0.cq.ioff, DEV_RDX, 32, 0, "command queue intr offset") },
+    { GRDATAD (CQBA,                tq_ctx0.cq.ba, DEV_RDX, 22, 0, "command queue base address") },
+    { GRDATAD (CQLNT,              tq_ctx0.cq.lnt, DEV_RDX,  8, 2, "command queue length"), REG_NZ },
+    { GRDATAD (CQIDX,              tq_ctx0.cq.idx, DEV_RDX,  8, 2, "command queue index") },
+    { GRDATAD (TQIOFF,            tq_ctx0.rq.ioff, DEV_RDX, 32, 0, "request queue intr offset") },
+    { GRDATAD (TQBA,                tq_ctx0.rq.ba, DEV_RDX, 22, 0, "request queue base address") },
+    { GRDATAD (TQLNT,              tq_ctx0.rq.lnt, DEV_RDX,  8, 2, "request queue length"), REG_NZ },
+    { GRDATAD (TQIDX,              tq_ctx0.rq.idx, DEV_RDX,  8, 2, "request queue index") },
+    { DRDATAD (FREE,                 tq_ctx0.freq, 5,              "head of free packet list") },
+    { DRDATAD (RESP,                 tq_ctx0.rspq, 5,              "head of response packet list") },
+    { DRDATAD (PBSY,                 tq_ctx0.pbsy, 5,              "number of busy packets") },
+    { GRDATAD (CFLGS,               tq_ctx0.cflgs, DEV_RDX, 16, 0, "controller flags") },
+    { GRDATAD (CSTA,                 tq_ctx0.csta, DEV_RDX,  4, 0, "controller state") },
+    { GRDATAD (PERR,                 tq_ctx0.perr, DEV_RDX,  9, 0, "port error number") },
+    { DRDATAD (CRED,              tq_ctx0.credits, 5,              "host credits") },
+    { DRDATAD (HAT,                   tq_ctx0.hat, 17,             "host available timer") },
+    { DRDATAD (HTMO,                 tq_ctx0.htmo, 17,             "host timeout value") },
     { URDATAD (CPKT,         tq_unit[0].cpkt, 10, 5, 0, TQ_NUMDR, 0, "current packet, units 0 to 3") },
     { URDATAD (PKTQ,         tq_unit[0].pktq, 10, 5, 0, TQ_NUMDR, 0, "packet queue, units 0 to 3") },
     { URDATAD (UFLG,           tq_unit[0].uf, DEV_RDX, 16, 0, TQ_NUMDR, 0, "unit flags, units 0 to 3") },
     { URDATAD (POS,           tq_unit[0].pos, 10, T_ADDR_W, 0, TQ_NUMDR, 0, "position, units 0 to 3") },
     { URDATAD (OBJP,         tq_unit[0].objp, 10, 32, 0, TQ_NUMDR, 0, "object position, units 0 to 3") },
-    { FLDATA  (PRGI,                 tq_prgi, 0), REG_HIDDEN },
-    { FLDATA  (PIP,                   tq_pip, 0), REG_HIDDEN },
+    { FLDATA  (PRGI,                 tq_ctx0.prgi, 0), REG_HIDDEN },
+    { FLDATA  (PIP,                   tq_ctx0.pip, 0), REG_HIDDEN },
     { FLDATAD (INT,                IREQ (TQ), INT_V_TQ,       "interrupt pending flag") },
     { DRDATAD (ITIME,               tq_itime, 24,             "init time delay, except stage 4"), PV_LEFT + REG_NZ },
     { DRDATAD (I4TIME,             tq_itime4, 24,             "init stage 4 delay"), PV_LEFT + REG_NZ },
@@ -538,9 +575,9 @@ REG tq_reg[] = {
     { DRDATAD (LOADMAX, tq_sregs.load_max_ms, 24,         "realism mode: longest load (ms)"), PV_LEFT },
     { DRDATAD (CALTIME,     tq_sregs.cal_ms, 24,          "realism mode: calibration of a new cartridge (ms)"), PV_LEFT },
     { DRDATAD (UNLOADTIME, tq_sregs.unload_ms, 24,        "realism mode: unload after the rewind (ms)"), PV_LEFT },
-    { VBRDATAD (PKTS,                 tq_pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
+    { VBRDATAD (PKTS,                 tq_ctx0.pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
     { URDATAD (PLUG,    tq_unit[0].unit_plug, 10, 32, 0, TQ_NUMDR, PV_LEFT | REG_RO, "unit plug value, units 0 to 3") },
-    { DRDATA  (DEVTYPE,               tq_typ, 2), REG_HRO },
+    { DRDATA  (DEVTYPE,               tq_ctx0.typ, 2), REG_HRO },
     { DRDATA  (DEVCAP, drv_tab[TQU_TYPE].cap, T_ADDR_W), PV_LEFT | REG_HRO },
     { GRDATA  (DEVADDR,            tq_dib.ba, DEV_RDX, 32, 0), REG_HRO },
     { GRDATA  (DEVVEC,            tq_dib.vec, DEV_RDX, 16, 0), REG_HRO },
@@ -633,6 +670,94 @@ DEVICE tq_dev = {
     &tq_description
     };
 
+/* From here on the names refer to the current controller (tqc) */
+
+#define tq_sa           (tqc->sa)
+#define tq_saw          (tqc->saw)
+#define tq_s1dat        (tqc->s1dat)
+#define tq_csta         (tqc->csta)
+#define tq_perr         (tqc->perr)
+#define tq_cflgs        (tqc->cflgs)
+#define tq_prgi         (tqc->prgi)
+#define tq_pip          (tqc->pip)
+#define tq_cq           (tqc->cq)
+#define tq_rq           (tqc->rq)
+#define tq_pkt          (tqc->pkt)
+#define tq_freq         (tqc->freq)
+#define tq_rspq         (tqc->rspq)
+#define tq_max_plug     (tqc->max_plug)
+#define tq_pbsy         (tqc->pbsy)
+#define tq_credits      (tqc->credits)
+#define tq_hat          (tqc->hat)
+#define tq_htmo         (tqc->htmo)
+#define tq_typ          (tqc->typ)
+#define tq_unit         (tqc->unit)
+#define tq_dev          (*tqc->dev)
+#define tq_dib          (*tqc->dib)
+#define tq_strm         (tq_strm_tab[(tqc == &tq_ctx0) ? 0 : 1])
+#define tq_pos0         (tq_pos0_tab[(tqc == &tq_ctx0) ? 0 : 1])
+#define TQ_RB(a,b,c)    (tqc->rb (a, b, c))
+#define TQ_RW(a,b,c)    (tqc->rw (a, b, c))
+#define TQ_WB(a,b,c)    (tqc->wb (a, b, c))
+#define TQ_WW(a,b,c)    (tqc->ww (a, b, c))
+#define TQ_SETINT       (tqc->setint ())
+#define TQ_CLRINT       (tqc->clrint ())
+
+/* Set the current controller: from a unit, a device, or directly.
+   Controller 1 is the KLESI-B's port (TB, VAX 8200 only). */
+
+#if defined (VAX_820)
+extern UNIT tb_unit[];
+extern DEVICE tb_dev;
+TQ_CTX tq_ctx1;                                         /* the KLESI-B's port */
+#endif
+
+static void tq_ctx_init (TQ_CTX *c, DEVICE *dptr, int32 typ, t_bool unibus);
+
+static void tq_set_ctx_dev (DEVICE *dptr)
+{
+#if defined (VAX_820)
+if (dptr == &tb_dev) {
+    tqc = &tq_ctx1;
+    return;
+    }
+#endif
+tqc = &tq_ctx0;
+}
+
+static void tq_set_ctx_unit (UNIT *uptr)
+{
+#if defined (VAX_820)
+if ((uptr >= tb_unit) && (uptr < tb_unit + TQ_NUMDR + 2)) {
+    tqc = &tq_ctx1;
+    return;
+    }
+#endif
+tqc = &tq_ctx0;
+}
+
+/* Set up a controller's context (once) */
+
+static void tq_ctx_init (TQ_CTX *c, DEVICE *dptr, int32 typ, t_bool unibus)
+{
+if (c->inited)
+    return;
+c->dev = dptr;
+c->unit = dptr->units;
+c->dib = (DIB *) dptr->ctxt;
+c->htmo = TQ_DHTMO;
+c->typ = typ;
+c->unibus = unibus;
+if (c->rb == NULL) {                                    /* bus hooks: Unibus/Qbus map */
+    c->rb = &tq0_rb;
+    c->rw = &tq0_rw;
+    c->wb = &tq0_wb;
+    c->ww = &tq0_ww;
+    c->setint = &tq0_setint;
+    c->clrint = &tq0_clrint;
+    }
+c->inited = TRUE;
+}
 
 struct tq_req_results {           /* intermediate State during tape motion commands */
     t_stat io_status;
@@ -652,7 +777,7 @@ struct tq_req_results {           /* intermediate State during tape motion comma
    17774502     SA      read/write
 */
 
-t_stat tq_rd (int32 *data, int32 PA, int32 access)
+static t_stat tq_rd_body (int32 *data, int32 PA, int32 access)
 {
 sim_debug(DBG_REG, &tq_dev, "tq_rd(PA=0x%08X [%s], access=%d)=0x%04X\n", PA, ((PA >> 1) & 01) ? "SA" : "IP", access, ((PA >> 1) & 01) ? tq_sa : 0);
 
@@ -675,7 +800,13 @@ switch ((PA >> 1) & 01) {                               /* decode PA<1> */
 return SCPE_OK;
 }
 
-t_stat tq_wr (int32 data, int32 PA, int32 access)
+t_stat tq_rd (int32 *data, int32 PA, int32 access)
+{
+tqc = &tq_ctx0;
+return tq_rd_body (data, PA, access);
+}
+
+static t_stat tq_wr_body (int32 data, int32 PA, int32 access)
 {
 sim_debug(DBG_REG, &tq_dev, "tq_wr(PA=0x%08X [%s], access=%d, data=0x%04X)\n", PA, ((PA >> 1) & 01) ? "SA" : "IP", access, data);
 
@@ -696,6 +827,12 @@ switch ((PA >> 1) & 01) {                               /* decode PA<1> */
         }
 
 return SCPE_OK;
+}
+
+t_stat tq_wr (int32 data, int32 PA, int32 access)
+{
+tqc = &tq_ctx0;
+return tq_wr_body (data, PA, access);
 }
 
 /* Transition to step 4 - init communications region */
@@ -721,7 +858,7 @@ if (lnt > SA_COMM_MAX)                                  /* paranoia */
     lnt = SA_COMM_MAX;
 for (i = 0; i < (lnt >> 1); i++)                        /* clr buffer */
     zero[i] = 0;
-if (Map_WriteW (base, lnt, zero))                       /* zero comm area */
+if (TQ_WW (base, lnt, zero))                       /* zero comm area */
     return tq_fatal (PE_QWE);                           /* error? */
 tq_sa = SA_S4 | (drv_tab[tq_typ].uqpm << SA_S4C_V_MOD) |/* send step 4 */
     ((drv_tab[tq_typ].cver & 0xFF) << SA_S4C_V_VER);
@@ -741,7 +878,7 @@ return OK;
    If all queues are idle, terminate thread
 */
 
-t_stat tq_quesvc (UNIT *uptr)
+static t_stat tq_quesvc_body (UNIT *uptr)
 {
 int32 i, cnid;
 uint16 pkt = 0;
@@ -869,9 +1006,15 @@ if (pkt)                                                /* more to do? */
 return SCPE_OK;                                         /* done */
 }
 
+t_stat tq_quesvc (UNIT *uptr)
+{
+tq_set_ctx_unit (uptr);
+return tq_quesvc_body (uptr);
+}
+
 /* Clock service (roughly once per second) */
 
-t_stat tq_tmrsvc (UNIT *uptr)
+static t_stat tq_tmrsvc_body (UNIT *uptr)
 {
 int32 i;
 UNIT *nuptr;
@@ -892,6 +1035,12 @@ for (i = 0; i < TQ_NUMDR; i++) {                        /* poll */
 if ((tq_hat > 0) && (--tq_hat == 0))                    /* host timeout? */
     tq_fatal (PE_HAT);                                  /* fatal err */ 
 return SCPE_OK;
+}
+
+t_stat tq_tmrsvc (UNIT *uptr)
+{
+tq_set_ctx_unit (uptr);
+return tq_tmrsvc_body (uptr);
 }
 
 /* MSCP packet handling */
@@ -1391,7 +1540,7 @@ return TRUE;
 
 /* The drive has loaded (the host sees the unit available) or unloaded */
 
-static void tq_strm_done (UNIT *uptr, int32 what)
+static void tq_strm_done_body (UNIT *uptr, int32 what)
 {
 if (what == SND_STRM_DONE_LOAD) {
     sim_tape_rewind (uptr);
@@ -1416,9 +1565,16 @@ else if (what == SND_STRM_DONE_UNLOAD) {
     }
 }
 
+static void tq_strm_done (UNIT *uptr, int32 what)
+{
+tq_set_ctx_unit (uptr);
+tq_strm_done_body (uptr, what);
+return;
+}
+
 /* Operator panel: the Load/Unload button (realism mode) */
 
-static t_stat tq_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+static t_stat tq_set_panel_body (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 SND_STREAMER *sp;
 int32 st;
@@ -1456,7 +1612,13 @@ if (!(sim_switches & SWMASK ('N')))                     /* at the prompt: wait *
 return SCPE_OK;
 }
 
-static t_stat tq_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+static t_stat tq_set_panel (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+tq_set_ctx_unit (uptr);
+return tq_set_panel_body (uptr, val, cptr, desc);
+}
+
+static t_stat tq_show_transport_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 if (!tq_real ()) {
     fprintf (st, "no transport model (sound realism mode of the TK50 only%s)\n", tq_hint ());
@@ -1466,6 +1628,12 @@ fprintf (st, "TK50: ");
 sim_strm_show (st, &tq_strm[uptr - tq_dev.units]);
 fprintf (st, "\n");
 return SCPE_OK;
+}
+
+static t_stat tq_show_transport (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+tq_set_ctx_unit (uptr);
+return tq_show_transport_body (st, uptr, val, desc);
 }
 
 uint16 tq_mot_valid (UNIT *uptr, uint32 cmd)
@@ -1495,7 +1663,7 @@ return ST_SUC;                                          /* success! */
 
 /* I/O completion callback */
 
-void tq_io_complete (UNIT *uptr, t_stat status)
+static void tq_io_complete_body (UNIT *uptr, t_stat status)
 {
 struct tq_req_results *res = (struct tq_req_results *)uptr->results;
 
@@ -1550,8 +1718,15 @@ if (tq_real ()) {                                       /* realism: the tape's t
 sim_activate_notbefore (uptr, uptr->iostarttime+tq_xtime);
 }
 
+void tq_io_complete (UNIT *uptr, t_stat status)
+{
+tq_set_ctx_unit (uptr);
+tq_io_complete_body (uptr, status);
+return;
+}
 
-t_stat tq_svc (UNIT *uptr)
+
+static t_stat tq_svc_body (UNIT *uptr)
 {
 uint32 t;
 t_mtrlnt wbc;
@@ -1625,7 +1800,7 @@ switch (cmd) {                                          /* case on command */
             }
         else wbc = res->tbc;
         if (cmd == OP_RD) {                             /* read? */
-            if ((t = Map_WriteB (ba, wbc, res->tqxb))) {/* store, nxm? */
+            if ((t = TQ_WB (ba, wbc, res->tqxb))) {/* store, nxm? */
                 PUTP32 (pkt, RW_BCL, wbc - t);          /* adj bc */
                 if (tq_hbe (uptr, ba + wbc - t))        /* post err log */
                     tq_mot_end (uptr, EF_LOG, ST_HST | SB_HST_NXM, res->tbc);        
@@ -1645,7 +1820,7 @@ switch (cmd) {                                          /* case on command */
                     mba = ba + i;
                     dby = ((uint8 *)res->tqxb)[i];
                     }
-                if (Map_ReadB (mba, 1, &mby)) {         /* fetch, nxm? */
+                if (TQ_RB (mba, 1, &mby)) {         /* fetch, nxm? */
                     PUTP32 (pkt, RW_BCL, i);            /* adj bc */
                     if (tq_hbe (uptr, mba))             /* post err log */
                         tq_mot_end (uptr, EF_LOG, ST_HST | SB_HST_NXM, res->tbc);
@@ -1664,7 +1839,7 @@ switch (cmd) {                                          /* case on command */
 
     case OP_WR:                                         /* write */
         if (!io_complete) { /* Top half processing */
-            if ((t = Map_ReadB (ba, bc, res->tqxb))) {  /* fetch buf, nxm? */
+            if ((t = TQ_RB (ba, bc, res->tqxb))) {  /* fetch buf, nxm? */
                 PUTP32 (pkt, RW_BCL, 0);                /* no bytes xfer'd */
                 if (tq_hbe (uptr, ba + bc - t))         /* post err log */
                     tq_mot_end (uptr, EF_LOG, ST_HST | SB_HST_NXM, bc);     
@@ -1751,6 +1926,12 @@ switch (cmd) {                                          /* case on command */
 
 tq_mot_end (uptr, 0, (uint16)res->sts, res->tbc);       /* done */
 return SCPE_OK;
+}
+
+t_stat tq_svc (UNIT *uptr)
+{
+tq_set_ctx_unit (uptr);
+return tq_svc_body (uptr);
 }
 
 /* Motion command drive error */
@@ -2071,7 +2252,7 @@ if (!tq_deqf (pkt))                                     /* get cmd pkt */
     return ERR;
 tq_hat = 0;                                             /* dsbl hst timer */
 addr = desc & UQ_ADDR;                                  /* get Q22 addr */
-if (Map_ReadW (addr + UQ_HDR_OFF, TQ_PKT_SIZE, tq_pkt[*pkt].d))
+if (TQ_RW (addr + UQ_HDR_OFF, TQ_PKT_SIZE, tq_pkt[*pkt].d))
     return tq_fatal (PE_PRE);                           /* read pkt */
 return tq_putdesc (&tq_cq, desc);                       /* release desc */
 }
@@ -2112,7 +2293,7 @@ if ((GETP (pkt, UQ_HCTC, TYP) == UQ_TYP_SEQ) &&         /* seq packet? */
     tq_credits = tq_credits - cr;                       /* decr credits */
     tq_pkt[pkt].d[UQ_HCTC] |= ((cr + 1) << UQ_HCTC_V_CR);
     }
-if (Map_WriteW (addr + UQ_HDR_OFF, lnt, tq_pkt[pkt].d))
+if (TQ_WW (addr + UQ_HDR_OFF, lnt, tq_pkt[pkt].d))
     return tq_fatal (PE_PWE);                           /* write pkt */
 tq_enqh (&tq_freq, pkt);                                /* pkt is free */
 tq_pbsy = tq_pbsy - 1;                                  /* decr busy cnt */
@@ -2128,7 +2309,7 @@ t_bool tq_getdesc (struct uq_ring *ring, uint32 *desc)
 uint32 addr = ring->ba + ring->idx;
 uint16 d[2];
 
-if (Map_ReadW (addr, 4, d))                             /* fetch desc */
+if (TQ_RW (addr, 4, d))                             /* fetch desc */
     return tq_fatal (PE_QRE);                           /* err? dead */
 *desc = ((uint32) d[0]) | (((uint32) d[1]) << 16);
 return OK;
@@ -2148,7 +2329,7 @@ uint16 d[2];
 
 d[0] = newd & 0xFFFF;                                   /* 32b to 16b */
 d[1] = (newd >> 16) & 0xFFFF;
-if (Map_WriteW (addr, 4, d))                            /* store desc */
+if (TQ_WW (addr, 4, d))                            /* store desc */
     return tq_fatal (PE_QWE);                           /* err? dead */
 if (desc & UQ_DESC_F) {                                 /* was F set? */
     if (ring->lnt <= 4)                                 /* lnt = 1? intr */
@@ -2156,7 +2337,7 @@ if (desc & UQ_DESC_F) {                                 /* was F set? */
     else {
         prva = ring->ba +                               /* prv desc */
             ((ring->idx - 4) & (ring->lnt - 1));
-        if (Map_ReadW (prva, 4, d))                     /* read prv */
+        if (TQ_RW (prva, 4, d))                     /* read prv */
             return tq_fatal (PE_QRE);
         prvd = ((uint32) d[0]) | (((uint32) d[1]) << 16);
         if (prvd & UQ_DESC_OWN)
@@ -2254,7 +2435,7 @@ return;
 void tq_init_int (void)
 {
 if ((tq_s1dat & SA_S1H_IE) && tq_dib.vec)
-    SET_INT (TQ);
+    TQ_SETINT;
 return;
 }
 
@@ -2265,17 +2446,23 @@ void tq_ring_int (struct uq_ring *ring)
 uint32 iadr = tq_comm + ring->ioff;                     /* addr intr wd */
 uint16 flag = 1;
 
-(void)Map_WriteW (iadr, 2, &flag);                      /* write flag */
+(void)TQ_WW (iadr, 2, &flag);                      /* write flag */
 if (tq_dib.vec)                                         /* if enb, intr */
-    SET_INT (TQ);
+    TQ_SETINT;
 return;
 }
 
 /* Return interrupt vector */
 
-int32 tq_inta (void)
+static int32 tq_inta_body (void)
 {
 return tq_dib.vec;                                      /* prog vector */
+}
+
+int32 tq_inta (void)
+{
+tqc = &tq_ctx0;
+return tq_inta_body ();
 }
 
 /* Fatal error */
@@ -2294,7 +2481,7 @@ return ERR;
 
 /* Device attach */
 
-t_stat tq_attach (UNIT *uptr, CONST char *cptr)
+static t_stat tq_attach_body (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
@@ -2312,9 +2499,15 @@ if (tq_csta == CST_UP)
 return SCPE_OK;
 }
 
+t_stat tq_attach (UNIT *uptr, CONST char *cptr)
+{
+tq_set_ctx_unit (uptr);
+return tq_attach_body (uptr, cptr);
+}
+
 /* Device detach */
 
-t_stat tq_detach (UNIT *uptr)
+static t_stat tq_detach_body (UNIT *uptr)
 {
 t_stat r;
 
@@ -2330,16 +2523,15 @@ return SCPE_OK;
 
 /* Device reset */
 
-t_stat tq_reset (DEVICE *dptr)
+static t_stat tq_reset_body (DEVICE *dptr)
 {
 int32 i, j;
 UNIT *uptr;
-static t_bool plugs_inited = FALSE;
 
 for (i=tq_max_plug=0; i<TQ_NUMDR; i++)
     if (dptr->units[i].unit_plug > tq_max_plug)
         tq_max_plug = (uint16)dptr->units[i].unit_plug;
-if (!plugs_inited ) {
+if (!tqc->plugs_inited) {
     uint32 d;
     char uname[16];
 
@@ -2347,7 +2539,7 @@ if (!plugs_inited ) {
     sim_set_uname (&dptr->units[4], uname);
     sprintf (uname, "%s-QUESVC", dptr->name);
     sim_set_uname (&dptr->units[5], uname);
-    plugs_inited  = TRUE;
+    tqc->plugs_inited = TRUE;
     for (d = 0; d < tq_dev.numunits - 2; d++)
         tq_unit[d].unit_plug = d;
     }
@@ -2364,7 +2556,7 @@ for (i = 0; i < TQ_NUMDR; i++) {
 tq_csta = CST_S1;                                       /* init stage 1 */
 tq_s1dat = 0;                                           /* no S1 data */
 tq_dib.vec = 0;                                         /* no vector */
-if (UNIBUS)                                             /* Unibus? */
+if (UNIBUS || (tqc != &tq_ctx0))                        /* Unibus (KLESI-B too)? */
     tq_sa = SA_S1 | SA_S1C_DI | SA_S1C_MP;
 else tq_sa = SA_S1 | SA_S1C_Q22 | SA_S1C_DI | SA_S1C_MP; /* init SA val */
 tq_cflgs = CF_RPL;                                      /* ctrl flgs off */
@@ -2384,7 +2576,7 @@ for (i = 0; i < TQ_NPKTS; i++) {                        /* all pkts free */
 tq_rspq = 0;                                            /* no q'd rsp pkts */
 tq_pbsy = 0;                                            /* all pkts free */
 tq_pip = 0;                                             /* not polling */
-CLR_INT (TQ);                                           /* clr intr req */
+TQ_CLRINT;                                           /* clr intr req */
 for (i = 0; i < TQ_NUMDR + 2; i++) {                    /* init units */
     uptr = tq_dev.units + i;
     sim_cancel (uptr);                                  /* clr activity */
@@ -2399,6 +2591,20 @@ for (i = 0; i < TQ_NUMDR + 2; i++) {                    /* init units */
         return SCPE_MEM;
     }
 return SCPE_OK;
+}
+
+t_stat tq_reset (DEVICE *dptr)
+{
+tq_set_ctx_dev (dptr);
+if (!tqc->inited)                                       /* first time: */
+    tq_ctx_init (tqc, dptr, INIT_TYPE, TRUE);           /* TQ or TB (hooks set) */
+return tq_reset_body (dptr);
+}
+
+t_stat tq_detach (UNIT *uptr)
+{
+tq_set_ctx_unit (uptr);
+return tq_detach_body (uptr);
 }
 
 /* Device bootstrap */
@@ -2515,6 +2721,7 @@ t_stat tq_boot (int32 unitno, DEVICE *dptr)
 size_t i;
 UNIT *uptr = &dptr->units[unitno];
 
+tq_set_ctx_dev (dptr);
 for (i = 0; i < BOOT_LEN; i++)
     WrMemW (BOOT_START + (2 * i), boot_rom[i]);
 WrMemW (BOOT_UNIT, (uint16)uptr->unit_plug);
@@ -2547,7 +2754,7 @@ fprintf (st, "ring, base = %x, index = %d, length = %d\n",
      rp->ba, rp->idx >> 2, rp->lnt >> 2);
 #endif
 for (i = 0; i < (rp->lnt >> 2); i++) {
-    if (Map_ReadW (rp->ba + (i << 2), 4, d)) {
+    if (TQ_RW (rp->ba + (i << 2), 4, d)) {
         fprintf (st, " %3d: non-existent memory\n", i);
         break;
         }
@@ -2583,7 +2790,7 @@ for (i = 0; i < TQ_SH_MAX; i = i + TQ_SH_PPL) {
 return;
 }
 
-t_stat tq_show_unitq (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+static t_stat tq_show_unitq_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 int32 pkt, u = uptr - tq_dev.units;
 
@@ -2611,7 +2818,13 @@ else fprintf (st, "Unit %d queues are empty\n", u);
 return SCPE_OK;
 }
 
-t_stat tq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+t_stat tq_show_unitq (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+tq_set_ctx_unit (uptr);
+return tq_show_unitq_body (st, uptr, val, desc);
+}
+
+static t_stat tq_show_ctrl_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 int32 i, pkt;
 
@@ -2657,9 +2870,15 @@ if (val & TQ_SH_UN) {
 return SCPE_OK;
 }
 
+t_stat tq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+tq_set_ctx_unit (uptr);
+return tq_show_ctrl_body (st, uptr, val, desc);
+}
+
 /* Set controller type (and capacity for user-defined type) */
 
-t_stat tq_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+static t_stat tq_set_type_body (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 uint32 i, cap;
 uint32 max = sim_taddr_64? TQU_EMAXC: TQU_MAXC;
@@ -2683,12 +2902,24 @@ for (i = 0; i < TQ_NUMDR; i++)
 return SCPE_OK;
 }
 
+t_stat tq_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+tq_set_ctx_unit (uptr);
+return tq_set_type_body (uptr, val, cptr, desc);
+}
+
 /* Show controller type and capacity */
 
-t_stat tq_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+static t_stat tq_show_type_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 fprintf (st, "%s (%dMB)", drv_tab[tq_typ].name, (uint32) (drv_tab[tq_typ].cap >> 20));
 return SCPE_OK;
+}
+
+t_stat tq_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+tq_set_ctx_unit (uptr);
+return tq_show_type_body (st, uptr, val, desc);
 }
 
 /* Show unit plug */
@@ -2701,7 +2932,7 @@ return SCPE_OK;
 
 /* Set unit plug */
 
-t_stat tq_set_plug (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+static t_stat tq_set_plug_body (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 plug;
 uint32 i;
@@ -2720,6 +2951,12 @@ for (i=0; i < dptr->numunits - 2; i++)
         return sim_messagef (SCPE_ARG, "Unit Plug %d Already In Use on %s\n", plug, sim_uname (&dptr->units[i]));
 uptr->unit_plug = plug;
 return SCPE_OK;
+}
+
+t_stat tq_set_plug (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+tq_set_ctx_unit (uptr);
+return tq_set_plug_body (uptr, val, cptr, desc);
 }
 
 static t_stat tq_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
@@ -2766,4 +3003,231 @@ const char *tq_description (DEVICE *dptr)
 {
 return (UNIBUS) ? "TUK50 TMSCP magnetic tape controller" :
                   "TQK50 TMSCP magnetic tape controller";
+}
+
+/* KLESI-B TMSCP port (TB): controller 1 on the VAX 8200
+
+   The KLESI-B is a VAXBI node with a DWBUA-like adapter and a TMSCP port
+   (KLESI) on its internal Unibus at 774500 (ULTRIX V2.0 bla.c).  The port
+   and its drives are this TQ code with the context tq_ctx1; the adapter is
+   VAX/vax820_klesib.c, which supplies the memory access through its map
+   and the interrupt (vector offset register | port vector).  TB is
+   disabled by default; its drives are TU81s (SET TB TK50 etc. work as for
+   TQ).  The node defaults to 8 (SET TB NODE=n). */
+
+#if defined (VAX_820)
+
+extern DIB tb_dib;                                      /* vax820_klesib.c */
+extern int32 kb_rb (uint32 ba, int32 bc, uint8 *buf);
+extern int32 kb_rw (uint32 ba, int32 bc, uint16 *buf);
+extern int32 kb_wb (uint32 ba, int32 bc, const uint8 *buf);
+extern int32 kb_ww (uint32 ba, int32 bc, const uint16 *buf);
+extern void kb_setint (void);
+extern void kb_clrint (void);
+extern t_stat kb_reset (DEVICE *dptr);
+extern t_stat kb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+extern t_stat kb_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+extern t_stat kb_show_vec (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+extern BIIC kb_biic;
+extern uint32 kb_csr, kb_vo, kb_int, kb_pint, kb_fubar, kb_bifa, kb_map[];
+
+t_stat tb_reset (DEVICE *dptr);
+t_stat tb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+const char *tb_description (DEVICE *dptr);
+
+UNIT tb_unit[] = {
+    { UDATA (&tq_svc, UNIT_IDLE|UNIT_ATTABLE|UNIT_DISABLE|UNIT_ROABLE, TQ8_CAP) },
+    { UDATA (&tq_svc, UNIT_IDLE|UNIT_ATTABLE|UNIT_DISABLE|UNIT_ROABLE, TQ8_CAP) },
+    { UDATA (&tq_svc, UNIT_IDLE|UNIT_ATTABLE|UNIT_DISABLE|UNIT_ROABLE, TQ8_CAP) },
+    { UDATA (&tq_svc, UNIT_IDLE|UNIT_ATTABLE|UNIT_DISABLE|UNIT_ROABLE, TQ8_CAP) },
+    { UDATA (&tq_tmrsvc, UNIT_IDLE|UNIT_DIS, 0) },
+    { UDATA (&tq_quesvc, UNIT_IDLE|UNIT_DIS, 0) }
+    };
+
+REG tb_reg[] = {
+    { GRDATAD (SA,                     tq_ctx1.sa, DEV_RDX, 16, 0, "status/address register") },
+    { GRDATAD (SAW,                   tq_ctx1.saw, DEV_RDX, 16, 0, "written data") },
+    { GRDATAD (S1DAT,               tq_ctx1.s1dat, DEV_RDX, 16, 0, "step 1 init host data") },
+    { GRDATAD (CQIOFF,            tq_ctx1.cq.ioff, DEV_RDX, 32, 0, "command queue intr offset") },
+    { GRDATAD (CQBA,                tq_ctx1.cq.ba, DEV_RDX, 22, 0, "command queue base address") },
+    { GRDATAD (CQLNT,              tq_ctx1.cq.lnt, DEV_RDX,  8, 2, "command queue length"), REG_NZ },
+    { GRDATAD (CQIDX,              tq_ctx1.cq.idx, DEV_RDX,  8, 2, "command queue index") },
+    { GRDATAD (TQIOFF,            tq_ctx1.rq.ioff, DEV_RDX, 32, 0, "response queue intr offset") },
+    { GRDATAD (TQBA,                tq_ctx1.rq.ba, DEV_RDX, 22, 0, "response queue base address") },
+    { GRDATAD (TQLNT,              tq_ctx1.rq.lnt, DEV_RDX,  8, 2, "response queue length"), REG_NZ },
+    { GRDATAD (TQIDX,              tq_ctx1.rq.idx, DEV_RDX,  8, 2, "response queue index") },
+    { DRDATAD (FREE,                 tq_ctx1.freq, 5,              "head of free packet list") },
+    { DRDATAD (RESP,                 tq_ctx1.rspq, 5,              "head of response packet list") },
+    { DRDATAD (PBSY,                 tq_ctx1.pbsy, 5,              "number of busy packets") },
+    { GRDATAD (CFLGS,               tq_ctx1.cflgs, DEV_RDX, 16, 0, "controller flags") },
+    { GRDATAD (CSTA,                 tq_ctx1.csta, DEV_RDX,  4, 0, "controller state") },
+    { GRDATAD (PERR,                 tq_ctx1.perr, DEV_RDX,  9, 0, "port error number") },
+    { DRDATAD (CRED,              tq_ctx1.credits, 5,              "host credits") },
+    { DRDATAD (HAT,                   tq_ctx1.hat, 17,             "host available timer") },
+    { DRDATAD (HTMO,                 tq_ctx1.htmo, 17,             "host timeout value") },
+    { URDATAD (CPKT,         tb_unit[0].cpkt, 10, 5, 0, TQ_NUMDR, 0, "current packet, units 0 to 3") },
+    { URDATAD (PKTQ,         tb_unit[0].pktq, 10, 5, 0, TQ_NUMDR, 0, "packet queue, units 0 to 3") },
+    { URDATAD (UFLG,           tb_unit[0].uf, DEV_RDX, 16, 0, TQ_NUMDR, 0, "unit flags, units 0 to 3") },
+    { URDATAD (POS,           tb_unit[0].pos, 10, T_ADDR_W, 0, TQ_NUMDR, 0, "position, units 0 to 3") },
+    { URDATAD (OBJP,         tb_unit[0].objp, 10, 32, 0, TQ_NUMDR, 0, "object position, units 0 to 3") },
+    { FLDATA  (PRGI,                 tq_ctx1.prgi, 0), REG_HIDDEN },
+    { FLDATA  (PIP,                   tq_ctx1.pip, 0), REG_HIDDEN },
+    { VBRDATAD (PKTS,                 tq_ctx1.pkt, DEV_RDX, 16, TQ_NPKTS * (TQ_PKT_SIZE_W + 1), "packet buffers, 33W each, 32 entries") },
+    { URDATAD (PLUG,    tb_unit[0].unit_plug, 10, 32, 0, TQ_NUMDR, PV_LEFT | REG_RO, "unit plug value, units 0 to 3") },
+    { DRDATA  (DEVTYPE,               tq_ctx1.typ, 2), REG_HRO },
+    { FLDATAD (PINT,                  kb_pint, 0,              "adapter: port interrupt request") },
+    { FLDATAD (AINT,                   kb_int, 0,              "adapter: error interrupt request") },
+    { HRDATAD (CSR,                    kb_csr, 32,             "adapter: control/status") },
+    { HRDATAD (VO,                      kb_vo, 32,             "adapter: vector offset") },
+    { HRDATAD (FUBAR,                kb_fubar, 32,             "adapter: failed Unibus address") },
+    { HRDATAD (BIFA,                  kb_bifa, 32,             "adapter: failed BI address") },
+    { HRDATAD (BICSR,             kb_biic.csr, 32,             "adapter: BIIC control/status") },
+    { HRDATAD (BIBER,             kb_biic.ber, 32,             "adapter: BIIC bus error") },
+    { HRDATAD (BIECR,            kb_biic.eicr, 32,             "adapter: BIIC error interrupt control") },
+    { HRDATAD (BIDEST,          kb_biic.idest, 32,             "adapter: BIIC interrupt destination") },
+    { BRDATAD (MAP,                    kb_map, 16, 32, 512,    "adapter: map registers") },
+    { GRDATA  (NODE,               tb_dib.ba, 16, 4, 0), REG_HRO },
+    { NULL }
+    };
+
+MTAB tb_mod[] = {
+    { MTAB_XTD|MTAB_VUN, 0, "write enabled", "WRITEENABLED",
+        &set_writelock, &show_writelock,   NULL, "Write enable tape drive" },
+    { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED",
+        &set_writelock, NULL,   NULL, "Write lock tape drive" },
+    { MTAB_XTD|MTAB_VDV,  TQ8_TYPE,           NULL,  "TU81",
+        &tq_set_type, NULL, NULL, "Set TU81 Device Type (default)"  },
+    { MTAB_XTD|MTAB_VDV,  TQ5_TYPE,           NULL,   "TK50",
+        &tq_set_type, NULL, NULL, "Set TK50 Device Type" },
+    { MTAB_XTD|MTAB_VDV,  TQ7_TYPE,           NULL,   "TK70",
+        &tq_set_type, NULL, NULL, "Set TK70 Device Type"  },
+    { MTAB_XTD|MTAB_VDV,  TQU_TYPE,           NULL,  "TKUSER",
+        &tq_set_type, NULL, NULL, "Set TKUSER=size Device Type"  },
+    { MTAB_XTD|MTAB_VDV,         0,         "TYPE",  NULL,
+        NULL, &tq_show_type, NULL, "Display device type" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "UNIT", "UNIT=val (0-65534)",
+      &tq_set_plug, &tq_show_plug, NULL, "Set/Display Unit plug value" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_RI, "RINGS", NULL,
+        NULL, &tq_show_ctrl, NULL, "Display command and response rings" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_FR, "FREEQ", NULL,
+        NULL, &tq_show_ctrl, NULL, "Display free queue" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_RS, "RESPQ", NULL,
+        NULL, &tq_show_ctrl, NULL, "Display response queue" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_UN, "UNITQ", NULL,
+        NULL, &tq_show_ctrl, NULL, "Display all unit queues" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, TQ_SH_ALL, "ALL", NULL,
+        NULL, &tq_show_ctrl, NULL, "Display complete controller state" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "UNITQ", NULL,
+        NULL, &tq_show_unitq, NULL, "Display unit queue" },
+    { MTAB_XTD|MTAB_VUN, 1,                 NULL, "LOAD",
+        &tq_set_panel, NULL, NULL, "Realism mode (TK50): Load/Unload button in" },
+    { MTAB_XTD|MTAB_VUN, 0,                 NULL, "UNLOAD",
+        &tq_set_panel, NULL, NULL, "Realism mode (TK50): Load/Unload button out" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "TRANSPORT", NULL,
+        NULL, &tq_show_transport, NULL, "Display the TK50 drive state (realism mode)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
+        &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
+        &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set/Display capacity" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
+        &kb_set_node, &kb_show_node, NULL, "VAXBI node number (2-15, default 8)" },
+    { MTAB_XTD|MTAB_VDV, 0,                 "VECTOR", NULL,
+        NULL, &kb_show_vec, NULL, "Adapter vector offset" },
+    { 0 }
+    };
+
+DEBTAB tb_debug[] = {
+  {"TRACE",   DBG_TRC,   "trace routine calls"},
+  {"INIT",    DBG_INI,   "display setup/init sequence info"},
+  {"REG",     DBG_REG,   "trace read/write port registers"},
+  {"REQ",     DBG_REQ,   "display transfer requests"},
+  {"TAPE",    DBG_TAP,   "display sim_tape activities, adapter transfers"},
+  {"STR",     DBG_STR,   "display tape structure detail"},
+  {"POS",     DBG_POS,   "display position activities"},
+  {"DATA",    DBG_DAT,   "display transfer data"},
+  {"AREG",    0x0100,    "adapter registers"},
+  {"AMAP",    0x0200,    "adapter map registers"},
+  {"AINT",    0x0400,    "adapter interrupts"},
+  {"AERR",    0x0800,    "adapter errors"},
+  {0}
+};
+
+DEVICE tb_dev = {
+    "TB", tb_unit, tb_reg, tb_mod,
+    TQ_NUMDR + 2, 10, T_ADDR_W, 1, DEV_RDX, 8,
+    NULL, NULL, &tb_reset,
+    NULL, &tq_attach, &tq_detach,
+    &tb_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS | DEV_DEBUG | DEV_TAPE,
+    0, tb_debug,
+    NULL, NULL, &tb_help, NULL, NULL,
+    &tb_description
+    };
+
+/* Port register access and interrupt acknowledge (from the adapter) */
+
+t_stat tb_rd (int32 *data, int32 PA, int32 access)
+{
+tqc = &tq_ctx1;
+return tq_rd_body (data, PA, access);
 }
+
+t_stat tb_wr (int32 data, int32 PA, int32 access)
+{
+tqc = &tq_ctx1;
+return tq_wr_body (data, PA, access);
+}
+
+int32 tb_inta (void)
+{
+tqc = &tq_ctx1;
+return tq_inta_body ();
+}
+
+/* Port reset (adapter self-test, Unibus power init) and device reset */
+
+t_stat tb_port_reset (void)
+{
+return tq_reset (&tb_dev);
+}
+
+t_stat tb_reset (DEVICE *dptr)
+{
+if (!tq_ctx1.inited) {                                  /* the adapter's hooks */
+    tq_ctx1.rb = &kb_rb;
+    tq_ctx1.rw = &kb_rw;
+    tq_ctx1.wb = &kb_wb;
+    tq_ctx1.ww = &kb_ww;
+    tq_ctx1.setint = &kb_setint;
+    tq_ctx1.clrint = &kb_clrint;
+    tq_ctx_init (&tq_ctx1, dptr, TQ8_TYPE, TRUE);
+    }
+kb_reset (dptr);
+return tq_reset (dptr);
+}
+
+t_stat tb_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+{
+fprintf (st, "KLESI-B VAXBI Tape Adapter (TB)\n\n");
+fprintf (st, "The KLESI-B is a VAXBI node with a TMSCP port (KLESI) on an internal\n");
+fprintf (st, "Unibus, for up to four TU81 tape drives (units TB0 to TB3).  It is a\n");
+fprintf (st, "second TMSCP tape controller next to TQ (TUK50, TU81 on the DWBUA's\n");
+fprintf (st, "Unibus) and works without the DWBUA, so also in the VAXBI-only mode\n");
+fprintf (st, "(SET UBA DISABLE).  TB is disabled by default:\n\n");
+fprintf (st, "    SET TB ENABLE\n");
+fprintf (st, "    SET TB NODE=8          VAXBI node (2-15, default 8)\n");
+fprintf (st, "    ATTACH TB0 tape.tap\n\n");
+fprintf (st, "The adapter has the DWBUA's registers (vector offset, map registers);\n");
+fprintf (st, "the port's IP and SA registers are at Unibus address 774500 in the\n");
+fprintf (st, "node's window.  ULTRIX supports it (V2.0: bla.c, tmscp.c).\n\n");
+fprint_set_help (st, dptr);
+fprint_show_help (st, dptr);
+fprint_reg_help (st, dptr);
+return SCPE_OK;
+}
+
+const char *tb_description (DEVICE *dptr)
+{
+return "KLESI-B VAXBI TMSCP tape adapter";
+}
+
+#endif
