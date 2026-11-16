@@ -199,8 +199,16 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 #define IOPAGEMASK      (IOPAGESIZE - 1)                /* IO addr mask */
 #define UBADDRBASE      WINADDR(TR_UBA)                 /* Unibus addr base */
 #define IOPAGEBASE      (UBADDRBASE + 0x3E000)          /* IO page base */
-#define ADDR_IS_IO(x)   ((((uint32) (x)) >= UBADDRBASE) && \
-                        (((uint32) (x)) < (UBADDRBASE + UBADDRSIZE)))
+/* I/O space: the DWBUA's Unibus window (not while SET UBA DISABLE, the
+   VAXBI-only mode) and the KLESI-B's internal Unibus window (kb_winbase:
+   its node's window, 0 while the KLESI-B (TB) is disabled) */
+extern uint32 uba_win_ena;                              /* DWBUA window enabled */
+extern uint32 kb_winbase;                               /* KLESI-B window, 0 = none */
+#define ADDR_IS_KB(x)   ((kb_winbase != 0) && \
+                        ((((uint32) (x)) - kb_winbase) < UBADDRSIZE))
+#define ADDR_IS_IO(x)   (((uba_win_ena != 0) && \
+                        ((((uint32) (x)) - UBADDRBASE) < UBADDRSIZE)) || \
+                        ADDR_IS_KB (x))
 #define ADDR_IS_IOP(x)  (((uint32) (x)) >= IOPAGEBASE)
 
 /* Nexus register space */

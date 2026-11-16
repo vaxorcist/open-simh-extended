@@ -587,6 +587,7 @@ add_simulator(vax8200
         vax_dmb.c
         vax_bi_dma.c
         vax_debna.c
+        vax820_klesib.c
         ${PDP11D}/pdp11_rl.c
         ${PDP11D}/pdp11_rq.c
         ${PDP11D}/pdp11_ts.c
