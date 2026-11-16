@@ -26,6 +26,8 @@
 
    rq           MSCP disk controller
 
+   16-Nov-26    Ulli    KDB50: a write to IP polls like a read (VMS V5.5
+                        PUDRIVER writes IP to start the controller)
    16-Nov-26    Ulli    KDB50: ring descriptors carry 30-bit VAXBI physical
                         addresses, not 22-bit Qbus addresses (VMS V5.5
                         boot driver's packets above 4 MB)
@@ -5375,8 +5377,10 @@ return show_vec (st, uptr, val, desc);
    The KDB50 is a VAXBI node with the usual BIIC registers (DTYPE 010E).
    Its UQSSP registers are the BIIC general purpose registers:
 
-     bb+F2   IP     upper half of GPR0: a read polls the command ring
-                    (writing it has no effect, unlike the UDA50)
+     bb+F2   IP     upper half of GPR0: a read or a write polls the
+                    command ring (VMS V4.7 and VMB read it, VMS V5.5's
+                    PUDRIVER writes 0 to it; unlike on the UDA50 a write
+                    does not initialize: that is BICSR NRST here)
      bb+F4   SAr    lower half of GPR1, read only
      bb+F6   SAw    upper half of GPR1, write only
 
@@ -5644,6 +5648,11 @@ if (lnt != L_LONG) {                                    /* to a longword */
             }
         return SCPE_OK;
         }
+    if (ofs == KOF_GPR0) {                              /* IP is the upper word */
+        if ((pa & 3) >= 2)                              /* a write to IP polls */
+            rq_ip_read (RQ_KDB_CIDX);
+        return SCPE_OK;
+        }
     data = data << sc;                                  /* other registers: merge */
     if (ofs == KOF_BICSR)
         data = (kdb_biic.csr & ~(((lnt == L_BYTE) ? 0xFFu : 0xFFFFu) << sc)) | data;
@@ -5674,7 +5683,8 @@ switch (ofs) {
         kdb_biic.uiic = ((kdb_biic.uiic & ~BIICR_RW) | (data & BIICR_RW)) & ~(data & BIICR_W1C);
         sim_debug (DBG_INI, &kdb_dev, "vector %03X (UINTRCSR)\n", kdb_biic.uiic & BIICR_VEC);
         break;
-    case KOF_GPR0:                                      /* IP: writing has no effect */
+    case KOF_GPR0:                                      /* IP: a write polls */
+        rq_ip_read (RQ_KDB_CIDX);
         break;
     case KOF_GPR1:                                      /* SAw: upper word */
         rq_sa_write (RQ_KDB_CIDX, (int32) ((data >> 16) & 0xFFFF));
