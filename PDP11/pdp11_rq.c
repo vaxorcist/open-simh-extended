@@ -4748,27 +4748,41 @@ static t_bool rq_is_rx50_ctype (int32 ct)
 return ((ct == RQDX1_CTYPE) || (ct == RQDX3_CTYPE) || (ct == RQDX4_CTYPE) || (ct == RUX50_CTYPE));
 }
 
-/* Realism mode: RX50 units on a controller that cannot have them are
-   disabled, with a message (SET SOUND ENABLED, SET RQ <controller type>).
+static t_bool rq_is_sdi_ctype (int32 ct);
+
+/* Realism mode: units a controller cannot have are disabled, with a
+   message (SET SOUND ENABLED, SET RQ <controller type>):
+   - RX50 units on a controller that is not an RX50 controller;
+   - non-SDI drives (RD, RX33, RF, ...) on an SDI controller (UDA50,
+     UDA50A, KDA50, KDB50), which only connects SDI drives (Ulli,
+     2026-11-16: known issues case 68).  The default RD54 units of the
+     Unibus VAXen's UDA50A are disabled this way.
    An attached one is left alone (the rules then refuse). */
 
 static void rq_rlz_rx50_disable (DEVICE *dptr, int32 ctype, const char *prefix)
 {
 int32 n = (int32) dptr->numunits - 2;
 int32 u;
+const char *art = ((ctlr_tab[ctype].name[0] == 'U') || (ctlr_tab[ctype].name[0] == 'K')) ? "" : "n";
 
-if ((dptr->flags & DEV_DIS) || rq_is_rx50_ctype (ctype))
+if (dptr->flags & DEV_DIS)
     return;
 for (u = 0; u < n; u++) {
     UNIT *xptr = &dptr->units[u];
+    uint32 dt = GET_DTYPE (xptr->flags);
 
-    if (rq_unit_enabled (xptr) && (GET_DTYPE (xptr->flags) == RX50_DTYPE) &&
-        !(xptr->flags & UNIT_ATT) && (xptr->flags & UNIT_DISABLE)) {
+    if (!rq_unit_enabled (xptr) || (xptr->flags & UNIT_ATT) || !(xptr->flags & UNIT_DISABLE))
+        continue;
+    if ((dt == RX50_DTYPE) && !rq_is_rx50_ctype (ctype)) {
         xptr->flags = xptr->flags | UNIT_DIS;
         sim_printf ("%s%s disabled: an RX50 needs an RQDX1, RQDX3, RQDX4 or RUX50 controller, %s is a%s %s\n",
-                    prefix, sim_uname (xptr), dptr->name,
-                    ((ctlr_tab[ctype].name[0] == 'U') || (ctlr_tab[ctype].name[0] == 'K')) ? "" : "n",
-                    ctlr_tab[ctype].name);
+                    prefix, sim_uname (xptr), dptr->name, art, ctlr_tab[ctype].name);
+        }
+    else if (rq_is_sdi_ctype (ctype) && !rq_is_sdi_type (dt)) {
+        xptr->flags = xptr->flags | UNIT_DIS;
+        sim_printf ("%s%s disabled: a%s %s only connects SDI drives (RA family, ESE), %s is an %s\n",
+                    prefix, sim_uname (xptr), art, ctlr_tab[ctype].name, sim_uname (xptr),
+                    drv_tab[dt].name);
         }
     }
 }
@@ -4821,6 +4835,10 @@ for (u = 0; u < n; u++) {
     if (!rx50c && (dt == RX50_DTYPE))
         return sim_messagef (SCPE_ARG, "%s%s: an RX50 needs an RQDX1, RQDX3, RQDX4 (Qbus) or RUX50 (Unibus) controller\n",
                              prefix, sim_uname (uptr));
+    if (sdi && !rq_is_sdi_type (dt))                    /* SDI controller: SDI drives only */
+        return sim_messagef (SCPE_ARG, "%s%s: a %s only connects SDI drives (RA family, ESE), %s is an %s\n",
+                             prefix, dptr->name, ctlr_tab[rq_eff_ctype (cp)].name, sim_uname (uptr),
+                             drv_tab[dt].name);
     if (rux50 && (dt != RX50_DTYPE))
         return sim_messagef (SCPE_ARG, "%s%s: a RUX50 only connects RX50 drives, %s is an %s\n",
                              prefix, dptr->name, sim_uname (uptr), drv_tab[dt].name);
@@ -5229,14 +5247,20 @@ fprintf (st, "    sound is enabled, SET RQ KLESI sets units 0/1 and 2/3 to RC25/
 fprintf (st, "    disables the others, SET RQ <other type> gives them their initial types\n");
 fprintf (st, "    back, SET RQn RC25 (or RCF25) also sets the other half of the pair, SET\n");
 fprintf (st, "    RQn UNIT=m also renumbers it, and settings or an ATTACH that would break\n");
-fprintf (st, "    a rule are refused.  RA drives (SDI drives) only on a UDA50, UDA50A or\n");
-fprintf (st, "    KDA50, which connect at most 4 drives: e.g. SET RQ KDA50 before SET RQ0\n");
-fprintf (st, "    RA81 on a Qbus machine.  SET RQ UDA50, UDA50A or KDA50 disables the\n");
-fprintf (st, "    units from 4 on, SET RQ <other type> gives the RA units their initial\n");
-fprintf (st, "    types back (RD54 if that is an RA as well), SET RQ DRIVES= above 4 is\n");
-fprintf (st, "    refused on them.  The UDA50 and UDA50A only on the Unibus, the KDA50\n");
-fprintf (st, "    only on the Qbus.  RX50 drives only on an RQDX1 (RQDX2), RQDX3, RQDX4 or\n");
-fprintf (st, "    RUX50 controller, and a RUX50 only connects RX50 drives:\n");
+fprintf (st, "    a rule are refused.  RA drives (SDI drives) only on a UDA50, UDA50A,\n");
+fprintf (st, "    KDA50 or KDB50, which connect at most 4 drives, and only SDI drives:\n");
+fprintf (st, "    SET SOUND ENABLED and SET RQ <SDI controller type> disable the other\n");
+fprintf (st, "    drives (RD, RX, RC25, ...) that are not attached, with a message (e.g.\n");
+fprintf (st, "    the RD54 units of the default Unibus configuration); an attached one is\n");
+fprintf (st, "    refused.  To make such a unit an RA drive, enable it first, one unit at\n");
+fprintf (st, "    a time: SET RQ KDA50, SET RQ0 ENABLED, SET RQ0 RA81, SET RQ1 ENABLED,\n");
+fprintf (st, "    SET RQ1 RA92 on a Qbus machine.  SET RQ UDA50, UDA50A or KDA50 also\n");
+fprintf (st, "    disables the units from 4 on, SET RQ <other type> gives the RA units\n");
+fprintf (st, "    their initial types back (RD54 if that is an RA as well), SET RQ\n");
+fprintf (st, "    DRIVES= above 4 is refused on them.  The UDA50 and UDA50A only on the\n");
+fprintf (st, "    Unibus, the KDA50 only on the Qbus.  RX50 drives only on an RQDX1\n");
+fprintf (st, "    (RQDX2), RQDX3, RQDX4 or RUX50 controller, and a RUX50 only connects\n");
+fprintf (st, "    RX50 drives:\n");
 fprintf (st, "    SET SOUND ENABLED and SET RQ <other controller type> disable RX50 units\n");
 fprintf (st, "    on the other controllers (with a message, e.g. RQ3 of the default\n");
 fprintf (st, "    Unibus configuration), SET RQ RUX50 makes units 0-3 RX50 units, SET\n");
