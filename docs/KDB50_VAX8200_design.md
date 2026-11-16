@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v5, 2026-11-16 (v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v6, 2026-11-16 (v6: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72), section 11; v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
 # KDB50 on the VAX 8200/8300 (implementation plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS** (patch 9 `opensimh_9_kdb50_v2.patch`, branch `kdb50`, on `integration`); ULTRIX postponed (section 10). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS V4.7 and V5.5** (patch 9 `opensimh_9_kdb50_v3.patch`, branch `kdb50`, on `integration`); ULTRIX postponed (section 10). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
 
 Sources:
 - EK-KDB50-UG-001 *KDB50 Controller User Guide*, supplied by Ulli. Chapter 3 is the programming information.
@@ -22,7 +22,7 @@ What the User Guide settles (chapter 3):
 | Node space | `2000 0000 + node*2000` |
 | DTYPE | `XXYZ 010E` (XX microcode, Y SDI board, Z processor board revision) |
 | BICSR after the self-test | `XX01 080n`: STS set, BROKE clear, n = node |
-| IP | `bb+F2`, the upper half of GPR0. A read starts command polling (after a connection) and a write has no effect |
+| IP | `bb+F2`, the upper half of GPR0. A read starts command polling (after a connection) and a write has no effect (User Guide). **But** VMS V5.5's PUDRIVER starts the port by writing 0 to IP and never reads it, so a real KDB50 must find the commands anyway (an IP write that polls, or its own periodic look at the ring). The simulator polls on a read and on a write (known issues 72, section 11) |
 | SA | GPR1: SAr (read) at `bb+F4`, SAw (write) at `bb+F6`. ER is bit 15 and the step bits are 11-14, as on the UDA50 |
 | Interrupts | The host sets the vector, which is used both for the BIIC error interrupt and for the controller's interrupt (UINTRCSR force bit). INTRDES = the host's node |
 | Command limit | 21 (20 MSCP commands + 1 immediate-only) |
@@ -122,3 +122,30 @@ Branch `kdb50` (on `dmb32`), also on `integration`; patch 9 `opensimh_9_kdb50_v2
 D3 (shared BI DMA): the DMB32's DMA engine is now `VAX/vax_bi_dma.c`; the DMB32 tests P2 and P3 pass unchanged.
 
 **Correction found on the way:** the DMB32 test P5 (v1) assumed `LOOP.EXE` on the disk; it was not there, so its CPU loop never ran. Both 8300 tests now build the loop themselves (DMB32 `p5.ini` v2: all async checks pass with both CPUs busy).
+
+## 11. VMS V5.5 (2026-11-16, patch 9 v3)
+
+Ulli's VMS V5.5 RA82 image (confidential: copies in the workspace only) did not boot from the KDB50; it boots from the UDA50 behind the DWBUA and from a KDA50 on the MicroVAX II. Two KDB50 bugs:
+
+| Case | Finding | Fix |
+|---|---|---|
+| 71 | When SYSBOOT relocates the VMB boot driver, the driver initializes the KDB50 again with its rings near the top of memory (PA 00FA8D74 with 16 MB). The ring descriptors were masked to 22 bits (`UQ_ADDR`), so the commands were read from 003A8D84 (zeros): `%EXECINIT-F-Error loading system file - PROCESS_MANAGEMENT.EXE R0 = 00000810`, reboot loop | 30-bit descriptor addresses on the KDB50 (`RQ_DESC_ADDR`) |
+| 72 | VMS V5.5's PUDRIVER (steps 1-4: comm area at PA 00000610, step 4 = 0403) starts the port by **writing** IP; the KDB50 ignored the write, PUDRIVER timed out after about 40 s, reset the node and started over (no date prompt) | A write to IP polls like a read |
+
+Also fixed in the RQ code: COMPARE HOST DATA reported the byte count as the bad host address after a memory error (known issues case 9).
+
+**Open question:** the User Guide says an IP write has no effect. A real KDB50 probably notices the commands another way (e.g. it scans the command ring on its own). Polling on the write is the smallest change that makes V5.5 work; a periodic ring scan would be the alternative (decision for Ulli).
+
+Results (vax8200 built from integration f3154741):
+
+| Test | Result |
+|---|---|
+| V5.5 `tests/kdb50/v55_1.ini` (8200) | **Pass.** Boot from KDB0 (VMS: DUB0, the UDA50 is DUA); login SYSTEM; a new RA82 on KDB1: INITIALIZE, MOUNT, COPY SYS$SYSTEM:S*.EXE (32 files, 3396 blocks), DIFFERENCES 0, ANALYZE/DISK_STRUCTURE (only QUOTA.SYS missing), BACKUP/VERIFY, DISMOUNT; error counts 0 |
+| V5.5 `tests/kdb50/v55_2.ini` (8300, SET KA1 ENABLE) | **Pass.** `%SMP-I-CPUBOOTED, CPU #01 has joined the PRIMARY CPU`; SHOW CPU/FULL: both CPUs in RUN state; the disk steps of v55_1 |
+| V5.5 `tests/kdb50/v55_3.ini` (8300) | **Pass.** Two CPU-bound DCL loops in subprocesses: in 60 s each got about 61 s of CPU time; STOP/CPU 1, START/CPU 1 (CPU 01 joins again) |
+| V5.5 on the microvax2 (KDA50, RA82) | **Pass** (boot through the startup; shared RQ code) |
+| V4.7 P1, P2, P3, P5 | **Pass** (P2: 222 files, DIFFERENCES 0) |
+| V4.7 P4 (8300) | **Not valid:** the VMS047_1.R81 uploaded 2026-11-16 has no MP8SS.EXE (`-CLI-E-IMAGEFNF`), so the second CPU did not start; the script then hung on a console DATAOVERUN. Its disk steps passed (DIFFERENCES 0 twice). V5.5's v55_2/v55_3 cover the 8300 |
+| KLESI-B b1-b4 | **Pass** (24 files, 4324 blocks; S.BCK 129 blocks) |
+
+Startup message seen with V5.5 from either controller (not a KDB50 matter): `%TMSCPLOAD-E-SERVE_ERR, error serving device MUA0: ... MUA3:, R0 status = 00000084` (the system serves its empty TK50 drives).
