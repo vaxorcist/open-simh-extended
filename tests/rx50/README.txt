@@ -1,4 +1,4 @@
-open-simh-extended/tests/rx50/README.txt  v1
+open-simh-extended/tests/rx50/README.txt  v2 (2026-11-16; v2: SDI rule: RD54 units on the KDA50/UDA50A disabled)
 
 RX50 tests for the sound realism mode (2026-11-11): RX50 diskettes on the
 MSCP controllers (RQ device).
@@ -18,14 +18,17 @@ Rules of the realism mode (Ulli, 2026-11-11):
 Script   Simulator  Mode     What
 -------  ---------  -------  ---------------------------------------------
 c1.ini   microvax2  realism  rules on the Qbus: default RQDX3 accepted;
-                             SET RQ KDA50 disables the RX50 units; pairs by
+                             SET RQ KDA50 disables the RX50 and the RD54
+                             units (SDI rule; enabled again on the RQDX3);
+                             pairs by
                              consecutive unit numbers (1/2 + lone 3, then
                              2/3 after RQ1 becomes an RD54)
 c2.ini   vax750     realism  rules on the Unibus: SET SOUND ENABLED
-                             disables RQ3 (RX50 on the UDA50A); SET RQ
+                             disables RQ0-RQ2 (RD54, SDI rule) and RQ3
+                             (RX50 on the UDA50A); SET RQ
                              RUX50: RQ0-RQ3 RX50 (drives 0/1, 2/3); an RD54
                              on the RUX50 refused; SET RQ UDA50A: RD54 x 3,
-                             RX50 at RQ3 disabled
+                             all disabled again (SDI and RX50 rules)
 vms1.ini microvax2  normal   VMS V4.7 (RA81 on a KDA50 = DUA0) with one
                              RX50 drive on the second controller (RQDX3):
                              DUB1 and DUB2 (both slots); INITIALIZE both,

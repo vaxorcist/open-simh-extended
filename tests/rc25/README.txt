@@ -1,4 +1,4 @@
-open-simh-extended/tests/rc25/README.txt  v3 (2026-11-07; v3: realism rules c10, g1, e3; v2: rc25test.py)
+open-simh-extended/tests/rc25/README.txt  v4 (2026-11-16; v4: c10 for the SDI rule; v3: realism rules c10, g1, e3; v2: rc25test.py)
 
 RC25 sound realism tests on the MicroVAX 3900 simulator (console and VMB
 only, no operating system).  Run them from the directory that holds the
@@ -33,7 +33,8 @@ c9     ?53 self-test error after a failed VMB boot and       see known issues ca
 c9b    the same with DETACH/ATTACH instead of the button     ?53 too: not related to the sound work
 e3     failed VMB boot with nothing attached, BOOT CPU       ?53 also on plain Open SIMH (case 22)
 c10    vax730, commands only: realism configuration rules    messages in the echo lines
-       (KLESI, RC25 pairs, unit numbers)
+       (KLESI, RC25 pairs, unit numbers; SDI rule: unattached
+       RD54/RC25 units on the UDA50 disabled, SET RQn ENABLED)
 
 Set SET DEBUG only after the console self-test (the expect lines do
 this): debug output during the self-test causes ?53 errors by itself.

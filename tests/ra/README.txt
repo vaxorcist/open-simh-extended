@@ -1,4 +1,4 @@
-open-simh-extended/tests/ra/README.txt  v3 (2026-11-10; v3: ra6, ra7, bus rule; v2: ra5, SDI rules)
+open-simh-extended/tests/ra/README.txt  v4 (2026-11-16; v4: SDI rule, ra1/ra5 adapted; v3: ra6, ra7, bus rule; v2: ra5, SDI rules)
 
 Tests of the fixed RA drives (RA70, RA71, RA72, RA73, RA80, RA81, RA82,
 RA90, RA92) in the sound realism mode of the RQ device (sound patch v23).
@@ -19,8 +19,9 @@ with SDL_AUDIODRIVER=dummy on a host without audio):
 
 Test   What                                                  Expected
 -----  ----------------------------------------------------  ---------------------------------
-ra1    realism, MicroVAX II, KDA50: RA81, RA92, RA70 offline "offline" x3, RD54 "fixed disk";
-       after ATTACH; RD54 ONLINE refused; RQ0 ONLINE/OFFLINE ONLINE waits 2 s, OFFLINE 1.5 s;
+ra1    realism, MicroVAX II, KDA50 (RQ0-RQ2 enabled again "offline" x3;
+       one at a time): RA81, RA92, RA70 offline after       ONLINE waits 2 s, OFFLINE 1.5 s;
+       ATTACH; RQ0 ONLINE/OFFLINE
        wait; SET -N; registers; VMB reads 50 blocks at     RA81 long seek 1120 cylinders,
        LBN 800000 (SET RQ DEBUG=TRACE)                     about 69 ms; ?06 HLT INST
 ra2    realism: BOOT DUA0 with the RA81 stopped              ?4D DEVOFFLINE, DUA0
@@ -32,7 +33,8 @@ ra5    realism rules (MicroVAX II): RA81 on the RQDX3        refused (SET SOUND 
        (before/after SET SOUND ENABLED); KDA50 with RA81 +   RQ0 RA81); accepted; DRIVES=8
        RA92; DRIVES=8; back to RQDX3; RQDX3 with an RA81     refused; RA units -> RD54; refused
        attached; 8 units enabled then SET SOUND ENABLED;     ("would have to change"); refused
-       RC25 on the KDA50                                     (8 units); refused (KLESI)
+       RC25 on the KDA50                                     (8 units: RD54 units 4-7 disabled,
+                                                             SDI rule); refused (KLESI)
 ra6    bus rule (MicroVAX II): UDA50A without sound, then    SET SOUND ENABLED refused; KDA50
        SET SOUND ENABLED; KDA50; UDA50A, UDA50 with sound    accepted; UDA50A/UDA50 refused
 ra7    bus rule (VAX-11/750): KDA50 without sound, then      SET SOUND ENABLED refused; UDA50A
@@ -53,6 +55,13 @@ sound, so the RA92 is tested as a data disk in R1).
 vhd2raw.py makes the flat copies (VHD to raw).  The RQ trace of each
 realism run (<test>.trc) gives the transfer times and the seek sound
 classes; ratest.py prints a summary.
+
+SDI rule (2026-11-16, known issues 68): in the realism mode an SDI controller
+(UDA50, UDA50A, KDA50, KDB50) only connects SDI drives.  SET SOUND ENABLED and
+SET RQ <SDI type> disable unattached other units (the default RD54 units) with
+a message; the tests enable a unit again (SET RQn ENABLED) right before they
+give it an RA type, one unit at a time, because the rules check all enabled
+units.
 
 Note: SIMH's RAW format is a host device, not a flat file; ATTACH -N with
 SET RQn FORMAT=RAW cannot create a file ("Cannot create").  Use the

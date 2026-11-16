@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v4, 2026-11-15 (v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v5, 2026-11-16 (v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
 # KDB50 on the VAX 8200/8300 (implementation plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS** (patch 9 `opensimh_9_kdb50_v1.patch`, branch `kdb50`, on `integration`); ULTRIX postponed (section 10). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS** (patch 9 `opensimh_9_kdb50_v2.patch`, branch `kdb50`, on `integration`); ULTRIX postponed (section 10). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
 
 Sources:
 - EK-KDB50-UG-001 *KDB50 Controller User Guide*, supplied by Ulli. Chapter 3 is the programming information.
@@ -106,7 +106,7 @@ Estimated size: about 600-900 lines (BI front end, BI DMA layer, boot) plus the 
 
 ## 10. Results (2026-11-15)
 
-Branch `kdb50` (on `dmb32`), also on `integration`; patch 9 `opensimh_9_kdb50_v1.patch` (after patch 8). Tests in `tests/kdb50/`.
+Branch `kdb50` (on `dmb32`), also on `integration`; patch 9 `opensimh_9_kdb50_v2.patch` (after patch 8). Tests in `tests/kdb50/`.
 
 | Phase | Result |
 |---|---|
@@ -115,7 +115,7 @@ Branch `kdb50` (on `dmb32`), also on `integration`; patch 9 `opensimh_9_kdb50_v1
 | P2 | **Pass.** RA81 on KDB1 (DUB1): INITIALIZE, MOUNT, COPY of 223 files (10,891 blocks), DIFFERENCES 0, ANALYZE/DISK (only the missing QUOTA.SYS), BACKUP/VERIFY, DISMOUNT (`p2.ini`) |
 | P3 | **Pass (boot test).** `BOOT KDB0`: VMS V4.7 from the KDB50, system disk DUB0, COPY/DIFFERENCES on it; also with the `integration` build (`p3.ini`) |
 | P4 | **Pass.** VAX 8300: START/CPU, two CPU-bound loop processes (attached processor in the EXECUTE state), INITIALIZE/MOUNT/COPY of 224 files to DUB1, DIFFERENCES 0 (`p4.ini` v2) |
-| P5 | **Pass.** Realism mode: RA drives on the KDB50 accepted, `SET KDB UDA50` refused, KDB0 spins up in 20 s (SET KDB0 ONLINE), VMS boots from it (`p5.ini` v3). An RD54 is accepted too, as on the UDA50/KDA50: known issues case 68 |
+| P5 | **Pass.** Realism mode: RA drives on the KDB50 accepted, `SET KDB UDA50` refused, KDB0 spins up in 20 s (SET KDB0 ONLINE), VMS boots from it (`p5.ini` v3). An RD54 was accepted too (known issues case 68); since 2026-11-16 the SDI rule disables unattached non-SDI units and refuses attached ones (`tests/kdb50/sdi_rule.sh`) |
 | P6 | **Pass.** RQ regression after the per-controller memory access: MicroVAX II (KDA50 system disk, RQDX3 with two RX50, `tests/rx50/vms1.ini`): mounts, DIFFERENCES 0; VAX-11/780 (UDA50 boot, `tests/dmb32/p4a_lp.ini`): printer output byte for byte the same as before. `pdp11`, `microvax3900`, `microvax2`, `vax780`, `vax750`, `vax8200` build without warnings |
 | P7 | `HELP KDB`; this document, the overview, known issues (case 68), the device table; patch 9 verified: the series 1, 2, 3, 4, 6, 5, 7, 8, 9 on 87eb7d5 gives the `integration` sources |
 
