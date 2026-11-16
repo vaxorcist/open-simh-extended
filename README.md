@@ -1,4 +1,4 @@
-<!-- open-simh-extended/README.md  v1 (integration branch: fork introduction above the Open SIMH README) -->
+<!-- open-simh-extended/README.md  v2 (v2: VAX 8200/8300 VAXBI devices: second CPU, DMB32, KDB50, DEBNA, KLESI-B, VAXBI-only mode; branches; v1: integration branch: fork introduction above the Open SIMH README) -->
 # open-simh-extended
 
 **A fork of [Open SIMH](https://github.com/open-simh/simh) with new devices and
@@ -21,6 +21,11 @@ The work is by Ulli (vaxorcist), developed with Claude (Anthropic).
   DR11-C compatible parallel interface.
 - **DMC11/DMR11** fixes that make the ULTRIX-32 V1.1 `if_dmc` driver work.
 - **VAX 8200**: DWBUA Unibus adapter fixes; VMS V4.7 now boots.
+- **VAX 8300**: the second KA820 runs (`SET KA1 ENABLE`; VMS `START/CPU`).
+- **VAX 8200/8300 VAXBI devices**: DMB32 communications interface (`DMB`),
+  KDB50 disk controller (`KDB`, bootable), DEBNA Ethernet adapter (`ET`,
+  DECnet under VMS) and KLESI-B tape adapter (`TB`, TU81). `SET UBA DISABLE`
+  removes the DWBUA for a VAXBI-only system.
 - **VAX-11/730 RB730**: disk images in DEC logical block order (an RB02
   cartridge is interchangeable with an RL02 on the RL11), the SIMH disk
   library (VHD, autosizing), and status, seek and range fixes.
@@ -34,7 +39,7 @@ The work is by Ulli (vaxorcist), developed with Claude (Anthropic).
 | Branch | Content |
 |---|---|
 | `integration` | everything below, together (default branch) |
-| `dmv11-dmp11`, `dmf32`, `dmc-ultrix`, `vax8200-uba`, `rb730`, `sound` | one topic each |
+| `dmv11-dmp11`, `dmf32`, `dmc-ultrix`, `vax8200-uba`, `rb730`, `sound`, `vax8300-mp`, `dmb32`, `kdb50`, `debna`, `klesib` | one topic each |
 | `notes` | documentation, tools, test scripts and the same work as patch files |
 | `master` | Open SIMH, unchanged |
 
