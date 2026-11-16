@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_known_issues.md  v38 (v38: case 70, KLESI-B work; v37: case 69 stays open (Ulli); v36: case 69, VMS V4.7's VMB.EXE has no DEBNA driver either; v35: case 69, no network boot on the VAX 8200 (DEBNA); v34: case 68 FIXED (patch 9 v2), SDI rule in the realism mode; v33: case 68, SDI controllers accept non-SDI drives in the realism mode; v32: cases 66 and 67 (fixed in patch 8, DMB32 work); v31: case 65 DONE, the second KA820 runs (patch 7); v30: case 65, VAX 8200 second CPU (KA1) never runs; v29: case 64 (fixed), BOOT CS unit on the VAX-11/780; v28: case 63 (fixed), realism throttle measurement and VMS delay loops; v27: case 62 checked by Ulli; v26: case 62 (fixed), BOOT CS on the VAX 8200; v25: cases 55-61, TU58 realism work; v24: case 54 (fixed), VAX 8200 console floppy physical track 0; v23: cases 51 (fixed), 52 and 53, VAX 8600 console RL02; v22: case 50, PDP-11 RQ controller type after SET CPU; v21: case 49, RY boot with the RX enabled; v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
+<!-- open-simh-extended/docs/SIMH_known_issues.md  v39 (v39: case 9 FIXED, cases 71 and 72, VMS V5.5 boot from the KDB50; v38: case 70, KLESI-B work; v37: case 69 stays open (Ulli); v36: case 69, VMS V4.7's VMB.EXE has no DEBNA driver either; v35: case 69, no network boot on the VAX 8200 (DEBNA); v34: case 68 FIXED (patch 9 v2), SDI rule in the realism mode; v33: case 68, SDI controllers accept non-SDI drives in the realism mode; v32: cases 66 and 67 (fixed in patch 8, DMB32 work); v31: case 65 DONE, the second KA820 runs (patch 7); v30: case 65, VAX 8200 second CPU (KA1) never runs; v29: case 64 (fixed), BOOT CS unit on the VAX-11/780; v28: case 63 (fixed), realism throttle measurement and VMS delay loops; v27: case 62 checked by Ulli; v26: case 62 (fixed), BOOT CS on the VAX 8200; v25: cases 55-61, TU58 realism work; v24: case 54 (fixed), VAX 8200 console floppy physical track 0; v23: cases 51 (fixed), 52 and 53, VAX 8600 console RL02; v22: case 50, PDP-11 RQ controller type after SET CPU; v21: case 49, RY boot with the RX enabled; v20: case 47 (fixed), VMS MOUNT of a double density RX02 diskette, and case 48; v19: cases 45 (fixed) and 46, RX02 Set Media Density; v18: cases 43 and 44, RX/RY Initialize; summary rows 41-42 added; v17: case 42, RX18 tracks per group; v16: case 41 DONE, SIMH is right; v15: case 41, RA80 capacity; v14: case 38 widened, cases 39 and 40; v13: case 38, TQ position beyond the recorded data stops the simulator; v12: case 37, asynchronous tape I/O and sim_activate; v11: cases 29-36, TS11/TSV05; v10: case 28; v9: case 27; v8: cases 18, 23, 24 done, 22 narrowed down, case 26; v7: case 25; v6: cases 22-24, case 18 confirmed by the RC25 User Guide) -->
 # Open SIMH: known bugs and suspicious code
 
 Started 2026-11-04 for Ulli (vaxorcist).
@@ -29,7 +29,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 6 | OPEN | Suspicious | `VAX/vax730_rb.c` `rb_svc` (SEEK) | Undocumented seek with disk address 0xFFFFFFFF |
 | 7 | DONE | Limitation | `VAX/vax730_rb.c` | RB730 does not use SIMH's disk library (sim_disk): no VHD, no FORMAT/autosize/metadata |
 | 8 | DONE | Bug | `VAX/vax730_rb.c` / `sim_sound.c` | SET SOUND ENABLED/DISABLED allowed while an RB drive is attached |
-| 9 | OPEN | Bug | `PDP11/pdp11_rq.c` `rq_svc` (COMPARE) | Wrong bus address stored after a memory error during Compare |
+| 9 | FIXED | Bug | `PDP11/pdp11_rq.c` `rq_svc` (COMPARE) | Wrong bus address stored after a memory error during Compare |
 | 10 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_avl` | AVAILABLE with spin-down detaches bypassing `rq_detach` |
 | 11 | OPEN | Suspicious | `PDP11/pdp11_rq.c` / `sim_disk.c` | After an unload, the container was reported as RAW format at the next ATTACH (not verified) |
 | 12 | OPEN | Suspicious | `PDP11/pdp11_rq.c` `rq_rw_valid` | LBN plausibility check commented out |
@@ -91,6 +91,8 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 | 68 | FIXED (patch 9) | Suspicious | `PDP11/pdp11_rq.c` `rq_rlz_rules` (realism mode) | The SDI rule only keeps SDI drives (RA, ESE) off non-SDI controllers; an SDI controller (UDA50, UDA50A, KDA50, KDB50) accepts RD, RX33 and other non-SDI drives, which a real one cannot connect |
 | 69 | OPEN | Limitation | `VAX/vax820_bi.c` boot, built-in VMB of the `vax8200` | No network boot: the built-in VMB has no driver for the DEBNA (VMB device code 98, `BTD$K_AIE_NI`) and halts; a real 8200 boots with its console EEPROM boot program ET (`B ETx0`). `BOOT ET` is not offered |
 | 70 | OPEN | Limitation | `VAX/vax820_uba.c` `uba_enbdis`, SCP `SET dev ENABLE` | After SET UBA DISABLE a Unibus device can still be enabled by hand; it has no adapter and SET UBA ENABLE does not know it |
+| 71 | FIXED | Bug | `PDP11/pdp11_rq.c` `rq_getpkt`, `rq_putpkt` (KDB50) | Ring descriptor addresses masked to 22 bits (Qbus width) on the VAXBI: VMS V5.5 cannot boot from the KDB50 (EXECINIT error loading PROCESS_MANAGEMENT.EXE, reboot loop) |
+| 72 | FIXED | Bug | `PDP11/pdp11_rq.c` `kdb_wr` (KDB50) | A write to IP did not poll: VMS V5.5's PUDRIVER starts the port by writing IP and hung, resetting the node every 50 s |
 
 ## Details
 
@@ -179,6 +181,7 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Probable intent:** `ba + i`, as in the read and write branches.
 - **Effect:** wrong address in the end packet or error log; only after a memory error during Compare.
 - **Found:** 2026-11-04.
+- **Fixed:** 2026-11-16, integration commit "RQ: compare host data reports the right bad host address" (`ba + i`), during the KDB50 work (cases 71 and 72), as fixing in code being worked on is fine (Ulli).
 
 ### 10 — OPEN — Suspicious: MSCP AVAILABLE with spin-down bypasses rq_detach
 - **Where:** `PDP11/pdp11_rq.c`, `rq_avl`, `sim_disk_unload (uptr)` for removable media. `sim_disk_unload` calls `sim_disk_detach` directly.
@@ -598,3 +601,17 @@ Line numbers refer to the sound branch (patch v8 plus work in progress) and are 
 - **Possible ways (decision for Ulli):** (a) leave it (harmless: the device is unreachable); (b) refuse SET dev ENABLE for Unibus devices while the UBA is disabled. That needs a check in each Unibus device's reset, or a hook in SCP.
 - **Found:** 2026-11-16 (KLESI-B work).
 
+### 71 — FIXED — Bug: KDB50 ring descriptors masked to 22 bits
+- **Where:** `PDP11/pdp11_rq.c`, `rq_getpkt` and `rq_putpkt`: `addr = desc & UQ_ADDR` (`UQ_ADDR` = 0x003FFFFE, the Qbus/Unibus width), also for the KDB50 (patch 9).
+- **Effect:** VMS V5.5 did not boot from the KDB50: `%EXECINIT-F-Error loading system file - PROCESS_MANAGEMENT.EXE R0 = 00000810`, then a reboot loop. When SYSBOOT relocates the VMB boot driver, the driver initializes the KDB50 again with its rings and packets near the top of memory (PA 00FA8D74 with 16 MB); the KDB50 fetched the command packets from 003A8D84 (zeros) and answered every command with an error. VMS V4.7 was not hit (its packets stay below 4 MB with 16 MB). The same image boots from the UDA50 behind the DWBUA and from a KDA50 on the MicroVAX II.
+- **Fix:** `RQ_DESC_ADDR (cp, desc)`: 30 bits (`KDB_DESC_ADDR` = 0x3FFFFFFE) on the KDB50, `UQ_ADDR` on the other controllers. The KLESI-B (TB) is not affected: its port sees 18-bit Unibus addresses through the adapter's map.
+- **Commit:** integration "RQ: KDB50 ring descriptors carry 30-bit VAXBI addresses".
+- **Found and fixed:** 2026-11-16 (Ulli's report, VMS V5.5 on the VAX 8200).
+
+### 72 — FIXED — Bug: the KDB50 ignored writes to IP
+- **Where:** `PDP11/pdp11_rq.c`, `kdb_wr` (patch 9): "IP: writing has no effect".
+- **Effect:** after case 71, VMS V5.5 got through EXECINIT but hung without the date prompt. Its PUDRIVER initializes the KDB50 (steps 1-4: communication area at PA 00000610, step 4 = 0403) and then starts it by **writing** 0 to IP (bb+F2). The KDB50 never polled the command ring; PUDRIVER timed out after about 40 s, reset the node (BICSR NRST) and started over, for ever. VMS V4.7's PUDRIVER and the VMB boot driver read IP, so this did not show before.
+- **Fix:** a write to IP (a word or byte write to bytes 2-3 of GPR0, or a longword write of GPR0) polls like a read. On the KDB50 the port is re-initialized through BICSR NRST, so an IP write has no initialization meaning (unlike the UDA50).
+- **Result:** VMS V5.5 boots from the KDB50 through the startup (date prompt, SYSTEM job terminated). The `%TMSCPLOAD-E-SERVE_ERR ... MUA0: ... MUA3:, R0 status = 00000084` messages at the end of the startup come from the system's TMSCP serving with empty TK50 drives; booting from the UDA50 gives the same.
+- **Commit:** integration "RQ: KDB50: a write to IP polls like a read".
+- **Found and fixed:** 2026-11-16.
