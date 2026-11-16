@@ -56,7 +56,7 @@ Decisions (Ulli, 2026-11-16):
 
 ## 4. Results (VMS V4.7, Ulli's image VMS047_1.R81 on the KDB50)
 
-Test scripts: `tests/klesib/mkini.py` (generates b1-b3).
+Test scripts: `tests/klesib/mkini.py` (generates b1-b4; README there).
 
 | Test | Configuration | Result |
 |---|---|---|
@@ -78,3 +78,4 @@ Regression:
 - **Port error count 1:** after the startup, SHOW DEVICE shows an error count of 1 on PTA0 (TB, b2/b3), and also on the TQ's PTA0 and the KDB50's and UDA50's PUA0/PUB0 (b4). VMS logs this for every MSCP/TMSCP port it starts; it is not a KLESI-B effect.
 - **The VMS names** depend on the order: with the DWBUA, TQ is PTA/MUA and TB is PTB/MUB; without it (VAXBI-only), TB is PTA/MUA.
 - **No boot from TB:** the 8200's VMB (built in, and VMS V4.7's VMB.EXE) has no tape boot driver (see case 69 for its driver table). `BOOT TB` is not offered.
+- **Open (known issues 70):** after SET UBA DISABLE a Unibus device can still be enabled by hand; it is unreachable. Decision for Ulli.
