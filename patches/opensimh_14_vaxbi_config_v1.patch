@@ -1,0 +1,2018 @@
+From 53a4b07c4551954d25b73fa7876edf07c32ad5b1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 22:48:04 +0100
+Subject: [PATCH] VAX8200: configurable VAXBI nodes, twelve MS820 memory
+ boards, SHOW BI
+
+A compromise between the standard SIMH VAX 8200/8300 and the real
+machine (Ulli, 2026-11-17), after DEC's field service rules for the
+82x0/83x0 and the 24-slot VAXBI backplane.
+
+VAXBI nodes
+- Every VAXBI device has SET dev NODE=n (0-15 or A-F); a node that an
+  enabled device or a memory board uses is refused.  New defaults as on
+  a real 8200/8300: DWBUA 0, KA1 1, KA0 2 (the attached processors'
+  EEPROMs name node 2 as their console), KDB50 4, DMB32 5, KLESI-B 6,
+  DEBNA 7, memory boards from node 15 down.
+- The fixed nexus assignments (TR_KA0, TR_KA1, TR_MCTL0/1, TR_UBA) are
+  gone.  The KA820 code maps nodes and processors: BIIC register access,
+  node private space, RXCD destination and sender node, the IPIR node
+  mask, BINID.  VMS shows the primary as CPU 02.
+- The DWBUA's Unibus window follows its node; the Unibus devices keep
+  their addresses in the canonical window of node 0 (ReadIO/WriteIO
+  translate).
+- SHOW BI lists the 16 nodes with device, BI device type and details,
+  the disabled BI devices and the rule check.
+- Rules: at most 3 KLESI-B, 2 DEBNT/DEBNA, 4 storage options (KDB50,
+  CIBCA, CIBCI); in the realism mode every DEBNA on a higher node than
+  any KLESI-B (SET NODE, BOOT, SET REALISM ENABLED).
+
+Memory
+- The MCTL device has twelve boards MCTL0-MCTL11 (MS820-AA 2MB, -BA 4MB,
+  -CA 16MB; SIMH-128MB outside the realism mode), each with its type and
+  VAXBI node (SET MCTLn TYPE=, NODE=, ENABLED, DISABLED); the memory size
+  is the sum of the boards.  SET CPU nM sets the boards from a table:
+  4M 2xAA, 8M 2xBA, 16M 4xBA, 32M 2xCA, 48M 3xCA, 64M 4xCA, 128M 8xCA,
+  256M 2x and 512M 4x SIMH-128MB.  The realism mode stops SET CPU at
+  128M and refuses SIMH-128MB boards.
+- The boards get contiguous addresses in board order; each answers with
+  BI device type 0001, its start and end address and CSR1 with its size
+  and RAM type (bits after NetBSD); SHOW MCTL, SHOW CPU MEMORY.
+- VMS uses at most 8 memory boards (V4.7 and V5.5 tested): more are
+  allowed, with a warning at SET MCTLn and BOOT.
+
+VAX/tests/vax-diag_test.ini: the diagnostic supervisor attaches the
+KA820 at node 2 and the DWBUA at node 0.
+
+Tested: VAX 8200 diagnostics; VMS V4.7 and V5.5 boots from the KDB50
+(8200 and 8300, START/CPU, V5.5 SMP); 4M to 128M, mixed boards (54MB),
+256M and 512M (V5.5); KLESI-B b1 and b1r, DEBNA V4.7 and V5.5, DMB32
+sync line and printer port, VMS from the UDA50 behind the DWBUA at node 0
+and node 3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtftJEqWTX7fajw6zWU
+---
+ PDP11/pdp11_rq.c            |  17 +-
+ PDP11/pdp11_tq.c            |   5 +-
+ VAX/tests/vax-diag_test.ini |   5 +-
+ VAX/vax820_bi.c             | 331 +++++++++++++++-
+ VAX/vax820_defs.h           |  53 ++-
+ VAX/vax820_ka.c             |  88 ++++-
+ VAX/vax820_klesib.c         |  23 +-
+ VAX/vax820_mem.c            | 737 ++++++++++++++++++++++++++++++++----
+ VAX/vax820_syslist.c        |   5 +-
+ VAX/vax820_uba.c            |  61 ++-
+ VAX/vax_cpu.c               |  11 +
+ VAX/vax_debna.c             |  16 +-
+ VAX/vax_dmb.c               |  13 +-
+ 13 files changed, 1183 insertions(+), 182 deletions(-)
+
+diff --git a/PDP11/pdp11_rq.c b/PDP11/pdp11_rq.c
+index 48a2df04..2dc49e3e 100644
+--- a/PDP11/pdp11_rq.c
++++ b/PDP11/pdp11_rq.c
+@@ -1776,7 +1776,7 @@ MTAB rq_mod[] = {
+ #endif
+ #if defined (RQ_KDB)
+     { MTAB_XTD|MTAB_VDV|MTAB_VALR|MTAB_NMO, 0, "NODE", "NODE=n",
+-      &kdb_set_node, &kdb_show_node_nl, NULL, "KDB50: VAXBI node number (default 6)" },
++      &kdb_set_node, &kdb_show_node_nl, NULL, "KDB50: VAXBI node number (0-15, default 4)" },
+ #endif
+     { MTAB_XTD|MTAB_VDV, 0, "VECTOR", NULL,
+       NULL, &rq_show_vec, NULL, "Interrupt vector" },
+@@ -5219,9 +5219,9 @@ if (dptr == &kdb_dev) {
+     fprintf (st, "KDB50 VAXBI MSCP Disk Controller (KDB)\n\n");
+     fprintf (st, "The KDB50 is the disk controller of a real VAX 8200/8300: a VAXBI node with\n");
+     fprintf (st, "four SDI drives (KDB0-KDB3, RA81 by default).  It is enabled by default at\n");
+-    fprintf (st, "BI node 6; the UDA50 behind the Unibus adapter (RQ) remains available as\n");
++    fprintf (st, "BI node 4; the UDA50 behind the Unibus adapter (RQ) remains available as\n");
+     fprintf (st, "the alternative.  Its type cannot be changed.\n\n");
+-    fprintf (st, "   sim> SET KDB NODE=7       (another BI node, 2-15)\n");
++    fprintf (st, "   sim> SET KDB NODE=3       (another free BI node, 0-15)\n");
+     fprintf (st, "   sim> ATTACH KDB0 vms.dsk\n");
+     fprintf (st, "   sim> BOOT KDB0\n\n");
+     fprintf (st, "BOOT KDBn starts VMB with the BI disk adapter boot code (R0 = 33) and the\n");
+@@ -5430,7 +5430,7 @@ return show_vec (st, uptr, val, desc);
+ #include "vax_bi.h"
+ #include "vax_bi_dma.h"
+ 
+-#define KDB_DEF_NODE    6                               /* decision D2 */
++#define KDB_DEF_NODE    4                               /* (patch 14; D2: 6) */
+ #define KDB_DTYPE       0x1311010E                      /* microcode 19 (V2.0), SDI 1, proc 1, KDB50 */
+ #define KDB_IPL         0x15                            /* BR5 */
+ 
+@@ -5751,13 +5751,8 @@ int32 node;
+ 
+ if (!RQ_IS_KDB (rq_ctxmap[uptr->cnum]))
+     return SCPE_NOFNC;
+-if (cptr == NULL)
+-    return SCPE_ARG;
+-node = (int32) get_uint (cptr, 10, 15, &r);
+-if (r != SCPE_OK)
+-    return r;
+-if (node < 2)                                           /* 0, 1: the KA820s */
+-    return sim_messagef (SCPE_ARG, "Node %d is a KA820 node\n", node);
++if ((r = bi_get_node (cptr, &kdb_dev, -1, &node)) != SCPE_OK)
++    return r;                                           /* 0-15, free */
+ nexus_req[KDB_IPL - IPL_HMIN] &= ~(1u << kdb_node ());
+ kdb_dib.ba = (uint32) node;
+ kdb_biic.csr = (kdb_biic.csr & ~BICSR_NODE) | (uint32) node;
+diff --git a/PDP11/pdp11_tq.c b/PDP11/pdp11_tq.c
+index 2adf31d0..ff73b85d 100644
+--- a/PDP11/pdp11_tq.c
++++ b/PDP11/pdp11_tq.c
+@@ -3165,7 +3165,7 @@ MTAB tb_mod[] = {
+     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
+         &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set/Display capacity" },
+     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
+-        &kb_set_node, &kb_show_node, NULL, "VAXBI node number (2-15, default 8)" },
++        &kb_set_node, &kb_show_node, NULL, "VAXBI node number (0-15, default 6)" },
+     { MTAB_XTD|MTAB_VDV, 0,                 "VECTOR", NULL,
+         NULL, &kb_show_vec, NULL, "Adapter vector offset" },
+     { 0 }
+@@ -3279,7 +3279,8 @@ fprintf (st, "second TMSCP tape controller next to TQ (TUK50, TU81 on the DWBUA'
+ fprintf (st, "Unibus) and works without the DWBUA, so also in the VAXBI-only mode\n");
+ fprintf (st, "(SET UBA DISABLE).  TB is disabled by default:\n\n");
+ fprintf (st, "    SET TB ENABLE\n");
+-fprintf (st, "    SET TB NODE=8          VAXBI node (2-15, default 8)\n");
++fprintf (st, "    SET TB NODE=6          VAXBI node (0-15, default 6; in the realism\n");
++fprintf (st, "                           mode below every DEBNA's)\n");
+ fprintf (st, "    ATTACH TB0 tape.tap\n\n");
+ fprintf (st, "The adapter has the DWBUA's registers (vector offset, map registers);\n");
+ fprintf (st, "the port's IP and SA registers are at Unibus address 774500 in the\n");
+diff --git a/VAX/tests/vax-diag_test.ini b/VAX/tests/vax-diag_test.ini
+index 0177ed43..bcf3af02 100644
+--- a/VAX/tests/vax-diag_test.ini
++++ b/VAX/tests/vax-diag_test.ini
+@@ -121,8 +121,9 @@ exit 0
+ 
+ :VAX8200
+ # VAX 8200 Diagnostic Supervisor Setup for EVKAB/C/D/E
+-expect "DS> " send "ATTACH KA820 HUB KA0 4096 0\r"; go -q
+-expect "DS> " send "ATTACH DWBUA HUB DW0 4 5\r"; go -q
++# (the primary KA820 is VAXBI node 2, the DWBUA node 0, as on a real 8200)
++expect "DS> " send "ATTACH KA820 HUB KA0 4096 2\r"; go -q
++expect "DS> " send "ATTACH DWBUA HUB DW0 0 5\r"; go -q
+ # VAX 8200 simulates the floating point accelerator which then 
+ # inspires tests to use it.  This takes more time.
+ set runlimit 2000M instructions
+diff --git a/VAX/vax820_bi.c b/VAX/vax820_bi.c
+index 7c0d28d3..2bbc5a16 100644
+--- a/VAX/vax820_bi.c
++++ b/VAX/vax820_bi.c
+@@ -30,6 +30,7 @@
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_sound.h"
+ 
+ #ifdef DONT_USE_INTERNAL_ROM
+ #define BOOT_CODE_FILENAME "vmb.exe"
+@@ -90,6 +91,11 @@ extern int32 tmr_int, tti_int, tto_int, fl_int;
+ extern int32 cur_cpu;
+ 
+ t_stat bi_reset (DEVICE *dptr);
++t_stat bi_show_nodes (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static t_stat bi_count_rules (const char *prefix);
++static t_stat bi_rlz_enable_check (t_bool apply);
++extern DEVICE mctl_dev;
++extern void mctl_board_text (int32 i, char *buf, size_t lnt);
+ t_stat vax820_boot (int32 flag, CONST char *ptr);
+ t_stat vax820_boot_parse (int32 flag, CONST char *ptr);
+ t_stat cpu_boot (int32 unitno, DEVICE *dptr);
+@@ -137,8 +143,14 @@ REG bi_reg[] = {
+     { NULL }
+     };
+ 
++MTAB bi_mod[] = {
++    { MTAB_XTD|MTAB_VDV, 0, "NODES", NULL,
++      NULL, &bi_show_nodes, NULL, "Display the VAXBI nodes" },
++    { 0 }
++    };
++
+ DEVICE bi_dev = {
+-    "BI", &bi_unit, bi_reg, NULL,
++    "BI", &bi_unit, bi_reg, bi_mod,
+     1, 16, 16, 1, 16, 8,
+     NULL, NULL, &bi_reset,
+     NULL, NULL, NULL,
+@@ -248,8 +260,8 @@ if (lvl > IPL_HMAX) {                                   /* error req lvl? */
+     }
+ if ((lvl <= IPL_HMAX) && (lvl >= IPL_HMIN)) {           /* nexus? */
+     l = lvl - IPL_HMIN;
+-    if (nexus_req[l] & (1u << TR_UBA)) {                /* unibus int? */
+-        nexus_req[l] = nexus_req[l] & ~(1u << TR_UBA);
++    if (nexus_req[l] & (1u << uba_node ())) {           /* unibus int? */
++        nexus_req[l] = nexus_req[l] & ~(1u << uba_node ());
+         vec = uba_get_ubvector(l);
+         return vec;                                     /* return vector */
+         }
+@@ -400,7 +412,7 @@ switch (rg) {
+         break;
+ 
+     case MT_BINID:                                      /* BINID */
+-        val = TR_KA0 + cur_cpu;
++        val = ka_node (cur_cpu);
+         break;
+ 
+     case MT_RXCD:                                       /* RXCD */
+@@ -420,8 +432,12 @@ void WriteIPR (int32 rg, int32 val)
+ {
+ switch (rg) {
+ 
+-    case MT_IPIR:                                       /* IPIR */
+-        ipir = val;
++    case MT_IPIR:                                       /* IPIR: a node mask */
++        ipir = 0;                                       /* (as processor mask) */
++        if ((val >> ka_node (0)) & 1)
++            ipir |= 1;
++        if ((val >> ka_node (1)) & 1)
++            ipir |= 2;
+         break;
+ 
+     case MT_ICCS:                                       /* ICCS */
+@@ -669,6 +685,12 @@ t_stat r;
+ 
+ if (!ptr || !*ptr)
+     return SCPE_2FARG;
++if ((r = bi_count_rules ("BOOT: ")) != SCPE_OK)        /* VAXBI configuration */
++    return r;
++if (sim_sound_enabled () &&
++    ((r = bi_realism_rules (NULL, 0, "BOOT: ")) != SCPE_OK))
++    return r;
++mctl_warn_count ("BOOT: ");                             /* more than 8 boards */
+ if ((ptr = get_sim_sw (ptr)) == NULL)                   /* get switches */
+     return SCPE_INVSW;
+ regptr = get_glyph (ptr, gbuf, 0);                      /* get glyph */
+@@ -705,7 +727,7 @@ for (i = 0; boot_tab[i].name != NULL; i++) {
+             R[2] = 0;                                   /* Unibus address */
+             }
+         else {
+-            R[1] = TR_UBA;
++            R[1] = uba_node ();
+             R[2] = boot_tab[i].let | (ba & UBADDRMASK);
+             }
+         R[3] = unitno;
+@@ -741,6 +763,7 @@ ipr_int = 0;
+ rxcd_int = 0;
+ ipir = 0;
+ sim_vm_cmd = vax820_cmd;
++sim_sound_register_enable_check (&bi_rlz_enable_check); /* realism: BI rules */
+ return SCPE_OK;
+ }
+ 
+@@ -824,6 +847,294 @@ for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {     /* loop thru dev */
+             }                                           /* end else */
+         }                                               /* end if enabled */
+     }                                                   /* end for */
++return mctl_build_nexus ();                             /* the memory boards */
++}
++
++/* VAXBI configuration
++
++   Every BI device keeps its node in its DIB's base address (SET dev
++   NODE=n); the memory boards are the units of the MCTL device, with their
++   own nodes (vax820_mem.c).  The helpers below are shared by all of them.
++
++   bi_node_owner        the enabled device (or present memory board, unit
++                        returned) on a node; skip/skip_unit: the one being
++                        changed */
++
++DEVICE *bi_node_owner (int32 node, DEVICE *skip, int32 skip_unit, int32 *unit)
++{
++int32 i, n, bn;
++DEVICE *dptr;
++DIB *dibp;
++
++if (unit)
++    *unit = -1;
++for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
++    if (dptr == &mctl_dev) {                            /* memory boards */
++        for (n = 0; n < MCTL_NUM; n++) {
++            if ((dptr == skip) && (n == skip_unit))
++                continue;
++            if (mctl_board_node (n, &bn) && (bn == node)) {
++                if (unit)
++                    *unit = n;
++                return dptr;
++                }
++            }
++        continue;
++        }
++    dibp = (DIB *) dptr->ctxt;
++    if ((dptr == skip) || !(dptr->flags & DEV_NEXUS) ||
++        (dptr->flags & DEV_DIS) || (dibp == NULL))
++        continue;
++    if ((int32) (dibp->ba & 0xF) == node)
++        return dptr;
++    }
++return NULL;
++}
++
++/* bi_get_node: SET dev NODE=n (decimal 0-15, or a hex digit A-F as in
++   DEC's documents); refused when an enabled device or a present memory
++   board has the node */
++
++t_stat bi_get_node (CONST char *cptr, DEVICE *dptr, int32 unit, int32 *node)
++{
++char who[16];
++int32 n, ou;
++DEVICE *owner;
++t_stat r;
++
++if (unit >= 0)
++    snprintf (who, sizeof (who), "%s%d", dptr->name, unit);
++else
++    snprintf (who, sizeof (who), "%s", dptr->name);
++if ((cptr == NULL) || (*cptr == 0))
++    return sim_messagef (SCPE_ARG, "%s: NODE=n expected (VAXBI node 0-15)\n", who);
++if ((cptr[1] == 0) && isxdigit ((unsigned char) cptr[0]) && isalpha ((unsigned char) cptr[0]))
++    n = 10 + (toupper ((unsigned char) cptr[0]) - 'A');
++else {
++    n = (int32) get_uint (cptr, 10, NEXUS_NUM - 1, &r);
++    if (r != SCPE_OK)
++        return sim_messagef (SCPE_ARG, "%s: the VAXBI node is 0 to 15 (or A to F)\n", who);
++    }
++owner = bi_node_owner (n, dptr, unit, &ou);
++if (owner != NULL) {
++    if (ou >= 0)
++        return sim_messagef (SCPE_ARG, "%s: VAXBI node %d is in use by %s%d\n",
++                             who, n, owner->name, ou);
++    return sim_messagef (SCPE_ARG, "%s: VAXBI node %d is in use by %s\n", who, n, owner->name);
++    }
++*node = n;
++return SCPE_OK;
++}
++
++/* A node's BI device type (DTYPE <15:0>), read from the device itself;
++   -1 if it has no register access */
++
++static int32 bi_dtype (DEVICE *dptr, int32 node)
++{
++DIB *dibp = (DIB *) dptr->ctxt;
++int32 val = 0;
++
++if (dptr == &mctl_dev)
++    return DTYPE_MS820;
++if ((dibp == NULL) || (dibp->rd == NULL))
++    return -1;
++if (dibp->rd (&val, REGBASE + (node << REG_V_NEXUS) + (BI_DTYPE << 2), L_LONG) != SCPE_OK)
++    return -1;
++return val & 0xFFFF;
++}
++
++#define BI_IS_KLESIB(t) ((t) == 0x0103)                 /* KLESI-B */
++#define BI_IS_DEBNA(t)  (((t) & 0x3FFF) == 0x010F)      /* DEBNT 010F, DEBNA 410F */
++#define BI_IS_STOR(t)   (((t) == 0x010E) || ((t) == 0x0108) || ((t) == 0x010B))
++                                                        /* KDB50, CIBCA, CIBCI */
++typedef struct {
++    int32       n_klesi, n_debna, n_stor;
++    int32       klesi_max, debna_min;                   /* nodes */
++    DEVICE      *klesi_dev, *debna_dev;
++    } BI_CENSUS;
++
++/* The enabled BI devices by kind; chg (if not NULL) counts at chg_node */
++
++static void bi_census (DEVICE *chg, int32 chg_node, BI_CENSUS *c)
++{
++int32 i, t, node;
++DEVICE *dptr;
++DIB *dibp;
++
++memset (c, 0, sizeof (*c));
++c->klesi_max = -1;
++c->debna_min = NEXUS_NUM;
++for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
++    dibp = (DIB *) dptr->ctxt;
++    if ((dptr == &mctl_dev) || !(dptr->flags & DEV_NEXUS) ||
++        ((dptr->flags & DEV_DIS) && (dptr != chg)) ||   /* (the one being */
++        (dibp == NULL))                                 /* changed counts) */
++        continue;
++    t = bi_dtype (dptr, (int32) (dibp->ba & 0xF));
++    node = (dptr == chg) ? chg_node : (int32) (dibp->ba & 0xF);
++    if (BI_IS_KLESIB (t)) {
++        c->n_klesi++;
++        if (node > c->klesi_max) {
++            c->klesi_max = node;
++            c->klesi_dev = dptr;
++            }
++        }
++    if (BI_IS_DEBNA (t)) {
++        c->n_debna++;
++        if (node < c->debna_min) {
++            c->debna_min = node;
++            c->debna_dev = dptr;
++            }
++        }
++    if (BI_IS_STOR (t))
++        c->n_stor++;
++    }
++}
++
++/* Limits of the 24-slot VAXBI configuration (DEC field service rules):
++   at most 3 KLESI-B, 2 DEBNT/DEBNA, 4 storage options; 16 nodes */
++
++static t_stat bi_count_rules (const char *prefix)
++{
++BI_CENSUS c;
++
++bi_census (NULL, 0, &c);
++if (c.n_klesi > 3)
++    return sim_messagef (SCPE_ARG, "%sat most 3 KLESI-B on the VAXBI (%d enabled)\n", prefix, c.n_klesi);
++if (c.n_debna > 2)
++    return sim_messagef (SCPE_ARG, "%sat most 2 DEBNT/DEBNA on the VAXBI (%d enabled)\n", prefix, c.n_debna);
++if (c.n_stor > 4)
++    return sim_messagef (SCPE_ARG, "%sat most 4 storage options (KDB50, CIBCA, CIBCI) on the VAXBI (%d enabled)\n",
++                         prefix, c.n_stor);
++return SCPE_OK;
++}
++
++/* Realism mode: every DEBNT/DEBNA on a higher node than any KLESI-B */
++
++t_stat bi_realism_rules (DEVICE *chg, int32 chg_node, const char *prefix)
++{
++BI_CENSUS c;
++
++bi_census (chg, chg_node, &c);
++if ((c.n_klesi > 0) && (c.n_debna > 0) && (c.debna_min <= c.klesi_max))
++    return sim_messagef (SCPE_ARG, "%sthe DEBNA %s (node %d) needs a higher VAXBI node than the "
++                         "KLESI-B %s (node %d) (realism mode)\n", prefix, c.debna_dev->name,
++                         c.debna_min, c.klesi_dev->name, c.klesi_max);
++return SCPE_OK;
++}
++
++/* SET dev NODE=n of a BI device: the realism rule with the new node */
++
++t_stat bi_set_node_rules (DEVICE *dptr, int32 node)
++{
++char prefix[32];
++
++if (!sim_sound_enabled ())
++    return SCPE_OK;
++snprintf (prefix, sizeof (prefix), "%s: ", dptr->name);
++return bi_realism_rules (dptr, node, prefix);
++}
++
++/* SET REALISM ENABLED: refused while the realism rule is broken (no
++   changes, so the dry run and the real run are the same) */
++
++static t_stat bi_rlz_enable_check (t_bool apply)
++{
++return bi_realism_rules (NULL, 0, "SET REALISM ENABLED: ");
++}
++
++/* SHOW BI: the VAXBI nodes */
++
++static const char *bi_type_name (int32 t, DEVICE *dptr)
++{
++switch (t) {
++    case 0x0001: return "MS820 memory";
++    case 0x0102: return "DWBUA Unibus adapter";
++    case 0x0103: return "KLESI-B tape adapter";
++    case 0x0105: return "KA820 processor";
++    case 0x0108: return "CIBCA CI adapter";
++    case 0x0109: return "DMB32 communications interface";
++    case 0x010B: return "CIBCI CI adapter";
++    case 0x010E: return "KDB50 disk controller";
++    case 0x010F: return "DEBNT Ethernet adapter";
++    case 0x410F: return "DEBNA Ethernet adapter";
++    default:
++        break;
++    }
++return (dptr->description != NULL) ? dptr->description (dptr) : "";
++}
++
++t_stat bi_show_nodes (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++int32 node, i, n, cnt, used = 0, t, bn;
++DEVICE *dptr, *owner;
++DIB *dibp;
++char buf[96], extra[96];
++t_stat r;
++
++fprintf (st, "VAXBI nodes:\n");
++for (node = 0; node < NEXUS_NUM; node++) {
++    owner = bi_node_owner (node, NULL, -1, &n);
++    if (owner == NULL) {
++        fprintf (st, "  %2d (%X)  -\n", node, node);
++        continue;
++        }
++    used++;
++    t = bi_dtype (owner, node);
++    extra[0] = 0;
++    if (owner == &mctl_dev) {
++        mctl_board_text (n, extra, sizeof (extra));
++        snprintf (buf, sizeof (buf), "MCTL%d", n);
++        }
++    else {
++        snprintf (buf, sizeof (buf), "%s", owner->name);
++        if (t == 0x0105)
++            snprintf (extra, sizeof (extra), "%s", (ka_cpu_of_node (node) == 0) ? "primary" : "attached");
++        if (t == 0x0102)
++            snprintf (extra, sizeof (extra), "Unibus window %08X", uba_winbase);
++        }
++    cnt = 0;                                            /* conflicts */
++    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
++        dibp = (DIB *) dptr->ctxt;
++        if (dptr == &mctl_dev) {
++            for (bn = 0; bn < MCTL_NUM; bn++) {
++                int32 nn;
++                if (mctl_board_node (bn, &nn) && (nn == node))
++                    cnt++;
++                }
++            continue;
++            }
++        if ((dptr->flags & DEV_NEXUS) && !(dptr->flags & DEV_DIS) &&
++            (dibp != NULL) && ((int32) (dibp->ba & 0xF) == node))
++            cnt++;
++        }
++    fprintf (st, "  %2d (%X)  %-7s ", node, node, buf);
++    if (t >= 0)
++        fprintf (st, "%04X  ", t);
++    else
++        fprintf (st, "      ");
++    fprintf (st, "%s%s%s%s\n", bi_type_name (t, owner), extra[0] ? ", " : "", extra,
++             (cnt > 1) ? "  ** CONFLICT: more than one device on this node **" : "");
++    }
++fprintf (st, "  %d of %d nodes in use\n", used, NEXUS_NUM);
++buf[0] = 0;                                             /* disabled BI devices */
++for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
++    dibp = (DIB *) dptr->ctxt;
++    if ((dptr == &mctl_dev) || !(dptr->flags & DEV_NEXUS) ||
++        !(dptr->flags & DEV_DIS) || (dibp == NULL))
++        continue;
++    snprintf (extra, sizeof (extra), "%s%s (node %d)", buf[0] ? ", " : "",
++              dptr->name, (int32) (dibp->ba & 0xF));
++    if ((strlen (buf) + strlen (extra)) < sizeof (buf))
++        strcat (buf, extra);
++    }
++if (buf[0])
++    fprintf (st, "  disabled: %s\n", buf);
++r = bi_count_rules ("  rule broken: ");
++if ((r == SCPE_OK) && sim_sound_enabled ())
++    r = bi_realism_rules (NULL, 0, "  realism rule broken: ");
++if (r == SCPE_OK)
++    fprintf (st, "  configuration rules: met%s", sim_sound_enabled () ? " (realism mode)" : "");
+ return SCPE_OK;
+ }
+ 
+@@ -855,7 +1166,11 @@ return SCPE_OK;
+ 
+ t_stat cpu_model_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+ {
+-fprintf (st, "Initial memory size is 32MB.\n\n");
++fprintf (st, "Initial memory size is 4MB (two MS820-AA boards).  SET CPU nM sets the\n");
++fprintf (st, "memory boards from a table (HELP MCTL); SET MCTLn TYPE=... configures each\n");
++fprintf (st, "of the twelve boards by hand.  SHOW BI shows the VAXBI nodes; every BI\n");
++fprintf (st, "device has SET dev NODE=n (KA0 2, KA1 1, UBA 0, KDB 4, DMB 5, TB 6, ET 7,\n");
++fprintf (st, "MCTL0-MCTL7 15-8 by default).\n\n");
+ fprintf (st, "The simulator is booted with the BOOT command:\n\n");
+ fprintf (st, "   sim> BO{OT} <device>{/R5:flags}\n\n");
+ fprintf (st, "where <device> is one of:\n\n");
+diff --git a/VAX/vax820_defs.h b/VAX/vax820_defs.h
+index 417c35ad..98591663 100644
+--- a/VAX/vax820_defs.h
++++ b/VAX/vax820_defs.h
+@@ -84,13 +84,16 @@
+ #define VAX_MP          1                               /* CPU core keeps one context
+                                                            per KA820 (VAX 8300) */
+ #endif
+-#define MCTL_NUM        2                               /* number of mem ctrl */
++#define MCTL_NUM        12                              /* MS820 boards MCTL0-11 */
+ #define MBA_NUM         2                               /* number of MBA's */
+-#define TR_KA0          0                               /* nexus assignments */
+-#define TR_KA1          1
+-#define TR_MCTL0        2
+-#define TR_MCTL1        3
+-#define TR_UBA          4
++/* Default VAXBI nodes (SET dev NODE=n changes them; the nodes are the DIBs'
++   base addresses): the primary KA820 node 2, the attached processor node 1
++   and the DWBUA node 0, as on a real 8200/8300 (the attached processors'
++   EEPROMs name node 2 as their console, the DWBUA needs the highest
++   arbitration priority) */
++#define TR_UBA_DEF      0                               /* DWBUA */
++#define TR_KA1_DEF      1                               /* attached KA820 */
++#define TR_KA0_DEF      2                               /* primary KA820 */
+ #define NEXUS_HLVL      (IPL_HMAX - IPL_HMIN + 1)
+ #define SCB_NEXUS       0x100                           /* nexus intr base */
+ 
+@@ -106,15 +109,8 @@
+ #define SCB_IPRINT      0x80
+ #define SCB_FLINT       0xF0
+ 
+-#define IPL_MCTL0       (0x15 - IPL_HMIN)
+-#define IPL_MCTL1       (0x15 - IPL_HMIN)
+ #define IPL_UBA         (0x15 - IPL_HMIN)
+ 
+-/* Nexus interrupt macros */
+-
+-#define SET_NEXUS_INT(dv)       nexus_req[IPL_##dv] |= (1 << TR_##dv)
+-#define CLR_NEXUS_INT(dv)       nexus_req[IPL_##dv] &= ~(1 << TR_##dv)
+-
+ /* Machine specific IPRs */
+ 
+ #define MT_IPIR         22                              /* interprocessor interrupt */
+@@ -182,6 +178,27 @@
+                         { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "MEMORY", NULL, NULL, &cpu_show_memory, NULL, "Display memory configuration" }
+ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
+ 
++/* Memory boards (vax820_mem.c): SET CPU nM sets the board table
++   (mctl_cpu_size); MCTL_RESIZE as cpu_set_size's desc marks the resizing
++   by the boards themselves (SET MCTLn TYPE, ENABLED, DISABLED) */
++#define MCTL_RESIZE     ((void *) &mctl_resize_tag)
++extern int32 mctl_resize_tag;
++extern t_stat mctl_cpu_size_check (uint32 size);
++extern void mctl_cpu_size (uint32 size);
++extern t_bool mctl_board_node (int32 i, int32 *node);  /* present board's node */
++extern t_stat mctl_build_nexus (void);
++extern void mctl_warn_count (const char *prefix);      /* more than 8 boards */
++
++/* VAXBI configuration (vax820_bi.c) */
++
++extern t_stat bi_get_node (CONST char *cptr, DEVICE *dptr, int32 unit, int32 *node);
++extern DEVICE *bi_node_owner (int32 node, DEVICE *skip, int32 skip_unit, int32 *unit);
++extern t_stat bi_realism_rules (DEVICE *chg, int32 chg_node, const char *prefix);
++extern t_stat bi_set_node_rules (DEVICE *dptr, int32 node);
++extern int32 ka_node (int32 cpu);                       /* vax820_ka.c */
++extern int32 ka_cpu_of_node (int32 node);
++extern int32 uba_node (void);                           /* vax820_uba.c */
++
+ /* Node window space */
+ 
+ #define WINAWIDTH       18                              /* VAXBI node window width */
+@@ -197,17 +214,23 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
+ #define IOPAGEAWIDTH    13                              /* IO addr width */
+ #define IOPAGESIZE      (1u << IOPAGEAWIDTH)            /* IO page length */
+ #define IOPAGEMASK      (IOPAGESIZE - 1)                /* IO addr mask */
+-#define UBADDRBASE      WINADDR(TR_UBA)                 /* Unibus addr base */
++/* The Unibus devices' addresses (DIBs, SHOW dev ADDRESS, the I/O page
++   dispatch) are kept in a canonical window, that of node 0, the DWBUA's
++   default node; they are constants of the device code.  The DWBUA's real
++   window follows its node (uba_winbase, SET UBA NODE=n): ReadIO and
++   WriteIO move an access in it to the canonical window. */
++#define UBADDRBASE      WINADDR(0)                      /* Unibus addr base (canonical) */
+ #define IOPAGEBASE      (UBADDRBASE + 0x3E000)          /* IO page base */
+ /* I/O space: the DWBUA's Unibus window (not while SET UBA DISABLE, the
+    VAXBI-only mode) and the KLESI-B's internal Unibus window (kb_winbase:
+    its node's window, 0 while the KLESI-B (TB) is disabled) */
+ extern uint32 uba_win_ena;                              /* DWBUA window enabled */
++extern uint32 uba_winbase;                              /* DWBUA window (its node's) */
+ extern uint32 kb_winbase;                               /* KLESI-B window, 0 = none */
+ #define ADDR_IS_KB(x)   ((kb_winbase != 0) && \
+                         ((((uint32) (x)) - kb_winbase) < UBADDRSIZE))
+ #define ADDR_IS_IO(x)   (((uba_win_ena != 0) && \
+-                        ((((uint32) (x)) - UBADDRBASE) < UBADDRSIZE)) || \
++                        ((((uint32) (x)) - uba_winbase) < UBADDRSIZE)) || \
+                         ADDR_IS_KB (x))
+ #define ADDR_IS_IOP(x)  (((uint32) (x)) >= IOPAGEBASE)
+ 
+diff --git a/VAX/vax820_ka.c b/VAX/vax820_ka.c
+index d174d264..1f1b2a76 100644
+--- a/VAX/vax820_ka.c
++++ b/VAX/vax820_ka.c
+@@ -107,7 +107,10 @@ void rxcd_halt (int32 cpu, int32 code, int32 pc);
+    kax_reg      KAx register list
+ */
+ 
+-DIB ka0_dib[] = { { TR_KA0, 0, &ka_rdreg, &ka_wrreg, 0 } };
++t_stat ka_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++t_stat ka_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++
++DIB ka0_dib[] = { { TR_KA0_DEF, 0, &ka_rdreg, &ka_wrreg, 0 } };
+ 
+ UNIT ka0_unit = { UDATA (&ka_svc, 0, 0) };
+ 
+@@ -116,12 +119,12 @@ REG ka0_reg[] = {
+     };
+ 
+ MTAB ka0_mod[] = {
+-    { MTAB_XTD|MTAB_VDV, TR_KA0, "NEXUS", NULL,
+-      NULL, &show_nexus },
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
++      &ka_set_node, &ka_show_node, NULL, "VAXBI node of the primary KA820 (0-15, default 2)" },
+     { 0 }
+     };
+ 
+-DIB ka1_dib[] = { { TR_KA1, 0, &ka_rdreg, &ka_wrreg, 0 } };
++DIB ka1_dib[] = { { TR_KA1_DEF, 0, &ka_rdreg, &ka_wrreg, 0 } };
+ 
+ UNIT ka1_unit = { UDATA (&ka_svc, 0, 0) };
+ 
+@@ -130,8 +133,8 @@ t_stat ka_show_state (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ #endif
+ 
+ MTAB ka1_mod[] = {
+-    { MTAB_XTD|MTAB_VDV, TR_KA1, "NEXUS", NULL,
+-      NULL, &show_nexus },
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 1, "NODE", "NODE=n",
++      &ka_set_node, &ka_show_node, NULL, "VAXBI node of the attached KA820 (0-15, default 1)" },
+ #if defined (VAX_MP)
+     { MTAB_XTD|MTAB_VDV, 0, "STATE", NULL,
+       NULL, &ka_show_state, NULL, "Display the attached processor's state" },
+@@ -195,7 +198,9 @@ REG ka1_reg[] = {
+ t_stat ka1_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+ {
+ fprintf (st, "KA820 attached processor (KA1): a VAX 8300\n\n");
+-fprintf (st, "SET KA1 ENABLE adds a second KA820 at VAXBI node 1.  The primary (KA0,\n");
++fprintf (st, "SET KA1 ENABLE adds a second KA820 at VAXBI node 1 (SET KA1 NODE=n; the\n");
++fprintf (st, "primary, KA0, is node 2, SET KA0 NODE=n).  VMS's START/CPU takes the\n");
++fprintf (st, "node number as the CPU ID (START/CPU 1).  The primary (KA0,\n");
+ fprintf (st, "the CPU device) starts it through the console channel between the\n");
+ fprintf (st, "processors (RXCD register) with the console commands I, D/G and S, as on\n");
+ fprintf (st, "a real VAX 8300.  Both processors execute; they take turns on the host,\n");
+@@ -259,11 +264,53 @@ DEVICE ka_dev[] = {
+ 
+ /* KA read */
+ 
++/* KA0/KA1 nodes: the DIBs' base addresses (SET KAn NODE=n) */
++
++int32 ka_node (int32 cpu)
++{
++return (int32) ((cpu == 0) ? ka0_dib[0].ba : ka1_dib[0].ba) & 0xF;
++}
++
++int32 ka_cpu_of_node (int32 node)                       /* -1: no KA820 */
++{
++if (node == ka_node (0))
++    return 0;
++if ((node == ka_node (1)) && !(ka_dev[1].flags & DEV_DIS))
++    return 1;
++return -1;
++}
++
++/* SET KAn NODE=n, SHOW KAn NODE (val = processor) */
++
++t_stat ka_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++int32 node;
++t_stat r;
++
++r = bi_get_node (cptr, &ka_dev[val], -1, &node);
++if (r != SCPE_OK)
++    return r;
++if (val == 0)
++    ka0_dib[0].ba = (uint32) node;
++else
++    ka1_dib[0].ba = (uint32) node;
++ka_biic[val].csr = (ka_biic[val].csr & ~BICSR_NODE) | ((uint32) node & BICSR_NODE);
++return SCPE_OK;
++}
++
++t_stat ka_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++fprintf (st, "node=%d", ka_node (val));
++return SCPE_OK;
++}
++
+ t_stat ka_rdreg (int32 *val, int32 pa, int32 lnt)
+ {
+ int32 ka, ofs;
+ 
+-ka = NEXUS_GETNEX (pa) - TR_KA0;                        /* get CPU num */
++ka = ka_cpu_of_node (NEXUS_GETNEX (pa));                /* get CPU num */
++if (ka < 0)
++    return SCPE_NXM;
+ ofs = NEXUS_GETOFS (pa);                                /* get offset */
+ switch (ofs) {
+ 
+@@ -318,14 +365,14 @@ int32 ka_priv_rd (int32 pa)
+ {
+ int32 val = 0;
+ 
+-if (ka_rdreg (&val, REGBASE + ((TR_KA0 + cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), L_LONG) != SCPE_OK)
++if (ka_rdreg (&val, REGBASE + (ka_node (cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), L_LONG) != SCPE_OK)
+     val = 0;
+ return val;
+ }
+ 
+ void ka_priv_wr (int32 pa, int32 val, int32 lnt)
+ {
+-ka_wrreg (val, REGBASE + ((TR_KA0 + cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), lnt);
++ka_wrreg (val, REGBASE + (ka_node (cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), lnt);
+ }
+ 
+ /* KA write */
+@@ -334,7 +381,9 @@ t_stat ka_wrreg (int32 val, int32 pa, int32 lnt)
+ {
+ int32 ka, ofs;
+ 
+-ka = NEXUS_GETNEX (pa) - TR_KA0;                        /* get CPU num */
++ka = ka_cpu_of_node (NEXUS_GETNEX (pa));                /* get CPU num */
++if (ka < 0)
++    return SCPE_NXM;
+ ofs = NEXUS_GETOFS (pa);                                /* get offset */
+ switch (ofs) {
+ 
+@@ -384,7 +433,7 @@ rxcd_count = 0;
+ ka_rxcd[0] = 0;
+ ka_rxcd[1] = 0;
+ for (i = 0; i < KA_NUM; i++) {
+-    ka_biic[i].csr = (1u << BICSR_V_IF) | BICSR_STS | ((TR_KA0 + i) & BICSR_NODE);
++    ka_biic[i].csr = (1u << BICSR_V_IF) | BICSR_STS | (ka_node (i) & BICSR_NODE);
+     ka_biic[i].ber = 0;
+     ka_biic[i].eicr = 0;
+     ka_biic[i].idest = 0;
+@@ -409,9 +458,9 @@ int32 rxcd_rd (void)
+ int32 val;
+ 
+ if (rxcd_count) {                                       /* data available? */
+-    val = rxcd_obuf[rxcd_optr] | (1 << 8);
+-    sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MFPR RXCD: %02X '%c' from node 1\n", cur_cpu, val & 0xFF,
+-               isprint (val & 0xFF) ? (val & 0xFF) : '.');
++    val = rxcd_obuf[rxcd_optr] | (ka_node (1) << 8);    /* sender: the attached one */
++    sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MFPR RXCD: %02X '%c' from node %d\n", cur_cpu, val & 0xFF,
++               isprint (val & 0xFF) ? (val & 0xFF) : '.', ka_node (1));
+     rxcd_optr++;
+     rxcd_count--;
+     if (rxcd_count)
+@@ -427,7 +476,8 @@ return val;
+ 
+ void rxcd_wr (int32 val)
+ {
+-int32 cpu = (val >> 8) & 7;
++int32 node = (val >> 8) & 0xF;                          /* destination node */
++int32 cpu = ka_cpu_of_node (node);
+ int32 ch = val & 0xFF;
+ int32 rg;
+ int32 rval;
+@@ -435,7 +485,11 @@ t_stat r;
+ char conv[10];
+ 
+ sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MTPR RXCD: %02X '%c' to node %d\n", cur_cpu, ch,
+-           isprint (ch) ? ch : '.', cpu);
++           isprint (ch) ? ch : '.', node);
++if (cpu < 0) {                                          /* no KA820 there: */
++    mxpr_cc_vc |= CC_V;                                 /* not taken */
++    return;
++    }
+ if (ka_rxcd[cpu] & 0x8000) {                            /* busy? */
+     mxpr_cc_vc |= CC_V;                                 /* set overflow */
+     return;
+diff --git a/VAX/vax820_klesib.c b/VAX/vax820_klesib.c
+index 9705a0bf..24e31ae1 100644
+--- a/VAX/vax820_klesib.c
++++ b/VAX/vax820_klesib.c
+@@ -55,7 +55,7 @@
+ #include "vax_defs.h"
+ 
+ #define DTYPE_KLESIB    0x0103                          /* KLESI-B (BI_BLA) */
+-#define KB_DEF_NODE     8                               /* default node */
++#define KB_DEF_NODE     6                               /* default node (below the DEBNA's) */
+ #define KB_NDPATH       6                               /* data paths */
+ #define KB_NMAPR        512                             /* map registers */
+ #define KB_NMAPU        496                             /* usable */
+@@ -539,23 +539,10 @@ t_stat kb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ t_stat r;
+ int32 node;
+ 
+-if (cptr == NULL)
+-    return SCPE_ARG;
+-DEVICE *dptr;
+-DIB *dibp;
+-int32 i;
+-
+-node = (int32) get_uint (cptr, 10, 15, &r);
+-if ((r != SCPE_OK) || (node < 2))
+-    return sim_messagef (SCPE_ARG, "TB: the BI node is 2 to 15\n");
+-for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {    /* node in use? */
+-    dibp = (DIB *) dptr->ctxt;
+-    if ((dptr == &tb_dev) || !(dptr->flags & DEV_NEXUS) ||
+-        (dptr->flags & DEV_DIS) || (dibp == NULL))
+-        continue;
+-    if ((int32) (dibp->ba & 0xF) == node)
+-        return sim_messagef (SCPE_ARG, "TB: BI node %d is %s's\n", node, dptr->name);
+-    }
++if ((r = bi_get_node (cptr, &tb_dev, -1, &node)) != SCPE_OK)
++    return r;                                           /* 0-15, free */
++if ((r = bi_set_node_rules (&tb_dev, node)) != SCPE_OK)
++    return r;                                           /* realism: below the DEBNA */
+ kb_clrint ();
+ tb_dib.ba = (uint32) node;
+ return kb_reset (&tb_dev);
+diff --git a/VAX/vax820_mem.c b/VAX/vax820_mem.c
+index e137a219..4b759b19 100644
+--- a/VAX/vax820_mem.c
++++ b/VAX/vax820_mem.c
+@@ -1,4 +1,4 @@
+-/* vax820_mem.c: VAX 8200 memory controllers
++/* vax820_mem.c: VAX 8200 memory boards (MS820)
+ 
+    Copyright (c) 2019, Matt Burke
+ 
+@@ -23,98 +23,592 @@
+    used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization from the author.
+ 
+-   mctl0, mctl1         MS820 memory controllers
++   mctl                 MS820 memory boards MCTL0-MCTL11
++
++   17-Nov-26    Ulli    Twelve MS820 boards (units MCTL0-MCTL11 of the MCTL
++                        device), each with its type (MS820-AA 2MB, -BA 4MB,
++                        -CA 16MB, SIMH-128MB outside the realism mode) and
++                        its VAXBI node; SET CPU nM sets them from a table;
++                        contiguous addresses in board order, as the KA820
++                        console assigns them; CSR1 with the board's size
++                        and RAM type; SHOW MCTL, SHOW CPU MEMORY (before:
++                        two controllers at nodes 2 and 3, each half of the
++                        memory)
++
++   The board facts:
++   - option, module and BI device type (all 0001): MS820-AA T1008 2MB,
++     MS820-BA T1019 4MB, MS820-CA T1040 16MB (DEC field service handbook,
++     chapter "82/83x0 and VAXBI", 1993);
++   - the console self-test writes contiguous start and end addresses into
++     the memory nodes (same source);
++   - CSR1 at node space +100, CSR2 at +104, their bits (NetBSD ka820.c; the
++     MS820 technical manual is not available): CSR1 <28:18> the size in
++     256KB units, <17:16> the RAM type (0 64K, 1 256K, 2 1M chips), <13>
++     the interlock (memory lock, cleared by an unlock write), error bits;
++     CSR2 the error flags, address and syndrome.
++   The RAM type of each option is provisional (MS820-AA and -BA 256K chips,
++   MS820-CA 1M chips); the DTYPE revision field stays 0.
+ */
+ 
+ #include "vax_defs.h"
++#include "sim_sound.h"
+ 
+-/* Memory CSR 1 */
++/* MS820 CSR1 (longword 0x40 of the node space, byte offset 100) */
+ 
+ #define MCSR1_OF        0x40
+-#define MCSR1_V_SIZE    18                              /* memory size */
+-#define MCSR1_M_SIZE    0x7FF
+-#define MCSR1_MWE       0x00000400                      /* masked write error - NI */
+-#define MCSR1_ICE       0x00000200                      /* internal controller error - NI */
+-#define MCSR1_CDI       0x00008000                      /* CRD interrupt inhibit - NI */
+-
+-/* Memory CSR 2 */
++#define MS1_ERRSUM      0x80000000                      /* error summary */
++#define MS1_ECCDIAG     0x40000000                      /* ECC diagnostic */
++#define MS1_ECCDIS      0x20000000                      /* ECC disable */
++#define MS1_V_SIZE      18                              /* size, 256KB units */
++#define MS1_M_SIZE      0x7FF
++#define MS1_RAMTY256K   0x00010000                      /* 256K chips */
++#define MS1_RAMTY1M     0x00020000                      /* 1M chips */
++#define MS1_CRDINH      0x00008000                      /* CRD interrupt inhibit */
++#define MS1_INTLK       0x00002000                      /* interlock (memory lock) */
++#define MS1_BROKE       0x00001000                      /* broke */
++#define MS1_MWRITEERR   0x00000400                      /* masked write error */
++#define MS1_CNTLERR     0x00000200                      /* controller error */
++#define MS1_DIAGC       0x0000007F                      /* ECC diagnostic bits */
++#define MS1_RW          (MS1_ECCDIAG | MS1_ECCDIS | MS1_CRDINH | MS1_BROKE | MS1_DIAGC)
++#define MS1_W1C         (MS1_MWRITEERR | MS1_CNTLERR | MS1_INTLK)
++
++/* MS820 CSR2 (longword 0x41, byte offset 104) */
+ 
+ #define MCSR2_OF        0x41
++#define MS2_W1C         0xF0000000                      /* RDS, high, CRD, address errors */
++
++#define MCTL_MB         (1u << 20)
++#define MCTL_NONODE     16                              /* board without a node */
++
++/* Board types */
++
++typedef struct {
++    const char          *name;
++    uint32              size;                           /* bytes */
++    uint32              ramty;                          /* CSR1 RAM type */
++    t_bool              real;                           /* a DEC option */
++    const char          *module;
++    } MS_TYPE;
++
++static const MS_TYPE ms_types[] = {
++    { "MS820-AA",     2 * MCTL_MB, MS1_RAMTY256K, TRUE,  "T1008" },
++    { "MS820-BA",     4 * MCTL_MB, MS1_RAMTY256K, TRUE,  "T1019" },
++    { "MS820-CA",    16 * MCTL_MB, MS1_RAMTY1M,   TRUE,  "T1040" },
++    { "SIMH-128MB", 128 * MCTL_MB, MS1_RAMTY1M,   FALSE, "none (SIMH only)" },
++    { NULL }
++    };
++
++#define MST_AA          0
++#define MST_BA          1
++#define MST_CA          2
++#define MST_X128        3
++#define MST_NUM         4
++
++/* SET CPU nM: the boards for each size (Ulli, 2026-11-17); 256M and 512M
++   only outside the realism mode, with SIMH-only boards (twelve MS820-CA
++   give 192MB) */
++
++static const struct {
++    uint32      size;
++    int32       n;
++    int32       type;
++    } mctl_tab[] = {
++    {   4 * MCTL_MB, 2, MST_AA },
++    {   8 * MCTL_MB, 2, MST_BA },
++    {  16 * MCTL_MB, 4, MST_BA },
++    {  32 * MCTL_MB, 2, MST_CA },
++    {  48 * MCTL_MB, 3, MST_CA },
++    {  64 * MCTL_MB, 4, MST_CA },
++    { 128 * MCTL_MB, 8, MST_CA },
++    { 256 * MCTL_MB, 2, MST_X128 },
++    { 512 * MCTL_MB, 4, MST_X128 },
++    { 0 }
++    };
+ 
+-uint32 mcsr_1[MCTL_NUM];
++uint32 mctl_type[MCTL_NUM];                             /* board type (MST_xx) */
++uint32 mctl_pres[MCTL_NUM];                             /* board present */
++uint32 mctl_nodes[MCTL_NUM];                            /* VAXBI node, 16 = none */
++uint32 mctl_manual = 0;                                 /* set by SET MCTLn */
++uint32 mcsr_1[MCTL_NUM];                                /* CSR1: the writable bits */
+ uint32 mcsr_2[MCTL_NUM];
++uint32 mctl_bcsr[MCTL_NUM];                             /* BIIC CSR, BER, EICR, INTRDES */
++uint32 mctl_ber[MCTL_NUM];
++uint32 mctl_eicr[MCTL_NUM];
++uint32 mctl_idest[MCTL_NUM];
++int32 mctl_resize_tag = 0;                              /* (MCTL_RESIZE) */
++static t_bool mctl_init_done = FALSE;
++static DIB mctl_dib[MCTL_NUM];
++
++extern t_stat build_nexus_tab (DEVICE *dptr, DIB *dibp);
++extern t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++extern UNIT cpu_unit;
+ 
+ t_stat mctl_reset (DEVICE *dptr);
+ const char *mctl_description (DEVICE *dptr);
++t_stat mctl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+ t_stat mctl_rdreg (int32 *val, int32 pa, int32 mode);
+ t_stat mctl_wrreg (int32 val, int32 pa, int32 mode);
+-
+-/* MCTLx data structures
+-
+-   mctlx_dev    MCTLx device descriptor
+-   mctlx_unit   MCTLx unit
+-   mctlx_reg    MCTLx register list
++t_stat mctl_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++t_stat mctl_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++t_stat mctl_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++t_stat mctl_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++t_stat mctl_set_enb (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++t_stat mctl_show_board (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++t_stat mctl_show_sum (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static t_stat mctl_rlz_enable_check (t_bool apply);
++
++/* MCTL data structures
++
++   mctl_dev     MCTL device descriptor
++   mctl_unit    the boards
++   mctl_reg     MCTL register list
+ */
+ 
+-DIB mctl0_dib[] = { { TR_MCTL0, 0, &mctl_rdreg, &mctl_wrreg, 0 } };
+-
+-UNIT mctl0_unit = { UDATA (NULL, 0, 0) };
++UNIT mctl_unit[MCTL_NUM] = {
++    { UDATA (NULL, 0, 0) }, { UDATA (NULL, 0, 0) }, { UDATA (NULL, 0, 0) },
++    { UDATA (NULL, 0, 0) }, { UDATA (NULL, 0, 0) }, { UDATA (NULL, 0, 0) },
++    { UDATA (NULL, 0, 0) }, { UDATA (NULL, 0, 0) }, { UDATA (NULL, 0, 0) },
++    { UDATA (NULL, 0, 0) }, { UDATA (NULL, 0, 0) }, { UDATA (NULL, 0, 0) }
++    };
+ 
+-REG mctl0_reg[] = {
+-    { HRDATA (CSR1, mcsr_1[0], 32) },
+-    { HRDATA (CSR2, mcsr_2[0], 32) },
++REG mctl_reg[] = {
++    { BRDATAD (TYPE,    mctl_type,  10,  8, MCTL_NUM, "board type (0 MS820-AA, 1 -BA, 2 -CA, 3 SIMH-128MB)") },
++    { BRDATAD (PRESENT, mctl_pres,  10,  1, MCTL_NUM, "board present") },
++    { BRDATAD (NODE,    mctl_nodes, 10,  8, MCTL_NUM, "VAXBI node (16 = none)") },
++    { FLDATAD (MANUAL,  mctl_manual, 0, "boards set by SET MCTLn (not by SET CPU nM)") },
++    { BRDATAD (CSR1,    mcsr_1,     16, 32, MCTL_NUM, "CSR1 (writable bits)") },
++    { BRDATAD (CSR2,    mcsr_2,     16, 32, MCTL_NUM, "CSR2") },
++    { BRDATAD (BICSR,   mctl_bcsr,  16, 32, MCTL_NUM, "BIIC CSR") },
++    { BRDATAD (BER,     mctl_ber,   16, 32, MCTL_NUM, "BIIC bus error register") },
++    { BRDATAD (EICR,    mctl_eicr,  16, 32, MCTL_NUM, "BIIC error interrupt control") },
++    { BRDATAD (INTRDES, mctl_idest, 16, 16, MCTL_NUM, "BIIC interrupt destination") },
+     { NULL }
+     };
+ 
+-MTAB mctl0_mod[] = {
+-    { MTAB_XTD|MTAB_VDV, TR_MCTL0, "NEXUS", NULL,
+-      NULL, &show_nexus, NULL, "Display nexus" },
++MTAB mctl_mod[] = {
++    { MTAB_XTD|MTAB_VDV, 0, "MEMORY", NULL,
++      NULL, &mctl_show_sum, NULL, "Display the memory size and the boards" },
++    { MTAB_XTD|MTAB_VUN, 0, "BOARD", NULL,
++      NULL, &mctl_show_board, NULL, "Display the board" },
++    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "TYPE", "TYPE={MS820-AA|MS820-BA|MS820-CA|SIMH-128MB|NONE}",
++      &mctl_set_type, &mctl_show_type, NULL, "Set/Display the board type (NONE: no board)" },
++    { MTAB_XTD|MTAB_VUN|MTAB_NMO|MTAB_VALR, 0, "NODE", "NODE=n",
++      &mctl_set_node, &mctl_show_node, NULL, "Set/Display the board's VAXBI node (0-15)" },
++    { MTAB_XTD|MTAB_VUN, 1, NULL, "ENABLED",
++      &mctl_set_enb, NULL, NULL, "Insert the board" },
++    { MTAB_XTD|MTAB_VUN, 0, NULL, "DISABLED",
++      &mctl_set_enb, NULL, NULL, "Remove the board" },
+     { 0 }
+     };
+ 
+-DIB mctl1_dib[] = { { TR_MCTL1, 0, &mctl_rdreg, &mctl_wrreg, 0 } };
++DEVICE mctl_dev = {
++    "MCTL", mctl_unit, mctl_reg, mctl_mod,
++    MCTL_NUM, 16, 16, 1, 16, 8,
++    NULL, NULL, &mctl_reset,
++    NULL, NULL, NULL,
++    NULL, 0, 0,
++    NULL, NULL, NULL, &mctl_help, NULL, NULL,
++    &mctl_description
++    };
+ 
+-UNIT mctl1_unit = { UDATA (NULL, 0, 0) };
++/* Board helpers */
+ 
+-MTAB mctl1_mod[] = {
+-    { MTAB_XTD|MTAB_VDV, TR_MCTL1, "NEXUS", NULL,
+-      NULL, &show_nexus },
+-    { 0 }  };
++static uint32 mctl_size (int32 i)
++{
++return ms_types[mctl_type[i] % MST_NUM].size;
++}
+ 
+-REG mctl1_reg[] = {
+-    { HRDATA (CSR1, mcsr_1[1], 32) },
+-    { HRDATA (CSR2, mcsr_2[1], 32) },
+-    { NULL }
+-    };
++static uint32 mctl_start (int32 i)                      /* contiguous, board order */
++{
++uint32 a = 0;
++int32 j;
+ 
+-DEVICE mctl_dev[] = {
+-    {
+-    "MCTL0", &mctl0_unit, mctl0_reg, mctl0_mod,
+-    1, 16, 16, 1, 16, 8,
+-    NULL, NULL, &mctl_reset,
+-    NULL, NULL, NULL,
+-    &mctl0_dib, DEV_NEXUS, 0,
+-    NULL, NULL, NULL, NULL, NULL, NULL, 
+-    &mctl_description
+-    },
+-    {
+-    "MCTL1", &mctl1_unit, mctl1_reg, mctl1_mod,
+-    1, 16, 16, 1, 16, 8,
+-    NULL, NULL, &mctl_reset,
+-    NULL, NULL, NULL,
+-    &mctl1_dib, DEV_NEXUS, 0,
+-    NULL, NULL, NULL, NULL, NULL, NULL, 
+-    &mctl_description
++for (j = 0; j < i; j++) {
++    if (mctl_pres[j])
++        a += mctl_size (j);
+     }
+-    };
++return a;
++}
++
++static uint32 mctl_total (void)
++{
++return mctl_start (MCTL_NUM);
++}
++
++static int32 mctl_count (void)
++{
++int32 i, n = 0;
++
++for (i = 0; i < MCTL_NUM; i++) {
++    if (mctl_pres[i])
++        n++;
++    }
++return n;
++}
++
++static uint32 mctl_def_node (int32 i)                   /* MCTL0-7: nodes 15-8 */
++{
++return (i < 8) ? (uint32) (15 - i) : MCTL_NONODE;
++}
+ 
+-/* Memory controller register read */
++t_bool mctl_board_node (int32 i, int32 *node)           /* a present board's node */
++{
++if ((i < 0) || (i >= MCTL_NUM) || !mctl_pres[i] || (mctl_nodes[i] >= MCTL_NONODE))
++    return FALSE;
++*node = (int32) mctl_nodes[i];
++return TRUE;
++}
++
++static int32 mctl_board_at (int32 node)                 /* present board on a node */
++{
++int32 i, n;
++
++for (i = 0; i < MCTL_NUM; i++) {
++    if (mctl_board_node (i, &n) && (n == node))
++        return i;
++    }
++return -1;
++}
++
++void mctl_board_text (int32 i, char *buf, size_t lnt)   /* for SHOW BI */
++{
++snprintf (buf, lnt, "%s %uMB, %08X-%08X", ms_types[mctl_type[i] % MST_NUM].name,
++          mctl_size (i) / MCTL_MB, mctl_start (i), mctl_start (i) + mctl_size (i) - 1);
++}
++
++static void mctl_init_board (int32 i)                   /* registers after a reset */
++{
++mctl_bcsr[i] = (1u << BICSR_V_IF) | BICSR_STS | (mctl_nodes[i] & BICSR_NODE);
++mctl_ber[i] = 0;
++mctl_eicr[i] = 0;
++mctl_idest[i] = 0;
++mcsr_1[i] = 0;
++mcsr_2[i] = 0;
++}
++
++/* The memory size follows the boards: called after a board change (SET
++   MCTLn TYPE, ENABLED, DISABLED); the caller restores the boards if it
++   fails (no board, too much memory, "Really truncate memory" answered no) */
++
++static t_stat mctl_resize (void)
++{
++uint32 total = mctl_total ();
++t_stat r;
++
++if (total == 0)
++    return sim_messagef (SCPE_ARG, "MCTL: at least one memory board is needed\n");
++if (total > MAXMEMSIZE_X)
++    return sim_messagef (SCPE_ARG, "MCTL: at most %uMB of memory (%uMB configured)\n",
++                         (uint32) (MAXMEMSIZE_X / MCTL_MB), total / MCTL_MB);
++if (total != (uint32) MEMSIZE) {
++    r = cpu_set_size (&cpu_unit, (int32) total, NULL, MCTL_RESIZE);
++    if (r != SCPE_OK)
++        return r;
++    if ((uint32) MEMSIZE != total)                      /* not truncated */
++        return SCPE_ARG | SCPE_NOMESSAGE;
++    }
++return SCPE_OK;
++}
++
++/* Saved board state, for undoing a refused change */
++
++typedef struct {
++    uint32      type[MCTL_NUM], pres[MCTL_NUM], nodes[MCTL_NUM], manual;
++    } MCTL_SNAP;
++
++static void mctl_snap (MCTL_SNAP *s)
++{
++memcpy (s->type, mctl_type, sizeof (mctl_type));
++memcpy (s->pres, mctl_pres, sizeof (mctl_pres));
++memcpy (s->nodes, mctl_nodes, sizeof (mctl_nodes));
++s->manual = mctl_manual;
++}
++
++static void mctl_unsnap (const MCTL_SNAP *s)
++{
++memcpy (mctl_type, s->type, sizeof (mctl_type));
++memcpy (mctl_pres, s->pres, sizeof (mctl_pres));
++memcpy (mctl_nodes, s->nodes, sizeof (mctl_nodes));
++mctl_manual = s->manual;
++}
++
++/* A board that is put in needs a free node */
++
++static t_stat mctl_check_insert (int32 i)
++{
++DEVICE *owner;
++int32 ou;
++
++if (mctl_nodes[i] >= MCTL_NONODE)
++    return sim_messagef (SCPE_ARG, "MCTL%d has no VAXBI node: SET MCTL%d NODE=n first\n", i, i);
++owner = bi_node_owner ((int32) mctl_nodes[i], &mctl_dev, i, &ou);
++if (owner != NULL) {
++    if (ou >= 0)
++        return sim_messagef (SCPE_ARG, "MCTL%d: VAXBI node %u is in use by MCTL%d\n", i, mctl_nodes[i], ou);
++    return sim_messagef (SCPE_ARG, "MCTL%d: VAXBI node %u is in use by %s\n", i, mctl_nodes[i], owner->name);
++    }
++return SCPE_OK;
++}
++
++/* SET CPU nM (cpu_set_size, VAX 8200): refused above 128M in the realism
++   mode; then the table's boards on their default nodes */
++
++t_stat mctl_cpu_size_check (uint32 size)
++{
++if (sim_sound_enabled () && (size > 128 * MCTL_MB))
++    return sim_messagef (SCPE_ARG, "SET CPU: in the realism mode SET CPU goes up to 128M (8 MS820-CA);\n"
++                         "more memory with SET MCTLn TYPE=MS820-CA (up to 12 boards, 192MB)\n");
++return SCPE_OK;
++}
++
++void mctl_cpu_size (uint32 size)
++{
++int32 i, n = 0, type = MST_CA, ou;
++DEVICE *owner;
++
++for (i = 0; mctl_tab[i].size != 0; i++) {
++    if (mctl_tab[i].size == size) {
++        n = mctl_tab[i].n;
++        type = mctl_tab[i].type;
++        break;
++        }
++    }
++if (n == 0) {                                           /* not in the table: */
++    static const int32 pref[] = { MST_CA, MST_BA, MST_AA, MST_X128 };
++    for (i = 0; i < 4; i++) {                           /* boards of one type */
++        uint32 s = ms_types[pref[i]].size;
++        if (((size % s) == 0) && ((size / s) <= MCTL_NUM)) {
++            n = (int32) (size / s);
++            type = pref[i];
++            break;
++            }
++        }
++    }
++for (i = 0; i < MCTL_NUM; i++) {
++    mctl_type[i] = (uint32) type;
++    mctl_pres[i] = (i < n);
++    mctl_nodes[i] = mctl_def_node (i);
++    mctl_init_board (i);
++    }
++mctl_manual = 0;
++if (n == 0)
++    sim_printf ("MCTL: %uKB cannot be built from memory boards; SET MCTLn TYPE=... the boards\n",
++                size >> 10);
++for (i = 0; i < n; i++) {                               /* default node taken? */
++    owner = bi_node_owner ((int32) mctl_nodes[i], &mctl_dev, i, &ou);
++    if ((owner != NULL) && (owner != &mctl_dev))
++        sim_printf ("MCTL%d: VAXBI node %u is in use by %s: SET MCTL%d NODE=n (or SET %s NODE=n)\n",
++                    i, mctl_nodes[i], owner->name, i, owner->name);
++    }
++}
++
++/* More than 8 boards: VMS (V4.7, V5.5 tested) uses at most 8 memory boards,
++   those on the lowest nodes; with more, V5.5's memory accounting broke
++   (SHOW MEMORY: more free pages than memory).  Allowed, with a warning. */
++
++void mctl_warn_count (const char *prefix)
++{
++int32 n = mctl_count ();
++
++if (n > 8)
++    sim_printf ("%s%d memory boards: VMS uses at most 8 memory boards (those on the "
++                "lowest VAXBI nodes)\n", prefix, n);
++}
++
++/* SET MCTLn TYPE=x */
++
++t_stat mctl_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++int32 i = (int32) (uptr - mctl_unit);
++int32 t;
++MCTL_SNAP s;
++t_stat r;
++
++if ((cptr == NULL) || (*cptr == 0))
++    return sim_messagef (SCPE_ARG, "MCTL%d: TYPE=MS820-AA, MS820-BA, MS820-CA, SIMH-128MB or NONE\n", i);
++mctl_snap (&s);
++if (strcasecmp (cptr, "NONE") == 0)
++    mctl_pres[i] = 0;
++else {
++    for (t = 0; t < MST_NUM; t++) {
++        if (strcasecmp (cptr, ms_types[t].name) == 0)
++            break;
++        }
++    if (t >= MST_NUM)
++        return sim_messagef (SCPE_ARG, "MCTL%d: unknown board type %s "
++                             "(MS820-AA, MS820-BA, MS820-CA, SIMH-128MB, NONE)\n", i, cptr);
++    if (!ms_types[t].real && sim_sound_enabled ())
++        return sim_messagef (SCPE_ARG, "MCTL%d: %s is a SIMH-only board, not in the realism mode\n",
++                             i, ms_types[t].name);
++    mctl_type[i] = (uint32) t;
++    if (!mctl_pres[i]) {
++        if ((r = mctl_check_insert (i)) != SCPE_OK) {
++            mctl_unsnap (&s);
++            return r;
++            }
++        mctl_pres[i] = 1;
++        }
++    }
++mctl_manual = 1;
++if ((r = mctl_resize ()) != SCPE_OK) {
++    mctl_unsnap (&s);
++    return r;
++    }
++mctl_init_board (i);
++if (mctl_pres[i] && !s.pres[i])                         /* a board went in */
++    mctl_warn_count ("MCTL: ");
++return SCPE_OK;
++}
++
++t_stat mctl_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++int32 i = (int32) (uptr - mctl_unit);
++
++if (mctl_pres[i])
++    fprintf (st, "type=%s\n", ms_types[mctl_type[i] % MST_NUM].name);
++else
++    fprintf (st, "type=NONE\n");
++return SCPE_OK;
++}
++
++/* SET MCTLn NODE=n (also after SET CPU nM; the boards stay as they are) */
++
++t_stat mctl_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++int32 i = (int32) (uptr - mctl_unit);
++int32 node;
++t_stat r;
++
++if ((r = bi_get_node (cptr, &mctl_dev, i, &node)) != SCPE_OK)
++    return r;
++mctl_nodes[i] = (uint32) node;
++mctl_bcsr[i] = (mctl_bcsr[i] & ~BICSR_NODE) | ((uint32) node & BICSR_NODE);
++return SCPE_OK;
++}
++
++t_stat mctl_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++int32 i = (int32) (uptr - mctl_unit);
++
++if (mctl_nodes[i] >= MCTL_NONODE)
++    fprintf (st, "node=none\n");
++else
++    fprintf (st, "node=%u\n", mctl_nodes[i]);
++return SCPE_OK;
++}
++
++/* SET MCTLn ENABLED / DISABLED: put the board in (with its type, default
++   MS820-CA) or take it out */
++
++t_stat mctl_set_enb (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++int32 i = (int32) (uptr - mctl_unit);
++MCTL_SNAP s;
++t_stat r;
++
++if (cptr != NULL)
++    return SCPE_ARG;
++if ((val != 0) == (mctl_pres[i] != 0))                  /* no change */
++    return SCPE_OK;
++mctl_snap (&s);
++if (val) {
++    if (!ms_types[mctl_type[i] % MST_NUM].real && sim_sound_enabled ())
++        mctl_type[i] = MST_CA;
++    if ((r = mctl_check_insert (i)) != SCPE_OK)
++        return r;
++    mctl_pres[i] = 1;
++    }
++else
++    mctl_pres[i] = 0;
++mctl_manual = 1;
++if ((r = mctl_resize ()) != SCPE_OK) {
++    mctl_unsnap (&s);
++    return r;
++    }
++mctl_init_board (i);
++if (val)                                                /* a board went in */
++    mctl_warn_count ("MCTL: ");
++return SCPE_OK;
++}
++
++/* SHOW MCTL: the device line and one line per board */
++
++t_stat mctl_show_sum (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++fprintf (st, "%uMB on %d board%s (%s)", mctl_total () / MCTL_MB, mctl_count (),
++         (mctl_count () == 1) ? "" : "s", mctl_manual ? "set by SET MCTLn" : "set by SET CPU");
++return SCPE_OK;
++}
++
++t_stat mctl_show_board (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++int32 i = (int32) (uptr - mctl_unit);
++const MS_TYPE *t = &ms_types[mctl_type[i] % MST_NUM];
++
++if (!mctl_pres[i]) {
++    fprintf (st, "no board");
++    if (mctl_nodes[i] < MCTL_NONODE)
++        fprintf (st, " (node %u reserved)", mctl_nodes[i]);
++    return SCPE_OK;
++    }
++fprintf (st, "%s, %uMB, node=%u, %08X-%08X%s", t->name, t->size / MCTL_MB, mctl_nodes[i],
++         mctl_start (i), mctl_start (i) + t->size - 1, t->real ? "" : " (SIMH only)");
++return SCPE_OK;
++}
++
++/* SHOW CPU MEMORY */
++
++t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
++{
++int32 i;
++char buf[96];
++
++fprintf (st, "Memory: %uMB on %d MS820 board%s\n", mctl_total () / MCTL_MB, mctl_count (),
++         (mctl_count () == 1) ? "" : "s");
++for (i = 0; i < MCTL_NUM; i++) {
++    if (!mctl_pres[i])
++        continue;
++    mctl_board_text (i, buf, sizeof (buf));
++    fprintf (st, "  MCTL%-2d node %2u  %s\n", i, mctl_nodes[i], buf);
++    }
++return SCPE_OK;
++}
++
++/* The boards on the VAXBI: one nexus each (build_dib_tab) */
++
++t_stat mctl_build_nexus (void)
++{
++int32 i;
++t_stat r;
++
++for (i = 0; i < MCTL_NUM; i++) {
++    if (!mctl_pres[i])
++        continue;
++    if (mctl_nodes[i] >= MCTL_NONODE) {
++        sim_printf ("MCTL%d has no VAXBI node: SET MCTL%d NODE=n\n", i, i);
++        return SCPE_STOP;
++        }
++    mctl_dib[i].ba = mctl_nodes[i];
++    mctl_dib[i].lnt = 0;
++    mctl_dib[i].rd = &mctl_rdreg;
++    mctl_dib[i].wr = &mctl_wrreg;
++    if ((r = build_nexus_tab (&mctl_dev, &mctl_dib[i])) != SCPE_OK) {
++        sim_printf ("MCTL%d: VAXBI node %u is in use (SHOW BI)\n", i, mctl_nodes[i]);
++        return r;
++        }
++    }
++return SCPE_OK;
++}
++
++/* Memory board register read */
+ 
+ t_stat mctl_rdreg (int32 *val, int32 pa, int32 lnt)
+ {
+-int32 mctl, ofs;
++int32 i, ofs;
+ 
+-mctl = NEXUS_GETNEX (pa) - TR_MCTL0;                    /* get mctl num */
++i = mctl_board_at (NEXUS_GETNEX (pa));                  /* the board on the node */
++if (i < 0)
++    return SCPE_NXM;
+ ofs = NEXUS_GETOFS (pa);                                /* get offset */
+ switch (ofs) {
+ 
+@@ -123,26 +617,38 @@ switch (ofs) {
+         break;
+ 
+     case BI_CSR:
++        *val = (int32) (mctl_bcsr[i] & BICSR_RD);
++        break;
++
+     case BI_BER:
++        *val = (int32) (mctl_ber[i] & BIBER_RD);
++        break;
++
+     case BI_EICR:
++        *val = (int32) (mctl_eicr[i] & BIECR_RD);
++        break;
++
+     case BI_IDEST:
+-        *val = 0;
++        *val = (int32) (mctl_idest[i] & BIID_RD);
+         break;
+ 
+     case BI_SA:                                         /* start address */
+-        *val = (mctl == 0) ? 0 : (int32)(MEMSIZE >> 1);
++        *val = (int32) mctl_start (i);
+         break;
+ 
+     case BI_EA:                                         /* end address */
+-        *val = (mctl == 0) ? (int32)(MEMSIZE >> 1) : (int32)MEMSIZE;
++        *val = (int32) (mctl_start (i) + mctl_size (i));
+         break;
+ 
+-    case MCSR1_OF:                                       /* CSR 1 */
+-        *val = mcsr_1[mctl];
++    case MCSR1_OF:                                      /* CSR 1 */
++        *val = (int32) ((mcsr_1[i] & (MS1_RW | MS1_W1C)) |
++               (((mctl_size (i) >> MS1_V_SIZE) & MS1_M_SIZE) << MS1_V_SIZE) |
++               ms_types[mctl_type[i] % MST_NUM].ramty |
++               ((mcsr_1[i] & (MS1_W1C)) || (mcsr_2[i] & MS2_W1C) ? MS1_ERRSUM : 0));
+         break;
+ 
+-    case MCSR2_OF:                                       /* CSR 2 */
+-        *val = mcsr_2[mctl];
++    case MCSR2_OF:                                      /* CSR 2 */
++        *val = (int32) mcsr_2[i];
+         break;
+ 
+     default:
+@@ -152,24 +658,46 @@ switch (ofs) {
+ return SCPE_OK;
+ }
+ 
+-/* Memory controller register write */
++/* Memory board register write */
+ 
+ t_stat mctl_wrreg (int32 val, int32 pa, int32 lnt)
+ {
+-int32 mctl, ofs;
++int32 i, ofs;
+ 
+-mctl = NEXUS_GETNEX (pa) - TR_MCTL0;                    /* get mctl num */
++i = mctl_board_at (NEXUS_GETNEX (pa));
++if (i < 0)
++    return SCPE_NXM;
+ ofs = NEXUS_GETOFS (pa);                                /* get offset */
+ switch (ofs) {
+ 
+     case BI_CSR:
++        mctl_bcsr[i] = (mctl_bcsr[i] & ~BICSR_RW) | ((uint32) val & BICSR_RW);
++        break;
++
+     case BI_BER:
++        mctl_ber[i] = mctl_ber[i] & ~((uint32) val & BIBER_W1C);
++        break;
++
+     case BI_EICR:
++        mctl_eicr[i] = (mctl_eicr[i] & ~BIECR_RW) | ((uint32) val & BIECR_RW);
++        mctl_eicr[i] = mctl_eicr[i] & ~((uint32) val & BIECR_W1C);
++        break;
++
+     case BI_IDEST:
++        mctl_idest[i] = (uint32) val & BIID_RW;
++        break;
++
++    case BI_SA:                                         /* the console's address */
++    case BI_EA:                                         /* assignment: kept */
++        break;
++
++    case MCSR1_OF:                                      /* CSR 1 */
++        mcsr_1[i] = (mcsr_1[i] & ~MS1_RW) | ((uint32) val & MS1_RW);
++        mcsr_1[i] = mcsr_1[i] & ~((uint32) val & MS1_W1C);
+         break;
+ 
+-    case MCSR1_OF:                                       /* CSR 1 */
+-    case MCSR2_OF:                                       /* CSR 2 */
++    case MCSR2_OF:                                      /* CSR 2 */
++        mcsr_2[i] = mcsr_2[i] & ~((uint32) val & MS2_W1C);
+         break;
+ 
+     default:
+@@ -186,25 +714,78 @@ void rom_wr_B (int32 pa, int32 val)
+ return;
+ }
+ 
+-/* MEMCTL reset */
++/* Realism mode: no SIMH-only boards */
++
++static t_stat mctl_rlz_enable_check (t_bool apply)
++{
++int32 i;
++
++for (i = 0; i < MCTL_NUM; i++) {
++    if (mctl_pres[i] && !ms_types[mctl_type[i] % MST_NUM].real)
++        return sim_messagef (SCPE_ARG, "SET REALISM ENABLED: MCTL%d is a %s board (SIMH only): "
++                             "SET CPU 128M or SET MCTL%d TYPE=MS820-CA\n", i,
++                             ms_types[mctl_type[i] % MST_NUM].name, i);
++    }
++return SCPE_OK;
++}
++
++/* MCTL reset: at the first reset the boards for the initial memory size */
+ 
+ t_stat mctl_reset (DEVICE *dptr)
+ {
+ int32 i;
+-for (i = 0; i < MCTL_NUM; i++) {                        /* init for MS820 */
+-    mcsr_1[i] = (MCSR1_M_SIZE << MCSR1_V_SIZE);
+-    mcsr_2[i] = 0;
++
++if (!mctl_init_done) {
++    mctl_cpu_size ((uint32) MEMSIZE);
++    mctl_init_done = TRUE;
+     }
++for (i = 0; i < MCTL_NUM; i++)
++    mctl_init_board (i);
++sim_sound_register_enable_check (&mctl_rlz_enable_check);
+ return SCPE_OK;
+ }
+ 
+ const char *mctl_description (DEVICE *dptr)
+ {
+-return "memory controller";
++return "MS820 memory boards";
+ }
+ 
+-t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
++t_stat mctl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+ {
+-// TODO
++fprintf (st, "MS820 memory boards (MCTL0-MCTL11)\n\n");
++fprintf (st, "The VAX 8200/8300 memory is up to twelve MS820 boards, each a VAXBI node\n");
++fprintf (st, "of its own (the 24-slot backplane of the 8220/8320):\n\n");
++fprintf (st, "   MS820-AA   2MB  (module T1008)\n");
++fprintf (st, "   MS820-BA   4MB  (module T1019)\n");
++fprintf (st, "   MS820-CA  16MB  (module T1040)\n\n");
++fprintf (st, "SET CPU nM puts in the boards for the size, on nodes 15, 14, ... (MCTL0,\n");
++fprintf (st, "MCTL1, ...):\n\n");
++fprintf (st, "   4M  2 x MS820-AA      32M  2 x MS820-CA      128M  8 x MS820-CA\n");
++fprintf (st, "   8M  2 x MS820-BA      48M  3 x MS820-CA\n");
++fprintf (st, "  16M  4 x MS820-BA      64M  4 x MS820-CA\n\n");
++fprintf (st, "Outside the realism mode SET CPU 256M and 512M use SIMH-only boards of\n");
++fprintf (st, "128MB (TYPE=SIMH-128MB); in the realism mode SET CPU goes up to 128M, and\n");
++fprintf (st, "more memory (up to 12 x MS820-CA, 192MB) is set board by board.\n\n");
++fprintf (st, "Each board can be set by hand; the memory size is then the sum of the\n");
++fprintf (st, "boards, until the next SET CPU nM:\n\n");
++fprintf (st, "   sim> SET MCTL2 TYPE=MS820-CA      (put in or change a board)\n");
++fprintf (st, "   sim> SET MCTL2 NODE=13            (its VAXBI node, 0-15 or A-F)\n");
++fprintf (st, "   sim> SET MCTL3 DISABLED           (take a board out; ENABLED: back in)\n");
++fprintf (st, "   sim> SET MCTL3 TYPE=NONE          (the same)\n");
++fprintf (st, "   sim> SHOW MCTL                    (all twelve boards)\n");
++fprintf (st, "   sim> SHOW BI                      (all VAXBI nodes)\n\n");
++fprintf (st, "MCTL8-MCTL11 have no default node.  The boards get contiguous addresses in\n");
++fprintf (st, "board order (MCTL0 from 0), as the KA820 console assigns them.  A board\n");
++fprintf (st, "answers with BI device type 0001, its start and end address, and CSR1 with\n");
++fprintf (st, "its size and RAM type (bits after NetBSD; the MS820 technical manual is not\n");
++fprintf (st, "available).\n\n");
++fprintf (st, "VMS uses at most 8 memory boards, those on the lowest VAXBI nodes (VMS\n");
++fprintf (st, "V4.7 and V5.5 tested; with 12 MS820-CA, V5.5 counted 128MB and its SHOW\n");
++fprintf (st, "MEMORY went wrong).  More boards are allowed, as on the 24-slot backplane;\n");
++fprintf (st, "SET MCTLn and BOOT then print a warning.  The size is no limit: V5.5 runs\n");
++fprintf (st, "with 512MB on four SIMH-128MB boards.\n\n");
++fprint_set_help (st, dptr);
++fprint_show_help (st, dptr);
++fprint_reg_help (st, dptr);
+ return SCPE_OK;
+ }
+diff --git a/VAX/vax820_syslist.c b/VAX/vax820_syslist.c
+index b44feffb..8781f561 100644
+--- a/VAX/vax820_syslist.c
++++ b/VAX/vax820_syslist.c
+@@ -45,7 +45,7 @@ extern DEVICE cpu_dev;
+ extern DEVICE tlb_dev;
+ extern DEVICE bi_dev;
+ extern DEVICE ka_dev[KA_NUM];
+-extern DEVICE mctl_dev[MCTL_NUM];
++extern DEVICE mctl_dev;
+ extern DEVICE uba_dev;
+ extern DEVICE clk_dev;
+ extern DEVICE wtc_dev;
+@@ -87,8 +87,7 @@ DEVICE *sim_devices[] = {
+     &bi_dev,
+     &ka_dev[0],
+     &ka_dev[1],
+-    &mctl_dev[0],
+-    &mctl_dev[1],
++    &mctl_dev,                                  /* MS820 memory boards MCTL0-MCTL11 */
+     &uba_dev,
+     &clk_dev,
+     &wtc_dev,
+diff --git a/VAX/vax820_uba.c b/VAX/vax820_uba.c
+index a221aef2..ca28d6d2 100644
+--- a/VAX/vax820_uba.c
++++ b/VAX/vax820_uba.c
+@@ -136,6 +136,7 @@ uint32 uba_aitime = 250;                                /* adapter init time */
+ uint32 uba_uitime = 12250;                              /* Unibus init time */
+ int32 autcon_enb = 1;                                   /* autoconfig enable */
+ uint32 uba_win_ena = 1;                                 /* window enabled (ADDR_IS_IO) */
++uint32 uba_winbase = WINADDR (TR_UBA_DEF);              /* its window: its node's */
+ static t_bool uba_was_dis = FALSE;                      /* SET UBA DISABLE in effect */
+ #define UBA_MAXOFF      64
+ static DEVICE *uba_off[UBA_MAXOFF];                     /* Unibus devices it disabled */
+@@ -196,7 +197,15 @@ int32 int_vec[IPL_HLVL][32];                            /* int req to vector */
+    uba_reg      UBA register list
+ */
+ 
+-DIB uba_dib = { TR_UBA, 0, &uba_rdreg, &uba_wrreg, 0, 0 };
++DIB uba_dib = { TR_UBA_DEF, 0, &uba_rdreg, &uba_wrreg, 0, 0 };
++
++t_stat uba_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++t_stat uba_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++
++int32 uba_node (void)
++{
++return (int32) (uba_dib.ba & 0xF);
++}
+ 
+ UNIT uba_unit = { UDATA (&uba_svc, 0, 0) };
+ 
+@@ -208,7 +217,6 @@ REG uba_reg[] = {
+     { HRDATA (CSR, uba_csr, 32) },
+     { HRDATA (VO, uba_vo, 32) },
+     { FLDATA (INT, uba_int, 0) },
+-    { FLDATA (NEXINT, nexus_req[IPL_UBA], TR_UBA) },
+     { HRDATA (FUBAR, uba_fubar, 32) },
+     { HRDATA (BIFA, uba_bifa, 32) },
+     { HRDATA (BICSR, uba_biic.csr, 32) },
+@@ -225,8 +233,8 @@ REG uba_reg[] = {
+     };
+ 
+ MTAB uba_mod[] = {
+-    { MTAB_XTD|MTAB_VDV, TR_UBA, "NEXUS", NULL,
+-      NULL, &show_nexus, NULL, "Display nexus" },
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
++      &uba_set_node, &uba_show_node, NULL, "VAXBI node of the DWBUA (0-15, default 0)" },
+     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "IOSPACE", NULL,
+       NULL, &show_iospace, NULL, "Display I/O space address map" },
+     { MTAB_XTD|MTAB_VDV, 1, "AUTOCONFIG", "AUTOCONFIG",
+@@ -531,6 +539,7 @@ uint32 iod;
+ 
+ if (ADDR_IS_KB (pa))                                    /* KLESI-B window? */
+     return kb_rdio (pa, lnt);
++pa = pa - uba_winbase + UBADDRBASE;                     /* to the canonical window */
+ if ((lnt == L_BYTE) ||                                  /* byte? */
+     ((lnt == L_WORD) && ((pa & 1) == 0))) {             /* aligned word? */
+     iod = ReadUb (pa);                                  /* DATI from Unibus */
+@@ -562,6 +571,7 @@ if (ADDR_IS_KB (pa)) {                                  /* KLESI-B window? */
+     kb_wrio (pa, val, lnt);
+     return;
+     }
++pa = pa - uba_winbase + UBADDRBASE;                     /* to the canonical window */
+ if (lnt == L_BYTE)                                      /* byte? DATOB */
+     WriteUb (pa, val, WRITEB);
+ else if (((lnt == L_WORD) || (lnt == L_LONG)) && ((pa & 1) == 0))/* aligned word? */
+@@ -592,17 +602,17 @@ void uba_eval_int (void)
+ int32 i, lvl;
+ 
+ for (i = 0; i < IPL_HLVL; i++)                          /* clear all UBA req */
+-    nexus_req[i] &= ~(1 << TR_UBA);
++    nexus_req[i] &= ~(1 << uba_node ());
+ if (uba_int) {                                          /* adapter int? */
+     lvl = (uba_biic.eicr >> BIECR_V_LVL) & BIECR_M_LVL;
+     for (i = 0; i < IPL_HLVL; i++) {
+         if (lvl & (1u << i))
+-            nexus_req[i] |= (1 << TR_UBA);
++            nexus_req[i] |= (1 << uba_node ());
+         }
+     }
+ for (i = 0; i < IPL_HLVL; i++) {                        /* Unibus device ints */
+     if (int_req[i])
+-        nexus_req[i] |= (1 << TR_UBA);
++        nexus_req[i] |= (1 << uba_node ());
+     }
+ return;
+ }
+@@ -967,7 +977,7 @@ uba_int = 0;
+ uba_aiip = uba_uiip = 0;
+ sim_cancel (&uba_unit);
+ for (i = 0; i < IPL_HLVL; i++) {
+-    nexus_req[i] &= ~(1 << TR_UBA);
++    nexus_req[i] &= ~(1 << uba_node ());
+     int_req[i] = 0;
+     }
+ for (i = 0; i < UBA_NMAPR; i++) {                       /* clear map registers */
+@@ -979,12 +989,13 @@ for (i = 0; i < UBA_NMAPR; i++) {                       /* clear map registers *
+ for (i = 0; i < UBA_NDPATH; i++)                        /* setup datapaths */
+     uba_dpr[i] = (i << UBADPR_V_SEL);
+ uba_csr = 0;
+-uba_biic.csr = (1u << BICSR_V_IF) | BICSR_STS | (TR_UBA & BICSR_NODE);
++uba_winbase = WINADDR (uba_node ());                    /* the node's window */
++uba_biic.csr = (1u << BICSR_V_IF) | BICSR_STS | (uba_node () & BICSR_NODE);
+ uba_biic.ber = 0;
+ uba_biic.eicr = 0;
+ uba_biic.idest = 0;
+-uba_biic.sa = UBADDRBASE;
+-uba_biic.ea = UBADDRBASE + WINSIZE;
++uba_biic.sa = uba_winbase;
++uba_biic.ea = uba_winbase + WINSIZE;
+ uba_biic.uiic = BIICR_EXV;
+ uba_biic.gpr0 = BIGPR0_UPU;
+ return SCPE_OK;
+@@ -1000,6 +1011,34 @@ return SCPE_OK;
+    leaves the BI (build_nexus_tab skips disabled devices).  Enabling: the
+    remembered devices are enabled again. */
+ 
++/* SET UBA NODE=n: the DWBUA's node and with it its Unibus window (the
++   Unibus devices keep their canonical addresses, see vax820_defs.h) */
++
++t_stat uba_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++int32 node, i;
++t_stat r;
++
++r = bi_get_node (cptr, &uba_dev, -1, &node);
++if (r != SCPE_OK)
++    return r;
++for (i = 0; i < IPL_HLVL; i++)                          /* no request on the old node */
++    nexus_req[i] &= ~(1 << uba_node ());
++uba_dib.ba = (uint32) node;
++uba_winbase = WINADDR (uba_node ());
++uba_biic.csr = (uba_biic.csr & ~BICSR_NODE) | ((uint32) node & BICSR_NODE);
++uba_biic.sa = uba_winbase;
++uba_biic.ea = uba_winbase + WINSIZE;
++uba_eval_int ();
++return SCPE_OK;
++}
++
++t_stat uba_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++fprintf (st, "node=%d (Unibus window %08X)", uba_node (), uba_winbase);
++return SCPE_OK;
++}
++
+ static t_stat uba_enbdis (void)
+ {
+ DEVICE *dptr;
+diff --git a/VAX/vax_cpu.c b/VAX/vax_cpu.c
+index 42f626f1..72d916cf 100644
+--- a/VAX/vax_cpu.c
++++ b/VAX/vax_cpu.c
+@@ -3639,6 +3639,13 @@ uint32 *nM = NULL;
+ 
+ if ((val <= 0) || (val > MAXMEMSIZE_X))
+     return SCPE_ARG;
++#if defined (VAX_820)                                   /* VAX 8200: memory boards */
++if (desc != MCTL_RESIZE) {                              /* SET CPU nM: */
++    t_stat r = mctl_cpu_size_check (uval);              /* (realism: up to 128M) */
++    if (r != SCPE_OK)
++        return r;
++    }
++#endif
+ for (i = val; i < MEMSIZE; i = i + 4)
+     mc = mc | M[i >> 2];
+ if ((mc != 0) && !get_yn ("Really truncate memory [N]?", FALSE))
+@@ -3652,6 +3659,10 @@ for (i = 0; i < clim; i = i + 4)
+ free (M);
+ M = nM;
+ MEMSIZE = uval; 
++#if defined (VAX_820)
++if (desc != MCTL_RESIZE)                                /* SET CPU nM: the board */
++    mctl_cpu_size (uval);                               /* table for the size */
++#endif
+ reset_all (0);
+ return SCPE_OK;
+ }
+diff --git a/VAX/vax_debna.c b/VAX/vax_debna.c
+index d2078bbe..f6898d24 100644
+--- a/VAX/vax_debna.c
++++ b/VAX/vax_debna.c
+@@ -433,7 +433,7 @@ REG et_reg[] = {
+ 
+ MTAB et_mod[] = {
+     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
+-      &et_set_node, &et_show_node, NULL, "BI node number (2-15, default 7)" },
++      &et_set_node, &et_show_node, NULL, "VAXBI node number (0-15, default 7)" },
+     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "MAC", "MAC=xx:xx:xx:xx:xx:xx",
+       &et_set_mac, &et_show_mac, NULL, "Ethernet hardware address" },
+     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "ETH", NULL,
+@@ -1504,13 +1504,10 @@ static t_stat et_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ t_stat r;
+ int32 node;
+ 
+-if (cptr == NULL)
+-    return SCPE_ARG;
+-node = (int32) get_uint (cptr, 10, 15, &r);
+-if (r != SCPE_OK)
+-    return r;
+-if (node < 2)                                   /* 0, 1: the KA820s */
+-    return sim_messagef (SCPE_ARG, "Node %d is a KA820 node\n", node);
++if ((r = bi_get_node (cptr, &et_dev, -1, &node)) != SCPE_OK)
++    return r;                                   /* 0-15, free */
++if ((r = bi_set_node_rules (&et_dev, node)) != SCPE_OK)
++    return r;                                   /* realism: above the KLESI-B */
+ et_irq = FALSE;
+ et_update_int ();
+ et_dib.ba = (uint32) node;
+@@ -1570,7 +1567,8 @@ fprintf (st, "SHOW/ADAPTER) and calls it ETA0; its DECnet line and circuit are B
+ fprintf (st, "(named after the DEBNT, the DEBNA's earlier name).  It is disabled by\n");
+ fprintf (st, "default:\n\n");
+ fprintf (st, "   sim> SET ET ENABLE\n");
+-fprintf (st, "   sim> SET ET NODE=7                 (BI node 2-15, default 7)\n");
++fprintf (st, "   sim> SET ET NODE=7                 (BI node 0-15, default 7; in the\n");
++fprintf (st, "                                      realism mode above the KLESI-B's)\n");
+ fprintf (st, "   sim> SET ET MAC=08:00:2B:12:34:56  (hardware address, before ATTACH)\n");
+ fprintf (st, "   sim> ATTACH ET <interface>         (as for XU and XQ, see HELP ET ATTACH)\n\n");
+ fprintf (st, "Two simulators can be connected without a host interface, e.g.\n\n");
+diff --git a/VAX/vax_dmb.c b/VAX/vax_dmb.c
+index 1fd386a1..01b79d3a 100644
+--- a/VAX/vax_dmb.c
++++ b/VAX/vax_dmb.c
+@@ -1691,7 +1691,7 @@ switch (ofs) {
+         break;
+     case OF_IDEST:
+         dmb_biic.idest = data & BIID_RW;
+-        if (dmb_biic.idest && !(dmb_biic.idest & 1))
++        if (dmb_biic.idest && !(dmb_biic.idest & (1u << ka_node (0))))
+             sim_debug (DBG_INT, &dmb_dev, "INTRDES %04X does not include KA0: "
+                        "interrupts still go to the primary\n", dmb_biic.idest);
+         break;
+@@ -1816,13 +1816,10 @@ static t_stat dmb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ t_stat r;
+ int32 node;
+ 
+-if (cptr == NULL)
+-    return SCPE_ARG;
+-node = (int32) get_uint (cptr, 10, 15, &r);
+-if (r != SCPE_OK)
++if ((r = bi_get_node (cptr, &dmb_dev, -1, &node)) != SCPE_OK)
++    return r;                                   /* 0-15, free */
++if ((r = bi_set_node_rules (&dmb_dev, node)) != SCPE_OK)
+     return r;
+-if (node < 2)                                   /* 0, 1: the KA820s */
+-    return sim_messagef (SCPE_ARG, "Node %d is a KA820 node\n", node);
+ nexus_req[DMB_IPL - IPL_HMIN] &= ~(1u << dmb_node ());
+ dmb_dib.ba = (uint32)node;
+ dmb_update_int ();
+@@ -1951,7 +1948,7 @@ fprintf (st, "The DMB32 is a VAXBI module with an eight-line asynchronous multip
+ fprintf (st, "a synchronous line and a line printer port: the VAXBI relative of the\n");
+ fprintf (st, "DMF32.  It is a BI node of its own (default node 5):\n\n");
+ fprintf (st, "   sim> SET DMB ENABLE\n");
+-fprintf (st, "   sim> SET DMB NODE=6           (another BI node, 2-15)\n");
++fprintf (st, "   sim> SET DMB NODE=3           (another free BI node, 0-15)\n");
+ fprintf (st, "   sim> SET DMB SELFTEST=50      (self-test time in ms after a reset)\n\n");
+ fprintf (st, "VMS configures the functions as TXA0-TXA7 (TXB.. if another TX controller\n");
+ fprintf (st, "comes first), SIA0 (DECnet circuit DMB-0) and LIA0.\n\n");
+-- 
+2.43.0
+
