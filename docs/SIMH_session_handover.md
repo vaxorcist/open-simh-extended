@@ -1,7 +1,7 @@
 <!-- open-simh-extended/docs/SIMH_session_handover.md  v2, 2026-11-17 (v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
-# Session handover (2026-11-16, after patch 11)
+# Session handover (2026-11-17, after patch 12)
 
-For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–70).
+For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–75).
 
 **A new session starts with an empty workspace.** Everything Claude had locally (worktrees, built simulators, test directories, Ulli's uploads) is gone. The code, docs, tests and tools are in the fork on GitHub. Ulli's images must be uploaded again (section 4).
 
@@ -124,6 +124,7 @@ None of these is in the repository; Ulli uploads them again when needed.
 - **VMS device names:**
   - TQ and TB together: PTA/MUA = TQ, PTB/MUB = TB;
   - VAXBI-only: TB is PTA/MUA;
-  - DEBNA: ETA0, DECnet line BNT-0.
+  - DEBNA: ETA0, DECnet line BNT-0 (VMS V4.7) or BNA-0 (VMS V5.5);
+  - DMB32 sync line: SIA0, DECnet line DMB-0 (VMS V5.5 SIDRIVER); the DMV11 on VMS V4.7: DMP-0.
 - **VMS error count 1** on PTA0, PUA0 and PUB0 after the startup is normal (port start); it is not a device fault.
 - **The pdp11_tq.c code serves several controllers.** The per-controller state is `TQ_CTX` (`tq_ctx0` TQ, `tq_ctx1` TB), the names are macros for the current controller (`tqc`), and every entry point selects the controller. New code in pdp11_tq.c must keep this up: set `tqc` in any new entry point.
