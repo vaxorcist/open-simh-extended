@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v7, 2026-11-17 (v7: microcode listing findings (IP poll), P4 valid; v6: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72), section 11; v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v8, 2026-11-17 (v8: patch 9 v4, identity and poll after interrupt per the microcode (known issues 73); v7: microcode listing findings (IP poll), P4 valid; v6: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72), section 11; v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
 # KDB50 on the VAX 8200/8300 (implementation plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS V4.7 and V5.5** (patch 9 `opensimh_9_kdb50_v3.patch`, branch `kdb50`, on `integration`); ULTRIX postponed (section 10). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS V4.7 and V5.5** (patch 9 `opensimh_9_kdb50_v4.patch`, branch `kdb50`, on `integration`); ULTRIX postponed (section 10). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
 
 Sources:
 - EK-KDB50-UG-001 *KDB50 Controller User Guide*, supplied by Ulli. Chapter 3 is the programming information.
@@ -20,7 +20,7 @@ What the User Guide settles (chapter 3):
 | Item | KDB50 |
 |---|---|
 | Node space | `2000 0000 + node*2000` |
-| DTYPE | `XXYZ 010E` (XX microcode, Y SDI board, Z processor board revision) |
+| DTYPE | `XXYZ 010E` (XX microcode, Y SDI board, Z processor board revision); SIMH: `1311010E` (microcode version 19, from the microcode listing) |
 | BICSR after the self-test | `XX01 080n`: STS set, BROKE clear, n = node |
 | IP | `bb+F2`, the upper half of GPR0. A read starts command polling (after a connection) and a write has no effect (User Guide). **But** VMS V5.5's PUDRIVER starts the port by writing 0 to IP and never reads it, so a real KDB50 must find the commands anyway (an IP write that polls, or its own periodic look at the ring). The simulator polls on a read and on a write (known issues 72, section 11) |
 | SA | GPR1: SAr (read) at `bb+F4`, SAw (write) at `bb+F6`. ER is bit 15 and the step bits are 11-14, as on the UDA50 |
@@ -149,3 +149,5 @@ Results (vax8200 built from integration f3154741):
 | KLESI-B b1-b4 | **Pass** (24 files, 4324 blocks; S.BCK 129 blocks) |
 
 Startup message seen with V5.5 from either controller (not a KDB50 matter): `%TMSCPLOAD-E-SERVE_ERR, error serving device MUA0: ... MUA3:, R0 status = 00000084` (the system serves its empty TK50 drives).
+
+**More from the microcode listing (patch 9 v4, known issues 73):** DTYPE 1311010E (the microcode writes its version 19 into DTYPE<31:24>); versions to the host 19 (software) and 0x11 (hardware = board revision byte), step 4 still 3 (19 mod 16) with model 18; after each ring interrupt the KDB50 polls the command ring again. Checked and already matching: Last Fail packet on request, no VAX purge interrupts on the BDA. Tests after the change: V5.5 v55_1 and v55_3, V4.7 P2 and P3 pass.
