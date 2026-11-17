@@ -26,6 +26,8 @@
    tq           TQK50 tape controller
    tb           KLESI-B TMSCP port (VAX 8200, VAXBI; adapter in vax820_klesib.c)
 
+   17-Nov-26    Ulli    Realism mode: the KLESI-B (TB) connects TU81 drives
+                        only (SET SOUND ENABLED, SET TB <type>, ATTACH)
    09-Nov-26    Ulli    Realism mode: a calibrated new cartridge gets an
                         end-of-medium marker (no calibration after the next
                         ATTACH)
@@ -442,6 +444,10 @@ t_stat tq_boot (int32 unitno, DEVICE *dptr);
 t_stat tq_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat tq_show_unitq (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat tq_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+#if defined (VAX_820)
+static t_bool tq_is_tb (void);
+static t_stat tb_rlz_msg (const char *prefix, int32 typ);
+#endif
 t_stat tq_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat tq_set_plug (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat tq_show_plug (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
@@ -2485,6 +2491,10 @@ static t_stat tq_attach_body (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
+#if defined (VAX_820)
+if (tq_is_tb () && sim_sound_enabled () && (tq_typ != TQ8_TYPE))
+    return tb_rlz_msg ("ATTACH: ", tq_typ);     /* realism: TU81 only */
+#endif
 r = sim_tape_attach_ex (uptr, cptr, DBG_TAP, 0);
 if (r != SCPE_OK)
     return r;
@@ -2876,6 +2886,23 @@ tq_set_ctx_unit (uptr);
 return tq_show_ctrl_body (st, uptr, val, desc);
 }
 
+/* Realism rule (SET SOUND ENABLED): a KLESI adapter only ever connected
+   TU81 drives (Ulli, 2026-11-17); SIMH allows the TK50 and TK70 on TB as
+   well (VMS only sees TMSCP), which the normal mode keeps. */
+
+#if defined (VAX_820)
+static t_bool tq_is_tb (void)
+{
+return tqc == &tq_ctx1;
+}
+
+static t_stat tb_rlz_msg (const char *prefix, int32 typ)
+{
+return sim_messagef (SCPE_ARG, "%sTB: a KLESI-B connects TU81 drives only, not a %s (realism mode; SET TB TU81)\n",
+                     prefix, drv_tab[typ].name);
+}
+#endif
+
 /* Set controller type (and capacity for user-defined type) */
 
 static t_stat tq_set_type_body (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
@@ -2890,6 +2917,10 @@ for (i = 0; i < TQ_NUMDR; i++) {
     if (tq_unit[i].flags & UNIT_ATT)
         return SCPE_ALATT;
     }
+#if defined (VAX_820)
+if (tq_is_tb () && sim_sound_enabled () && (val != TQ8_TYPE))
+    return tb_rlz_msg ("", val);                /* realism: TU81 only */
+#endif
 if (cptr) {
     cap = (uint32) get_uint (cptr, 10, max, &r);
     if ((r != SCPE_OK) || (cap < TQU_MINC))
@@ -3013,7 +3044,9 @@ return (UNIBUS) ? "TUK50 TMSCP magnetic tape controller" :
    VAX/vax820_klesib.c, which supplies the memory access through its map
    and the interrupt (vector offset register | port vector).  TB is
    disabled by default; its drives are TU81s (SET TB TK50 etc. work as for
-   TQ).  The node defaults to 8 (SET TB NODE=n). */
+   TQ in the normal mode; the realism mode allows only the TU81, as no
+   KLESI adapter ever had a TK50 or TK70).  The node defaults to 8
+   (SET TB NODE=n). */
 
 #if defined (VAX_820)
 
@@ -3190,8 +3223,18 @@ t_stat tb_port_reset (void)
 return tq_reset (&tb_dev);
 }
 
+/* SET SOUND ENABLED: an enabled TB must have TU81 drives */
+
+static t_stat tb_rlz_enable_check (void)
+{
+if ((tq_ctx1.dev != NULL) && !(tq_ctx1.dev->flags & DEV_DIS) && (tq_ctx1.typ != TQ8_TYPE))
+    return tb_rlz_msg ("SET SOUND ENABLED: ", tq_ctx1.typ);
+return SCPE_OK;
+}
+
 t_stat tb_reset (DEVICE *dptr)
 {
+sim_sound_register_enable_check (&tb_rlz_enable_check);    /* realism: TU81 only */
 if (!tq_ctx1.inited) {                                  /* the adapter's hooks */
     tq_ctx1.rb = &kb_rb;
     tq_ctx1.rw = &kb_rw;
@@ -3219,6 +3262,9 @@ fprintf (st, "    ATTACH TB0 tape.tap\n\n");
 fprintf (st, "The adapter has the DWBUA's registers (vector offset, map registers);\n");
 fprintf (st, "the port's IP and SA registers are at Unibus address 774500 in the\n");
 fprintf (st, "node's window.  ULTRIX supports it (V2.0: bla.c, tmscp.c).\n\n");
+fprintf (st, "SIMH also accepts SET TB TK50, TK70 or TKUSER (the guest only sees\n");
+fprintf (st, "TMSCP); no KLESI adapter ever connected those drives, so the sound\n");
+fprintf (st, "realism mode (SET SOUND ENABLED) allows the TU81 only.\n\n");
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
