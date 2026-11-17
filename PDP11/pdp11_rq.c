@@ -26,6 +26,9 @@
 
    rq           MSCP disk controller
 
+   17-Nov-26    Ulli    Realism mode: SET SOUND ENABLED checks the rules on
+                        a snapshot first (dry run), so that a refusal by
+                        another device leaves the RQ units as they were
    17-Nov-26    Ulli    KDB50 per its microcode listing (version 19): DTYPE
                         1311010E, versions 19/0x11 to the host, poll after
                         each ring interrupt
@@ -1452,7 +1455,7 @@ struct rq_usnap;                                        /* (rq_snap_take) */
 static t_stat rq_rlz_rules (DEVICE *dptr, const char *prefix);
 static int32 rq_eff_ctype (MSC *cp);
 static t_bool rq_is_sdi_ctype (int32 ct);
-static t_stat rq_rlz_enable_check (void);
+static t_stat rq_rlz_enable_check (t_bool apply);
 static t_stat rq_rlz_set_type (UNIT *uptr, struct rq_usnap *s);
 static t_stat rq_rlz_set_ctype (UNIT *uptr, int32 newtype);
 static t_stat rq_rlz_set_plug (UNIT *uptr, uint32 plug);
@@ -4803,14 +4806,16 @@ for (u = 0; u < n; u++) {
         continue;
     if ((dt == RX50_DTYPE) && !rq_is_rx50_ctype (ctype)) {
         xptr->flags = xptr->flags | UNIT_DIS;
-        sim_printf ("%s%s disabled: an RX50 needs an RQDX1, RQDX3, RQDX4 or RUX50 controller, %s is a%s %s\n",
-                    prefix, sim_uname (xptr), dptr->name, art, ctlr_tab[ctype].name);
+        if (prefix != NULL)                     /* (NULL: quietly, dry run) */
+            sim_printf ("%s%s disabled: an RX50 needs an RQDX1, RQDX3, RQDX4 or RUX50 controller, %s is a%s %s\n",
+                        prefix, sim_uname (xptr), dptr->name, art, ctlr_tab[ctype].name);
         }
     else if (rq_is_sdi_ctype (ctype) && !rq_is_sdi_type (dt)) {
         xptr->flags = xptr->flags | UNIT_DIS;
-        sim_printf ("%s%s disabled: a%s %s only connects SDI drives (RA family, ESE), %s is an %s\n",
-                    prefix, sim_uname (xptr), art, ctlr_tab[ctype].name, sim_uname (xptr),
-                    drv_tab[dt].name);
+        if (prefix != NULL)
+            sim_printf ("%s%s disabled: a%s %s only connects SDI drives (RA family, ESE), %s is an %s\n",
+                        prefix, sim_uname (xptr), art, ctlr_tab[ctype].name, sim_uname (xptr),
+                        drv_tab[dt].name);
         }
     }
 }
@@ -4907,22 +4912,6 @@ if (sdi && (n_en > SDI_MAX_UNITS))
 return SCPE_OK;
 }
 
-/* SET SOUND ENABLED: every RQ controller must keep to the rules */
-
-static t_stat rq_rlz_enable_check (void)
-{
-int32 i;
-t_stat r;
-
-for (i = 0; i < RQ_NUMCT; i++)                          /* RX50s on other controllers: off */
-    rq_rlz_rx50_disable (rq_devmap[i], rq_eff_ctype (rq_ctxmap[rq_devmap[i]->units[0].cnum]),
-                         "SET SOUND ENABLED: ");
-for (i = 0; i < RQ_NUMCT; i++)
-    if ((r = rq_rlz_rules (rq_devmap[i], "SET SOUND ENABLED: ")) != SCPE_OK)
-        return r;
-return SCPE_OK;
-}
-
 /* A snapshot of a controller's unit settings (flags, capacity, unit
    number), so that a SET that would break a rule can be undone */
 
@@ -4957,6 +4946,33 @@ for (u = 0; u < n; u++) {
     dptr->units[u].capac = s[u].capac;
     dptr->units[u].unit_plug = s[u].plug;
     }
+}
+
+/* SET SOUND ENABLED: every RQ controller must keep to the rules.  The
+   units that do not fit their controller (RX50s off the RQDX/RUX50,
+   non-SDI drives on SDI controllers) are disabled first.  In the dry run
+   (apply FALSE, sim_sound.h) this happens quietly on snapshots that are
+   restored, so only a broken rule is printed and nothing changes. */
+
+static t_stat rq_rlz_enable_check (t_bool apply)
+{
+RQ_USNAP *snap[RQ_NUMCT];
+int32 i;
+t_stat r = SCPE_OK;
+
+for (i = 0; i < RQ_NUMCT; i++)
+    snap[i] = apply ? NULL : rq_snap_take (rq_devmap[i]);
+for (i = 0; i < RQ_NUMCT; i++)                          /* RX50s on other controllers: off */
+    rq_rlz_rx50_disable (rq_devmap[i], rq_eff_ctype (rq_ctxmap[rq_devmap[i]->units[0].cnum]),
+                         apply ? "SET SOUND ENABLED: " : NULL);
+for (i = 0; (i < RQ_NUMCT) && (r == SCPE_OK); i++)
+    r = rq_rlz_rules (rq_devmap[i], "SET SOUND ENABLED: ");
+for (i = 0; i < RQ_NUMCT; i++)                          /* dry run: undo */
+    if (snap[i] != NULL) {
+        rq_snap_restore (rq_devmap[i], snap[i]);
+        free (snap[i]);
+        }
+return r;
 }
 
 /* After a change made with a snapshot: keep it if the rules hold, else

@@ -3223,9 +3223,10 @@ t_stat tb_port_reset (void)
 return tq_reset (&tb_dev);
 }
 
-/* SET SOUND ENABLED: an enabled TB must have TU81 drives */
+/* SET SOUND ENABLED: an enabled TB must have TU81 drives (no changes,
+   so the dry run and the real run are the same) */
 
-static t_stat tb_rlz_enable_check (void)
+static t_stat tb_rlz_enable_check (t_bool apply)
 {
 if ((tq_ctx1.dev != NULL) && !(tq_ctx1.dev->flags & DEV_DIS) && (tq_ctx1.typ != TQ8_TYPE))
     return tb_rlz_msg ("SET SOUND ENABLED: ", tq_ctx1.typ);
