@@ -28,7 +28,9 @@
                       only; no code taken)
      VMS V4.7 ETDRIVER: traced where the above leave a point open
      VMS V5.5 ETDRIVER: no message free queue (entry length 0), free queue
-                      lengths set after INIT (17-Nov-26, known issues 74)
+                      lengths set after INIT (17-Nov-26, known issues 74);
+                      immediate datagrams, the frame in the queue entry
+                      (17-Nov-26, known issues 75)
 
    The DEBNA is a MicroVAX with a LANCE behind a BIIC and a BCI3.  The host
    talks to its Ethernet ("NI") port through the BVP architecture: four port
@@ -198,6 +200,8 @@
 #define QE_DG_CMDREF    0x14
 #define QE_DG_PTDBX     0x18
 #define QE_DG_BUFS      0x1C                    /* buffer list, 8 bytes each */
+#define QE_DG_IMM       0x1C                    /* immediate datagram: the frame */
+#define QE_LEN_BASE     0x12                    /* QE_LEN counts from here */
 #define QE_SIZE         512                     /* largest entry we look at */
 #define QEF_R           0x01
 #define DGB_CHAIN       0x8000                  /* more items follow */
@@ -965,7 +969,16 @@ uint32 status = 0;
 BI_DMA d;
 int32 err;
 
-for (i = 0; i < DGB_MAX; i++) {
+if (b[QE_OPCODE] == OPC_DGRAMI) {               /* immediate: the frame is */
+    len = GW (b, QE_LEN);                       /* in the entry at 0x1C, up */
+    n = (len > (QE_DG_IMM - QE_LEN_BASE)) ?     /* to 0x12 + QE_LEN */
+        len - (QE_DG_IMM - QE_LEN_BASE) : 0;
+    if (n > ETH_MAX_PACKET)
+        status = 0x11;                          /* too long */
+    else if (n && !et_vxfer (e + QE_DG_IMM, et_wbuf.msg, (int32) n, FALSE))
+        status = 0x13;                          /* entry not readable */
+    }
+else for (i = 0; i < DGB_MAX; i++) {            /* buffer list */
     item = QE_DG_BUFS + i * 8;
     if ((item + 8) > et_qe_max) {
         status = 0x11;
