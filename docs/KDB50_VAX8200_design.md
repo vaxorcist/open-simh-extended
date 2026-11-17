@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v6, 2026-11-16 (v6: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72), section 11; v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v7, 2026-11-17 (v7: microcode listing findings (IP poll), P4 valid; v6: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72), section 11; v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
 # KDB50 on the VAX 8200/8300 (implementation plan)
 
 Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS V4.7 and V5.5** (patch 9 `opensimh_9_kdb50_v3.patch`, branch `kdb50`, on `integration`); ULTRIX postponed (section 10). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
@@ -134,7 +134,7 @@ Ulli's VMS V5.5 RA82 image (confidential: copies in the workspace only) did not 
 
 Also fixed in the RQ code: COMPARE HOST DATA reported the byte count as the bad host address after a memory error (known issues case 9).
 
-**Open question:** the User Guide says an IP write has no effect. A real KDB50 probably notices the commands another way (e.g. it scans the command ring on its own). Polling on the write is the smallest change that makes V5.5 work; a periodic ring scan would be the alternative (decision for Ulli).
+**IP write, settled with the microcode listing (2026-11-17):** the KDB50 microcode listing (KDB50 microcode of 22-Apr-1988, listing of Sep 1988, Ulli's copy) shows no periodic ring scan: the idle loop (U.IDLE) reads the command ring only when a hardware POLL condition ("IP accessed") is set, and the BDA code clears that condition when it starts reading the ring. The condition is set by a BI access to the node's IP address that the board detects itself (the microcode's poll self-test sets it with a BI read of its own IP and clears it with a BI abort); it is not the BIIC write-status bit the board uses for SA. The listing does not say whether a host write sets it, but nothing else starts a poll, so VMS V5.5, which only writes IP, can only work on a real KDB50 if a write does. **Conclusion:** "a write polls" fits the listing and stays, unless Ulli decides otherwise. Also seen: after each ring interrupt to the host the microcode reads its own IP to poll again (comment "biicd goof"); SIMH does not need that so far.
 
 Results (vax8200 built from integration f3154741):
 
@@ -145,7 +145,7 @@ Results (vax8200 built from integration f3154741):
 | V5.5 `tests/kdb50/v55_3.ini` (8300) | **Pass.** Two CPU-bound DCL loops in subprocesses: in 60 s each got about 61 s of CPU time; STOP/CPU 1, START/CPU 1 (CPU 01 joins again) |
 | V5.5 on the microvax2 (KDA50, RA82) | **Pass** (boot through the startup; shared RQ code) |
 | V4.7 P1, P2, P3, P5 | **Pass** (P2: 222 files, DIFFERENCES 0) |
-| V4.7 P4 (8300) | **Not valid:** the VMS047_1.R81 uploaded 2026-11-16 has no MP8SS.EXE (`-CLI-E-IMAGEFNF`), so the second CPU did not start; the script then hung on a console DATAOVERUN. Its disk steps passed (DIFFERENCES 0 twice). V5.5's v55_2/v55_3 cover the 8300 |
+| V4.7 P4 (8300) | **Pass** (2026-11-17, Ulli's VMS047_1.R81 with MP8SS.EXE): attached processor in the EXECUTE state under load, DIFFERENCES 0 twice, 224 files copied. The first run (2026-11-16) used a copy without MP8SS.EXE and was not valid |
 | KLESI-B b1-b4 | **Pass** (24 files, 4324 blocks; S.BCK 129 blocks) |
 
 Startup message seen with V5.5 from either controller (not a KDB50 matter): `%TMSCPLOAD-E-SERVE_ERR, error serving device MUA0: ... MUA3:, R0 status = 00000084` (the system serves its empty TK50 drives).
