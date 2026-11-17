@@ -1471,13 +1471,28 @@ static const char simh_help1[] =
       "3Asynch\n"
       "+SET ASYNCH                  enable asynchronous I/O\n"
       "+SET NOASYNCH                disable asynchronous I/O\n"
+#define HLP_SET_REALISM "*Commands SET Realism"
+      "3Realism\n"
+      "+SET REALISM ENABLED          enable the realism mode (and the sounds)\n"
+      "+SET REALISM DISABLED         disable the realism mode (and the sounds)\n\n"
+      " The realism mode makes the simulated hardware behave like the real\n"
+      " one, even if no audio output is available: devices use realistic\n"
+      " timing and operator behavior (e.g. HELP HK), configurations the real\n"
+      " hardware did not allow are refused (e.g. HELP RQ), and the CPU runs at\n"
+      " a realistic speed with SET THROTTLE if the simulator defines one and no\n"
+      " throttle was set by the user (SHOW REALISM shows it; SET REALISM\n"
+      " DISABLED removes it again).  The sounds of the devices and the system\n"
+      " (HELP SET SOUND) come with it.  SET REALISM ENABLED and DISABLED are\n"
+      " only allowed while no disk or tape unit is attached.  SET SOUND\n"
+      " ENABLED and SET SOUND DISABLED do the same (older name).\n"
 #define HLP_SET_SOUND "*Commands SET Sound"
       "3Sound\n"
       " Sound output with SDL2 audio: system sounds (power relay, fans), unit\n"
-      " loops (spindles) and events (seeks).  Without SDL2 or without an audio\n"
-      " device, sounds are silently ignored.\n\n"
-      "+SET SOUND ENABLED            enable sound and the realism mode\n"
-      "+SET SOUND DISABLED           disable sound and the realism mode\n"
+      " loops (spindles) and events (seeks), in the realism mode (HELP SET\n"
+      " REALISM).  Without SDL2 or without an audio device, sounds are\n"
+      " silently ignored.\n\n"
+      "+SET SOUND ENABLED            the same as SET REALISM ENABLED\n"
+      "+SET SOUND DISABLED           the same as SET REALISM DISABLED\n"
       "+SET SOUND VOLUME=n           set the master volume (0..200 %%)\n"
       "+SET SOUND VOLUME=group:n     set a group volume (0..200 %%)\n"
       "+SET SOUND MUTE{=group}       mute everything or one group\n"
@@ -1490,14 +1505,6 @@ static const char simh_help1[] =
       " Several items can be given, separated by commas.  PATH, STARTING,\n"
       " RUNNING and STOPPING take the rest of the line; an empty value\n"
       " restores the default.  The groups are SYSTEM, DISK, TAPE and EVENT.\n\n"
-      "4Realism mode\n"
-      " SET SOUND ENABLED also switches on the realism mode, even if no audio\n"
-      " output is available: devices use realistic timing and operator\n"
-      " behavior (e.g. HELP HK), and the CPU runs at a realistic speed with\n"
-      " SET THROTTLE if the simulator defines one and no throttle was set by\n"
-      " the user (SHOW SOUND shows it; SET SOUND DISABLED removes it again).\n"
-      " SET SOUND ENABLED and DISABLED are only allowed while no disk or tape\n"
-      " unit is attached.\n"
       "4Power\n"
       " The system power is switched on by the first RUN or BOOT command, which\n"
       " plays the starting sound followed by the running loop.  It stays on\n"
@@ -1664,6 +1671,7 @@ static const char simh_help2[] =
       "+sh{ow} video                show video capabilities\n"
       "+sh{ow} clocks               show calibrated timer information\n"
       "+sh{ow} throttle             show throttle info\n"
+      "+sh{ow} realism              show the realism mode and the CPU speed\n"
       "+sh{ow} sound                show sound settings and state\n"
       "+sh{ow} on                   show on condition actions\n"
       "+sh{ow} do                   show do nesting state\n"
@@ -1686,6 +1694,7 @@ static const char simh_help2[] =
 #define HLP_SHOW_LOG            "*Commands SHOW"
 #define HLP_SHOW_DEBUG          "*Commands SHOW"
 #define HLP_SHOW_THROTTLE       "*Commands SHOW"
+#define HLP_SHOW_REALISM        "*Commands SHOW"
 #define HLP_SHOW_SOUND          "*Commands SHOW"
 #define HLP_SHOW_ASYNCH         "*Commands SHOW"
 #define HLP_SHOW_ETHERNET       "*Commands SHOW"
@@ -2685,6 +2694,7 @@ static CTAB set_glob_tab[] = {
     { "NODEBUG",    &sim_set_deboff,            0, HLP_SET_DEBUG  },
     { "THROTTLE",   &sim_set_throt,             1, HLP_SET_THROTTLE },
     { "NOTHROTTLE", &sim_set_throt,             0, HLP_SET_THROTTLE },
+    { "REALISM",    &sim_realism_set,           1, HLP_SET_REALISM },
     { "SOUND",      &sim_sound_set,             1, HLP_SET_SOUND },
     { "CLOCKS",     &sim_set_timers,            1, HLP_SET_CLOCK },
     { "ASYNCH",     &sim_set_asynch,            1, HLP_SET_ASYNCH },
@@ -2749,6 +2759,7 @@ static SHTAB show_glob_tab[] = {
     { "TELNET",         &sim_show_telnet,           0 },    /* deprecated */
     { "DEBUG",          &sim_show_debug,            0, HLP_SHOW_DEBUG },
     { "THROTTLE",       &sim_show_throt,            0, HLP_SHOW_THROTTLE },
+    { "REALISM",        &sim_realism_show,          0, HLP_SHOW_REALISM },
     { "SOUND",          &sim_sound_show,            0, HLP_SHOW_SOUND },
     { "ASYNCH",         &sim_show_asynch,           0, HLP_SHOW_ASYNCH },
     { "ETHERNET",       &eth_show_devices,          0, HLP_SHOW_ETHERNET },

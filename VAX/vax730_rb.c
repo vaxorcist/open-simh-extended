@@ -29,7 +29,7 @@
    07-Nov-2026  Ulli    At most one RB80 (the IDC connects one R80 and up to
                         three RL02, EK-RB730-TD-001 figure 3-2)
    07-Nov-2026  Ulli    Help: seek sounds fall back to sound/default_disk
-   04-Nov-2026  Ulli    Sound realism mode (SET SOUND ENABLED): SET RBn
+   04-Nov-2026  Ulli    Realism mode (SET REALISM ENABLED): SET RBn
                         ONLINE/LOAD and OFFLINE/UNLOAD are the LOAD button of
                         the RB02 (an RL02), ATTACH waits for ONLINE, spin-up/
                         down (SPINUP, SPINDOWN); realistic RB02 and RB80 seek,
@@ -257,7 +257,7 @@ int32 rb_swait = 150;                                   /* seek wait */
 int32 rb_mwait = 300;                                   /* seek wait */
 int32 rb_cwait = 50;                                    /* seek wait */
 
-/* Sound realism mode (SET SOUND ENABLED)
+/* Realism mode (SET REALISM ENABLED)
 
    The RB02 is an RL02 drive on the RB730 controller: its LOAD button is
    SET RBn ONLINE (or LOAD) and SET RBn OFFLINE (or UNLOAD).  A spindle
@@ -360,8 +360,8 @@ UNIT rb_unit[] = {
     };
 
 REG rb_reg[] = {
-    { DRDATAD (SPINUP,   rb_spinup_ms,   24, "RB02 spin-up time in ms (sound realism mode)"), PV_LEFT },
-    { DRDATAD (SPINDOWN, rb_spindown_ms, 24, "RB02 spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINUP,   rb_spinup_ms,   24, "RB02 spin-up time in ms (realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, rb_spindown_ms, 24, "RB02 spin-down time in ms (realism mode)"), PV_LEFT },
     { DRDATAD (SEEK02S,  rb_seek02s,     10, "RB02 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK02M,  rb_seek02m,     10, "RB02 medium seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK80S,  rb_seek80s,     10, "RB80 short seek sound up to n cylinders"), PV_LEFT },
@@ -955,7 +955,7 @@ fprintf (st, "\nSET RBn ONLINE (or LOAD) and SET RBn OFFLINE (or UNLOAD) are the
 fprintf (st, "of an RB02: OFFLINE spins the drive down (the cartridge stays attached),\n");
 fprintf (st, "ONLINE spins it up.  SHOW RBn SPINDLE shows the spindle state.  The RB80 is\n");
 fprintf (st, "a fixed disk without this button.\n\n");
-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
+fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND):\n");
 fprintf (st, "  - ATTACH of an RB02 only loads the cartridge; the drive stays stopped until\n");
 fprintf (st, "    SET RBn ONLINE (spin-up time register SPINUP, default 40000 ms, spin-down\n");
 fprintf (st, "    SPINDOWN, default 30000 ms); at the sim> prompt the commands wait until\n");
@@ -976,7 +976,7 @@ fprint_reg_help (st, dptr);
 return SCPE_OK;
 }
 
-/* Sound realism mode (see the description at rb_spinup_ms) */
+/* Realism mode (see the description at rb_spinup_ms) */
 
 /* Is the drive ready: attached and (RB02) spun up? */
 

@@ -44,7 +44,7 @@ sim_savename = "VAX750";
    sound/default_cpu/, which this simulator uses (opt-in) */
 sim_sound_set_system ("vax750", "starting.wav", "running.wav", "stopping.wav");
 sim_sound_use_default_cpu ();
-/* Realistic CPU speed in the sound realism mode: about 0.6 of a
+/* Realistic CPU speed in the realism mode: about 0.6 of a
    VAX-11/780 (roughly 0.5 million VAX instructions per second), so about
    300,000 instructions per second.  Provisional: to be calibrated against
    a real VAX-11/750 (e.g. the time of a VMS boot). */

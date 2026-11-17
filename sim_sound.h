@@ -71,10 +71,10 @@
 
    Realism mode
    ------------
-   SET SOUND ENABLED switches on the realism mode (see sim_sound_enabled()),
+   SET REALISM ENABLED switches on the realism mode (see sim_sound_enabled()),
    independent of whether audio output is actually available.  Devices use
    it to select realistic timing and operator behavior (OFFLINE/ONLINE).
-   Because this changes device behavior, SET SOUND ENABLED/DISABLED is
+   Because this changes device behavior, SET REALISM ENABLED/DISABLED is
    rejected while any disk or tape unit is attached.  A simulator can also
    register a realistic CPU speed (sim_sound_set_throttle ()); it is set
    with SET THROTTLE when sound is enabled, unless the user has already set
@@ -132,6 +132,8 @@ typedef int32 SND_HANDLE;
 
 t_stat sim_sound_set (int32 flag, CONST char *cptr);
 t_stat sim_sound_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST char *cptr);
+t_stat sim_realism_set (int32 flag, CONST char *cptr);      /* SET REALISM ENABLED|DISABLED */
+t_stat sim_realism_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST char *cptr);
 
 /* Simulator defaults: the sound directory name (e.g. "vax750") and the
    file names of the system sounds.  Called once by a simulator during its
@@ -171,7 +173,7 @@ void sim_sound_set_throttle (const char *spec);
 
 /* State queries */
 
-t_bool sim_sound_enabled (void);                /* SET SOUND ENABLED: realism mode is on */
+t_bool sim_sound_enabled (void);                /* SET REALISM ENABLED: realism mode is on */
 t_bool sim_sound_available (void);              /* audio output is actually open */
 t_bool sim_sound_powered (void);                /* system power is on */
 
@@ -191,10 +193,10 @@ void sim_sound_run_state (t_bool running);      /* instruction execution starts/
 
 void sim_sound_register_run_hook (void (*fn)(t_bool running));
 
-/* Configuration checks: SET SOUND ENABLED calls every registered function
+/* Configuration checks: SET REALISM ENABLED calls every registered function
    before it switches the realism mode on; a function returns SCPE_OK, or
    prints why the configuration cannot run in the realism mode and returns
-   an error, which refuses SET SOUND ENABLED (e.g. the RQ: RC25 drives
+   an error, which refuses SET REALISM ENABLED (e.g. the RQ: RC25 drives
    only as pairs on a KLESI).  Each function is called twice: first with
    apply FALSE for all of them, where it must not change anything (a dry
    run: only the refusal is printed), then, if none refused, with apply
@@ -207,7 +209,7 @@ void sim_sound_register_enable_check (t_stat (*fn) (t_bool apply));
 
 /* Storage devices that are neither DEV_DISK nor DEV_TAPE (e.g. the VAX
    8600 console RL02, which does not use sim_disk): their attached units
-   keep SET SOUND ENABLED/DISABLED from changing the timing under them, as
+   keep SET REALISM ENABLED/DISABLED from changing the timing under them, as
    the units of disk and tape devices do.  Registering the same device
    twice is harmless. */
 
@@ -760,7 +762,7 @@ int32 sim_sound_seek (SND_SAMPLE *smp[3], int32 dist, int32 s_lim, int32 m_lim,
    that it calls do nothing).
 
    sim_floppy_init ()      once per drive (device reset); registers the
-                           drive, so that SET SOUND ENABLED/DISABLED is
+                           drive, so that SET REALISM ENABLED/DISABLED is
                            refused while a diskette is attached.
    sim_floppy_set_defaults () register defaults from the type.
    sim_floppy_insert ()    ATTACH: diskette in, door closed.

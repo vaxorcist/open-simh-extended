@@ -36,7 +36,7 @@ char sim_name[] = "MicroVAX I (KA610)";
 void vax_init(void)
 {
 sim_savename = "MicroVAX I (KA610)";
-/* Realistic CPU speed in the sound realism mode: a MicroVAX I is about 0.3
+/* Realistic CPU speed in the realism mode: a MicroVAX I is about 0.3
    of a VAX-11/780 (0.3 VUP), so about 150K instructions per second (VUPs
    times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
    Provisional: to be calibrated with a CPU benchmark on a real machine. */

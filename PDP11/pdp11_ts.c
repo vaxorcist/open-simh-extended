@@ -110,7 +110,7 @@
 #include "sim_sound.h"
 #define ADDRTEST        (UNIBUS? 0177774: 0177700)
 
-/* Sound realism mode (SET SOUND ENABLED; 2026-11-07, Ulli)
+/* Realism mode (SET REALISM ENABLED; 2026-11-07, Ulli)
 
    The controller is simulated as before; the tape transport behind it
    gets an operator panel, realistic timing and sounds (SND_REEL in
@@ -336,7 +336,7 @@ int32 ts_bcmd = 0;                                      /* boot cmd */
 int32 ts_time = 2000;                                   /* record latency */
 static uint16 cpy_buf[MAX_PLNT];                        /* copy buffer */
 
-/* Transport (sound realism mode, see above) */
+/* Transport (realism mode, see above) */
 
 static const SND_REEL_TYPE ts_type_ts11 = {
     "TS11", "ts11", "ts11",
@@ -1710,7 +1710,7 @@ fprintf (st, "The TS11 device supports the BOOT command.\n");
 fprintf (st, "The TS11 does not support the BOOT command.\n");
 #endif
 fprint_reg_help (st, dptr);
-fprintf (st, "\nSound realism mode (SET SOUND ENABLED):\n\n");
+fprintf (st, "\nRealism mode (SET REALISM ENABLED):\n\n");
 fprintf (st, "On the Unibus the transport is a TS11 (45 in/s, start/stop for every record),\n");
 fprintf (st, "on the Qbus a TSV05 (25 in/s, streaming).  The tape motion takes its real\n");
 fprintf (st, "time and is heard: records, rewinds (the reel motors' pitch follows the\n");

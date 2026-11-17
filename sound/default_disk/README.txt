@@ -3,7 +3,7 @@ Default disk sounds (sound/default_disk)
 
 These seek sounds were made by Ulli (vaxorcist); they are synthetic (they
 were the RK07 seek sounds).  Every disk drive with sound support uses them
-when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND) and the
+when sound is enabled (SET REALISM ENABLED; see HELP SET SOUND) and the
 drive has no seek sounds of its own.
 
 File          Content                                     Use

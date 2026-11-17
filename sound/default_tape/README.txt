@@ -5,7 +5,7 @@ These tape transport sounds are synthetic: there are no recordings of a
 real drive.  They model a TS11 (TS04 transport: capstan, tension arms, AC
 reel motors) and were made by tools/make_tape_sounds.py (open-simh-extended,
 branch notes).  Every tape transport with sound support uses them when
-sound is enabled (SET SOUND ENABLED; see HELP SET SOUND) and the transport
+sound is enabled (SET REALISM ENABLED; see HELP SET SOUND) and the transport
 has no sound of its own.
 
 File               Content                                  Use

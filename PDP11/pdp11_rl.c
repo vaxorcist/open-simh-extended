@@ -283,7 +283,7 @@ int32 rl_swait = 10;                                    /* seek wait */
 int32 rl_rwait = 10;                                    /* rotate wait */
 int32 rl_stopioe = 1;                                   /* stop on error */
 
-/* Sound realism mode (SET SOUND ENABLED)
+/* Realism mode (SET REALISM ENABLED)
 
    The RL01/RL02 front panel LOAD button is the drive's RUN/STOP button.
    In the realism mode SET RLn ONLINE and SET RLn LOAD press it in (spin
@@ -395,8 +395,8 @@ static const REG rl_reg[] = {
     { FLDATAD (IE,                rlcs, CSR_V_IE,       "interrupt enable flag (CSR<6>)") },
     { DRDATAD (STIME,         rl_swait, 24,             "seek time, per cylinder"), PV_LEFT },
     { DRDATAD (RTIME,         rl_rwait, 24,             "rotational delay"), PV_LEFT },
-    { DRDATAD (SPINUP,    rl_spinup_ms, 24,             "spin-up time in ms (sound realism mode)"), PV_LEFT },
-    { DRDATAD (SPINDOWN, rl_spindown_ms, 24,            "spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINUP,    rl_spinup_ms, 24,             "spin-up time in ms (realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, rl_spindown_ms, 24,            "spin-down time in ms (realism mode)"), PV_LEFT },
     { DRDATAD (SEEK1S,       rl_seek1s, 10,             "RL01 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK1M,       rl_seek1m, 10,             "RL01 medium seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK2S,       rl_seek2s, 10,             "RL02 short seek sound up to n cylinders"), PV_LEFT },
@@ -1246,7 +1246,7 @@ t_stat rl_show_load (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
     return (SCPE_OK);
 }
 
-/* Sound realism mode: spindles */
+/* Realism mode: spindles */
 
 /* The spindle is up to speed: heads loaded, seek home, lock on.  The
    drive is ready; the new volume is flagged (volume check) as on ATTACH. */
@@ -1508,7 +1508,7 @@ return SCPE_NOFNC;
 t_stat rl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 fprintf (st, "RL11/RL01/RL02 Cartridge Disk (RL)\n\n");
-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND) the\n");
+fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND) the\n");
 fprintf (st, "drive's LOAD button is SET RLn ONLINE or LOAD (spin up, 40 s, register\n");
 fprintf (st, "SPINUP) and SET RLn OFFLINE or UNLOAD (spin down, 30 s, register SPINDOWN).\n");
 fprintf (st, "ATTACH only loads the cartridge.  At the sim> prompt the commands wait until\n");
@@ -1520,7 +1520,7 @@ fprintf (st, "missing, the default disk sounds seek-s/m/l.wav in default_disk) f
 fprintf (st, "short, medium and long seeks; the limits are the registers SEEK1S/SEEK1M\n");
 fprintf (st, "(RL01, default 15/95 cylinders) and SEEK2S/SEEK2M (RL02, default 30/190).\n");
 fprintf (st, "Optional spindle sounds: rl02_spinup.wav, rl02_running.wav, rl02_spindown.wav.\n");
-fprintf (st, "Without the sound realism mode ONLINE/OFFLINE only switch the drive select.\n\n");
+fprintf (st, "Without the realism mode ONLINE/OFFLINE only switch the drive select.\n\n");
 fprintf (st, "RL11 options include the ability to set units write enabled or write locked,\n");
 fprintf (st, "to set the drive type to RL01, RL02, or autosize, and to write a DEC standard\n");
 fprintf (st, "144 compliant bad block table on the last track:\n\n");

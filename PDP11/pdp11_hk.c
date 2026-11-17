@@ -578,7 +578,7 @@ int16 hkdb[3] = { 0 };                                  /* data buffer silo */
 int16 hk_off[HK_NUMDR] = { 0 };                         /* saved offset */
 int16 hk_dif[HK_NUMDR] = { 0 };                         /* cylinder diff */
 
-/* Drive RUN/STOP button and sound realism mode
+/* Drive RUN/STOP button and realism mode
 
    Each drive has a spindle (SND_SPINDLE, common support in sim_sound).
    A drive is ready for positioning and data transfers only when a pack is
@@ -587,7 +587,7 @@ int16 hk_dif[HK_NUMDR] = { 0 };                         /* cylinder diff */
    - Normal mode (sound disabled): ATTACH spins the drive up at once, as
      before.  SET HKn OFFLINE stops the spindle (the pack stays attached),
      SET HKn ONLINE spins it up again at once.
-   - Realism mode (SET SOUND ENABLED): ATTACH only loads the pack; the
+   - Realism mode (SET REALISM ENABLED): ATTACH only loads the pack; the
      drive stays stopped until SET HKn ONLINE (the RUN button), which takes
      the spin-up time (HK SPINUP register, default 30 s); OFFLINE takes the
      spin-down time (SPINDOWN, default 30 s).  At the sim> prompt both
@@ -729,8 +729,8 @@ REG hk_reg[] = {
     { DRDATAD (STIME,       hk_swait, 24,             "seek time, per cylinder"), REG_NZ + PV_LEFT },
     { DRDATAD (RTIME,       hk_rwait, 24,             "rotational delay"), REG_NZ + PV_LEFT },
     { DRDATAD (MIN2TIME, hk_min2wait, 24,             "minimum time between DONE and ATA"), REG_NZ + PV_LEFT },
-    { DRDATAD (SPINUP,  hk_spinup_ms, 24,             "spin-up time in ms (sound realism mode)"), PV_LEFT },
-    { DRDATAD (SPINDOWN, hk_spindown_ms, 24,          "spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINUP,  hk_spinup_ms, 24,             "spin-up time in ms (realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, hk_spindown_ms, 24,          "spin-down time in ms (realism mode)"), PV_LEFT },
     { DRDATAD (SEEK6S,     hk_seek6s, 10,             "RK06 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK6M,     hk_seek6m, 10,             "RK06 medium seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK7S,     hk_seek7s, 10,             "RK07 short seek sound up to n cylinders"), PV_LEFT },
@@ -1944,7 +1944,7 @@ fprintf (st, "In the realism mode SET HKn ONLINE and OFFLINE, given at the sim> 
 fprintf (st, "in a command file, wait until the drive is up to speed (SPINUP) or at rest\n");
 fprintf (st, "(register SPINDOWN, default 30000 ms) before the next command; SET -N HKn\n");
 fprintf (st, "ONLINE or OFFLINE returns at once.\n\n");
-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
+fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND):\n");
 fprintf (st, "  - ATTACH only loads the pack; the drive stays stopped until SET HKn ONLINE,\n");
 fprintf (st, "    which takes the spin-up time (register SPINUP, default 30000 ms).  While\n");
 fprintf (st, "    the CPU runs this is simulated time; while the simulator is stopped at\n");

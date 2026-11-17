@@ -129,7 +129,7 @@ uint8 rx_buf[RX_NUMBY] = { 0 };                         /* sector buffer */
 int32 rx_bptr = 0;                                      /* buffer pointer */
 int32 rx_enb = 1;                                       /* device enable */
 
-/* Sound realism mode (SET SOUND ENABLED): the drive mechanics of each
+/* Realism mode (SET REALISM ENABLED): the drive mechanics of each
    RX01 drive (sim_sound SND_FLOPPY) and their adjustable times, shared by
    both drives (registers STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP). */
 
@@ -223,7 +223,7 @@ MTAB rx_mod[] = {
     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
         &set_writelock, NULL,   NULL, "Write lock floppy drive" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
-        NULL, &rx_show_drive, NULL, "Display the drive mechanics (sound realism mode)" },
+        NULL, &rx_show_drive, NULL, "Display the drive mechanics (realism mode)" },
 #if defined (VM_PDP11)
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004, "ADDRESS", "ADDRESS",
       &set_addr, &show_addr, NULL },
@@ -596,7 +596,7 @@ else
     sim_activate (uptr, rx_xwait);
 }
 
-/* Realistic times (sound realism mode), from the RX8/RX11 Floppy Disk
+/* Realistic times (realism mode), from the RX8/RX11 Floppy Disk
    System Maintenance Manual EK-RX01-MM-002:
    - Read/Write Sector: the other drive's head unloads (one head load line),
      the head steps 10 ms per track, is loaded and the microcode waits
@@ -688,7 +688,7 @@ fprintf (st, "    not attached  1          report error and stop\n");
 fprintf (st, "                  0          disk not ready\n\n");
 fprintf (st, "RX01 data files are buffered in memory; therefore, end of file and OS I/O\n");
 fprintf (st, "errors cannot occur.\n\n");
-fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
+fprintf (st, "Realism mode (SET REALISM ENABLED, see HELP SET SOUND):\n\n");
 fprintf (st, "  - The RX01 drive motors are AC motors on the power line: they run while\n");
 fprintf (st, "    the system power is on (RUN/BOOT, SET SOUND POWER=ON), with or without\n");
 fprintf (st, "    a diskette; at power on the heads move ten tracks in and back.  ATTACH\n");

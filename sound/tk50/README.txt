@@ -6,7 +6,7 @@ Synthetic sounds of the TK50 cartridge streamer (also the TZ30): 75 in/s,
 by tools/make_tape_sounds.py v3 (open-simh-extended, branch notes), shaped
 after measurements of a TZ30 recording (pitch 457 Hz with harmonics,
 octave band levels, durations of the 3 s reposition cycle); the recording
-itself is not included.  Used by the TK50 in the sound realism mode
+itself is not included.  Used by the TK50 in the realism mode
 (PDP11/pdp11_tq.c, SND_STREAMER in sim_sound.c).
 
 File                Content                                      Use

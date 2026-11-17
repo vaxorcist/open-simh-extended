@@ -24,7 +24,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author(s).
 
-   08-Nov-2026  Ulli    Realistic CPU speed for the sound realism mode
+   08-Nov-2026  Ulli    Realistic CPU speed for the realism mode
                         (MicroVAX II: THROTTLE 450K, provisional)
    08-Nov-2012  MB      First version
 */
@@ -38,7 +38,7 @@ char sim_name[] = "rtVAX1000 (KA620)";
 void vax_init(void)
 {
 sim_savename = "rtVAX1000 (KA620)";
-/* Realistic CPU speed in the sound realism mode: an rtVAX 1000 (KA620,
+/* Realistic CPU speed in the realism mode: an rtVAX 1000 (KA620,
    the KA630 processor) is about 0.9 of a VAX-11/780, so about 450,000
    instructions per second, as the MicroVAX II.  Provisional. */
 sim_sound_set_throttle ("450K");
@@ -49,7 +49,7 @@ char sim_name[] = "MicroVAX II (KA630)";
 void vax_init(void)
 {
 sim_savename = "MicroVAX II (KA630)";
-/* Realistic CPU speed in the sound realism mode: a MicroVAX II is about
+/* Realistic CPU speed in the realism mode: a MicroVAX II is about
    0.9 of a VAX-11/780 (roughly 0.5 million VAX instructions per second),
    so about 450,000 instructions per second (the same method as the
    VAX-11/750's 300K).  Provisional: to be calibrated with a CPU benchmark

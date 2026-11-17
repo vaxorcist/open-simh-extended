@@ -272,7 +272,7 @@ t_stat fl_detach (UNIT *uptr);
 t_stat fl_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat fl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 
-/* Sound realism mode (SET SOUND ENABLED): CS0 and CS1 are the two
+/* Realism mode (SET REALISM ENABLED): CS0 and CS1 are the two
    diskette slots of the console's RX50 drive: one spindle motor switched
    by the controller, one head carriage (CS1 shares the mechanics of CS0),
    a head load solenoid per side (sim_sound SND_FLOPPY, sim_flp_rx50).
@@ -470,7 +470,7 @@ MTAB fl_mod[] = {
     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
         &set_writelock, NULL,   NULL, "Write lock floppy drive" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
-        NULL, &fl_show_drive, NULL, "Display the RX50 drive mechanics (sound realism mode)" },
+        NULL, &fl_show_drive, NULL, "Display the RX50 drive mechanics (realism mode)" },
     { 0 }
     };
 
@@ -1389,7 +1389,7 @@ fprintf (st, "diskette.  The CPU reaches it through the floppy controller regist
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
-fprintf (st, "\nSound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
+fprintf (st, "\nRealism mode (SET REALISM ENABLED, see HELP SET SOUND):\n\n");
 fprintf (st, "  - Both slots turn on one spindle motor and share one head carriage.  The\n");
 fprintf (st, "    controller switches the motor on for a command (at speed in MOTORUP,\n");
 fprintf (st, "    500 ms) and off after MOTOROFF (2000 ms, provisional) without one.\n");

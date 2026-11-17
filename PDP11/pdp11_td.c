@@ -617,7 +617,7 @@ static int32 td_itime = 180;                            /* init time */
 
 static int32 td_ctrls = 1;                              /* number of enabled controllers */
 
-/* Sound realism mode: see the comments of SND_TU58 in sim_sound.h.  The
+/* Realism mode: see the comments of SND_TU58 in sim_sound.h.  The
    tape times come from the model, the bytes on the serial line take
    10 bits each at td_baud (38.4 kbaud, the TU58's factory setting).
    Host to TU58 bytes are not timed (the host sees transmit done at once,
@@ -1629,7 +1629,7 @@ static t_stat td_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const cha
 {
 fprintf (st, "%s (%s)\n\n", dptr->description (dptr), dptr->name);
 fprintf (st, "DECtape TU58 Cartridge .\n\n");
-fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n");
+fprintf (st, "Realism mode (SET REALISM ENABLED, see HELP SET SOUND):\n");
 fprintf (st, "  - ATTACH inserts a cartridge (the tape at BOT), DETACH removes it; a command\n");
 fprintf (st, "    in progress then ends with \"no cartridge\".\n");
 fprintf (st, "  - The tape is modelled per drive: 512 blocks of four 128-byte records on two\n");
