@@ -187,6 +187,7 @@ extern t_stat mctl_cpu_size_check (uint32 size);
 extern void mctl_cpu_size (uint32 size);
 extern t_bool mctl_board_node (int32 i, int32 *node);  /* present board's node */
 extern t_stat mctl_build_nexus (void);
+extern void mctl_warn_count (const char *prefix);      /* more than 8 boards */
 
 /* VAXBI configuration (vax820_bi.c) */
 

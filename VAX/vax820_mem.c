@@ -402,6 +402,19 @@ for (i = 0; i < n; i++) {                               /* default node taken? *
     }
 }
 
+/* More than 8 boards: VMS (V4.7, V5.5 tested) uses at most 8 memory boards,
+   those on the lowest nodes; with more, V5.5's memory accounting broke
+   (SHOW MEMORY: more free pages than memory).  Allowed, with a warning. */
+
+void mctl_warn_count (const char *prefix)
+{
+int32 n = mctl_count ();
+
+if (n > 8)
+    sim_printf ("%s%d memory boards: VMS uses at most 8 memory boards (those on the "
+                "lowest VAXBI nodes)\n", prefix, n);
+}
+
 /* SET MCTLn TYPE=x */
 
 t_stat mctl_set_type (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
@@ -442,6 +455,8 @@ if ((r = mctl_resize ()) != SCPE_OK) {
     return r;
     }
 mctl_init_board (i);
+if (mctl_pres[i] && !s.pres[i])                         /* a board went in */
+    mctl_warn_count ("MCTL: ");
 return SCPE_OK;
 }
 
@@ -511,6 +526,8 @@ if ((r = mctl_resize ()) != SCPE_OK) {
     return r;
     }
 mctl_init_board (i);
+if (val)                                                /* a board went in */
+    mctl_warn_count ("MCTL: ");
 return SCPE_OK;
 }
 
@@ -761,7 +778,12 @@ fprintf (st, "MCTL8-MCTL11 have no default node.  The boards get contiguous addr
 fprintf (st, "board order (MCTL0 from 0), as the KA820 console assigns them.  A board\n");
 fprintf (st, "answers with BI device type 0001, its start and end address, and CSR1 with\n");
 fprintf (st, "its size and RAM type (bits after NetBSD; the MS820 technical manual is not\n");
-fprintf (st, "available).  VMS V4 uses at most 8 memory boards (128MB).\n\n");
+fprintf (st, "available).\n\n");
+fprintf (st, "VMS uses at most 8 memory boards, those on the lowest VAXBI nodes (VMS\n");
+fprintf (st, "V4.7 and V5.5 tested; with 12 MS820-CA, V5.5 counted 128MB and its SHOW\n");
+fprintf (st, "MEMORY went wrong).  More boards are allowed, as on the 24-slot backplane;\n");
+fprintf (st, "SET MCTLn and BOOT then print a warning.  The size is no limit: V5.5 runs\n");
+fprintf (st, "with 512MB on four SIMH-128MB boards.\n\n");
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);

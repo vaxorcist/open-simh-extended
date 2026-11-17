@@ -690,6 +690,7 @@ if ((r = bi_count_rules ("BOOT: ")) != SCPE_OK)        /* VAXBI configuration */
 if (sim_sound_enabled () &&
     ((r = bi_realism_rules (NULL, 0, "BOOT: ")) != SCPE_OK))
     return r;
+mctl_warn_count ("BOOT: ");                             /* more than 8 boards */
 if ((ptr = get_sim_sw (ptr)) == NULL)                   /* get switches */
     return SCPE_INVSW;
 regptr = get_glyph (ptr, gbuf, 0);                      /* get glyph */
