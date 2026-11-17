@@ -1,4 +1,4 @@
-open-simh-extended/tests/debna/README.txt  v1 (2026-11-16)
+open-simh-extended/tests/debna/README.txt  v2 (2026-11-17; v2: VMS V5.5 test p55_8200.ini, p2.sh v3)
 
 Tests of the DEBNA VAXBI Ethernet adapter (device ET, patch 10) on the
 VAX 8200/8300 with VMS V4.7.  The 8200 boots from the KDB50 (a copy of
@@ -21,7 +21,11 @@ Files
                 and network access, starts DECnet, waits for DONE.TMP
   p3_8300.ini   P3: the P2 test on a VAX 8300 with both CPUs busy
                 (START/CPU, two CPU-bound loop processes)
-  p2.sh         runs P2 or P3: both simulators, then PASS/FAIL
+  p55_8200.ini  P2 with VMS V5.5 on the 8200 (VMS055.R82, Ulli's RA82 image,
+                SYSTEM without a password; line/circuit BNA-0; the partner
+                addressed as 1.2 / node number 1026); known issues 74, 75
+  p2.sh         runs P2, P3 or the V5.5 test: both simulators, then
+                PASS/FAIL (v3: the 8200 disk keeps its file name)
 
 Running
 
@@ -29,6 +33,7 @@ Running
         (VMS047_1.R81 in the current directory)
 
     tests/debna/p2.sh BIN VMS047_1.R81 VMS047.R81 [workdir] [p3_8300.ini]
+    tests/debna/p2.sh BIN VMS055.R82 VMS047.R81 [workdir] p55_8200.ini
         (copies both disks into the work directory, ./p2run by default;
         takes 5-8 minutes; prints RESULT: PASS or FAIL with the checks)
 
@@ -65,3 +70,9 @@ Notes
     are not send failures for VMS (the frames are lost, as on a cable with
     nobody listening).
   - Network boot (BOOT ET) is not possible yet: known issues case 69.
+
+VMS V5.5 (2026-11-17): p55_8200.ini with p2.sh: all checks pass (the run
+with p2.sh v2's fixed 2235-block check reported only that check; the v3
+check matches its output) (adjacency up,
+HELPLIB.HLB 5675 blocks there and back, 0 difference sections, LOOP, SET
+HOST, about 3.4 MB each way, no failures); P2 with VMS V4.7: PASS.

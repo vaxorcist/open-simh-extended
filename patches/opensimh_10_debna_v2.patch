@@ -1,0 +1,1684 @@
+From 9dcfa9e196073e1bd3cb1e0e2f4cab87467c7b96 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 10:23:42 +0100
+Subject: [PATCH] VAX8200: DEBNA VAXBI Ethernet adapter (device ET, node 7)
+
+The DEBNA's BI VAX Port (BVP) Ethernet port: BIIC node with DTYPE 410F,
+node reset and self-test (BROKE while testing), port registers PC/PS/PE/PD
+at node space 204-210, PUDR, the Ethernet address at 218-21D.  Port
+instructions INIT (PQB), ENABLE, SHUTDOWN, command and free queue
+notices; the PQB, free queue block and buffer descriptor table in host
+memory, self-relative interlocked queues reached by system virtual
+address (vax_bi_dma.c); messages (system ID, parameters, counters,
+protocol type definition blocks), transmit and receive datagrams through
+sim_ether, the interrupt vector from the PQB.
+Disabled by default.
+
+VMS V4.7 configures it ("BI - AIE Adapter with NI port only", ETA0,
+DECnet line BNT-0); DECnet to a MicroVAX II (DELQA) over a UDP link:
+copies, SET HOST, NCP LOOP.
+
+Patch 10 v2: VMS V5.5 (DECnet circuit BNA-0): message entries without a
+message free queue, free queue lengths set after INIT (known issues
+case 74), immediate datagrams, BVP opcode 3 (case 75).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Suavtcc46vFhoyQ1F6AQu4
+Claude-Session: https://claude.ai/code/session_01SuavtftJEqWTX7fajw6zWU
+---
+ VAX/CMakeLists.txt   |    1 +
+ VAX/vax820_syslist.c |    2 +
+ VAX/vax_debna.c      | 1595 ++++++++++++++++++++++++++++++++++++++++++
+ makefile             |    2 +-
+ 4 files changed, 1599 insertions(+), 1 deletion(-)
+ create mode 100644 VAX/vax_debna.c
+
+diff --git a/VAX/CMakeLists.txt b/VAX/CMakeLists.txt
+index 22622b5b..a1e3c60f 100644
+--- a/VAX/CMakeLists.txt
++++ b/VAX/CMakeLists.txt
+@@ -586,6 +586,7 @@ add_simulator(vax8200
+         vax_combo_lib.c
+         vax_dmb.c
+         vax_bi_dma.c
++        vax_debna.c
+         ${PDP11D}/pdp11_rl.c
+         ${PDP11D}/pdp11_rq.c
+         ${PDP11D}/pdp11_ts.c
+diff --git a/VAX/vax820_syslist.c b/VAX/vax820_syslist.c
+index 393a70be..fdbb7242 100644
+--- a/VAX/vax820_syslist.c
++++ b/VAX/vax820_syslist.c
+@@ -67,6 +67,7 @@ extern DEVICE dz_dev;
+ extern DEVICE dmf_dev;
+ extern DEVICE dmb_dev;
+ extern DEVICE kdb_dev;
++extern DEVICE et_dev;
+ extern DEVICE vh_dev;
+ extern DEVICE xu_dev, xub_dev;
+ extern DEVICE dmc_dev;
+@@ -100,6 +101,7 @@ DEVICE *sim_devices[] = {
+     &dmf_dev,                                   /* DMF32 (async + LP) */
+     &dmb_dev,                                   /* DMB32 (VAXBI node) */
+     &kdb_dev,                                   /* KDB50 (VAXBI node) */
++    &et_dev,                                    /* DEBNA (VAXBI node) */
+     &vh_dev,
+     &cr_dev,
+     &lpt_dev,
+diff --git a/VAX/vax_debna.c b/VAX/vax_debna.c
+new file mode 100644
+index 00000000..d2078bbe
+--- /dev/null
++++ b/VAX/vax_debna.c
+@@ -0,0 +1,1595 @@
++/* vax_debna.c: DEBNA VAXBI Ethernet adapter
++
++   Permission is hereby granted, free of charge, to any person obtaining a
++   copy of this software and associated documentation files (the "Software"),
++   to deal in the Software without restriction, including without limitation
++   the rights to use, copy, modify, merge, publish, distribute, sublicense,
++   and/or sell copies of the Software, and to permit persons to whom the
++   Software is furnished to do so, subject to the following conditions:
++
++   The above copyright notice and this permission notice shall be included in
++   all copies or substantial portions of the Software.
++
++   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++   THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
++   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
++   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++
++   et           DEBNA (T1034) - VAXBI Ethernet adapter
++
++   References:
++     EK-DEBNX-IN-001  DEBNA/DEBNK Installation Guide (registers: appendix B,
++                      self-test: chapter 3, boot: appendix C, Ethernet
++                      address: appendix D)
++     NetBSD sys/dev/bi/if_ni.c, if_nireg.h: the BI VAX Port (BVP) data
++                      structures as a host driver uses them (interface facts
++                      only; no code taken)
++     VMS V4.7 ETDRIVER: traced where the above leave a point open
++     VMS V5.5 ETDRIVER: no message free queue (entry length 0), free queue
++                      lengths set after INIT (17-Nov-26, known issues 74);
++                      immediate datagrams, the frame in the queue entry
++                      (17-Nov-26, known issues 75)
++
++   The DEBNA is a MicroVAX with a LANCE behind a BIIC and a BCI3.  The host
++   talks to its Ethernet ("NI") port through the BVP architecture: four port
++   registers in the BCI3 general purpose registers (PC port control, PS port
++   status, PE port error, PD port data at bb+204..210) and, in host memory,
++   a port queue block (PQB) with command queues and a response queue, a
++   free queue block (FQB) with the free queues (messages, transmit and
++   receive datagrams) and a buffer descriptor table (BDT).  The queues are
++   VAX self-relative interlocked queues (INSQTI/REMQHI); the port reaches
++   the queue entries by system virtual address through the system page
++   table, the buffers through the PTE address in their BDT entry.
++
++   Port instructions (PC bits 6:0, OWN bit 7 set by the host, cleared by the
++   port when it has taken the instruction):
++     INIT       data = physical address of the PQB: state UNDEFINED -> INITIALIZED
++     ENABLE     INITIALIZED -> ENABLED
++     SHUTDOWN   back to UNDEFINED
++     CMDQNE     command queue (bits 9:8) not empty: work it
++     FREEQNE    free queue (bits 9:8) not empty: receives can continue
++   The port reports a state change or a queued response in PS (OWN, RSQ)
++   and interrupts with the vector from the PQB.
++
++   Command queue entries (both 512 bytes in the host drivers):
++     datagram   opcode 1: transmit the frame described by its buffer list
++                (offset, length, BDT index with a chain bit, key); with the
++                R flag (byte 0F bit 0) it comes back on the response queue,
++                else it goes back to its free queue
++     message    opcode 2: NI function in the sub-opcode (write/read system
++                ID, write/read parameters, read (and clear) counters, set and
++                clear a protocol type definition block (PTDB)); comes back
++                as opcode 34 on the response queue
++   A received frame is put into an entry from the free queue its PTDB names
++   (opcode 33, buffer and length in the first buffer list item) and queued
++   on the response queue.
++
++   Found with VMS V4.7 (ETDRIVER, traced and disassembled with SIMH):
++   the vector and level word of the PQB is <15:2> vector, <1:0> level (2 =
++   BR5, VMS vector 15C for node 7); the free queue block gives each queue's
++   entry length (messages 96, datagrams 80 bytes), so the port never writes
++   past it; a PTDB's index is any longword (VMS: an address), received
++   datagrams carry it; WPARAM's second address field is the address to use
++   (DECnet AA-00-04-...), the answer has the hardware address in the first;
++   VMS reads a transmit's completion status from byte 12 of the entry, which
++   it does not clear when it reuses an entry, a received frame's from byte
++   0D; the counters are the 64-byte DEC Ethernet counter block; VMS gives
++   back PS OWN right after it issues an instruction, so the port takes an
++   instruction a little later, as the board's MicroVAX does.
++
++   Modification history:
++
++   16-Nov-26    Ulli/Claude  First version (VAX 8200/8300)
++*/
++
++#include "vax_defs.h"
++#include "vax_bi.h"
++#include "vax_bi_dma.h"
++#include "sim_ether.h"
++
++/* Node, identity */
++
++#define ET_DEF_NODE     7                       /* decision D3 */
++#define ET_DTYPE        0x0200410F              /* T1034, rev 0, DEBNA */
++#define ET_PUDR         0x7FFB0FDF              /* self-test passed, no tape */
++#define ET_IPL_DEF      0x15                    /* until the PQB gives one */
++
++/* Node space offsets */
++
++#define EOF_DTYPE       0x000                   /* BIIC registers */
++#define EOF_BICSR       0x004
++#define EOF_BER         0x008
++#define EOF_EICR        0x00C
++#define EOF_IDEST       0x010
++#define EOF_IMSK        0x014
++#define EOF_FIDEST      0x018
++#define EOF_ISRC        0x01C
++#define EOF_SADR        0x020
++#define EOF_EADR        0x024
++#define EOF_BCICSR      0x028
++#define EOF_UINTRCSR    0x040
++#define EOF_RXCD        0x200                   /* receive console data */
++#define EOF_PC          0x204                   /* NI port registers */
++#define EOF_PS          0x208
++#define EOF_PE          0x20C
++#define EOF_PD          0x210
++#define EOF_PUDR        0x214
++#define EOF_ADDR0       0x218                   /* Ethernet address bytes 0-3 */
++#define EOF_ADDR1       0x21C                   /* bytes 4-5 */
++
++/* Port control register */
++
++#define PC_OWN          0x00000080              /* owned by the port */
++#define PC_INS          0x0000007F              /* instruction */
++#define PC_V_QUE        8                       /* queue select */
++#define PC_M_QUE        3
++#define PCI_INIT        1
++#define PCI_ENABLE      2
++#define PCI_SHUTDOWN    4
++#define PCI_CMDQNE      6
++#define PCI_FREEQNE     7
++#define PCI_RESTART     11
++
++/* Port status register */
++
++#define PS_OWN          0x80000000              /* owned by the host (status posted) */
++#define PS_RPSQ         0x40000000              /* response to a port status query */
++#define PS_STD          0x20000000              /* self-test done */
++#define PS_ACC          0x10000000              /* adapter can communicate */
++#define PS_XSTP         0x08000000              /* extended self-test passed */
++#define PS_ERL          0x04000000              /* error lost */
++#define PS_FQE          0x02000000              /* free queue exhausted */
++#define PS_V_PST        16                      /* port state */
++#define PS_M_PST        7
++#define PS_PST          (PS_M_PST << PS_V_PST)
++#define PS_V_ETYPE      8                       /* error type */
++#define PS_M_ETYPE      0xFF
++#define PS_RSQ          0x00000080              /* response queued */
++#define PS_SUME         0x00000040              /* summary error */
++#define PST_UNDEF       1
++#define PST_INIT        2
++#define PST_ENABLED     4
++#define PST_STOPPED     6
++#define PST_MAINT       7
++#define ETY_PLE         6                       /* port logical error */
++#define PE_ILLINS       0x0B                    /* illegal port instruction */
++#define PE_INSSTATE     0x0C                    /* instruction illegal in state */
++#define PE_PQB          0x08                    /* invalid PQB */
++
++/* Port queue block (offsets from its start) */
++
++#define PQB_CMDQ0       0x00                    /* command queues 0-3 */
++#define PQB_RSPQ        0x20                    /* response queue */
++#define PQB_VECLVL      0x28                    /* word: vector and level */
++#define PQB_NODE        0x2A                    /* word: node(s) to interrupt */
++#define PQB_FREEQ       0x2C                    /* number of free queues */
++#define PQB_VFQB        0x30                    /* virtual address of the FQB */
++#define PQB_BVPLVL      0xD0                    /* BVP level */
++#define PQB_VPQB        0xD4                    /* virtual address of the PQB */
++#define PQB_VBDT        0xD8                    /* virtual address of the BDT */
++#define PQB_NBDT        0xDC                    /* number of BDT entries */
++#define PQB_SPT         0xE0                    /* system page table (physical) */
++#define PQB_SPTLEN      0xE4
++#define PQB_GPT         0xE8                    /* global page table (virtual) */
++#define PQB_GPTLEN      0xEC
++
++/* Free queue block: per queue a quadword (entry length, unused), then the
++   queue header */
++
++#define FQB_SIZE        0x10                    /* bytes per free queue */
++#define FQB_LEN         0x00
++#define FQB_HDR         0x08
++#define FQ_MSG          0
++#define FQ_DG           1
++#define FQ_RCV          2
++#define FQ_MAX          4
++
++/* Queue entries */
++
++#define QE_STATUS       0x0D                    /* byte */
++#define QE_OPCODE       0x0E                    /* byte */
++#define QE_FLAGS        0x0F                    /* byte: bit 0 R (respond) */
++#define QE_LEN          0x10                    /* word: length after the header */
++#define QE_MSG_OPC2     0x12                    /* message: NI function */
++#define QE_MSG_STS2     0x13
++#define QE_MSG_TEXT     0x18
++#define QE_DG_XSTS      0x12                    /* datagram: transmit status (byte; VMS
++                                                   reuses entries without clearing it) */
++#define QE_DG_CMDREF    0x14
++#define QE_DG_PTDBX     0x18
++#define QE_DG_BUFS      0x1C                    /* buffer list, 8 bytes each */
++#define QE_DG_IMM       0x1C                    /* immediate datagram: the frame */
++#define QE_LEN_BASE     0x12                    /* QE_LEN counts from here */
++#define QE_SIZE         512                     /* largest entry we look at */
++#define QEF_R           0x01
++#define DGB_CHAIN       0x8000                  /* more items follow */
++#define DGB_INDEX       0x7FFF
++#define DGB_MAX         32                      /* items per datagram, sanity */
++
++#define OPC_DGRAM       1
++#define OPC_MSG         2
++#define OPC_DGRAMI      3
++#define OPC_DGRAMRX     33
++#define OPC_MSGRX       34
++
++#define NI_WSYSID       1
++#define NI_RSYSID       2
++#define NI_WPARAM       3
++#define NI_RPARAM       4
++#define NI_RCCNTR       5
++#define NI_RDCNTR       6
++#define NI_STPTDB       7
++#define NI_CLPTDB       8
++
++/* Buffer descriptor table entry (16 bytes) */
++
++#define BD_STATUS       0x00                    /* word: offset <8:0>, valid <15> */
++#define BD_KEY          0x02
++#define BD_LEN          0x04
++#define BD_PTE          0x08                    /* system virtual address of the PTE */
++#define BD_SIZE         16
++#define BDS_OFFSET      0x01FF
++#define BDS_VALID       0x8000
++
++/* Parameter block (message text of WPARAM/RPARAM).  The first field is the
++   default (hardware) physical address, which the answer carries (NetBSD
++   reads its address from it); the second is the actual physical address:
++   VMS writes the address it wants there (DECnet AA-00-04-...), zero keeps
++   the current one. */
++
++#define PAR_DPA         0x00                    /* default physical address */
++#define PAR_APA         0x08                    /* actual physical address */
++#define PAR_LSA         0x10                    /* last source address */
++#define PAR_BVC         0x18
++#define PAR_CURADDR     0x20                    /* words */
++#define PAR_MAXADDR     0x22
++#define PAR_CURPTT      0x24
++#define PAR_MAXPTT      0x26
++#define PAR_CURFQ       0x28
++#define PAR_MAXFQ       0x2A
++#define PAR_SID         0x2C                    /* longwords */
++#define PAR_MOP         0x30
++#define PAR_FLAGS       0x34
++#define PAR_RCTO        0x38
++#define PAR_XMTO        0x3C
++#define PAR_SIZE        0x40
++
++/* Protocol type definition block (message text of STPTDB/CLPTDB) */
++
++#define PTD_TYPE        0x00                    /* word */
++#define PTD_FQUE        0x02                    /* byte */
++#define PTD_FLAGS       0x03                    /* byte */
++#define PTD_INDEX       0x04                    /* longword */
++#define PTD_ADRLEN      0x08                    /* word */
++#define PTD_802         0x0A                    /* word */
++#define PTD_MCAST       0x0C                    /* 16 x 8 bytes */
++#define PTDF_PROMISC    0x08
++#define PTDF_802        0x10
++#define PTDF_BDC        0x20                    /* broadcast */
++#define PTDF_UNKN       0x40                    /* types no other PTDB takes */
++#define PTDF_AMC        0x80                    /* all multicast */
++#define ET_MAXPTDB      16
++#define ET_MAXMC        16
++
++typedef struct {
++    t_bool  valid;
++    uint32  index;
++    uint16  type;
++    uint16  sap802;
++    uint8   fque;
++    uint8   flags;
++    int32   nmc;
++    ETH_MAC mc[ET_MAXMC];
++    } ET_PTDB;
++
++/* Debug flags */
++
++#define DBG_REG         0x0001                  /* register access */
++#define DBG_PORT        0x0002                  /* port instructions, states */
++#define DBG_QUE         0x0004                  /* queue entries */
++#define DBG_XMT         0x0008                  /* transmit */
++#define DBG_RCV         0x0010                  /* receive */
++#define DBG_MSG         0x0020                  /* messages */
++#define DBG_INT         0x0040                  /* interrupts */
++#define DBG_PCK         0x0080                  /* packet headers */
++#define DBG_DAT         0x0100                  /* packet data, DMA */
++#define DBG_ETH         0x0200                  /* sim_ether */
++
++#define ET_RQUE_MAX     128                     /* frames waiting for a buffer */
++#define ET_SELFTEST     100000                  /* self-test after node reset, usec */
++#define ET_PCDELAY      50                      /* port takes an instruction, instr. */
++
++extern uint32 nexus_req[NEXUS_HLVL];
++
++/* State */
++
++static BIIC et_biic;                            /* BIIC registers */
++static uint32 et_pc;                            /* port control */
++static uint32 et_ps;                            /* port status */
++static uint32 et_pe;                            /* port error */
++static uint32 et_pd;                            /* port data */
++static uint32 et_pqb_pa;                        /* PQB, physical */
++static uint32 et_pqb_va;                        /* PQB, virtual */
++static uint32 et_fqb_va;                        /* free queue block */
++static uint32 et_nfq;                           /* number of free queues */
++static uint32 et_fq_len[FQ_MAX];                /* their entry lengths */
++static uint32 et_qe_max = QE_SIZE;              /* longest entry */
++static uint32 et_bdt_va;                        /* buffer descriptor table */
++static uint32 et_nbdt;
++static uint32 et_veclvl;                        /* from the PQB */
++static uint32 et_vector;                        /* derived */
++static uint32 et_ipl = ET_IPL_DEF;
++static t_bool et_irq;                           /* interrupt requested */
++static BI_PT et_pt;                             /* page tables */
++static ETH_MAC et_mac;                          /* hardware address */
++static ETH_MAC et_apa;                          /* actual physical address */
++static uint8 et_param[PAR_SIZE];                /* last parameters written */
++static uint8 et_sysid[128];                     /* system ID (WSYSID) */
++static uint32 et_sysid_len;
++static ET_PTDB et_ptdb[ET_MAXPTDB];
++static ETH_DEV *et_eth;                         /* the Ethernet */
++static ETH_QUE et_rque;                         /* frames waiting for a buffer */
++static ETH_PACK et_rbuf;                        /* read buffer */
++static ETH_PACK et_wbuf;                        /* write buffer */
++static int32 et_poll = 1;                       /* clock ticks between polls */
++
++/* Counters: the block of READ COUNTERS (64 bytes; layout found with VMS
++   NCP SHOW LINE COUNTERS, the usual DEC Ethernet counter block):
++     00 W seconds since zeroed    02 L bytes received      06 L bytes sent
++     0A L frames received         0E L frames sent         12 L mc bytes rcvd
++     16 L mc frames received      1A L mc bytes sent       1E L mc frames sent
++     22 L sent, deferred          26 L single collision    2A L multiple coll.
++     2E W send failures           30 W send failure bits   32 W rcv failures
++     34 W rcv failure bits        36 W unrecognized dest.  38 W data overrun
++     3A W system buffer unavail.  3C W user buffer unavail. 3E W collision check */
++
++#define CNT_RBYTES      0                       /* longwords */
++#define CNT_XBYTES      1
++#define CNT_RFRAMES     2
++#define CNT_XFRAMES     3
++#define CNT_RMBYTES     4
++#define CNT_RMFRAMES    5
++#define CNT_XMBYTES     6
++#define CNT_XMFRAMES    7
++#define CNT_NLONG       8
++#define CNT_UNRDEST     8                       /* words */
++#define CNT_SBUF        9
++#define CNT_UBUF        10
++#define CNT_NUM         11
++#define CNT_SIZE        0x40
++static uint32 et_cnt[CNT_NUM];
++static double et_cnt_zero;                      /* when zeroed (sim_os_msec) */
++
++t_stat et_rd (int32 *val, int32 pa, int32 lnt);
++t_stat et_wr (int32 val, int32 pa, int32 lnt);
++int32 et_ack (void);
++t_stat et_reset (DEVICE *dptr);
++t_stat et_svc (UNIT *uptr);
++t_stat et_st_svc (UNIT *uptr);
++t_stat et_pc_svc (UNIT *uptr);
++t_stat et_attach (UNIT *uptr, CONST char *cptr);
++t_stat et_detach (UNIT *uptr);
++t_stat et_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
++t_stat et_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
++const char *et_description (DEVICE *dptr);
++static t_stat et_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++static t_stat et_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static t_stat et_set_mac (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++static t_stat et_show_mac (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static void et_port_instr (void);
++static void et_work_cmdq (int32 q);
++static t_bool et_load_fq_len (void);
++static void et_deliver (void);
++static void et_set_filter (void);
++static ET_PTDB *et_find_ptdb (uint32 index, t_bool alloc);
++
++/* Data structures
++
++   et_dev       ET device descriptor
++   et_unit      ET units: 0 = Ethernet (attach, receive poll), 1 = self-test,
++                2 = port instruction
++   et_reg       ET register list
++*/
++
++DIB et_dib = { ET_DEF_NODE, 0, &et_rd, &et_wr, 0, 0, 0, { &et_ack } };
++
++UNIT et_unit[] = {
++    { UDATA (&et_svc, UNIT_IDLE|UNIT_ATTABLE, 0) },
++    { UDATA (&et_st_svc, UNIT_DIS, 0) },
++    { UDATA (&et_pc_svc, UNIT_DIS, 0) },
++    };
++
++REG et_reg[] = {
++    { HRDATAD (PC,       et_pc,          32, "port control") },
++    { HRDATAD (PS,       et_ps,          32, "port status") },
++    { HRDATAD (PE,       et_pe,          32, "port error") },
++    { HRDATAD (PD,       et_pd,          32, "port data") },
++    { HRDATAD (PQB,      et_pqb_pa,      32, "port queue block, physical") },
++    { HRDATAD (VPQB,     et_pqb_va,      32, "port queue block, virtual") },
++    { HRDATAD (VFQB,     et_fqb_va,      32, "free queue block, virtual") },
++    { HRDATAD (VBDT,     et_bdt_va,      32, "buffer descriptor table, virtual") },
++    { DRDATAD (NBDT,     et_nbdt,        16, "buffer descriptors") },
++    { HRDATAD (VECLVL,   et_veclvl,      16, "vector and level from the PQB") },
++    { HRDATAD (VECTOR,   et_vector,      16, "interrupt vector") },
++    { HRDATAD (IPL,      et_ipl,          5, "interrupt level") },
++    { FLDATAD (IRQ,      et_irq,          0, "interrupt request") },
++    { HRDATAD (SPT,      et_pt.spte,     32, "system page table, physical") },
++    { HRDATAD (SPTLEN,   et_pt.spts,     32, "system page table length") },
++    { HRDATAD (GPT,      et_pt.gpte,     32, "global page table, virtual") },
++    { HRDATAD (GPTLEN,   et_pt.gpts,     32, "global page table length") },
++    { BRDATAD (CNT,      et_cnt, 10, 32, CNT_NUM, "counters") },
++    { DRDATAD (POLL,     et_poll,        8, "receive poll interval, clock ticks"), REG_NZ },
++    { HRDATAD (BICSR,    et_biic.csr,    32, "BI control and status") },
++    { HRDATAD (BER,      et_biic.ber,    32, "BI bus error") },
++    { HRDATAD (EINTRCSR, et_biic.eicr,   32, "BI error interrupt control") },
++    { HRDATAD (INTRDES,  et_biic.idest,  16, "BI interrupt destination") },
++    { HRDATAD (BCICSR,   et_biic.bcic,   32, "BCI control and status") },
++    { HRDATAD (UINTRCSR, et_biic.uiic,   32, "BI user interrupt control") },
++    { GRDATA  (NODE,     et_dib.ba, 16, 4, 0), REG_HRO },
++    { NULL }
++    };
++
++MTAB et_mod[] = {
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
++      &et_set_node, &et_show_node, NULL, "BI node number (2-15, default 7)" },
++    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "MAC", "MAC=xx:xx:xx:xx:xx:xx",
++      &et_set_mac, &et_show_mac, NULL, "Ethernet hardware address" },
++    { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "ETH", NULL,
++      NULL, &eth_show, NULL, "Show the host's Ethernet interfaces" },
++    { 0 }
++    };
++
++DEBTAB et_debug[] = {
++    { "REG",  DBG_REG,  "register access" },
++    { "PORT", DBG_PORT, "port instructions and states" },
++    { "QUE",  DBG_QUE,  "queue entries" },
++    { "XMT",  DBG_XMT,  "transmit" },
++    { "RCV",  DBG_RCV,  "receive" },
++    { "MSG",  DBG_MSG,  "messages" },
++    { "INT",  DBG_INT,  "interrupts" },
++    { "PCK",  DBG_PCK,  "packet headers" },
++    { "DATA", DBG_DAT,  "packet data, DMA" },
++    { "ETH",  DBG_ETH,  "Ethernet transport" },
++    { NULL }
++    };
++
++DEVICE et_dev = {
++    "ET", et_unit, et_reg, et_mod,
++    3, 16, 32, 1, 16, 8,
++    NULL, NULL, &et_reset,
++    NULL, &et_attach, &et_detach,
++    &et_dib, DEV_NEXUS | DEV_DISABLE | DEV_DIS | DEV_DEBUG | DEV_ETHER,
++    0, et_debug, NULL, NULL, &et_help, &et_help_attach, NULL,
++    &et_description
++    };
++
++/* Node and interrupts */
++
++static int32 et_node (void)
++{
++return (int32) (et_dib.ba & 0xF);
++}
++
++static void et_update_int (void)
++{
++int32 l;
++
++for (l = 0; l < NEXUS_HLVL; l++)                /* the level may change */
++    nexus_req[l] &= ~(1u << et_node ());
++if (et_irq && et_vector && !(et_dev.flags & DEV_DIS))
++    nexus_req[et_ipl - IPL_HMIN] |= (1u << et_node ());
++}
++
++int32 et_ack (void)
++{
++if (!et_irq)
++    return 0;                                   /* passive release */
++et_irq = FALSE;
++sim_debug (DBG_INT, &et_dev, "interrupt acknowledge, vector %03X\n", et_vector);
++return (int32) et_vector;
++}
++
++/* Post a status change in PS (OWN) and interrupt */
++
++static void et_post (uint32 bits)
++{
++et_ps |= PS_OWN | bits;
++if (et_vector) {
++    et_irq = TRUE;
++    sim_debug (DBG_INT, &et_dev, "interrupt request, PS %08X\n", et_ps);
++    }
++et_update_int ();
++}
++
++static void et_set_state (uint32 st)
++{
++et_ps = (et_ps & ~PS_PST) | (st << PS_V_PST);
++sim_debug (DBG_PORT, &et_dev, "port state %s\n",
++           (st == PST_UNDEF) ? "UNDEFINED" : (st == PST_INIT) ? "INITIALIZED" :
++           (st == PST_ENABLED) ? "ENABLED" : (st == PST_STOPPED) ? "STOPPED" : "MAINT");
++}
++
++static uint32 et_state (void)
++{
++return (et_ps >> PS_V_PST) & PS_M_PST;
++}
++
++/* A port logical error: the port stops (BVP: error -> STOPPED) */
++
++static void et_port_error (uint32 code, uint32 data)
++{
++sim_debug (DBG_PORT, &et_dev, "port error %02X, data %08X\n", code, data);
++et_pe = code;
++et_pd = data;
++et_ps = (et_ps & ~(PS_M_ETYPE << PS_V_ETYPE)) | (ETY_PLE << PS_V_ETYPE) | PS_SUME;
++et_set_state (PST_STOPPED);
++et_post (0);
++}
++
++/* Host memory by system virtual address */
++
++static t_bool et_vxfer (uint32 va, uint8 *buf, int32 n, t_bool wr)
++{
++BI_DMA d;
++int32 err;
++
++bi_dma_setup (&d, va, 0, (uint32) n, 0, &et_pt, &et_dev, DBG_DAT);
++if (bi_dma_xfer (&d, buf, n, wr, &err) != n) {
++    sim_debug (DBG_PORT, &et_dev, "memory error %02X at %08X (va %08X)\n",
++               err, d.err_addr, va);
++    return FALSE;
++    }
++return TRUE;
++}
++
++static t_bool et_vrl (uint32 va, uint32 *val)
++{
++uint8 b[4];
++
++if (!et_vxfer (va, b, 4, FALSE))
++    return FALSE;
++*val = b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32) b[3] << 24);
++return TRUE;
++}
++
++static t_bool et_vwl (uint32 va, uint32 val)
++{
++uint8 b[4];
++
++b[0] = (uint8) val; b[1] = (uint8) (val >> 8);
++b[2] = (uint8) (val >> 16); b[3] = (uint8) (val >> 24);
++return et_vxfer (va, b, 4, TRUE);
++}
++
++#define GW(b,o)  ((uint32) ((b)[o] | ((b)[(o) + 1] << 8)))
++#define GL(b,o)  ((uint32) ((b)[o] | ((b)[(o) + 1] << 8) | ((b)[(o) + 2] << 16) | ((uint32) (b)[(o) + 3] << 24)))
++#define PW(b,o,v) { (b)[o] = (uint8) (v); (b)[(o) + 1] = (uint8) ((v) >> 8); }
++#define PL(b,o,v) { PW (b, o, v); PW (b, (o) + 2, (v) >> 16); }
++
++/* Self-relative interlocked queues (as the VAX instructions INSQTI and
++   REMQHI see them).  The CPU executes those instructions atomically here,
++   so a set secondary interlock means another agent holds the queue: the
++   port then tries again later. */
++
++#define Q_OK        0
++#define Q_EMPTY     1
++#define Q_BUSY      2
++#define Q_ERR       3
++
++static int32 et_remqhi (uint32 h, uint32 *ent)
++{
++uint32 hf, ef, e, nx;
++
++if (!et_vrl (h, &hf))
++    return Q_ERR;
++if (hf & 1)
++    return Q_BUSY;
++if (hf == 0)
++    return Q_EMPTY;
++e = h + hf;
++if (!et_vrl (e, &ef))
++    return Q_ERR;
++nx = e + ef;
++if (nx == h) {                                  /* now empty */
++    if (!et_vwl (h, 0) || !et_vwl (h + 4, 0))
++        return Q_ERR;
++    }
++else {
++    if (!et_vwl (h, nx - h) || !et_vwl (nx + 4, h - nx))
++        return Q_ERR;
++    }
++*ent = e;
++return Q_OK;
++}
++
++static int32 et_insqti (uint32 e, uint32 h, t_bool *first)
++{
++uint32 hf, hb, last;
++
++if (!et_vrl (h, &hf) || !et_vrl (h + 4, &hb))
++    return Q_ERR;
++if (hf & 1)
++    return Q_BUSY;
++*first = (hf == 0);
++if (hf == 0) {
++    if (!et_vwl (e, h - e) || !et_vwl (e + 4, h - e) ||
++        !et_vwl (h, e - h) || !et_vwl (h + 4, e - h))
++        return Q_ERR;
++    return Q_OK;
++    }
++last = h + hb;
++if (!et_vwl (e, h - e) || !et_vwl (e + 4, last - e) ||
++    !et_vwl (last, e - last) || !et_vwl (h + 4, e - h))
++    return Q_ERR;
++return Q_OK;
++}
++
++static uint32 et_fq_hdr (uint32 q)
++{
++return et_fqb_va + q * FQB_SIZE + FQB_HDR;
++}
++
++/* Queue an entry on the response queue and tell the host */
++
++static void et_respond (uint32 e)
++{
++t_bool first;
++int32 r;
++
++r = et_insqti (e, et_pqb_va + PQB_RSPQ, &first);
++if (r == Q_BUSY) {                              /* cannot happen with VMS */
++    sim_debug (DBG_QUE, &et_dev, "response queue interlocked, entry %08X lost\n", e);
++    et_ps |= PS_ERL;
++    return;
++    }
++if (r != Q_OK) {
++    et_port_error (PE_PQB, et_pqb_va + PQB_RSPQ);
++    return;
++    }
++sim_debug (DBG_QUE, &et_dev, "response %08X queued%s\n", e, first ? " (first)" : "");
++if (!(et_ps & PS_RSQ) || !(et_ps & PS_OWN))
++    et_post (PS_RSQ);
++}
++
++/* Return an entry to a free queue */
++
++static void et_free (uint32 e, uint32 q)
++{
++t_bool first;
++
++if ((q >= et_nfq) || (et_insqti (e, et_fq_hdr (q), &first) != Q_OK))
++    sim_debug (DBG_QUE, &et_dev, "cannot return %08X to free queue %d\n", e, q);
++}
++
++/* Debug: an entry's first bytes */
++
++static void et_dump (const char *what, uint32 e, const uint8 *b, int32 n)
++{
++int32 i;
++
++if (!sim_deb || !(et_dev.dctrl & DBG_QUE))
++    return;
++sim_debug (DBG_QUE, &et_dev, "%s %08X:", what, e);
++for (i = 0; i < n; i++)
++    sim_debug (DBG_QUE, &et_dev, "%s%02X", ((i & 15) == 0) ? "\n    " : " ", b[i]);
++sim_debug (DBG_QUE, &et_dev, "\n");
++}
++
++/* Buffer descriptor: set up DMA for item bytes [off, off+len) of BDT entry x */
++
++static t_bool et_bd_dma (BI_DMA *d, uint32 x, uint32 off, uint32 len)
++{
++uint8 bd[BD_SIZE];
++uint32 st;
++
++if ((x >= et_nbdt) || !et_vxfer (et_bdt_va + x * BD_SIZE, bd, BD_SIZE, FALSE))
++    return FALSE;
++st = GW (bd, BD_STATUS);
++if (!(st & BDS_VALID)) {
++    sim_debug (DBG_QUE, &et_dev, "BDT entry %d not valid\n", x);
++    return FALSE;
++    }
++bi_dma_setup (d, GL (bd, BD_PTE), (st & BDS_OFFSET) + off, len, BIDMA_PTE,
++              &et_pt, &et_dev, DBG_DAT);
++return TRUE;
++}
++
++static uint32 et_bd_len (uint32 x)
++{
++uint8 bd[BD_SIZE];
++
++if ((x >= et_nbdt) || !et_vxfer (et_bdt_va + x * BD_SIZE, bd, BD_SIZE, FALSE))
++    return 0;
++return GL (bd, BD_LEN);
++}
++
++/* Register access (longword registers; the CPU picks bytes and words) */
++
++t_stat et_rd (int32 *val, int32 pa, int32 lnt)
++{
++int32 ofs = pa & 0x1FFC;
++uint32 v;
++
++switch (ofs) {
++    case EOF_DTYPE:    v = ET_DTYPE; break;
++    case EOF_BICSR:    v = et_biic.csr & BICSR_RD; break;
++    case EOF_BER:      v = et_biic.ber; break;
++    case EOF_EICR:     v = et_biic.eicr & BIECR_RD; break;
++    case EOF_IDEST:    v = et_biic.idest & BIID_RD; break;
++    case EOF_IMSK:     v = et_biic.imsk & 0xFFFF0000; break;
++    case EOF_FIDEST:   v = et_biic.fidest & 0xFFFF0000; break;
++    case EOF_ISRC:     v = et_biic.isrc & 0xFFFF0000; break;
++    case EOF_SADR:     v = et_biic.sa & 0x3FFC0000; break;
++    case EOF_EADR:     v = et_biic.ea & 0x3FFC0000; break;
++    case EOF_BCICSR:   v = et_biic.bcic; break;
++    case EOF_UINTRCSR: v = et_biic.uiic & BIICR_RD; break;
++    case EOF_RXCD:     v = 0; break;            /* no console traffic */
++    case EOF_PC:       v = et_pc; break;
++    case EOF_PS:       v = et_ps; break;
++    case EOF_PE:       v = et_pe; break;
++    case EOF_PD:       v = et_pd; break;
++    case EOF_PUDR:     v = (et_ps & PS_STD) ? ET_PUDR : 0; break;
++    case EOF_ADDR0:
++        v = et_mac[0] | (et_mac[1] << 8) | (et_mac[2] << 16) | ((uint32) et_mac[3] << 24);
++        break;
++    case EOF_ADDR1:    v = et_mac[4] | (et_mac[5] << 8); break;
++    default:
++        if (ofs < 0x100)                        /* BIIC (GPRs: no tape port) */
++            v = 0;
++        else if (ofs < 0x220)
++            v = 0;
++        else
++            return SCPE_NXM;
++        break;
++    }
++*val = (int32) v;
++sim_debug (DBG_REG, &et_dev, "et_rd (%03X) = %08X\n", pa & 0x1FFF, v);
++return SCPE_OK;
++}
++
++t_stat et_wr (int32 val, int32 pa, int32 lnt)
++{
++int32 ofs = pa & 0x1FFC;
++uint32 data = (uint32) val;
++uint32 old = 0;
++
++sim_debug (DBG_REG, &et_dev, "et_wr (%03X, %d bytes) = %08X\n", pa & 0x1FFF,
++           (lnt == L_BYTE) ? 1 : ((lnt == L_WORD) ? 2 : 4), data);
++switch (ofs) {                                  /* merge partial writes */
++    case EOF_BICSR: old = et_biic.csr; break;
++    case EOF_PC:    old = et_pc; break;
++    case EOF_PS:    old = et_ps; break;
++    case EOF_PE:    old = et_pe; break;
++    case EOF_PD:    old = et_pd; break;
++    default:        old = 0; break;
++    }
++if (lnt != L_LONG) {
++    int32 sc = (pa & 3) << 3;
++    uint32 m = ((lnt == L_BYTE) ? 0xFFu : 0xFFFFu) << sc;
++
++    data = (old & ~m) | ((data << sc) & m);
++    }
++switch (ofs) {
++    case EOF_BICSR:
++        if (data & BICSR_RST) {                 /* node reset: self-test */
++            et_biic.csr = (et_biic.csr & ~BICSR_RW) | (data & BICSR_RW & ~BICSR_RST);
++            sim_debug (DBG_PORT, &et_dev, "node reset\n");
++            et_biic.csr = (et_biic.csr | BICSR_BRK) & ~BICSR_STS;
++            et_ps = 0;                          /* self-test in progress */
++            et_pc = 0;
++            et_pe = et_pd = 0;
++            et_vector = 0;
++            et_irq = FALSE;
++            et_pt.valid = FALSE;
++            memset (et_ptdb, 0, sizeof (et_ptdb));
++            et_set_filter ();
++            et_update_int ();
++            sim_cancel (&et_unit[2]);
++            sim_activate_after (&et_unit[1], ET_SELFTEST);
++            break;
++            }
++        et_biic.csr = (et_biic.csr & ~BICSR_RW) | (data & BICSR_RW);
++        et_biic.csr &= ~(data & BICSR_UWP);      /* write 1 to clear */
++        break;
++    case EOF_BER:      et_biic.ber &= ~(data & BIBER_W1C); break;
++    case EOF_EICR:
++        et_biic.eicr = (et_biic.eicr & ~BIECR_RW) | (data & BIECR_RW);
++        et_biic.eicr &= ~(data & BIECR_W1C);
++        break;
++    case EOF_IDEST:    et_biic.idest = data & BIID_RW; break;
++    case EOF_IMSK:     et_biic.imsk = data & 0xFFFF0000; break;
++    case EOF_FIDEST:   et_biic.fidest = data & 0xFFFF0000; break;
++    case EOF_ISRC:     et_biic.isrc &= ~(data & 0xFFFF0000); break;
++    case EOF_SADR:     et_biic.sa = data & 0x3FFC0000; break;
++    case EOF_EADR:     et_biic.ea = data & 0x3FFC0000; break;
++    case EOF_BCICSR:   et_biic.bcic = data; break;
++    case EOF_UINTRCSR:
++        et_biic.uiic = ((et_biic.uiic & ~BIICR_RW) | (data & BIICR_RW)) & ~(data & BIICR_W1C);
++        break;
++    case EOF_PC:                                /* the port takes it a little */
++        et_pc = data;                           /* later (VMS gives PS back first) */
++        if ((et_pc & PC_OWN) && (et_ps & PS_STD))
++            sim_activate (&et_unit[2], ET_PCDELAY);
++        break;
++    case EOF_PS:                                /* the host gives OWN, RSQ back */
++        et_ps = (et_ps & ~(PS_OWN|PS_RSQ)) | (data & et_ps & (PS_OWN|PS_RSQ));
++        if (!(et_ps & PS_OWN)) {
++            et_irq = FALSE;
++            et_ps &= ~(PS_SUME | (PS_M_ETYPE << PS_V_ETYPE) | PS_RPSQ);
++            }
++        if (!(et_ps & PS_RSQ) && (et_state () == PST_ENABLED)) {  /* anything left? */
++            uint32 f;
++
++            if (et_vrl (et_pqb_va + PQB_RSPQ, &f) && (f != 0))
++                et_post (PS_RSQ);
++            }
++        et_update_int ();
++        break;
++    case EOF_PE:       et_pe = data; break;
++    case EOF_PD:       et_pd = data; break;
++    default:
++        if (ofs >= 0x220)
++            return SCPE_NXM;
++        break;
++    }
++return SCPE_OK;
++}
++
++/* Self-test done */
++
++t_stat et_st_svc (UNIT *uptr)
++{
++et_biic.csr = (et_biic.csr & ~BICSR_BRK) | BICSR_STS;
++et_ps = PS_STD | PS_ACC | (PST_UNDEF << PS_V_PST);
++et_pe = et_pd = 0;
++sim_debug (DBG_PORT, &et_dev, "self-test done\n");
++return SCPE_OK;
++}
++
++/* The port takes an instruction */
++
++t_stat et_pc_svc (UNIT *uptr)
++{
++if ((et_pc & PC_OWN) && (et_ps & PS_STD))
++    et_port_instr ();
++return SCPE_OK;
++}
++
++/* Load the PQB (INIT) */
++
++static t_bool et_load_pqb (uint32 pa)
++{
++uint32 w, vfqb, fq;
++
++et_pqb_pa = pa;
++if (!bi_mem_rl (pa + PQB_SPT, &et_pt.spte) || !bi_mem_rl (pa + PQB_SPTLEN, &et_pt.spts) ||
++    !bi_mem_rl (pa + PQB_GPT, &et_pt.gpte) || !bi_mem_rl (pa + PQB_GPTLEN, &et_pt.gpts) ||
++    !bi_mem_rl (pa + PQB_VPQB, &et_pqb_va) || !bi_mem_rl (pa + PQB_VBDT, &et_bdt_va) ||
++    !bi_mem_rl (pa + PQB_NBDT, &et_nbdt) || !bi_mem_rl (pa + PQB_VFQB, &vfqb) ||
++    !bi_mem_rl (pa + PQB_FREEQ, &fq) || !bi_mem_rl (pa + PQB_VECLVL, &w))
++    return FALSE;
++et_pt.spte &= 0x3FFFFFFF;
++et_pt.valid = TRUE;
++et_fqb_va = vfqb;
++et_nfq = (fq > FQ_MAX) ? FQ_MAX : fq;
++if (!et_load_fq_len ())                         /* entry lengths */
++    return FALSE;
++if (!bi_mem_rl (pa + PQB_VECLVL, &w))
++    return FALSE;
++et_veclvl = w & 0xFFFF;
++et_vector = (et_veclvl >> 2) & 0x3FFC;          /* <15:2> vector, <1:0> level */
++et_ipl = 0x13 + (et_veclvl & 3);                /* 1-3 = BR4-BR6 (VMS: 2, vector 15C */
++if (et_ipl < IPL_HMIN)                          /* = BR5 slot of node 7) */
++    et_ipl = IPL_HMIN;
++sim_debug (DBG_PORT, &et_dev, "PQB %08X (va %08X): veclvl %04X (vector %03X, IPL %02X), node word %04X,\n"
++           "    free queues %d at %08X, BDT %08X (%d), SPT %08X/%d, GPT %08X/%d\n",
++           pa, et_pqb_va, et_veclvl, et_vector, et_ipl, w >> 16, fq, et_fqb_va,
++           et_bdt_va, et_nbdt, et_pt.spte, et_pt.spts, et_pt.gpte, et_pt.gpts);
++if (sim_deb && (et_dev.dctrl & DBG_QUE)) {      /* the whole PQB, to trace */
++    uint8 b[0x100];
++    int32 i;
++
++    for (i = 0; i < 0x100; i += 4) {
++        bi_mem_rl (pa + i, &w);
++        PL (b, i, w);
++        }
++    et_dump ("PQB", pa, b, 0x100);
++    if (et_vxfer (et_fqb_va, b, FQ_MAX * FQB_SIZE, FALSE))
++        et_dump ("FQB", et_fqb_va, b, FQ_MAX * FQB_SIZE);
++    }
++return TRUE;
++}
++
++/* A port instruction */
++
++static void et_port_instr (void)
++{
++uint32 ins = et_pc & PC_INS;
++uint32 q = (et_pc >> PC_V_QUE) & PC_M_QUE;
++uint32 st = et_state ();
++
++sim_debug (DBG_PORT, &et_dev, "instruction %d, queue %d, PC %08X, state %d\n", ins, q, et_pc, st);
++et_pc &= ~PC_OWN;                               /* taken */
++switch (ins) {
++    case PCI_INIT:
++        if ((st != PST_UNDEF) && (st != PST_STOPPED)) {
++            et_port_error (PE_INSSTATE, et_ps);
++            return;
++            }
++        if (!et_load_pqb (et_pc & ~0x1FF)) {
++            et_port_error (PE_PQB, et_pc & ~0x1FF);
++            return;
++            }
++        et_ps &= ~(PS_SUME | (PS_M_ETYPE << PS_V_ETYPE) | PS_FQE | PS_ERL | PS_RSQ);
++        et_pe = et_pd = 0;
++        et_set_state (PST_INIT);
++        et_post (0);
++        break;
++    case PCI_ENABLE:
++        if (st != PST_INIT) {
++            et_port_error (PE_INSSTATE, et_ps);
++            return;
++            }
++        et_set_state (PST_ENABLED);
++        et_post (0);
++        if (et_unit[0].flags & UNIT_ATT)
++            sim_clock_coschedule (&et_unit[0], et_poll);
++        break;
++    case PCI_SHUTDOWN:
++        et_set_state (PST_UNDEF);
++        memset (et_ptdb, 0, sizeof (et_ptdb));
++        et_set_filter ();
++        et_post (0);
++        break;
++    case PCI_CMDQNE:
++        if (st != PST_ENABLED) {
++            et_port_error (PE_INSSTATE, et_ps);
++            return;
++            }
++        et_work_cmdq (q);
++        break;
++    case PCI_FREEQNE:
++        if (st == PST_ENABLED)
++            et_deliver ();
++        break;
++    default:
++        et_port_error (PE_ILLINS, ins);
++        break;
++    }
++}
++
++/* Transmit a datagram */
++
++static void et_transmit (uint32 e, uint8 *b)
++{
++uint32 n = 0, i, item, x, len, off, flags = b[QE_FLAGS], ptdbx = GL (b, QE_DG_PTDBX);
++uint32 status = 0;
++BI_DMA d;
++int32 err;
++
++if (b[QE_OPCODE] == OPC_DGRAMI) {               /* immediate: the frame is */
++    len = GW (b, QE_LEN);                       /* in the entry at 0x1C, up */
++    n = (len > (QE_DG_IMM - QE_LEN_BASE)) ?     /* to 0x12 + QE_LEN */
++        len - (QE_DG_IMM - QE_LEN_BASE) : 0;
++    if (n > ETH_MAX_PACKET)
++        status = 0x11;                          /* too long */
++    else if (n && !et_vxfer (e + QE_DG_IMM, et_wbuf.msg, (int32) n, FALSE))
++        status = 0x13;                          /* entry not readable */
++    }
++else for (i = 0; i < DGB_MAX; i++) {            /* buffer list */
++    item = QE_DG_BUFS + i * 8;
++    if ((item + 8) > et_qe_max) {
++        status = 0x11;
++        break;
++        }
++    off = GW (b, item);
++    len = GW (b, item + 2);
++    x = GW (b, item + 4);
++    if ((n + len) > ETH_MAX_PACKET) {
++        status = 0x11;                          /* too long */
++        break;
++        }
++    if (len && (!et_bd_dma (&d, x & DGB_INDEX, off, len) ||
++        (bi_dma_xfer (&d, et_wbuf.msg + n, (int32) len, FALSE, &err) != (int32) len))) {
++        status = 0x13;                          /* buffer error */
++        break;
++        }
++    n += len;
++    if (!(x & DGB_CHAIN))
++        break;
++    }
++if ((status == 0) && (n < 14))
++    status = 0x11;
++if (status == 0) {
++    if (n < ETH_MIN_PACKET) {                   /* the LANCE pads */
++        memset (et_wbuf.msg + n, 0, ETH_MIN_PACKET - n);
++        n = ETH_MIN_PACKET;
++        }
++    et_wbuf.len = n;
++    sim_debug (DBG_XMT, &et_dev, "transmit %d bytes, type %02X%02X, to %02X-%02X-%02X-%02X-%02X-%02X\n",
++               n, et_wbuf.msg[12], et_wbuf.msg[13], et_wbuf.msg[0], et_wbuf.msg[1],
++               et_wbuf.msg[2], et_wbuf.msg[3], et_wbuf.msg[4], et_wbuf.msg[5]);
++    if (et_eth) {
++        if (sim_deb && (et_dev.dctrl & DBG_PCK))
++            eth_packet_trace_ex (et_eth, et_wbuf.msg, et_wbuf.len, "et-write", et_dev.dctrl & DBG_DAT, DBG_PCK);
++        if (eth_write (et_eth, &et_wbuf, NULL) != SCPE_OK) /* a host side error (e.g. */
++            sim_debug (DBG_XMT, &et_dev, "host transport error\n"); /* no UDP partner) is */
++        }                                       /* not a send failure on the cable */
++    if (status == 0) {                          /* (no cable: it goes nowhere) */
++        et_cnt[CNT_XBYTES] += n;
++        et_cnt[CNT_XFRAMES]++;
++        if (et_wbuf.msg[0] & 1) {
++            et_cnt[CNT_XMBYTES] += n;
++            et_cnt[CNT_XMFRAMES]++;
++            }
++        }
++    }
++else
++    sim_debug (DBG_XMT, &et_dev, "transmit failed, status %02X\n", status);
++if (flags & QEF_R) {                            /* respond */
++    uint8 s = (uint8) status, z = 0;
++
++    et_vxfer (e + QE_STATUS, &z, 1, TRUE);
++    et_vxfer (e + QE_DG_XSTS, &s, 1, TRUE);     /* VMS reads it here */
++    et_respond (e);
++    }
++else {                                          /* back to its free queue */
++    ET_PTDB *p = et_find_ptdb (ptdbx, FALSE);
++
++    et_free (e, p ? p->fque : FQ_DG);
++    }
++}
++
++/* PTDB table */
++
++static ET_PTDB *et_find_ptdb (uint32 index, t_bool alloc)
++{
++int32 i;
++
++for (i = 0; i < ET_MAXPTDB; i++)                /* the host's index is any */
++    if (et_ptdb[i].valid && (et_ptdb[i].index == index))   /* longword (VMS: an */
++        return &et_ptdb[i];                     /* address) */
++if (alloc)
++    for (i = 0; i < ET_MAXPTDB; i++)
++        if (!et_ptdb[i].valid)
++            return &et_ptdb[i];
++return NULL;
++}
++
++/* sim_ether filter from the PTDBs */
++
++static void et_set_filter (void)
++{
++ETH_MAC f[ETH_FILTER_MAX];
++int32 n = 0, i, j, k;
++t_bool prom = FALSE, amc = FALSE;
++
++if (!et_eth)
++    return;
++memcpy (f[n++], et_apa, sizeof (ETH_MAC));
++if (memcmp (et_apa, et_mac, sizeof (ETH_MAC)))  /* the hardware address too */
++    memcpy (f[n++], et_mac, sizeof (ETH_MAC));
++for (i = 0; i < ET_MAXPTDB; i++) {
++    ET_PTDB *p = &et_ptdb[i];
++
++    if (!p->valid)
++        continue;
++    prom |= (p->flags & PTDF_PROMISC) != 0;
++    amc |= (p->flags & PTDF_AMC) != 0;
++    if (p->flags & PTDF_BDC) {
++        static ETH_MAC bc = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
++
++        for (k = 0; (k < n) && memcmp (f[k], bc, sizeof (ETH_MAC)); k++) ;
++        if ((k == n) && (n < ETH_FILTER_MAX))
++            memcpy (f[n++], bc, sizeof (ETH_MAC));
++        }
++    for (j = 0; j < p->nmc; j++) {
++        for (k = 0; (k < n) && memcmp (f[k], p->mc[j], sizeof (ETH_MAC)); k++) ;
++        if (k == n) {
++            if (n < ETH_FILTER_MAX)
++                memcpy (f[n++], p->mc[j], sizeof (ETH_MAC));
++            else
++                amc = TRUE;
++            }
++        }
++    }
++eth_filter (et_eth, n, f, amc, prom);
++sim_debug (DBG_RCV, &et_dev, "filter: %d addresses%s%s\n", n,
++           amc ? ", all multicast" : "", prom ? ", promiscuous" : "");
++}
++
++/* A message */
++
++static void et_message (uint32 e, uint8 *b)
++{
++uint32 fn = b[QE_MSG_OPC2];
++uint32 len = GW (b, QE_LEN);
++uint8 *t = b + QE_MSG_TEXT;
++uint8 sts = 0;
++uint32 resp_len = len;
++ET_PTDB *p;
++int32 i;
++
++switch (fn) {
++    case NI_WSYSID:
++        et_sysid_len = (len > 6) ? len - 6 : 0;
++        if (et_sysid_len > sizeof (et_sysid))
++            et_sysid_len = sizeof (et_sysid);
++        memcpy (et_sysid, t, et_sysid_len);
++        sim_debug (DBG_MSG, &et_dev, "write system ID, %d bytes\n", et_sysid_len);
++        break;
++    case NI_RSYSID:
++        memcpy (t, et_sysid, et_sysid_len);
++        resp_len = et_sysid_len + 6;
++        sim_debug (DBG_MSG, &et_dev, "read system ID\n");
++        break;
++    case NI_WPARAM:
++        memcpy (et_param, t, PAR_SIZE);
++        if (memcmp (t + PAR_APA, "\0\0\0\0\0\0", 6))    /* a new address */
++            memcpy (et_apa, t + PAR_APA, sizeof (ETH_MAC));
++        sim_debug (DBG_MSG, &et_dev, "write parameters: flags %08X, address %02X-%02X-%02X-%02X-%02X-%02X\n",
++                   GL (t, PAR_FLAGS), et_apa[0], et_apa[1], et_apa[2], et_apa[3], et_apa[4], et_apa[5]);
++        et_set_filter ();
++        /* fall through: the response carries the parameters */
++    case NI_RPARAM:
++        memset (t, 0, PAR_SIZE);
++        memcpy (t + PAR_DPA, et_mac, sizeof (ETH_MAC));
++        memcpy (t + PAR_APA, et_apa, sizeof (ETH_MAC));
++        memcpy (t + PAR_LSA, et_param + PAR_LSA, 8);
++        memcpy (t + PAR_BVC, et_param + PAR_BVC, 8);
++        PW (t, PAR_MAXADDR, ET_MAXMC);
++        PW (t, PAR_MAXPTT, ET_MAXPTDB);
++        PW (t, PAR_MAXFQ, FQ_MAX);
++        for (i = 0; i < ET_MAXPTDB; i++)
++            if (et_ptdb[i].valid) {
++                PW (t, PAR_CURPTT, GW (t, PAR_CURPTT) + 1);
++                }
++        PW (t, PAR_CURFQ, et_nfq);
++        PL (t, PAR_SID, GL (et_param, PAR_SID));
++        PL (t, PAR_MOP, GL (et_param, PAR_MOP));
++        PL (t, PAR_FLAGS, GL (et_param, PAR_FLAGS));
++        PL (t, PAR_RCTO, GL (et_param, PAR_RCTO));
++        PL (t, PAR_XMTO, GL (et_param, PAR_XMTO));
++        if (fn == NI_RPARAM)
++            sim_debug (DBG_MSG, &et_dev, "read parameters\n");
++        resp_len = PAR_SIZE + 6;
++        break;
++    case NI_RCCNTR:
++    case NI_RDCNTR:
++        memset (t, 0, CNT_SIZE);
++        if (1) {
++            uint32 secs = (uint32) ((sim_os_msec () - et_cnt_zero) / 1000.0);
++
++            PW (t, 0x00, (secs > 0xFFFF) ? 0xFFFF : secs);
++            }
++        for (i = 0; i < CNT_NLONG; i++)
++            PL (t, 0x02 + i * 4, et_cnt[i]);
++        PW (t, 0x36, (et_cnt[CNT_UNRDEST] > 0xFFFF) ? 0xFFFF : et_cnt[CNT_UNRDEST]);
++        PW (t, 0x3A, (et_cnt[CNT_SBUF] > 0xFFFF) ? 0xFFFF : et_cnt[CNT_SBUF]);
++        PW (t, 0x3C, (et_cnt[CNT_UBUF] > 0xFFFF) ? 0xFFFF : et_cnt[CNT_UBUF]);
++        resp_len = CNT_SIZE + 6;
++        sim_debug (DBG_MSG, &et_dev, "read%s counters\n", (fn == NI_RCCNTR) ? " and clear" : "");
++        if (fn == NI_RCCNTR) {
++            memset (et_cnt, 0, sizeof (et_cnt));
++            et_cnt_zero = sim_os_msec ();
++            }
++        break;
++    case NI_STPTDB:
++        p = et_find_ptdb (GL (t, PTD_INDEX), TRUE);
++        if (p == NULL) {
++            sts = 0x01;                         /* table full */
++            break;
++            }
++        p->valid = TRUE;
++        p->index = GL (t, PTD_INDEX);
++        p->type = (uint16) ((t[PTD_TYPE] << 8) | t[PTD_TYPE + 1]);   /* network order */
++        p->fque = t[PTD_FQUE];
++        p->flags = t[PTD_FLAGS];
++        p->sap802 = (uint16) GW (t, PTD_802);
++        p->nmc = (int32) GW (t, PTD_ADRLEN);
++        if (p->nmc > ET_MAXMC)
++            p->nmc = ET_MAXMC;
++        for (i = 0; i < p->nmc; i++)
++            memcpy (p->mc[i], t + PTD_MCAST + i * 8, sizeof (ETH_MAC));
++        sim_debug (DBG_MSG, &et_dev, "set PTDB %X: type %04X, free queue %d, flags %02X, %d addresses\n",
++                   p->index, p->type, p->fque, p->flags, p->nmc);
++        et_set_filter ();
++        break;
++    case NI_CLPTDB:
++        p = et_find_ptdb (GL (t, PTD_INDEX), FALSE);
++        if (p == NULL) {
++            sts = 0x01;
++            break;
++            }
++        sim_debug (DBG_MSG, &et_dev, "clear PTDB %X\n", p->index);
++        memset (p, 0, sizeof (*p));
++        et_set_filter ();
++        break;
++    default:
++        sim_debug (DBG_MSG, &et_dev, "unknown NI function %d\n", fn);
++        sts = 0x03;
++        break;
++    }
++b[QE_STATUS] = sts;
++b[QE_OPCODE] = OPC_MSGRX;
++if (et_fq_len[FQ_MSG] != 0) {                   /* entry from the message free queue */
++    if ((QE_MSG_TEXT + resp_len - 6) > et_fq_len[FQ_MSG])  /* never past the entry */
++        resp_len = et_fq_len[FQ_MSG] - QE_MSG_TEXT + 6;
++    }
++else if (resp_len > len)                        /* no message free queue (VMS V5.5): */
++    resp_len = len;                             /* the host's own entry, as long as the command */
++PW (b, QE_LEN, resp_len);
++if (!et_vxfer (e + QE_STATUS, b + QE_STATUS, QE_MSG_TEXT + resp_len - 6 - QE_STATUS, TRUE))
++    return;
++et_respond (e);
++}
++
++/* The free queues' entry lengths (FQB).  Read at INIT and again before
++   each command queue is worked: VMS V5.5 sets some of them only after
++   INIT (free queue 2 with its first PTDB), and leaves the message free
++   queue (0) at 0 because it allocates its message entries itself. */
++
++static t_bool et_load_fq_len (void)
++{
++uint32 w;
++int32 fq;
++
++et_qe_max = 0;
++for (fq = 0; fq < FQ_MAX; fq++) {
++    if (!et_vrl (et_fqb_va + fq * FQB_SIZE + FQB_LEN, &w))
++        return FALSE;
++    et_fq_len[fq] = (w > QE_SIZE) ? QE_SIZE : w;
++    if (et_fq_len[fq] > et_qe_max)
++        et_qe_max = et_fq_len[fq];
++    }
++if (et_qe_max < QE_DG_BUFS + 8)
++    et_qe_max = QE_DG_BUFS + 8;
++return TRUE;
++}
++
++/* Work a command queue */
++
++static void et_work_cmdq (int32 q)
++{
++uint32 e;
++uint8 b[QE_SIZE];
++int32 r;
++
++et_load_fq_len ();                              /* lengths may have changed */
++while ((r = et_remqhi (et_pqb_va + PQB_CMDQ0 + q * 8, &e)) == Q_OK) {
++    memset (b, 0, sizeof (b));
++    if (!et_vxfer (e, b, et_qe_max, FALSE)) {
++        et_port_error (PE_PQB, e);
++        return;
++        }
++    et_dump ("command", e, b, 0x40);
++    switch (b[QE_OPCODE]) {
++        case OPC_DGRAM:
++        case OPC_DGRAMI:
++            et_transmit (e, b);
++            break;
++        case OPC_MSG:
++            et_message (e, b);
++            break;
++        default:
++            sim_debug (DBG_QUE, &et_dev, "unknown opcode %d in %08X\n", b[QE_OPCODE], e);
++            b[QE_STATUS] = 0x03;
++            et_vxfer (e + QE_STATUS, &b[QE_STATUS], 1, TRUE);
++            et_respond (e);
++            break;
++        }
++    if (et_state () != PST_ENABLED)
++        return;
++    }
++if (r == Q_BUSY)                                /* try again shortly */
++    sim_activate (&et_unit[0], 100);
++}
++
++/* Receive: which PTDB takes the frame */
++
++static ET_PTDB *et_match (const uint8 *m)
++{
++uint16 type = (uint16) ((m[12] << 8) | m[13]);
++t_bool mc = (m[0] & 1) != 0;
++t_bool bc = mc && (memcmp (m, "\377\377\377\377\377\377", 6) == 0);
++ET_PTDB *unkn = NULL;
++int32 i, j;
++
++for (i = 0; i < ET_MAXPTDB; i++) {
++    ET_PTDB *p = &et_ptdb[i];
++    t_bool addr_ok;
++
++    if (!p->valid)
++        continue;
++    if (p->flags & PTDF_PROMISC)
++        addr_ok = TRUE;
++    else if (bc)
++        addr_ok = (p->flags & PTDF_BDC) != 0;
++    else if (mc) {
++        addr_ok = (p->flags & PTDF_AMC) != 0;
++        for (j = 0; !addr_ok && (j < p->nmc); j++)
++            addr_ok = (memcmp (m, p->mc[j], 6) == 0);
++        }
++    else
++        addr_ok = (memcmp (m, et_apa, 6) == 0) || (memcmp (m, et_mac, 6) == 0);
++    if (!addr_ok)
++        continue;
++    if ((p->flags & PTDF_802) ? (type < 0x600) : (type == p->type))
++        return p;
++    if ((p->flags & PTDF_UNKN) && (unkn == NULL))
++        unkn = p;
++    }
++if (unkn) {                                     /* only if no PTDB has the type */
++    for (i = 0; i < ET_MAXPTDB; i++)
++        if (et_ptdb[i].valid && !(et_ptdb[i].flags & PTDF_802) && (et_ptdb[i].type == type))
++            return NULL;
++    }
++return unkn;
++}
++
++/* Put waiting frames into receive buffers; FALSE if one must wait */
++
++static void et_deliver (void)
++{
++while ((et_rque.count > 0) && (et_state () == PST_ENABLED)) {
++    ETH_ITEM *it = &et_rque.item[et_rque.head];
++    uint8 *m = it->packet.msg;
++    uint32 n = it->packet.crc_len ? it->packet.crc_len : it->packet.len + 4;
++    ET_PTDB *p = et_match (m);
++    uint32 e, x, blen;
++    uint8 b[QE_SIZE];
++    BI_DMA d;
++    int32 r, err;
++
++    if (p == NULL) {                            /* nobody wants it */
++        sim_debug (DBG_RCV, &et_dev, "frame type %02X%02X not taken\n", m[12], m[13]);
++        et_cnt[CNT_UNRDEST]++;
++        ethq_remove (&et_rque);
++        continue;
++        }
++    r = et_remqhi (et_fq_hdr (p->fque), &e);
++    if (r == Q_EMPTY) {                         /* wait for FREEQNE */
++        if (!(et_ps & PS_FQE)) {
++            sim_debug (DBG_RCV, &et_dev, "free queue %d empty\n", p->fque);
++            et_cnt[CNT_UBUF]++;
++            }
++        return;
++        }
++    if (r != Q_OK)
++        return;
++    if (!et_vxfer (e, b, QE_DG_BUFS + 8, FALSE)) {
++        et_port_error (PE_PQB, e);
++        return;
++        }
++    x = GW (b, QE_DG_BUFS + 4) & DGB_INDEX;
++    blen = et_bd_len (x);
++    if (n > blen)
++        n = blen;
++    if (!et_bd_dma (&d, x, GW (b, QE_DG_BUFS), n) ||
++        (bi_dma_xfer (&d, m, (int32) n, TRUE, &err) != (int32) n)) {
++        sim_debug (DBG_RCV, &et_dev, "receive buffer error, BDT entry %d\n", x);
++        b[QE_STATUS] = 0x13;
++        }
++    else
++        b[QE_STATUS] = 0;
++    PW (b, QE_DG_BUFS + 2, n);                  /* length with the CRC */
++    PL (b, QE_DG_PTDBX, p->index);
++    b[QE_OPCODE] = OPC_DGRAMRX;
++    if (et_vxfer (e, b, QE_DG_BUFS + 8, TRUE)) {
++        sim_debug (DBG_RCV, &et_dev, "received %d bytes, type %02X%02X, PTDB %X, entry %08X\n",
++                   n, m[12], m[13], p->index, e);
++        et_cnt[CNT_RBYTES] += n - 4;
++        et_cnt[CNT_RFRAMES]++;
++        if (m[0] & 1) {
++            et_cnt[CNT_RMBYTES] += n - 4;
++            et_cnt[CNT_RMFRAMES]++;
++            }
++        et_respond (e);
++        }
++    ethq_remove (&et_rque);
++    }
++}
++
++/* Receive poll */
++
++t_stat et_svc (UNIT *uptr)
++{
++if (et_state () == PST_ENABLED) {
++    if (et_eth) {
++        while (eth_read (et_eth, &et_rbuf, NULL) > 0) {
++            if (sim_deb && (et_dev.dctrl & DBG_PCK))
++                eth_packet_trace_ex (et_eth, et_rbuf.msg, et_rbuf.len, "et-recv", et_dev.dctrl & DBG_DAT, DBG_PCK);
++            if (et_rque.count >= et_rque.max)
++                ethq_remove (&et_rque);         /* oldest goes */
++            ethq_insert (&et_rque, 2, &et_rbuf, 0);
++            }
++        }
++    et_deliver ();
++    et_work_cmdq (0);                           /* retry after interlock */
++    if (uptr->flags & UNIT_ATT)
++        sim_clock_coschedule (uptr, et_poll);
++    }
++return SCPE_OK;
++}
++
++/* Reset (power-up, RESET): the self-test has passed */
++
++t_stat et_reset (DEVICE *dptr)
++{
++static t_bool mac_set = FALSE;
++
++if (!mac_set) {                                 /* first time: a DEC address */
++    eth_mac_scan_ex (et_mac, "08:00:2B:00:00:00/24", &et_unit[0]);
++    mac_set = TRUE;
++    }
++memcpy (et_apa, et_mac, sizeof (ETH_MAC));
++memset (&et_biic, 0, sizeof (et_biic));
++et_biic.csr = (1u << BICSR_V_IF) | BICSR_STS | (et_node () & BICSR_NODE);
++et_pc = 0;
++et_ps = PS_STD | PS_ACC | (PST_UNDEF << PS_V_PST);
++et_pe = et_pd = 0;
++et_vector = 0;
++et_irq = FALSE;
++et_pt.valid = FALSE;
++memset (et_ptdb, 0, sizeof (et_ptdb));
++et_set_filter ();
++if (et_rque.max == 0)
++    ethq_init (&et_rque, ET_RQUE_MAX);
++ethq_clear (&et_rque);
++et_cnt_zero = sim_os_msec ();
++sim_cancel (&et_unit[0]);
++sim_cancel (&et_unit[1]);
++sim_cancel (&et_unit[2]);
++et_update_int ();
++return SCPE_OK;
++}
++
++/* Attach, detach */
++
++t_stat et_attach (UNIT *uptr, CONST char *cptr)
++{
++t_stat r;
++char *tptr;
++
++if (uptr != &et_unit[0])
++    return SCPE_NOATT;
++tptr = (char *) malloc (strlen (cptr) + 1);
++if (tptr == NULL)
++    return SCPE_MEM;
++strcpy (tptr, cptr);
++et_eth = (ETH_DEV *) calloc (1, sizeof (ETH_DEV));
++if (et_eth == NULL) {
++    free (tptr);
++    return SCPE_MEM;
++    }
++r = eth_open (et_eth, cptr, &et_dev, DBG_ETH);
++if (r == SCPE_OK)
++    r = eth_check_address_conflict (et_eth, et_mac);
++if (r != SCPE_OK) {
++    eth_close (et_eth);
++    free (et_eth);
++    et_eth = NULL;
++    free (tptr);
++    return r;
++    }
++eth_setcrc (et_eth, 1);                         /* frames with their CRC */
++uptr->filename = tptr;
++uptr->flags |= UNIT_ATT;
++et_set_filter ();
++if (et_state () == PST_ENABLED)
++    sim_clock_coschedule (uptr, et_poll);
++return SCPE_OK;
++}
++
++t_stat et_detach (UNIT *uptr)
++{
++if (!(uptr->flags & UNIT_ATT))
++    return SCPE_OK;
++sim_cancel (uptr);
++eth_close (et_eth);
++free (et_eth);
++et_eth = NULL;
++free (uptr->filename);
++uptr->filename = NULL;
++uptr->flags &= ~UNIT_ATT;
++return SCPE_OK;
++}
++
++/* SET ET NODE=n */
++
++static t_stat et_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++t_stat r;
++int32 node;
++
++if (cptr == NULL)
++    return SCPE_ARG;
++node = (int32) get_uint (cptr, 10, 15, &r);
++if (r != SCPE_OK)
++    return r;
++if (node < 2)                                   /* 0, 1: the KA820s */
++    return sim_messagef (SCPE_ARG, "Node %d is a KA820 node\n", node);
++et_irq = FALSE;
++et_update_int ();
++et_dib.ba = (uint32) node;
++et_biic.csr = (et_biic.csr & ~BICSR_NODE) | (uint32) node;
++return SCPE_OK;
++}
++
++static t_stat et_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++fprintf (st, "node=%d", et_node ());
++return SCPE_OK;
++}
++
++/* SET ET MAC=address */
++
++static t_stat et_set_mac (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++t_stat r;
++
++if (cptr == NULL)
++    return SCPE_ARG;
++if (et_unit[0].flags & UNIT_ATT)
++    return SCPE_ALATT;
++r = eth_mac_scan_ex (et_mac, cptr, &et_unit[0]);
++if (r == SCPE_OK)
++    memcpy (et_apa, et_mac, sizeof (ETH_MAC));
++return r;
++}
++
++static t_stat et_show_mac (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++char buf[32];
++
++eth_mac_fmt (et_mac, buf);
++fprintf (st, "MAC=%s", buf);
++return SCPE_OK;
++}
++
++/* Help */
++
++const char *et_description (DEVICE *dptr)
++{
++return "DEBNA VAXBI Ethernet adapter";
++}
++
++t_stat et_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
++{
++return eth_attach_help (st, dptr, uptr, flag, cptr);
++}
++
++t_stat et_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
++{
++fprintf (st, "DEBNA VAXBI Ethernet adapter (ET)\n\n");
++fprintf (st, "The DEBNA is a VAXBI node that connects the VAX 8200/8300 to an Ethernet.\n");
++fprintf (st, "VMS V4.7 shows it as \"BI - AIE Adapter with NI port only\" (SYSGEN\n");
++fprintf (st, "SHOW/ADAPTER) and calls it ETA0; its DECnet line and circuit are BNT-0\n");
++fprintf (st, "(named after the DEBNT, the DEBNA's earlier name).  It is disabled by\n");
++fprintf (st, "default:\n\n");
++fprintf (st, "   sim> SET ET ENABLE\n");
++fprintf (st, "   sim> SET ET NODE=7                 (BI node 2-15, default 7)\n");
++fprintf (st, "   sim> SET ET MAC=08:00:2B:12:34:56  (hardware address, before ATTACH)\n");
++fprintf (st, "   sim> ATTACH ET <interface>         (as for XU and XQ, see HELP ET ATTACH)\n\n");
++fprintf (st, "Two simulators can be connected without a host interface, e.g.\n\n");
++fprintf (st, "   sim> ATTACH ET udp:5001:localhost:5002\n\n");
++fprintf (st, "and on the other simulator ATTACH XQ udp:5002:localhost:5001.  DECnet on\n");
++fprintf (st, "VMS V4.7:\n\n");
++fprintf (st, "   $ MC NCP DEFINE LINE BNT-0 STATE ON\n");
++fprintf (st, "   $ MC NCP DEFINE CIRCUIT BNT-0 STATE ON\n");
++fprintf (st, "   $ @SYS$MANAGER:STARTNET\n\n");
++fprintf (st, "The DEBNA implements the BI VAX Port (BVP) Ethernet port: port\n");
++fprintf (st, "registers at node space 204-210, PUDR at 214, the Ethernet address at\n");
++fprintf (st, "218-21D, device type 410F.  After a node reset the self-test takes\n");
++fprintf (st, "0.1 s (BROKE set meanwhile).  An error of the host side transport (e.g.\n");
++fprintf (st, "no UDP partner yet) is not reported as a send failure: frames are lost\n");
++fprintf (st, "as on a cable with nobody listening.  Not simulated: the DEBNK's TK50\n");
++fprintf (st, "port, booting from the network (BOOT ET; a real 8200 uses its console\n");
++fprintf (st, "EEPROM boot program ET, SIMH's built-in VMB has no DEBNA driver).\n\n");
++fprint_set_help (st, dptr);
++fprint_show_help (st, dptr);
++fprint_reg_help (st, dptr);
++return SCPE_OK;
++}
+diff --git a/makefile b/makefile
+index a70633b4..4372774e 100644
+--- a/makefile
++++ b/makefile
+@@ -1745,7 +1745,7 @@ VAX8200 = ${VAXD}/vax_cpu.c ${VAXD}/vax_cpu1.c ${VAXD}/vax_fpa.c \
+ 	${VAXD}/vax_watch.c ${VAXD}/vax820_stddev.c ${VAXD}/vax820_bi.c \
+ 	${VAXD}/vax820_mem.c ${VAXD}/vax820_uba.c ${VAXD}/vax820_ka.c \
+ 	${VAXD}/vax_uw.c ${VAXD}/vax820_syslist.c ${VAXD}/vax_dmf.c \
+-	${VAXD}/vax_dmb.c ${VAXD}/vax_combo_lib.c ${VAXD}/vax_bi_dma.c \
++	${VAXD}/vax_dmb.c ${VAXD}/vax_combo_lib.c ${VAXD}/vax_bi_dma.c ${VAXD}/vax_debna.c \
+ 	${PDP11D}/pdp11_rl.c ${PDP11D}/pdp11_rq.c ${PDP11D}/pdp11_ts.c \
+ 	${PDP11D}/pdp11_dz.c ${PDP11D}/pdp11_lp.c ${PDP11D}/pdp11_tq.c \
+ 	${PDP11D}/pdp11_xu.c ${PDP11D}/pdp11_ry.c ${PDP11D}/pdp11_cr.c \
+-- 
+2.43.0
+

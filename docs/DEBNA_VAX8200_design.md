@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DEBNA_VAX8200_design.md  v4, 2026-11-16 (v4: network boot open until further notice (Ulli); v3: P5: VMS V4.7's VMB.EXE tried, no DEBNA driver; v2: decisions D1-D6 accepted by Ulli; section 9, results P0-P4, P6, VMS findings, network boot (P5) open; v1: first implementation plan for Ulli's decision: DEBNA or DEBNK, sources, phases, open points) -->
+<!-- open-simh-extended/docs/DEBNA_VAX8200_design.md  v5, 2026-11-17 (v5: section 10, VMS V5.5 (known issues 74, 75), patch 10 v2; v4: network boot open until further notice (Ulli); v3: P5: VMS V4.7's VMB.EXE tried, no DEBNA driver; v2: decisions D1-D6 accepted by Ulli; section 9, results P0-P4, P6, VMS findings, network boot (P5) open; v1: first implementation plan for Ulli's decision: DEBNA or DEBNK, sources, phases, open points) -->
 # DEBNA (and later DEBNK) on the VAX 8200/8300 (implementation plan and results)
 
 Prepared with Claude for Ulli (vaxorcist), 2026-11-16. Status: **done for VMS** (patch 10 `opensimh_10_debna_v1.patch`, branch `debna`, on `integration`); network boot (P5) open, see section 9; the DEBNK tape port maybe later (Ulli).
@@ -131,3 +131,13 @@ Branch `debna` (on `kdb50`), also on `integration`; patch 10 `opensimh_10_debna_
 | Host transport errors | `eth_write` fails on a UDP link while the partner is not listening; reporting that as a send failure made VMS drop the circuit. A real DEBNA on an empty cable sends successfully, so such errors are only traced |
 | Frames | VMS builds the whole frame including DECnet's length word; the port adds nothing but the padding to 60 bytes |
 
+## 10. VMS V5.5 (2026-11-17, patch 10 v2)
+
+Ulli: DECnet start under VMS V5.5 failed on the DEBNA (`%SYSTEM-F-TIMEOUT` on line BNA-0; V5.5 names the line and circuit BNA-0, V4.7 BNT-0). Two differences of V5.5's ETDRIVER, found with `SET ET DEBUG=PORT;MSG;QUE;XMT`:
+
+| Case | V5.5 does | Fix |
+|---|---|---|
+| 74 | No message free queue: free queue 0 has entry length 0, the message entries are V5.5's own; free queue 2's length is set only after INIT | Lengths read again before each command queue; a response is clamped to the command entry when there is no message free queue |
+| 75 | Immediate datagrams (opcode 3): the frame is in the queue entry from 0x1C, length = LEN - 10 | Opcode 3 sends the frame from the entry |
+
+Test `tests/debna/p55_8200.ini` (with `p2.sh` v3; partner: MicroVAX II with VMS V4.7, node MV2 = 1.2): adjacency up, copies there and back with 0 differences, remote DIRECTORY, NCP LOOP NODE, SET HOST; about 3.4 MB each way, no failures. VMS V4.7 P2 passes unchanged.
