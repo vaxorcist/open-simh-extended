@@ -26,6 +26,9 @@
 
    rq           MSCP disk controller
 
+   17-Nov-26    Ulli    KDB50 per its microcode listing (version 19): DTYPE
+                        1311010E, versions 19/0x11 to the host, poll after
+                        each ring interrupt
    16-Nov-26    Ulli    KDB50: a write to IP polls like a read (VMS V5.5
                         PUDRIVER writes IP to start the controller)
    16-Nov-26    Ulli    KDB50: ring descriptors carry 30-bit VAXBI physical
@@ -203,6 +206,8 @@ extern int32 MMR2;
 #define RQ_CLASS        1                               /* RQ class: Mass storage controllers */
 #define RQ_HVER         1                               /* hardware version */
 #define RQ_SVER         3                               /* software version */
+#define KDB_HVER        0x11                            /* KDB50: board revisions (DTYPE<23:16>) */
+#define KDB_SVER        19                              /* KDB50: microcode version 19 (V2.0) */
 #define RQ_DHTMO        60                              /* def host timeout */
 #define RQ_DCTMO        120                             /* def ctrl timeout */
 #define RQ_NUMDR        4                               /* def # drives */
@@ -1511,6 +1516,10 @@ uint32 kdb_vector (void);
    (<29:0>; <31> is OWN, <30> FLAG), a Qbus/Unibus address 22 bits. */
 #define KDB_DESC_ADDR   0x3FFFFFFE                      /* 30 bits, word aligned */
 #define RQ_DESC_ADDR(cp,d) ((d) & (RQ_IS_KDB (cp) ? KDB_DESC_ADDR : UQ_ADDR))
+/* Versions the controller reports (end and error log packets; step 4
+   sends the software version modulo 16). */
+#define RQ_HVER_OF(cp)  (RQ_IS_KDB (cp) ? KDB_HVER : RQ_HVER)
+#define RQ_SVER_OF(cp)  (RQ_IS_KDB (cp) ? KDB_SVER : RQ_SVER)
 #else
 #define RQ_IS_KDB(cp)   FALSE
 #define RQ_RB(cp,a,n,b) Map_ReadB (a, n, b)
@@ -1518,6 +1527,8 @@ uint32 kdb_vector (void);
 #define RQ_WW(cp,a,n,b) Map_WriteW (a, n, b)
 #define RQ_HAS_VEC(cp)  ((cp)->s1dat & SA_S1H_VEC)
 #define RQ_DESC_ADDR(cp,d) ((d) & UQ_ADDR)
+#define RQ_HVER_OF(cp)  (RQ_HVER)
+#define RQ_SVER_OF(cp)  (RQ_SVER)
 #endif
 void rq_putr (MSC *cp, uint16 pkt, uint16 cmd, uint16 flg,
     uint16 sts, uint16 lnt, uint16 typ);
@@ -2156,7 +2167,7 @@ if (RQ_WW (cp, base, lnt, zero))                        /* zero comm area */
     return rq_fatal (cp, PE_QWE);                       /* error? */
 cp->sa = SA_S4 |                                        /* send step 4 */
     (ctlr_tab[cp->ctype].uqpm << SA_S4C_V_MOD) |
-    (RQ_SVER << SA_S4C_V_VER);
+    ((RQ_SVER_OF (cp) & 0xF) << SA_S4C_V_VER);
 cp->csta = CST_S4;                                      /* set step 4 */
 rq_init_int (cp);                                       /* poke host */
 return OK;
@@ -2597,8 +2608,8 @@ else {
     cp->pak[pkt].d[SCC_CFL] = cp->cflgs;                /* return flags */
     cp->pak[pkt].d[SCC_TMO] = (sim_sound_enabled () && (cp->ctype == KLESI_CTYPE)) ?
         KLESI_CTMO : RQ_DCTMO;                          /* ctrl timeout (realism: RC25) */
-    cp->pak[pkt].d[SCC_VER] = (RQ_HVER << SCC_VER_V_HVER) |
-        (RQ_SVER << SCC_VER_V_SVER);
+    cp->pak[pkt].d[SCC_VER] = (RQ_HVER_OF (cp) << SCC_VER_V_HVER) |
+        (RQ_SVER_OF (cp) << SCC_VER_V_SVER);
     cp->pak[pkt].d[SCC_CIDA] = 0;                       /* ctrl ID */
     cp->pak[pkt].d[SCC_CIDB] = 0;
     cp->pak[pkt].d[SCC_CIDC] = 0;
@@ -3087,8 +3098,8 @@ cp->pak[pkt].d[DTE_CIDB] = 0;
 cp->pak[pkt].d[DTE_CIDC] = 0;
 cp->pak[pkt].d[DTE_CIDD] = (RQ_CLASS << DTE_CIDD_V_CLS) |
     (ctlr_tab[cp->ctype].model << DTE_CIDD_V_MOD);
-cp->pak[pkt].d[DTE_VER] = (RQ_HVER << DTE_VER_V_HVER) |
-    (RQ_SVER << DTE_VER_V_SVER);
+cp->pak[pkt].d[DTE_VER] = (RQ_HVER_OF (cp) << DTE_VER_V_HVER) |
+    (RQ_SVER_OF (cp) << DTE_VER_V_SVER);
 cp->pak[pkt].d[DTE_MLUN] = lu;                          /* MLUN */
 cp->pak[pkt].d[DTE_UIDA] = lu;                          /* unit ID */
 cp->pak[pkt].d[DTE_UIDB] = 0;
@@ -3129,8 +3140,8 @@ cp->pak[pkt].d[HBE_CIDB] = 0;
 cp->pak[pkt].d[HBE_CIDC] = 0;
 cp->pak[pkt].d[HBE_CIDD] = (RQ_CLASS << DTE_CIDD_V_CLS) |
     (ctlr_tab[cp->ctype].model << DTE_CIDD_V_MOD);
-cp->pak[pkt].d[HBE_VER] = (RQ_HVER << HBE_VER_V_HVER) | /* versions */
-    (RQ_SVER << HBE_VER_V_SVER);
+cp->pak[pkt].d[HBE_VER] = (RQ_HVER_OF (cp) << HBE_VER_V_HVER) | /* versions */
+    (RQ_SVER_OF (cp) << HBE_VER_V_SVER);
 cp->pak[pkt].d[HBE_RSV] = 0;
 cp->pak[pkt].d[HBE_BADL] = cp->pak[tpkt].d[RW_WBAL];    /* bad addr */
 cp->pak[pkt].d[HBE_BADH] = cp->pak[tpkt].d[RW_WBAH];
@@ -3157,8 +3168,8 @@ cp->pak[pkt].d[PLF_CIDB] = 0;
 cp->pak[pkt].d[PLF_CIDC] = 0;
 cp->pak[pkt].d[PLF_CIDD] = (RQ_CLASS << PLF_CIDD_V_CLS) |
     (ctlr_tab[cp->ctype].model << PLF_CIDD_V_MOD);
-cp->pak[pkt].d[PLF_VER] = (RQ_SVER << PLF_VER_V_SVER) |
-    (RQ_HVER << PLF_VER_V_HVER);
+cp->pak[pkt].d[PLF_VER] = (RQ_SVER_OF (cp) << PLF_VER_V_SVER) |
+    (RQ_HVER_OF (cp) << PLF_VER_V_HVER);
 cp->pak[pkt].d[PLF_ERR] = err;
 rq_putr (cp, pkt, FM_CNT, LF_SNR, ST_CNT, PLF_LNT, UQ_TYP_DAT);
 cp->pak[pkt].d[UQ_HCTC] |= (UQ_CID_DIAG << UQ_HCTC_V_CID);
@@ -3434,8 +3445,13 @@ uint32 iadr = cp->comm + ring->ioff;                    /* addr intr wd */
 uint16 flag = 1;
 
 (void)RQ_WW (cp, iadr, 2, &flag);                       /* write flag */
-if (RQ_HAS_VEC (cp))                                    /* if enb, intr */
+if (RQ_HAS_VEC (cp)) {                                  /* if enb, intr */
     rq_setint (cp);
+#if defined (RQ_KDB)
+    if (RQ_IS_KDB (cp) && (cp->csta == CST_UP))         /* KDB50: after each ring */
+        rq_ip_read (cp->cnum);                          /* interrupt it polls again */
+#endif
+    }
 return;
 }
 
@@ -5399,7 +5415,7 @@ return show_vec (st, uptr, val, desc);
 #include "vax_bi_dma.h"
 
 #define KDB_DEF_NODE    6                               /* decision D2 */
-#define KDB_DTYPE       0x0511010E                      /* microcode 05, SDI 1, proc 1, KDB50 */
+#define KDB_DTYPE       0x1311010E                      /* microcode 19 (V2.0), SDI 1, proc 1, KDB50 */
 #define KDB_IPL         0x15                            /* BR5 */
 
 #define KOF_DTYPE       0x000                           /* BIIC registers */
