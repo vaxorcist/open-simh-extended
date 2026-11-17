@@ -1691,7 +1691,7 @@ switch (ofs) {
         break;
     case OF_IDEST:
         dmb_biic.idest = data & BIID_RW;
-        if (dmb_biic.idest && !(dmb_biic.idest & 1))
+        if (dmb_biic.idest && !(dmb_biic.idest & (1u << ka_node (0))))
             sim_debug (DBG_INT, &dmb_dev, "INTRDES %04X does not include KA0: "
                        "interrupts still go to the primary\n", dmb_biic.idest);
         break;
@@ -1816,13 +1816,10 @@ static t_stat dmb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 t_stat r;
 int32 node;
 
-if (cptr == NULL)
-    return SCPE_ARG;
-node = (int32) get_uint (cptr, 10, 15, &r);
-if (r != SCPE_OK)
+if ((r = bi_get_node (cptr, &dmb_dev, -1, &node)) != SCPE_OK)
+    return r;                                   /* 0-15, free */
+if ((r = bi_set_node_rules (&dmb_dev, node)) != SCPE_OK)
     return r;
-if (node < 2)                                   /* 0, 1: the KA820s */
-    return sim_messagef (SCPE_ARG, "Node %d is a KA820 node\n", node);
 nexus_req[DMB_IPL - IPL_HMIN] &= ~(1u << dmb_node ());
 dmb_dib.ba = (uint32)node;
 dmb_update_int ();
@@ -1951,7 +1948,7 @@ fprintf (st, "The DMB32 is a VAXBI module with an eight-line asynchronous multip
 fprintf (st, "a synchronous line and a line printer port: the VAXBI relative of the\n");
 fprintf (st, "DMF32.  It is a BI node of its own (default node 5):\n\n");
 fprintf (st, "   sim> SET DMB ENABLE\n");
-fprintf (st, "   sim> SET DMB NODE=6           (another BI node, 2-15)\n");
+fprintf (st, "   sim> SET DMB NODE=3           (another free BI node, 0-15)\n");
 fprintf (st, "   sim> SET DMB SELFTEST=50      (self-test time in ms after a reset)\n\n");
 fprintf (st, "VMS configures the functions as TXA0-TXA7 (TXB.. if another TX controller\n");
 fprintf (st, "comes first), SIA0 (DECnet circuit DMB-0) and LIA0.\n\n");

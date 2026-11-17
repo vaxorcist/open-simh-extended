@@ -45,7 +45,7 @@ extern DEVICE cpu_dev;
 extern DEVICE tlb_dev;
 extern DEVICE bi_dev;
 extern DEVICE ka_dev[KA_NUM];
-extern DEVICE mctl_dev[MCTL_NUM];
+extern DEVICE mctl_dev;
 extern DEVICE uba_dev;
 extern DEVICE clk_dev;
 extern DEVICE wtc_dev;
@@ -87,8 +87,7 @@ DEVICE *sim_devices[] = {
     &bi_dev,
     &ka_dev[0],
     &ka_dev[1],
-    &mctl_dev[0],
-    &mctl_dev[1],
+    &mctl_dev,                                  /* MS820 memory boards MCTL0-MCTL11 */
     &uba_dev,
     &clk_dev,
     &wtc_dev,

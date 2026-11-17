@@ -84,13 +84,16 @@
 #define VAX_MP          1                               /* CPU core keeps one context
                                                            per KA820 (VAX 8300) */
 #endif
-#define MCTL_NUM        2                               /* number of mem ctrl */
+#define MCTL_NUM        12                              /* MS820 boards MCTL0-11 */
 #define MBA_NUM         2                               /* number of MBA's */
-#define TR_KA0          0                               /* nexus assignments */
-#define TR_KA1          1
-#define TR_MCTL0        2
-#define TR_MCTL1        3
-#define TR_UBA          4
+/* Default VAXBI nodes (SET dev NODE=n changes them; the nodes are the DIBs'
+   base addresses): the primary KA820 node 2, the attached processor node 1
+   and the DWBUA node 0, as on a real 8200/8300 (the attached processors'
+   EEPROMs name node 2 as their console, the DWBUA needs the highest
+   arbitration priority) */
+#define TR_UBA_DEF      0                               /* DWBUA */
+#define TR_KA1_DEF      1                               /* attached KA820 */
+#define TR_KA0_DEF      2                               /* primary KA820 */
 #define NEXUS_HLVL      (IPL_HMAX - IPL_HMIN + 1)
 #define SCB_NEXUS       0x100                           /* nexus intr base */
 
@@ -106,14 +109,7 @@
 #define SCB_IPRINT      0x80
 #define SCB_FLINT       0xF0
 
-#define IPL_MCTL0       (0x15 - IPL_HMIN)
-#define IPL_MCTL1       (0x15 - IPL_HMIN)
 #define IPL_UBA         (0x15 - IPL_HMIN)
-
-/* Nexus interrupt macros */
-
-#define SET_NEXUS_INT(dv)       nexus_req[IPL_##dv] |= (1 << TR_##dv)
-#define CLR_NEXUS_INT(dv)       nexus_req[IPL_##dv] &= ~(1 << TR_##dv)
 
 /* Machine specific IPRs */
 
@@ -182,6 +178,26 @@
                         { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "MEMORY", NULL, NULL, &cpu_show_memory, NULL, "Display memory configuration" }
 extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
 
+/* Memory boards (vax820_mem.c): SET CPU nM sets the board table
+   (mctl_cpu_size); MCTL_RESIZE as cpu_set_size's desc marks the resizing
+   by the boards themselves (SET MCTLn TYPE, ENABLED, DISABLED) */
+#define MCTL_RESIZE     ((void *) &mctl_resize_tag)
+extern int32 mctl_resize_tag;
+extern t_stat mctl_cpu_size_check (uint32 size);
+extern void mctl_cpu_size (uint32 size);
+extern t_bool mctl_board_node (int32 i, int32 *node);  /* present board's node */
+extern t_stat mctl_build_nexus (void);
+
+/* VAXBI configuration (vax820_bi.c) */
+
+extern t_stat bi_get_node (CONST char *cptr, DEVICE *dptr, int32 unit, int32 *node);
+extern DEVICE *bi_node_owner (int32 node, DEVICE *skip, int32 skip_unit, int32 *unit);
+extern t_stat bi_realism_rules (DEVICE *chg, int32 chg_node, const char *prefix);
+extern t_stat bi_set_node_rules (DEVICE *dptr, int32 node);
+extern int32 ka_node (int32 cpu);                       /* vax820_ka.c */
+extern int32 ka_cpu_of_node (int32 node);
+extern int32 uba_node (void);                           /* vax820_uba.c */
+
 /* Node window space */
 
 #define WINAWIDTH       18                              /* VAXBI node window width */
@@ -197,17 +213,23 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 #define IOPAGEAWIDTH    13                              /* IO addr width */
 #define IOPAGESIZE      (1u << IOPAGEAWIDTH)            /* IO page length */
 #define IOPAGEMASK      (IOPAGESIZE - 1)                /* IO addr mask */
-#define UBADDRBASE      WINADDR(TR_UBA)                 /* Unibus addr base */
+/* The Unibus devices' addresses (DIBs, SHOW dev ADDRESS, the I/O page
+   dispatch) are kept in a canonical window, that of node 0, the DWBUA's
+   default node; they are constants of the device code.  The DWBUA's real
+   window follows its node (uba_winbase, SET UBA NODE=n): ReadIO and
+   WriteIO move an access in it to the canonical window. */
+#define UBADDRBASE      WINADDR(0)                      /* Unibus addr base (canonical) */
 #define IOPAGEBASE      (UBADDRBASE + 0x3E000)          /* IO page base */
 /* I/O space: the DWBUA's Unibus window (not while SET UBA DISABLE, the
    VAXBI-only mode) and the KLESI-B's internal Unibus window (kb_winbase:
    its node's window, 0 while the KLESI-B (TB) is disabled) */
 extern uint32 uba_win_ena;                              /* DWBUA window enabled */
+extern uint32 uba_winbase;                              /* DWBUA window (its node's) */
 extern uint32 kb_winbase;                               /* KLESI-B window, 0 = none */
 #define ADDR_IS_KB(x)   ((kb_winbase != 0) && \
                         ((((uint32) (x)) - kb_winbase) < UBADDRSIZE))
 #define ADDR_IS_IO(x)   (((uba_win_ena != 0) && \
-                        ((((uint32) (x)) - UBADDRBASE) < UBADDRSIZE)) || \
+                        ((((uint32) (x)) - uba_winbase) < UBADDRSIZE)) || \
                         ADDR_IS_KB (x))
 #define ADDR_IS_IOP(x)  (((uint32) (x)) >= IOPAGEBASE)
 

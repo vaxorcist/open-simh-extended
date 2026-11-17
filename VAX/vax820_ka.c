@@ -107,7 +107,10 @@ void rxcd_halt (int32 cpu, int32 code, int32 pc);
    kax_reg      KAx register list
 */
 
-DIB ka0_dib[] = { { TR_KA0, 0, &ka_rdreg, &ka_wrreg, 0 } };
+t_stat ka_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat ka_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+
+DIB ka0_dib[] = { { TR_KA0_DEF, 0, &ka_rdreg, &ka_wrreg, 0 } };
 
 UNIT ka0_unit = { UDATA (&ka_svc, 0, 0) };
 
@@ -116,12 +119,12 @@ REG ka0_reg[] = {
     };
 
 MTAB ka0_mod[] = {
-    { MTAB_XTD|MTAB_VDV, TR_KA0, "NEXUS", NULL,
-      NULL, &show_nexus },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
+      &ka_set_node, &ka_show_node, NULL, "VAXBI node of the primary KA820 (0-15, default 2)" },
     { 0 }
     };
 
-DIB ka1_dib[] = { { TR_KA1, 0, &ka_rdreg, &ka_wrreg, 0 } };
+DIB ka1_dib[] = { { TR_KA1_DEF, 0, &ka_rdreg, &ka_wrreg, 0 } };
 
 UNIT ka1_unit = { UDATA (&ka_svc, 0, 0) };
 
@@ -130,8 +133,8 @@ t_stat ka_show_state (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 #endif
 
 MTAB ka1_mod[] = {
-    { MTAB_XTD|MTAB_VDV, TR_KA1, "NEXUS", NULL,
-      NULL, &show_nexus },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 1, "NODE", "NODE=n",
+      &ka_set_node, &ka_show_node, NULL, "VAXBI node of the attached KA820 (0-15, default 1)" },
 #if defined (VAX_MP)
     { MTAB_XTD|MTAB_VDV, 0, "STATE", NULL,
       NULL, &ka_show_state, NULL, "Display the attached processor's state" },
@@ -195,7 +198,9 @@ REG ka1_reg[] = {
 t_stat ka1_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 fprintf (st, "KA820 attached processor (KA1): a VAX 8300\n\n");
-fprintf (st, "SET KA1 ENABLE adds a second KA820 at VAXBI node 1.  The primary (KA0,\n");
+fprintf (st, "SET KA1 ENABLE adds a second KA820 at VAXBI node 1 (SET KA1 NODE=n; the\n");
+fprintf (st, "primary, KA0, is node 2, SET KA0 NODE=n).  VMS's START/CPU takes the\n");
+fprintf (st, "node number as the CPU ID (START/CPU 1).  The primary (KA0,\n");
 fprintf (st, "the CPU device) starts it through the console channel between the\n");
 fprintf (st, "processors (RXCD register) with the console commands I, D/G and S, as on\n");
 fprintf (st, "a real VAX 8300.  Both processors execute; they take turns on the host,\n");
@@ -259,11 +264,53 @@ DEVICE ka_dev[] = {
 
 /* KA read */
 
+/* KA0/KA1 nodes: the DIBs' base addresses (SET KAn NODE=n) */
+
+int32 ka_node (int32 cpu)
+{
+return (int32) ((cpu == 0) ? ka0_dib[0].ba : ka1_dib[0].ba) & 0xF;
+}
+
+int32 ka_cpu_of_node (int32 node)                       /* -1: no KA820 */
+{
+if (node == ka_node (0))
+    return 0;
+if ((node == ka_node (1)) && !(ka_dev[1].flags & DEV_DIS))
+    return 1;
+return -1;
+}
+
+/* SET KAn NODE=n, SHOW KAn NODE (val = processor) */
+
+t_stat ka_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+int32 node;
+t_stat r;
+
+r = bi_get_node (cptr, &ka_dev[val], -1, &node);
+if (r != SCPE_OK)
+    return r;
+if (val == 0)
+    ka0_dib[0].ba = (uint32) node;
+else
+    ka1_dib[0].ba = (uint32) node;
+ka_biic[val].csr = (ka_biic[val].csr & ~BICSR_NODE) | ((uint32) node & BICSR_NODE);
+return SCPE_OK;
+}
+
+t_stat ka_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fprintf (st, "node=%d", ka_node (val));
+return SCPE_OK;
+}
+
 t_stat ka_rdreg (int32 *val, int32 pa, int32 lnt)
 {
 int32 ka, ofs;
 
-ka = NEXUS_GETNEX (pa) - TR_KA0;                        /* get CPU num */
+ka = ka_cpu_of_node (NEXUS_GETNEX (pa));                /* get CPU num */
+if (ka < 0)
+    return SCPE_NXM;
 ofs = NEXUS_GETOFS (pa);                                /* get offset */
 switch (ofs) {
 
@@ -318,14 +365,14 @@ int32 ka_priv_rd (int32 pa)
 {
 int32 val = 0;
 
-if (ka_rdreg (&val, REGBASE + ((TR_KA0 + cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), L_LONG) != SCPE_OK)
+if (ka_rdreg (&val, REGBASE + (ka_node (cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), L_LONG) != SCPE_OK)
     val = 0;
 return val;
 }
 
 void ka_priv_wr (int32 pa, int32 val, int32 lnt)
 {
-ka_wrreg (val, REGBASE + ((TR_KA0 + cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), lnt);
+ka_wrreg (val, REGBASE + (ka_node (cur_cpu) << REG_V_NEXUS) + (pa & 0xFF), lnt);
 }
 
 /* KA write */
@@ -334,7 +381,9 @@ t_stat ka_wrreg (int32 val, int32 pa, int32 lnt)
 {
 int32 ka, ofs;
 
-ka = NEXUS_GETNEX (pa) - TR_KA0;                        /* get CPU num */
+ka = ka_cpu_of_node (NEXUS_GETNEX (pa));                /* get CPU num */
+if (ka < 0)
+    return SCPE_NXM;
 ofs = NEXUS_GETOFS (pa);                                /* get offset */
 switch (ofs) {
 
@@ -384,7 +433,7 @@ rxcd_count = 0;
 ka_rxcd[0] = 0;
 ka_rxcd[1] = 0;
 for (i = 0; i < KA_NUM; i++) {
-    ka_biic[i].csr = (1u << BICSR_V_IF) | BICSR_STS | ((TR_KA0 + i) & BICSR_NODE);
+    ka_biic[i].csr = (1u << BICSR_V_IF) | BICSR_STS | (ka_node (i) & BICSR_NODE);
     ka_biic[i].ber = 0;
     ka_biic[i].eicr = 0;
     ka_biic[i].idest = 0;
@@ -409,9 +458,9 @@ int32 rxcd_rd (void)
 int32 val;
 
 if (rxcd_count) {                                       /* data available? */
-    val = rxcd_obuf[rxcd_optr] | (1 << 8);
-    sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MFPR RXCD: %02X '%c' from node 1\n", cur_cpu, val & 0xFF,
-               isprint (val & 0xFF) ? (val & 0xFF) : '.');
+    val = rxcd_obuf[rxcd_optr] | (ka_node (1) << 8);    /* sender: the attached one */
+    sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MFPR RXCD: %02X '%c' from node %d\n", cur_cpu, val & 0xFF,
+               isprint (val & 0xFF) ? (val & 0xFF) : '.', ka_node (1));
     rxcd_optr++;
     rxcd_count--;
     if (rxcd_count)
@@ -427,7 +476,8 @@ return val;
 
 void rxcd_wr (int32 val)
 {
-int32 cpu = (val >> 8) & 7;
+int32 node = (val >> 8) & 0xF;                          /* destination node */
+int32 cpu = ka_cpu_of_node (node);
 int32 ch = val & 0xFF;
 int32 rg;
 int32 rval;
@@ -435,7 +485,11 @@ t_stat r;
 char conv[10];
 
 sim_debug (DBG_RXCD, &ka_dev[1], "CPU%d MTPR RXCD: %02X '%c' to node %d\n", cur_cpu, ch,
-           isprint (ch) ? ch : '.', cpu);
+           isprint (ch) ? ch : '.', node);
+if (cpu < 0) {                                          /* no KA820 there: */
+    mxpr_cc_vc |= CC_V;                                 /* not taken */
+    return;
+    }
 if (ka_rxcd[cpu] & 0x8000) {                            /* busy? */
     mxpr_cc_vc |= CC_V;                                 /* set overflow */
     return;

@@ -3165,7 +3165,7 @@ MTAB tb_mod[] = {
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
         &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set/Display capacity" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
-        &kb_set_node, &kb_show_node, NULL, "VAXBI node number (2-15, default 8)" },
+        &kb_set_node, &kb_show_node, NULL, "VAXBI node number (0-15, default 6)" },
     { MTAB_XTD|MTAB_VDV, 0,                 "VECTOR", NULL,
         NULL, &kb_show_vec, NULL, "Adapter vector offset" },
     { 0 }
@@ -3279,7 +3279,8 @@ fprintf (st, "second TMSCP tape controller next to TQ (TUK50, TU81 on the DWBUA'
 fprintf (st, "Unibus) and works without the DWBUA, so also in the VAXBI-only mode\n");
 fprintf (st, "(SET UBA DISABLE).  TB is disabled by default:\n\n");
 fprintf (st, "    SET TB ENABLE\n");
-fprintf (st, "    SET TB NODE=8          VAXBI node (2-15, default 8)\n");
+fprintf (st, "    SET TB NODE=6          VAXBI node (0-15, default 6; in the realism\n");
+fprintf (st, "                           mode below every DEBNA's)\n");
 fprintf (st, "    ATTACH TB0 tape.tap\n\n");
 fprintf (st, "The adapter has the DWBUA's registers (vector offset, map registers);\n");
 fprintf (st, "the port's IP and SA registers are at Unibus address 774500 in the\n");

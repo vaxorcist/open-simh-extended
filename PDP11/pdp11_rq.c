@@ -1776,7 +1776,7 @@ MTAB rq_mod[] = {
 #endif
 #if defined (RQ_KDB)
     { MTAB_XTD|MTAB_VDV|MTAB_VALR|MTAB_NMO, 0, "NODE", "NODE=n",
-      &kdb_set_node, &kdb_show_node_nl, NULL, "KDB50: VAXBI node number (default 6)" },
+      &kdb_set_node, &kdb_show_node_nl, NULL, "KDB50: VAXBI node number (0-15, default 4)" },
 #endif
     { MTAB_XTD|MTAB_VDV, 0, "VECTOR", NULL,
       NULL, &rq_show_vec, NULL, "Interrupt vector" },
@@ -5219,9 +5219,9 @@ if (dptr == &kdb_dev) {
     fprintf (st, "KDB50 VAXBI MSCP Disk Controller (KDB)\n\n");
     fprintf (st, "The KDB50 is the disk controller of a real VAX 8200/8300: a VAXBI node with\n");
     fprintf (st, "four SDI drives (KDB0-KDB3, RA81 by default).  It is enabled by default at\n");
-    fprintf (st, "BI node 6; the UDA50 behind the Unibus adapter (RQ) remains available as\n");
+    fprintf (st, "BI node 4; the UDA50 behind the Unibus adapter (RQ) remains available as\n");
     fprintf (st, "the alternative.  Its type cannot be changed.\n\n");
-    fprintf (st, "   sim> SET KDB NODE=7       (another BI node, 2-15)\n");
+    fprintf (st, "   sim> SET KDB NODE=3       (another free BI node, 0-15)\n");
     fprintf (st, "   sim> ATTACH KDB0 vms.dsk\n");
     fprintf (st, "   sim> BOOT KDB0\n\n");
     fprintf (st, "BOOT KDBn starts VMB with the BI disk adapter boot code (R0 = 33) and the\n");
@@ -5430,7 +5430,7 @@ return show_vec (st, uptr, val, desc);
 #include "vax_bi.h"
 #include "vax_bi_dma.h"
 
-#define KDB_DEF_NODE    6                               /* decision D2 */
+#define KDB_DEF_NODE    4                               /* (patch 14; D2: 6) */
 #define KDB_DTYPE       0x1311010E                      /* microcode 19 (V2.0), SDI 1, proc 1, KDB50 */
 #define KDB_IPL         0x15                            /* BR5 */
 
@@ -5751,13 +5751,8 @@ int32 node;
 
 if (!RQ_IS_KDB (rq_ctxmap[uptr->cnum]))
     return SCPE_NOFNC;
-if (cptr == NULL)
-    return SCPE_ARG;
-node = (int32) get_uint (cptr, 10, 15, &r);
-if (r != SCPE_OK)
-    return r;
-if (node < 2)                                           /* 0, 1: the KA820s */
-    return sim_messagef (SCPE_ARG, "Node %d is a KA820 node\n", node);
+if ((r = bi_get_node (cptr, &kdb_dev, -1, &node)) != SCPE_OK)
+    return r;                                           /* 0-15, free */
 nexus_req[KDB_IPL - IPL_HMIN] &= ~(1u << kdb_node ());
 kdb_dib.ba = (uint32) node;
 kdb_biic.csr = (kdb_biic.csr & ~BICSR_NODE) | (uint32) node;

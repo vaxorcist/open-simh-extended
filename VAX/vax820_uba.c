@@ -136,6 +136,7 @@ uint32 uba_aitime = 250;                                /* adapter init time */
 uint32 uba_uitime = 12250;                              /* Unibus init time */
 int32 autcon_enb = 1;                                   /* autoconfig enable */
 uint32 uba_win_ena = 1;                                 /* window enabled (ADDR_IS_IO) */
+uint32 uba_winbase = WINADDR (TR_UBA_DEF);              /* its window: its node's */
 static t_bool uba_was_dis = FALSE;                      /* SET UBA DISABLE in effect */
 #define UBA_MAXOFF      64
 static DEVICE *uba_off[UBA_MAXOFF];                     /* Unibus devices it disabled */
@@ -196,7 +197,15 @@ int32 int_vec[IPL_HLVL][32];                            /* int req to vector */
    uba_reg      UBA register list
 */
 
-DIB uba_dib = { TR_UBA, 0, &uba_rdreg, &uba_wrreg, 0, 0 };
+DIB uba_dib = { TR_UBA_DEF, 0, &uba_rdreg, &uba_wrreg, 0, 0 };
+
+t_stat uba_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat uba_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+
+int32 uba_node (void)
+{
+return (int32) (uba_dib.ba & 0xF);
+}
 
 UNIT uba_unit = { UDATA (&uba_svc, 0, 0) };
 
@@ -208,7 +217,6 @@ REG uba_reg[] = {
     { HRDATA (CSR, uba_csr, 32) },
     { HRDATA (VO, uba_vo, 32) },
     { FLDATA (INT, uba_int, 0) },
-    { FLDATA (NEXINT, nexus_req[IPL_UBA], TR_UBA) },
     { HRDATA (FUBAR, uba_fubar, 32) },
     { HRDATA (BIFA, uba_bifa, 32) },
     { HRDATA (BICSR, uba_biic.csr, 32) },
@@ -225,8 +233,8 @@ REG uba_reg[] = {
     };
 
 MTAB uba_mod[] = {
-    { MTAB_XTD|MTAB_VDV, TR_UBA, "NEXUS", NULL,
-      NULL, &show_nexus, NULL, "Display nexus" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
+      &uba_set_node, &uba_show_node, NULL, "VAXBI node of the DWBUA (0-15, default 0)" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "IOSPACE", NULL,
       NULL, &show_iospace, NULL, "Display I/O space address map" },
     { MTAB_XTD|MTAB_VDV, 1, "AUTOCONFIG", "AUTOCONFIG",
@@ -531,6 +539,7 @@ uint32 iod;
 
 if (ADDR_IS_KB (pa))                                    /* KLESI-B window? */
     return kb_rdio (pa, lnt);
+pa = pa - uba_winbase + UBADDRBASE;                     /* to the canonical window */
 if ((lnt == L_BYTE) ||                                  /* byte? */
     ((lnt == L_WORD) && ((pa & 1) == 0))) {             /* aligned word? */
     iod = ReadUb (pa);                                  /* DATI from Unibus */
@@ -562,6 +571,7 @@ if (ADDR_IS_KB (pa)) {                                  /* KLESI-B window? */
     kb_wrio (pa, val, lnt);
     return;
     }
+pa = pa - uba_winbase + UBADDRBASE;                     /* to the canonical window */
 if (lnt == L_BYTE)                                      /* byte? DATOB */
     WriteUb (pa, val, WRITEB);
 else if (((lnt == L_WORD) || (lnt == L_LONG)) && ((pa & 1) == 0))/* aligned word? */
@@ -592,17 +602,17 @@ void uba_eval_int (void)
 int32 i, lvl;
 
 for (i = 0; i < IPL_HLVL; i++)                          /* clear all UBA req */
-    nexus_req[i] &= ~(1 << TR_UBA);
+    nexus_req[i] &= ~(1 << uba_node ());
 if (uba_int) {                                          /* adapter int? */
     lvl = (uba_biic.eicr >> BIECR_V_LVL) & BIECR_M_LVL;
     for (i = 0; i < IPL_HLVL; i++) {
         if (lvl & (1u << i))
-            nexus_req[i] |= (1 << TR_UBA);
+            nexus_req[i] |= (1 << uba_node ());
         }
     }
 for (i = 0; i < IPL_HLVL; i++) {                        /* Unibus device ints */
     if (int_req[i])
-        nexus_req[i] |= (1 << TR_UBA);
+        nexus_req[i] |= (1 << uba_node ());
     }
 return;
 }
@@ -967,7 +977,7 @@ uba_int = 0;
 uba_aiip = uba_uiip = 0;
 sim_cancel (&uba_unit);
 for (i = 0; i < IPL_HLVL; i++) {
-    nexus_req[i] &= ~(1 << TR_UBA);
+    nexus_req[i] &= ~(1 << uba_node ());
     int_req[i] = 0;
     }
 for (i = 0; i < UBA_NMAPR; i++) {                       /* clear map registers */
@@ -979,12 +989,13 @@ for (i = 0; i < UBA_NMAPR; i++) {                       /* clear map registers *
 for (i = 0; i < UBA_NDPATH; i++)                        /* setup datapaths */
     uba_dpr[i] = (i << UBADPR_V_SEL);
 uba_csr = 0;
-uba_biic.csr = (1u << BICSR_V_IF) | BICSR_STS | (TR_UBA & BICSR_NODE);
+uba_winbase = WINADDR (uba_node ());                    /* the node's window */
+uba_biic.csr = (1u << BICSR_V_IF) | BICSR_STS | (uba_node () & BICSR_NODE);
 uba_biic.ber = 0;
 uba_biic.eicr = 0;
 uba_biic.idest = 0;
-uba_biic.sa = UBADDRBASE;
-uba_biic.ea = UBADDRBASE + WINSIZE;
+uba_biic.sa = uba_winbase;
+uba_biic.ea = uba_winbase + WINSIZE;
 uba_biic.uiic = BIICR_EXV;
 uba_biic.gpr0 = BIGPR0_UPU;
 return SCPE_OK;
@@ -999,6 +1010,34 @@ return SCPE_OK;
    the DWBUA's window leaves the I/O space (ADDR_IS_IO).  The DWBUA's node
    leaves the BI (build_nexus_tab skips disabled devices).  Enabling: the
    remembered devices are enabled again. */
+
+/* SET UBA NODE=n: the DWBUA's node and with it its Unibus window (the
+   Unibus devices keep their canonical addresses, see vax820_defs.h) */
+
+t_stat uba_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+int32 node, i;
+t_stat r;
+
+r = bi_get_node (cptr, &uba_dev, -1, &node);
+if (r != SCPE_OK)
+    return r;
+for (i = 0; i < IPL_HLVL; i++)                          /* no request on the old node */
+    nexus_req[i] &= ~(1 << uba_node ());
+uba_dib.ba = (uint32) node;
+uba_winbase = WINADDR (uba_node ());
+uba_biic.csr = (uba_biic.csr & ~BICSR_NODE) | ((uint32) node & BICSR_NODE);
+uba_biic.sa = uba_winbase;
+uba_biic.ea = uba_winbase + WINSIZE;
+uba_eval_int ();
+return SCPE_OK;
+}
+
+t_stat uba_show_node (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fprintf (st, "node=%d (Unibus window %08X)", uba_node (), uba_winbase);
+return SCPE_OK;
+}
 
 static t_stat uba_enbdis (void)
 {
