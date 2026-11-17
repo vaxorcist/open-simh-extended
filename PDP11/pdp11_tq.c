@@ -26,6 +26,8 @@
    tq           TQK50 tape controller
    tb           KLESI-B TMSCP port (VAX 8200, VAXBI; adapter in vax820_klesib.c)
 
+   17-Nov-26    Ulli    Realism mode: SET TB ENABLE makes a TB of another
+                        type a TU81 (known issues 77)
    17-Nov-26    Ulli    Realism mode: the KLESI-B (TB) connects TU81 drives
                         only (SET SOUND ENABLED, SET TB <type>, ATTACH)
    09-Nov-26    Ulli    Realism mode: a calibrated new cartridge gets an
@@ -3233,6 +3235,24 @@ if ((tq_ctx1.dev != NULL) && !(tq_ctx1.dev->flags & DEV_DIS) && (tq_ctx1.typ != 
 return SCPE_OK;
 }
 
+/* Realism mode: an enabled TB is a TU81 (SET TB ENABLE after a SET TB
+   TK50/TK70/user type made while TB was disabled).  Units are never
+   attached here with another type (ATTACH refuses it). */
+
+static void tb_rlz_force_tu81 (DEVICE *dptr)
+{
+uint32 i;
+
+if ((dptr->flags & DEV_DIS) || !sim_sound_enabled () ||
+    !tq_ctx1.inited || (tq_ctx1.typ == TQ8_TYPE))
+    return;
+sim_printf ("TB: realism mode: %s replaced by TU81 (a KLESI-B connects TU81 drives only)\n",
+            drv_tab[tq_ctx1.typ].name);
+tq_ctx1.typ = TQ8_TYPE;
+for (i = 0; i < dptr->numunits; i++)
+    dptr->units[i].capac = drv_tab[TQ8_TYPE].cap;
+}
+
 t_stat tb_reset (DEVICE *dptr)
 {
 sim_sound_register_enable_check (&tb_rlz_enable_check);    /* realism: TU81 only */
@@ -3245,6 +3265,7 @@ if (!tq_ctx1.inited) {                                  /* the adapter's hooks *
     tq_ctx1.clrint = &kb_clrint;
     tq_ctx_init (&tq_ctx1, dptr, TQ8_TYPE, TRUE);
     }
+tb_rlz_force_tu81 (dptr);                               /* realism: TU81 only */
 kb_reset (dptr);
 return tq_reset (dptr);
 }
