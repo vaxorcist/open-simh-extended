@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_session_handover.md  v1, 2026-11-16 (v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
+<!-- open-simh-extended/docs/SIMH_session_handover.md  v2, 2026-11-17 (v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
 # Session handover (2026-11-16, after patch 11)
 
 For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–70).
@@ -47,13 +47,14 @@ make vax8200 microvax2 vax780 vax750       # build only what the change affects,
 
 ## 3. State of the work
 
-- **Patch chain:** patches 1–11 on Open SIMH 87eb7d5, applied with `git am --keep-cr` in the order 1, 2, 3, 4, 6, 5, 7, 8, 9 (v2), 10, 11. The result equals the `integration` branch except `README.md` and `.github/workflows/cmake-builds.yml`.
+- **Patch chain:** patches 1–12 on Open SIMH 87eb7d5, applied with `git am --keep-cr` in the order 1, 2, 3, 4, 6, 5, 7, 8, 9 (v4), 10 (v2), 11, 12. The result equals the `integration` branch except `README.md` and `.github/workflows/cmake-builds.yml`.
 - **How a patch is made** (patch 11 as the example):
   - apply the series in a scratch worktree on 87eb7d5;
   - cherry-pick the topic commit with `git am --keep-cr` and reset its author to Claude;
   - `git format-patch -1 --stdout` into `notes/patches/opensimh_<n>_<topic>_v<k>.patch`;
   - `git diff --stat integration <scratch>` must show only README.md and the workflow file.
-- **Last commits:** `integration` 79ae525a (README v2), `klesib` d59d5d6b, `notes` 33538781, plus this handover.
+- **Last commits (2026-11-17):** `integration` 1420058d, `kdb50` 86631fc2, `debna` b9d7e456, `dmb32-sync` 9c2acafa, `notes` with this handover.
+- **Work of 2026-11-17 (VMS V5.5):** KDB50 boot (known issues 71-73, patch 9 v3/v4, also from the KDB50 microcode listing), DEBNA with V5.5 (74, 75, patch 10 v2), DMB32 sync line with V5.5's SIDRIVER and the DMF32 sync line on the shared code (patch 12).
 - **Last work:** the KLESI-B (device TB) and `SET UBA DISABLE`; see `docs/KLESIB_VAX8200_design.md` and `tests/klesib/`.
 - **VAX 8200/8300 devices done:** second KA820 (patch 7), DMB32 (8), KDB50 (9), DEBNA (10), KLESI-B and VAXBI-only mode (11).
 
@@ -67,6 +68,8 @@ None of these is in the repository; Ulli uploads them again when needed.
 | `VMS047.R81` | VMS V4.7 for the MicroVAX II and other VAXen (tktest.py, `set rq0 ra81`) | The test copy had the SYSTEM password set to MANAGER with `AUTHORIZE MODIFY SYSTEM/NETWORK/PASSWORD=MANAGER/NOPWDEXPIRED`; ask Ulli if a fresh upload does not accept SYSTEM/MANAGER |
 | **`VMS055.R82`** (new, 2026-11-16) | VMS V5.5 on an RA82, for testing | **Confidential: it contains license data. It must not go anywhere else**: not into the fork, not into the project, not into any delivered file or doc, and no license data may be quoted. Work on a copy inside the workspace only. Its purpose has not been discussed yet: ask Ulli. |
 | `ult020src.tap` | ULTRIX V2.0 sources (VAXBI drivers: bla.c, bua.c, buareg.h, ...) | DEC copyright: stays out of the fork and the project; extracts go to Ulli only |
+| `KDB50_Microcode_Listing_Sep88_O.pdf` (new, 2026-11-17) | KDB50 microcode listing (version 19), OCR text | DEC copyright: facts only, in our own words; stays out of the fork and the project |
+| `EK-DMB32-UG-001`, `EK-DMB32-TD-001` (PDF) | DMB32 User Guide and Technical Description (sync line: UG 3.3.28-3.3.43, 3.3.52, 3.4.8, 3.4.11; TD 2.7) | Upload again when needed |
 | Standalone BACKUP kits (`STABA047-*.RX50`, `.RX1`, `.T58`), RT-11 images, DEC manuals (KA820, DMB32, KDB50, DEBNX, RX02) | earlier tests and sources | Upload again when needed |
 
 ## 5. Test methods that work
@@ -100,9 +103,9 @@ None of these is in the repository; Ulli uploads them again when needed.
 |---|---|
 | Known issues 70: Unibus devices can be enabled while the UBA is disabled | Decision for Ulli: leave it, or refuse `SET <dev> ENABLE` for Unibus devices while the UBA is disabled |
 | Known issues 69: no network boot on the 8200 (DEBNA) | Open until further notice (Ulli). VMS V4.7's VMB has no DEBNA driver. **Idea:** VMS V5.5's VMB.EXE (on VMS055.R82) may have the AIE_NI boot driver (device code 98). Only with Ulli's go-ahead. |
-| VMS V5.5 RA82 image | New; what to test with it is not decided. Ask Ulli. |
+| VMS V5.5 RA82 image | In use: boots from the KDB50 (8200 and 8300), DECnet over the DEBNA and the DMB32 sync line; tests `tests/kdb50/v55_*.ini`, `tests/debna/p55_8200.ini`, `tests/dmb32/p4*.ini`. SYSTEM has no password. Further tests: ask Ulli. |
 | ULTRIX tests of the VAXBI devices (KLESI-B, KDB50, DMB32, DEBNA) | Not done: no ULTRIX system for the 8200 is available. ULTRIX V2.2 and UETP tests are postponed until further notice. |
-| DMB32 sync line | Waits for SIDRIVER.EXE (Ulli asks friends) |
+| DMB32 sync line | Done with VMS V5.5's SIDRIVER (patch 12). A SIDRIVER for VMS V4.7 is still missing (Ulli asks friends); not needed any more for testing |
 | Second KDB50, DEBNK tape port | Postponed by Ulli |
 | MicroVAX II THROTTLE results | Waiting for Ulli's results |
 

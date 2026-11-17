@@ -1,0 +1,1160 @@
+From 00ada270ef5934bf7655592c354e9da2f682c2b1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 12:16:25 +0100
+Subject: [PATCH] VAX8200: DMB32 synchronous line (DDCMP); DMF32 sync line on
+ the shared code
+
+The DMB32's synchronous line, DDCMP only (DMB32 design D3), from the
+DMB32 User Guide 3.3.28-3.3.43, 3.3.52, 3.4.6, 3.4.8, 3.4.11 and the
+Technical Description 2.7:
+- two transmit and two receive buffers (TBUFFADn/CTn/TLNCTRLn,
+  RBUFFADn/CTn/RLNCTRLn): DMA.START, DMA.ABORT, BUFCTRL buffer priority;
+- the board frames DDCMP: transmit takes header and data and adds both
+  CRCs, receive stores header and data without them (bad header CRC:
+  frame dropped; bad data CRC, message too long: message errors);
+- completions and modem changes in SBUF, the sync interrupt;
+- LPR1 receiver enable, loopback, modem change suppression, line reset;
+  LPR2 modem signals, protocol, modem override; BUFCTRL shows a V.24
+  cable;
+- unit DMB-SYNC: SET DMB-SYNC PEER=host:port, ATTACH DMB-SYNC port, a
+  DDCMP link to a DMC11/DMR11/DMP11/DMV11/DMF32/DMB32 in another
+  simulator.
+
+The link to the peer and the DDCMP framing are in vax_combo_lib.c (taken
+from the DMF32's sync line), and the DMF32 sync line uses them too
+(design D1, phase P4a).  The DMF32 keeps its registers, buffers,
+interrupts, tributary check, HDLC/SDLC and GEN BYTE; a received DDCMP
+frame with a bad start character is now dropped like one with a bad
+header CRC.
+
+Tested (tests/dmb32/p4.sh): VMS V5.5 (SIDRIVER) on the VAX 8200, DECnet
+circuit DMB-0 to a MicroVAX II with a DMV11 and to a VAX-11/780 with a
+DMF32, both VMS V4.7; VMS V4.7 XGDRIVER on the DMF32 of the 8200 to the
+DMV11: circuits up, copies there and back with 0 differences, LOOP NODE,
+SET HOST.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtftJEqWTX7fajw6zWU
+---
+ VAX/vax_combo_lib.c | 219 +++++++++++++++++++++++++++-
+ VAX/vax_combo_lib.h |  62 +++++++-
+ VAX/vax_dmb.c       | 341 ++++++++++++++++++++++++++++++++++++++++++--
+ VAX/vax_dmf.c       | 162 ++++++---------------
+ 4 files changed, 656 insertions(+), 128 deletions(-)
+
+diff --git a/VAX/vax_combo_lib.c b/VAX/vax_combo_lib.c
+index 34ca8203..d96777cf 100644
+--- a/VAX/vax_combo_lib.c
++++ b/VAX/vax_combo_lib.c
+@@ -22,14 +22,19 @@
+ 
+    References:
+      EK-DMF32-UG-003  DMF32 User's Guide (line printer, Table 4-34)
+-     EK-DMB32-UG-001  DMB32 User Guide (printer registers, 3.3.22-3.3.27)
++     EK-DMB32-UG-001  DMB32 User Guide (printer registers, 3.3.22-3.3.27;
++                      sync line 3.3.28-3.3.43, 3.3.52, 3.4.8)
++     EK-DMB32-TD-001  DMB32 Technical Description (DDCMP support, 2.7)
+ 
+    Modification history:
+ 
++   17-Nov-26    Ulli/Claude  Synchronous line link and DDCMP framing (from
++                             vax_dmf.c), for the DMB32 sync line
+    15-Nov-26    Ulli/Claude  First version: printer formatter (from vax_dmf.c)
+ */
+ 
+ #include "vax_combo_lib.h"
++#include "pdp11_ddcmp.h"                        /* DDCMP framing and CRC */
+ 
+ /* ---------------------------------------------------------------------------
+    Line printer formatter
+@@ -150,3 +155,215 @@ while (count-- > 0) {
+         combo_lp_format (lp, c);
+     }
+ }
++
++/* ---------------------------------------------------------------------------
++   Synchronous line: link to the peer and DDCMP framing
++
++   The link is a one-line TMXR connection; ATTACH gives the local port
++   (and SET PEER the partner to connect to), as for DMF-SYNC and the DMC.
++   It carries whole DDCMP frames with their CRCs (ddcmp_tmxr_put/get_
++   packet_ln), so a board talks to a DMC11, DMR11, DMP11, DMV11, DMF32 or
++   DMB32 on the other side.
++   --------------------------------------------------------------------------- */
++
++/* Set up the connection structures (device reset; the first one comes
++   before any ATTACH): one line, message oriented raw TCP without Telnet
++   (as the DMC11 and DMF-SYNC). */
++void combo_sync_setup (COMBO_SYNC *cs, DEVICE *dptr, UNIT *uptr, uint32 dbg)
++{
++if (cs->desc.ldsc == NULL) {                    /* not yet set up */
++    memset (&cs->desc, 0, sizeof (cs->desc));
++    cs->desc.lines = 1;
++    cs->desc.ldsc = cs->ln;
++    }
++cs->desc.packet = TRUE;                         /* message oriented, raw TCP */
++cs->desc.notelnet = TRUE;
++cs->desc.buffered = 16384;
++cs->desc.uptr = uptr;
++cs->desc.dptr = dptr;
++cs->dptr = dptr;
++cs->dbg = dbg;
++}
++
++/* SET <unit> PEER=host:port (only while not attached) */
++t_stat combo_sync_set_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr)
++{
++char host[CBUFSIZE], port[CBUFSIZE];
++
++if ((cptr == NULL) || (*cptr == 0))
++    return SCPE_ARG;
++if (uptr->flags & UNIT_ATT)
++    return SCPE_ALATT;
++if (sim_parse_addr (cptr, host, sizeof (host), NULL, port, sizeof (port), NULL, NULL))
++    return SCPE_ARG;
++strlcpy (cs->peer, cptr, sizeof (cs->peer));
++return SCPE_OK;
++}
++
++t_stat combo_sync_show_peer (FILE *st, COMBO_SYNC *cs)
++{
++fprintf (st, "peer=%s", cs->peer[0] ? cs->peer : "unspecified");
++return SCPE_OK;
++}
++
++/* ATTACH <unit> port: listen on the port, connect to the peer if set */
++t_stat combo_sync_attach (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr)
++{
++char attach[CBUFSIZE * 2 + 32];
++t_stat r;
++
++if (cs->peer[0])
++    snprintf (attach, sizeof (attach), "Line=0,Connect=%s,%s", cs->peer, cptr);
++else
++    snprintf (attach, sizeof (attach), "Line=0,%s", cptr);
++r = tmxr_open_master (&cs->desc, attach);
++if (r != SCPE_OK)
++    return r;
++uptr->filename = (char *)malloc (strlen (cptr) + 1);
++strcpy (uptr->filename, cptr);
++uptr->flags |= UNIT_ATT;
++cs->frame_len = 0;
++return SCPE_OK;
++}
++
++t_stat combo_sync_detach (COMBO_SYNC *cs, UNIT *uptr)
++{
++t_stat r;
++
++if (!(uptr->flags & UNIT_ATT))
++    return SCPE_OK;
++r = tmxr_close_master (&cs->desc);
++uptr->flags &= ~UNIT_ATT;
++free (uptr->filename);
++uptr->filename = NULL;
++cs->frame_len = 0;
++return r;
++}
++
++/* Connections and input; TRUE if the peer has just connected */
++t_bool combo_sync_poll_rx (COMBO_SYNC *cs, UNIT *uptr)
++{
++t_bool newconn = FALSE;
++
++if (!(uptr->flags & UNIT_ATT))
++    return FALSE;
++if (tmxr_poll_conn (&cs->desc) >= 0) {
++    sim_debug (cs->dbg, cs->dptr, "sync line connected\n");
++    cs->ln[0].rcve = 1;
++    newconn = TRUE;
++    }
++tmxr_poll_rx (&cs->desc);
++return newconn;
++}
++
++void combo_sync_poll_tx (COMBO_SYNC *cs, UNIT *uptr)
++{
++if (uptr->flags & UNIT_ATT)
++    tmxr_poll_tx (&cs->desc);
++}
++
++t_bool combo_sync_up (COMBO_SYNC *cs)
++{
++return cs->ln[0].conn ? TRUE : FALSE;
++}
++
++t_bool combo_sync_tx_busy (COMBO_SYNC *cs)
++{
++return (cs->ln[0].conn && tmxr_tpbusyln (&cs->ln[0])) ? TRUE : FALSE;
++}
++
++/* A whole frame (CRCs included) to the peer */
++void combo_sync_send (COMBO_SYNC *cs, uint8 *frame, int32 len)
++{
++if (cs->ln[0].conn)
++    ddcmp_tmxr_put_packet_ln (&cs->ln[0], frame, len, 0);
++}
++
++/* Keep a received frame (also a looped back one) until a buffer is free */
++void combo_sync_hold (COMBO_SYNC *cs, const uint8 *frame, int32 len)
++{
++if (len > COMBO_SFRAME)
++    len = COMBO_SFRAME;
++if (len <= 0)
++    return;
++memcpy (cs->frame, frame, len);
++cs->frame_len = len;
++}
++
++/* TRUE if a DDCMP frame waits in cs->frame (taken from the line if none
++   was waiting). */
++t_bool combo_ddcmp_fetch (COMBO_SYNC *cs)
++{
++const uint8 *pkt = NULL;
++uint16 size = 0;
++
++if (cs->frame_len)
++    return TRUE;
++if (!cs->ln[0].conn)
++    return FALSE;
++ddcmp_tmxr_get_packet_ln (&cs->ln[0], &pkt, &size, 0);
++if (pkt == NULL)
++    return FALSE;
++combo_sync_hold (cs, pkt, size);
++return cs->frame_len != 0;
++}
++
++/* A received frame as the host gets it: the 6 header characters and the
++   data, without the two CRCs (TD 2.7.2).  *n is the number of characters
++   for the buffer.  A bad header CRC, a bad start character or a short
++   frame: CDD_DROP (the receiver resynchronizes, TD 2.7.2.6); a bad data
++   CRC: CDD_DCRC (stored, with the message error). */
++int32 combo_ddcmp_decode (const uint8 *frame, int32 len, uint8 *out, int32 *n)
++{
++int32 dlen;
++
++*n = 0;
++if (len < DDCMP_HEADER_SIZE)
++    return CDD_DROP;
++if ((frame[0] != DDCMP_SOH) && (frame[0] != DDCMP_ENQ) && (frame[0] != DDCMP_DLE))
++    return CDD_DROP;
++if (ddcmp_crc16 (0, frame, DDCMP_HEADER_SIZE) != 0)
++    return CDD_DROP;
++memcpy (out, frame, 6);
++*n = 6;
++if (frame[0] == DDCMP_ENQ)                      /* control message: header only */
++    return CDD_OK;
++dlen = ((frame[2] & 077) << 8) | frame[1];
++if ((dlen + DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE) > len)
++    return CDD_DROP;                            /* (short frame) */
++memcpy (out + 6, frame + DDCMP_HEADER_SIZE, dlen);
++*n += dlen;
++if (ddcmp_crc16 (0, frame + DDCMP_HEADER_SIZE, dlen + DDCMP_CRC_SIZE) != 0)
++    return CDD_DCRC;
++return CDD_OK;
++}
++
++/* A message from a transmit buffer (header and data, count characters)
++   as a frame with both CRCs; *len is the frame length.  A control message
++   (ENQ) is the header alone; the data count of a data or maintenance
++   message must fit in the buffer. */
++int32 combo_ddcmp_encode (const uint8 *msg, int32 count, uint8 *out, int32 *len)
++{
++int32 dlen;
++uint16 crc;
++
++*len = 0;
++if ((count < 6) || ((msg[0] != DDCMP_SOH) && (msg[0] != DDCMP_ENQ) && (msg[0] != DDCMP_DLE)))
++    return CDE_HDR;
++dlen = (msg[0] == DDCMP_ENQ) ? 0 : (((msg[2] & 077) << 8) | msg[1]);
++if (count < 6 + dlen)
++    return CDE_LEN;
++memcpy (out, msg, 6);
++crc = ddcmp_crc16 (0, out, 6);
++out[6] = crc & 0377;
++out[7] = (crc >> 8) & 0377;
++*len = DDCMP_HEADER_SIZE;
++if (dlen) {
++    memcpy (out + DDCMP_HEADER_SIZE, msg + 6, dlen);
++    crc = ddcmp_crc16 (0, out + DDCMP_HEADER_SIZE, dlen);
++    out[DDCMP_HEADER_SIZE + dlen] = crc & 0377;
++    out[DDCMP_HEADER_SIZE + dlen + 1] = (crc >> 8) & 0377;
++    *len += dlen + DDCMP_CRC_SIZE;
++    }
++return CDE_OK;
++}
+diff --git a/VAX/vax_combo_lib.h b/VAX/vax_combo_lib.h
+index a46a778f..a66ab89f 100644
+--- a/VAX/vax_combo_lib.h
++++ b/VAX/vax_combo_lib.h
+@@ -23,13 +23,26 @@
+ 
+    - the line printer formatter (tabs, truncation, line wrap, automatic
+      carriage return, form feed conversion, upper case, non printing
+-     characters, DAVFU codes, prefix and suffix characters).
++     characters, DAVFU codes, prefix and suffix characters);
++   - the synchronous line's link to its peer and the DDCMP framing.
+ 
+    Each board keeps a COMBO_LP for its printer, sets the option flags from
+    its own registers before a print cycle and supplies the output routine.
+ 
++   For the synchronous line each board keeps a COMBO_SYNC: the one-line
++   TMXR connection to the peer (SET <unit> PEER=host:port, ATTACH <unit>
++   port), as DMF-SYNC and the DMC11 use it: whole DDCMP frames, CRCs
++   included.  In DDCMP mode the boards only frame messages (DMB32 TD 2.7,
++   DMF32 UG 4.11): the host software runs the protocol; the board takes
++   the 6-byte header and the data from a transmit buffer and inserts the
++   header and data CRCs, and on receive it checks and strips them and
++   stores header and data.  combo_ddcmp_encode/decode do that; the
++   register handling, buffers and interrupts stay with the board.
++
+    Modification history:
+ 
++   17-Nov-26    Ulli/Claude  Synchronous line link and DDCMP framing (from
++                             vax_dmf.c), for the DMB32 sync line
+    15-Nov-26    Ulli/Claude  First version: printer formatter (from vax_dmf.c)
+ */
+ 
+@@ -37,6 +50,7 @@
+ #define VAX_COMBO_LIB_H_    0
+ 
+ #include "sim_defs.h"
++#include "sim_tmxr.h"
+ 
+ /* Printer formatter options (COMBO_LP.flags) */
+ 
+@@ -77,4 +91,50 @@ void combo_lp_newline (COMBO_LP *lp);           /* "new line" (prefix 0, wrap) *
+ void combo_lp_format (COMBO_LP *lp, int32 c);   /* one data character, formatted */
+ void combo_lp_fix (COMBO_LP *lp, int32 count, int32 c);    /* prefix/suffix */
+ 
++/* Synchronous line: link to the peer and DDCMP framing */
++
++#define COMBO_SFRAME    (16384 + 16)            /* largest message + header/CRCs */
++
++/* combo_ddcmp_decode results */
++#define CDD_OK          0                       /* good message */
++#define CDD_DROP        1                       /* bad header (CRC, start
++                                                   character, short frame):
++                                                   the receiver resynchronizes,
++                                                   nothing is stored */
++#define CDD_DCRC        2                       /* stored, data CRC bad */
++
++/* combo_ddcmp_encode results */
++#define CDE_OK          0
++#define CDE_HDR         1                       /* not SOH, ENQ or DLE, or shorter
++                                                   than a header */
++#define CDE_LEN         2                       /* data count beyond the buffer */
++
++typedef struct combo_sync COMBO_SYNC;
++
++struct combo_sync {
++    TMLN    ln[1];                              /* the line */
++    TMXR    desc;                               /* its one-line multiplexer */
++    char    peer[CBUFSIZE];                     /* host:port to connect to */
++    uint8   frame[COMBO_SFRAME];                /* received frame waiting for a
++                                                   buffer (CRCs included) */
++    int32   frame_len;                          /* its length, 0 = none */
++    DEVICE  *dptr;                              /* for debug output */
++    uint32  dbg;                                /* debug flag of connection messages */
++    };
++
++void combo_sync_setup (COMBO_SYNC *cs, DEVICE *dptr, UNIT *uptr, uint32 dbg);
++t_stat combo_sync_set_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
++t_stat combo_sync_show_peer (FILE *st, COMBO_SYNC *cs);
++t_stat combo_sync_attach (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
++t_stat combo_sync_detach (COMBO_SYNC *cs, UNIT *uptr);
++t_bool combo_sync_poll_rx (COMBO_SYNC *cs, UNIT *uptr);    /* TRUE: new connection */
++void combo_sync_poll_tx (COMBO_SYNC *cs, UNIT *uptr);
++t_bool combo_sync_up (COMBO_SYNC *cs);          /* connected to the peer */
++t_bool combo_sync_tx_busy (COMBO_SYNC *cs);     /* previous frame still going */
++void combo_sync_send (COMBO_SYNC *cs, uint8 *frame, int32 len);
++void combo_sync_hold (COMBO_SYNC *cs, const uint8 *frame, int32 len);
++t_bool combo_ddcmp_fetch (COMBO_SYNC *cs);      /* a DDCMP frame waits in cs->frame */
++int32 combo_ddcmp_decode (const uint8 *frame, int32 len, uint8 *out, int32 *n);
++int32 combo_ddcmp_encode (const uint8 *msg, int32 count, uint8 *out, int32 *len);
++
+ #endif
+diff --git a/VAX/vax_dmb.c b/VAX/vax_dmb.c
+index b5967f33..1fd386a1 100644
+--- a/VAX/vax_dmb.c
++++ b/VAX/vax_dmb.c
+@@ -52,12 +52,15 @@
+    table, plus a byte offset within the first page for the two page table
+    forms.
+ 
+-   This file has the BI node, the self-test, the async lines and the DMA
+-   engine.  The printer port and the synchronous line use the shared
++   This file has the BI node, the self-test, the async lines, the
++   synchronous line's registers and the DMA engine.  The printer port and
++   the synchronous line use the shared
+    printer formatter and DDCMP engine (vax_combo_lib.c, with the DMF32).
+ 
+    Modification history:
+ 
++   17-Nov-26    Ulli/Claude  Synchronous line (DDCMP), with the link and
++                             framing of vax_combo_lib.c (VMS V5.5 SIDRIVER)
+    15-Nov-26    Ulli/Claude  First version (BI node, self-test, async lines)
+ */
+ 
+@@ -278,6 +281,33 @@
+ #define SB_V_ERR        16
+ #define SB_ACT          0x80000000
+ 
++/* sync LPR1 (3.3.34) */
++#define L1_RXENA        0x00000001              /* receiver enable */
++#define L1_LOOP         0x00001000              /* internal loopback */
++#define L1_MDMSUPP      0x00008000              /* no modem change entries in SBUF */
++#define L1_LINERESET    0x80000000              /* line reset request */
++
++/* sync LPR2 (3.3.35) */
++#define L2_OUTPUTS      0x0000001F              /* modem control outputs */
++#define L2_V_INPUTS     8
++#define L2_INPUTS       0x0000FF00              /* modem status inputs (ro) */
++#define  SM_RXCLK        0x0100                 /* receive clock running */
++#define  SM_TXCLK        0x0200                 /* transmit clock running */
++#define  SM_CTS          0x1000
++#define  SM_DCD          0x2000
++#define  SM_DSR          0x8000
++#define  SM_UP           (SM_RXCLK|SM_TXCLK|SM_CTS|SM_DCD|SM_DSR)
++#define L2_V_PROTO      16
++#define L2_PROTO        0x00070000
++#define  SPROTO_DDCMP    0
++#define L2_OVERRIDE     0x80000000              /* ignore the modem signals */
++
++/* sync BUFCTRL (3.3.43) */
++#define BC_TXPRIO       0x00000001              /* use buffer 2 if both ready */
++#define BC_RXPRIO       0x00000100
++#define BC_RO           0xFFFF0000              /* cable, test inputs (ro) */
++#define BC_CABLE        0x42000000              /* SYNC.VALID, V.24 cable (2) */
++
+ /* RBUF (3.3.53) */
+ #define RB_PARERR       0x00001000
+ #define RB_FRMERR       0x00002000
+@@ -296,6 +326,12 @@
+ #define  ER_R_INV        (2 << 2)               /* PTE not valid */
+ #define  ER_R_ACC        (3 << 2)               /* PTE does not allow the access */
+ #define ER_ABORT        0x61                    /* aborted by the host */
++#define ER_MSG_DCRC     0x22                    /* message error: bad data CRC */
++#define ER_MSG_LONG     0x23                    /* longer than the buffer, good CRC */
++#define ER_MSG_LONGBAD  0x24                    /* longer than the buffer, bad CRC */
++#define ER_BUF_HDR      0x41                    /* buffer error: invalid header */
++#define ER_BUF_LEN      0x42                    /* invalid message length */
++#define ER_MDM_STS      0x52                    /* modem error: invalid modem status */
+ #define ER_NOPRINTER    0x81                    /* printer not connected */
+ 
+ /* BI interrupt vector types (TD 2.2.3) */
+@@ -318,6 +354,8 @@
+ #define DBG_MDM         TMXR_DBG_MDM
+ #define DBG_CON         TMXR_DBG_CON
+ #define DBG_TRC         TMXR_DBG_TRC
++#define DBG_PXMT        TMXR_DBG_PXMT           /* = DDCMP_DBG_PXMT (pdp11_ddcmp.h) */
++#define DBG_PRCV        TMXR_DBG_PRCV           /* = DDCMP_DBG_PRCV */
+ 
+ /* DMA descriptor of a channel: BI_DMA (vax_bi_dma.h), set up from what
+    the host wrote into the address, count/offset and control registers;
+@@ -360,6 +398,8 @@ static COMBO_LP dmb_lp;                         /* printer formatter state */
+ static DMB_DMA dmb_pdma;                        /* printer DMA in progress */
+ static t_bool dmb_p_active;                     /* printer DMA.START seen */
+ static uint32 dmb_sreg[SY_NREGS];               /* sync line registers */
++static COMBO_SYNC dmb_sl;                       /* sync line link (vax_combo_lib) */
++static int32 dmb_s_wait = 50;                   /* register write to action (instr) */
+ static uint32 dmb_ram[DMB_RAM_LONGS];           /* on-board RAM (maintenance) */
+ static DMB_LINE dmb_line[DMB_LINES];
+ 
+@@ -415,6 +455,8 @@ static void dmb_update_int (void);
+ static void dmb_start_selftest (const char *why);
+ static void dmb_async_init (t_bool power);
+ static void dmb_sync_init (void);
++static t_stat dmb_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++static t_stat dmb_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ static void dmb_lp_init (void);
+ static void dmb_transmit (int32 ln);
+ 
+@@ -488,6 +530,8 @@ MTAB dmb_mod[] = {
+         NULL, &tmxr_show_cstat, (void *) &dmb_desc, "Display current connections" },
+     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "STATISTICS", NULL,
+         NULL, &tmxr_show_cstat, (void *) &dmb_desc, "Display multiplexer statistics" },
++    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "PEER", "PEER=address:port",
++        &dmb_set_peer, &dmb_show_peer, NULL, "Peer of the synchronous line (DMB-SYNC)" },
+     { 0 }
+     };
+ 
+@@ -503,6 +547,8 @@ DEBTAB dmb_debug[] = {
+     { "MDM",  DBG_MDM,  "modem signals" },
+     { "CON",  DBG_CON,  "connection activities" },
+     { "TRC",  DBG_TRC,  "trace routine calls" },
++    { "PXMT", DBG_PXMT, "synchronous DDCMP frames transmitted" },
++    { "PRCV", DBG_PRCV, "synchronous DDCMP frames received" },
+     { 0 }
+     };
+ 
+@@ -1133,27 +1179,283 @@ if (dmb_p_active)
+ }
+ 
+ /* ---------------------------------------------------------------------------
+-   Synchronous line: registers only in this version (comes with P4)
++   Synchronous line (UG 3.3.28-3.3.43, 3.3.52, 3.4.6, 3.4.11; TD 2.7)
++
++   DDCMP only (D3).  The board frames messages; the host's SIDRIVER runs
++   the protocol.  Two buffers per direction: the host sets DMA.START in
++   TLNCTRLn/RLNCTRLn, the board clears it when the buffer is done and
++   reports it in SBUF (sync interrupt).  The line is unit DMB-SYNC, a
++   one-line connection to the peer (vax_combo_lib.c): ATTACH DMB-SYNC port
++   (and SET DMB-SYNC PEER=host:port to connect out).  Without a
++   connection the modem inputs are off; with LPR1 LOOP the transmitter
++   feeds the receiver.
++
++   The line is polled once per clock tick (like DMF-SYNC); a register
++   write that gives it work runs the service at once.
+    --------------------------------------------------------------------------- */
+ 
++#define DMB_S_POLL(u)   sim_clock_coschedule ((u), tmxr_poll)
++
++/* buffer n (0, 1) register indexes */
++static const int32 dmb_s_tad[2]  = { SY_TBUFFAD1, SY_TBUFFAD2 };
++static const int32 dmb_s_tct[2]  = { SY_TBUFFCT1, SY_TBUFFCT2 };
++static const int32 dmb_s_tctl[2] = { SY_TLNCTRL1, SY_TLNCTRL2 };
++static const int32 dmb_s_rad[2]  = { SY_RBUFFAD1, SY_RBUFFAD2 };
++static const int32 dmb_s_rct[2]  = { SY_RBUFFCT1, SY_RBUFFCT2 };
++static const int32 dmb_s_rctl[2] = { SY_RLNCTRL1, SY_RLNCTRL2 };
++
++static void dmb_sync_kick (void)
++{
++sim_cancel (DMB_SYNC_UNIT);
++sim_activate (DMB_SYNC_UNIT, dmb_s_wait);
++}
++
++/* Initialization (self-test, SYNC.RESET): all registers 0 (3.3.28 ff.),
++   the cable fields of BUFCTRL show a V.24 cable. */
+ static void dmb_sync_init (void)
+ {
+ int32 i;
+ 
+ dmb_scnt = 0;
+ dmb_s_posted = FALSE;
+-for (i = 0; i < SY_NREGS; i++)                  /* all fields 0 but BUFCTRL<31:16> */
+-    dmb_sreg[i] = (i == SY_BUFCTRL) ? (dmb_sreg[i] & 0xFFFF0000) : 0;
++for (i = 0; i < SY_NREGS; i++)
++    dmb_sreg[i] = 0;
++dmb_sreg[SY_BUFCTRL] = BC_CABLE;
++dmb_sl.frame_len = 0;
++}
++
++/* The modem inputs: all on while connected to the peer or looped. */
++static uint32 dmb_sync_inputs (void)
++{
++if (combo_sync_up (&dmb_sl) || (dmb_sreg[SY_LPR1] & L1_LOOP))
++    return SM_UP;
++return 0;
++}
++
++/* Modem status into LPR2<15:8>; a change is an SBUF entry (3.4.11) */
++static void dmb_sync_modem (void)
++{
++uint32 old = dmb_sreg[SY_LPR2] & L2_INPUTS;
++uint32 now = dmb_sync_inputs ();
++
++if (now == old)
++    return;
++dmb_sreg[SY_LPR2] = (dmb_sreg[SY_LPR2] & ~L2_INPUTS) | now;
++sim_debug (DBG_MDM, &dmb_dev, "sync modem status %02X -> %02X\n",
++           old >> L2_V_INPUTS, now >> L2_V_INPUTS);
++if (!(dmb_sreg[SY_LPR1] & L1_MDMSUPP))
++    dmb_s_report (SB_MODEM | ((now >> L2_V_INPUTS) << SB_V_ERR));
++}
++
++/* End of a buffer: control register, SBUF entry, interrupt */
++static void dmb_sync_done (t_bool tx, int32 b, int32 err)
++{
++int32 ctl = tx ? dmb_s_tctl[b] : dmb_s_rctl[b];
++
++dmb_sreg[ctl] = (dmb_sreg[ctl] & ~(DC_START|DC_ERR)) | ((uint32)err << DC_V_ERR);
++sim_debug (DBG_SYNC, &dmb_dev, "sync %s buffer %d done, error %02X\n",
++           tx ? "transmit" : "receive", b + 1, err);
++dmb_s_report ((tx ? SB_TXACT : 0) | (b ? SB_SECOND : 0) | ((uint32)err << SB_V_ERR));
++}
++
++/* The buffer to use: the one started, or by priority if both are */
++static int32 dmb_sync_pick (const int32 *ctl, uint32 prio)
++{
++t_bool s1 = (dmb_sreg[ctl[0]] & DC_START) != 0;
++t_bool s2 = (dmb_sreg[ctl[1]] & DC_START) != 0;
++
++if (s1 && s2)
++    return (dmb_sreg[SY_BUFCTRL] & prio) ? 1 : 0;
++return s1 ? 0 : (s2 ? 1 : -1);
++}
++
++/* Transmit the started buffers, one message per buffer (TD 2.7). */
++static void dmb_sync_transmit (void)
++{
++static uint8 msg[COMBO_SFRAME], frame[COMBO_SFRAME];
++int32 b, err, dmaerr, n, count, flen, r;
++uint32 *ad, *ct;
++DMB_DMA d;
++
++while ((b = dmb_sync_pick (dmb_s_tctl, BC_TXPRIO)) >= 0) {
++    if (!(dmb_sreg[SY_LPR1] & L1_LOOP) && combo_sync_tx_busy (&dmb_sl))
++        return;                                 /* previous message still going */
++    ad = &dmb_sreg[dmb_s_tad[b]];
++    ct = &dmb_sreg[dmb_s_tct[b]];
++    err = 0;
++    if (!(dmb_sreg[SY_LPR2] & L2_OVERRIDE) &&   /* no modem: no transmission */
++        ((dmb_sync_inputs () & (SM_DSR|SM_CTS)) != (SM_DSR|SM_CTS))) {
++        dmb_sync_done (TRUE, b, ER_MDM_STS);
++        continue;
++        }
++    dmb_dma_setup (&d, *ad, *ct, dmb_sreg[dmb_s_tctl[b]]);
++    count = (int32) d.count;
++    if (count > COMBO_SFRAME)
++        count = COMBO_SFRAME;
++    n = bi_dma_xfer (&d, msg, count, FALSE, &dmaerr);
++    if (n != count)
++        err = dmaerr;
++    else if (((dmb_sreg[SY_LPR2] & L2_PROTO) >> L2_V_PROTO) != SPROTO_DDCMP)
++        err = ER_BUF_HDR;                       /* DDCMP only (D3) */
++    else if ((r = combo_ddcmp_encode (msg, count, frame, &flen)) != CDE_OK)
++        err = (r == CDE_LEN) ? ER_BUF_LEN : ER_BUF_HDR;
++    if (err) {
++        dmb_dma_regs (&d, err, ad, ct);
++        dmb_sync_done (TRUE, b, err);
++        continue;
++        }
++    sim_debug (DBG_SYNC, &dmb_dev, "sync transmit %d characters from buffer %d\n", count, b + 1);
++    if (dmb_sreg[SY_LPR1] & L1_LOOP) {          /* internal loopback */
++        if (dmb_sl.frame_len == 0)              /* (one message in flight) */
++            combo_sync_hold (&dmb_sl, frame, flen);
++        }
++    else
++        combo_sync_send (&dmb_sl, frame, flen); /* (no connection: into the void) */
++    dmb_dma_regs (&d, 0, ad, ct);               /* count 0: all sent */
++    dmb_sync_done (TRUE, b, 0);
++    }
++}
++
++/* Receive messages into the started buffers (TD 2.7.2). */
++static void dmb_sync_receive (void)
++{
++static uint8 msg[COMBO_SFRAME];
++int32 b, err, dmaerr, n, store, count, r;
++uint32 *ad, *ct;
++DMB_DMA d;
++
++for (;;) {
++    if (!(dmb_sreg[SY_LPR1] & L1_LOOP) && !combo_sync_up (&dmb_sl))
++        return;
++    if (!combo_ddcmp_fetch (&dmb_sl))
++        return;
++    if (!(dmb_sreg[SY_LPR1] & L1_RXENA)) {      /* receiver off: data ignored */
++        sim_debug (DBG_SYNC, &dmb_dev, "sync message dropped, receiver disabled\n");
++        dmb_sl.frame_len = 0;
++        continue;
++        }
++    r = combo_ddcmp_decode (dmb_sl.frame, dmb_sl.frame_len, msg, &n);
++    if (r == CDD_DROP) {                        /* bad header: resynchronize */
++        sim_debug (DBG_SYNC, &dmb_dev, "sync DDCMP header error - frame ignored\n");
++        dmb_sl.frame_len = 0;
++        continue;
++        }
++    if ((b = dmb_sync_pick (dmb_s_rctl, BC_RXPRIO)) < 0)
++        return;                                 /* no buffer: the message waits */
++    dmb_sl.frame_len = 0;
++    ad = &dmb_sreg[dmb_s_rad[b]];
++    ct = &dmb_sreg[dmb_s_rct[b]];
++    dmb_dma_setup (&d, *ad, *ct, dmb_sreg[dmb_s_rctl[b]]);
++    count = (int32) d.count;
++    err = (r == CDD_DCRC) ? ER_MSG_DCRC : 0;
++    store = n;
++    if (store > count) {                        /* buffer too small */
++        store = count;
++        err = (r == CDD_DCRC) ? ER_MSG_LONGBAD : ER_MSG_LONG;
++        }
++    if (bi_dma_xfer (&d, msg, store, TRUE, &dmaerr) != store) {
++        dmb_dma_regs (&d, dmaerr, ad, ct);
++        dmb_sync_done (FALSE, b, dmaerr);
++        continue;
++        }
++    *ct = ((uint32)store << CT_V_COUNT) | (*ct & CT_OFF);   /* characters received */
++    sim_debug (DBG_SYNC, &dmb_dev, "sync receive %d characters into buffer %d\n", store, b + 1);
++    dmb_sync_done (FALSE, b, err);
++    }
+ }
+ 
+ t_stat dmb_sync_svc (UNIT *uptr)
+ {
++combo_sync_poll_rx (&dmb_sl, uptr);
++dmb_sync_modem ();
++dmb_sync_receive ();
++dmb_sync_transmit ();
++if (uptr->flags & UNIT_ATT) {
++    combo_sync_poll_tx (&dmb_sl, uptr);
++    DMB_S_POLL (uptr);
++    }
+ return SCPE_OK;
+ }
+ 
++/* LPR1 LINE.RESET: abort all DMA operations and initialize the channel
++   (their SBUF entries may be lost, 3.3.34); the parameters stay. */
++static void dmb_sync_line_reset (void)
++{
++int32 b;
++
++for (b = 0; b < 2; b++) {
++    dmb_sreg[dmb_s_tctl[b]] &= ~(DC_START|DC_ERR);
++    dmb_sreg[dmb_s_rctl[b]] &= ~(DC_START|DC_ERR);
++    }
++dmb_sl.frame_len = 0;
++dmb_sreg[SY_LPR1] &= ~L1_LINERESET;             /* done */
++sim_debug (DBG_SYNC, &dmb_dev, "sync line reset\n");
++}
++
++/* A control register write: start, or abort, buffer b */
++static void dmb_sync_ctl (t_bool tx, int32 b, uint32 data, uint32 bytes)
++{
++int32 idx = tx ? dmb_s_tctl[b] : dmb_s_rctl[b];
++t_bool active = (dmb_sreg[idx] & DC_START) != 0;
++
++if (active) {                                   /* only ABORT may change now */
++    if ((bytes & 2) && (data & DC_ABORT)) {
++        dmb_sreg[idx] |= DC_ABORT;
++        dmb_sync_done (tx, b, ER_ABORT);
++        }
++    return;
++    }
++dmb_sreg[idx] = data & LN_RW;
++if ((bytes & 1) && (data & DC_START)) {
++    if (data & DC_ABORT)                        /* aborted at once (3.3.32) */
++        dmb_sync_done (tx, b, ER_ABORT);
++    else {
++        dmb_sreg[idx] &= ~DC_ERR;
++        sim_debug (DBG_SYNC, &dmb_dev, "sync %s buffer %d started\n", tx ? "transmit" : "receive", b + 1);
++        dmb_sync_kick ();
++        }
++    }
++}
++
+ static void dmb_write_sync (int32 idx, uint32 data, uint32 bytes)
+ {
+-dmb_sreg[idx] = data;
++switch (idx) {
++    case SY_TLNCTRL1: dmb_sync_ctl (TRUE, 0, data, bytes);  break;
++    case SY_TLNCTRL2: dmb_sync_ctl (TRUE, 1, data, bytes);  break;
++    case SY_RLNCTRL1: dmb_sync_ctl (FALSE, 0, data, bytes); break;
++    case SY_RLNCTRL2: dmb_sync_ctl (FALSE, 1, data, bytes); break;
++    case SY_LPR1:
++        dmb_sreg[idx] = data;
++        if (data & L1_LINERESET)
++            dmb_sync_line_reset ();
++        dmb_sync_kick ();                       /* receiver, loopback changed */
++        break;
++    case SY_LPR2:                               /* modem inputs are read only */
++        dmb_sreg[idx] = (data & ~L2_INPUTS) | (dmb_sreg[idx] & L2_INPUTS);
++        dmb_sync_kick ();
++        break;
++    case SY_BUFCTRL:                            /* cable fields are read only */
++        dmb_sreg[idx] = (data & ~BC_RO) | (dmb_sreg[idx] & BC_RO);
++        break;
++    default:                                    /* addresses, counts, LPR3 */
++        dmb_sreg[idx] = data;
++        break;
++    }
++}
++
++/* SET/SHOW DMB-SYNC PEER */
++static t_stat dmb_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++if (uptr != DMB_SYNC_UNIT)
++    return SCPE_NOFNC;
++return combo_sync_set_peer (&dmb_sl, uptr, cptr);
++}
++
++static t_stat dmb_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++if (uptr != DMB_SYNC_UNIT)
++    return SCPE_OK;
++return combo_sync_show_peer (st, &dmb_sl);
+ }
+ 
+ /* ---------------------------------------------------------------------------
+@@ -1563,6 +1865,7 @@ sim_set_uname (&dmb_unit[0], "DMB-ASYNC");
+ sim_set_uname (&dmb_unit[1], "DMB-PRINT");
+ sim_set_uname (&dmb_unit[2], "DMB-SYNC");
+ dmb_desc.dptr = dptr;
++combo_sync_setup (&dmb_sl, dptr, DMB_SYNC_UNIT, DBG_CON);   /* sync line link */
+ /* bus reset: the self-test has run by the time software looks at the
+    node (power-up), so the board is ready at once */
+ sim_cancel (DMB_ST_UNIT);
+@@ -1579,6 +1882,10 @@ if (DMB_MUX_UNIT->flags & UNIT_ATT)
+     sim_clock_coschedule (DMB_MUX_UNIT, tmxr_poll);
+ else
+     sim_cancel (DMB_MUX_UNIT);
++if (DMB_SYNC_UNIT->flags & UNIT_ATT)            /* sync line keeps polling */
++    sim_clock_coschedule (DMB_SYNC_UNIT, tmxr_poll);
++else
++    sim_cancel (DMB_SYNC_UNIT);
+ return SCPE_OK;
+ }
+ 
+@@ -1588,8 +1895,12 @@ t_stat r;
+ 
+ if (uptr == DMB_LP_UNIT)
+     return attach_unit (uptr, cptr);
+-if (uptr == DMB_SYNC_UNIT)
+-    return sim_messagef (SCPE_NOFNC, "DMB-SYNC: the synchronous line is not implemented yet\n");
++if (uptr == DMB_SYNC_UNIT) {                    /* synchronous line */
++    r = combo_sync_attach (&dmb_sl, uptr, cptr);
++    if (r == SCPE_OK)
++        dmb_sync_kick ();
++    return r;
++    }
+ if (uptr != DMB_MUX_UNIT)
+     return SCPE_NOATT;
+ if (sim_switches & SWMASK ('M'))                /* modem control on all lines */
+@@ -1610,6 +1921,11 @@ t_stat r;
+ 
+ if (uptr == DMB_LP_UNIT)
+     return detach_unit (uptr);
++if (uptr == DMB_SYNC_UNIT) {                    /* synchronous line */
++    r = combo_sync_detach (&dmb_sl, uptr);
++    dmb_sync_modem ();                          /* modem signals drop */
++    return r;
++    }
+ if (uptr != DMB_MUX_UNIT)
+     return SCPE_NOATT;
+ r = tmxr_detach (&dmb_desc, uptr);
+@@ -1652,6 +1968,15 @@ fprintf (st, "clear to send; with -M the modem signals follow the connection and
+ fprintf (st, "Line printer: attach DMB-PRINT to an output file:\n\n");
+ fprintf (st, "   sim> ATTACH DMB-PRINT printer.txt\n\n");
+ fprintf (st, "Without a file the printer is offline (not connected).\n\n");
++fprintf (st, "Synchronous line: DDCMP (the DECnet circuit DMB-0 of VMS's SIDRIVER),\n");
++fprintf (st, "connected to a DMC11, DMR11, DMP11, DMV11, DMF32 or another DMB32 in\n");
++fprintf (st, "another simulator, as for the DMC and DMF-SYNC.  Listen on a port and\n");
++fprintf (st, "connect to the peer's port:\n\n");
++fprintf (st, "   sim> SET DMB-SYNC PEER=localhost:4001\n");
++fprintf (st, "   sim> ATTACH DMB-SYNC 4000\n\n");
++fprintf (st, "The peer does the same with the ports swapped.  While connected the\n");
++fprintf (st, "modem signals (DSR, DCD, CTS, clocks) are on.  Only DDCMP is supported;\n");
++fprintf (st, "a buffer for another protocol ends with a buffer error.\n\n");
+ fprint_set_help (st, dptr);
+ fprint_show_help (st, dptr);
+ fprint_reg_help (st, dptr);
+diff --git a/VAX/vax_dmf.c b/VAX/vax_dmf.c
+index 3cab8925..59a5373a 100644
+--- a/VAX/vax_dmf.c
++++ b/VAX/vax_dmf.c
+@@ -109,7 +109,8 @@
+ #include "vax_defs.h"
+ #include "sim_tmxr.h"
+ #include "pdp11_ddcmp.h"                       /* DDCMP framing and CRC */
+-#include "vax_combo_lib.h"                     /* printer formatter (with DMB32) */
++#include "vax_combo_lib.h"                     /* printer formatter, sync line link
++                                                   and DDCMP framing (with DMB32) */
+ 
+ /* ---------------------------------------------------------------------------
+    Register layout
+@@ -309,8 +310,8 @@ static int32 dmf_config;
+ 
+ static TMLN dmf_ldsc[DMF_LINES];
+ static TMXR dmf_desc = { DMF_LINES, 0, 0, dmf_ldsc };
+-static TMXR dmf_sdesc;                          /* sync line, parallel device: */
+-static TMXR dmf_ddesc;                          /* defined with their code below */
++static COMBO_SYNC dmf_sl;                       /* sync line link (vax_combo_lib.c) */
++static TMXR dmf_ddesc;                          /* parallel device: defined with its code below */
+ 
+ t_stat dmf_rd (int32 *data, int32 PA, int32 access);
+ t_stat dmf_wr (int32 data, int32 PA, int32 access);
+@@ -418,7 +419,7 @@ static t_stat dmf_show_summ (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ TMXR *mp = &dmf_desc;
+ 
+ if (uptr == &dmf_unit[3])                       /* DMF-SYNC */
+-    mp = &dmf_sdesc;
++    mp = &dmf_sl.desc;
+ else if (uptr == &dmf_unit[4])                  /* DMF-PAR */
+     mp = &dmf_ddesc;
+ return tmxr_show_summ (st, uptr, val, (void *) mp);
+@@ -1142,8 +1143,6 @@ static uint16 dmf_srcsr;                        /* receive CSR */
+ static uint16 dmf_stcsr;                        /* transmit CSR */
+ static uint16 dmf_smisc;                        /* misc (7:0), data set change flags (15:8) */
+ static uint16 dmf_sind[16];                     /* indirect registers */
+-static uint8 dmf_sframe[DMF_SFRAME];            /* received message waiting for a buffer */
+-static int32 dmf_sframe_len;                    /* its length, 0 = none */
+ static uint8 dmf_srxp[DMF_SFRAME + 4];          /* HDLC frame being assembled */
+ static int32 dmf_srxp_len;
+ static t_bool dmf_sgen_sync;                    /* GEN BYTE receiver synchronized */
+@@ -1152,10 +1151,6 @@ static t_bool dmf_sgen_strip;                   /* stripping syncs after synchro
+ static int32 dmf_sgen_off[2];                   /* GEN BYTE: bytes stored in each buffer */
+ static uint8 dmf_sxbuf[DMF_SFRAME + 4];         /* transmit message being built */
+ static int32 dmf_sync_wait = 50;                /* register write to action (instr) */
+-static char dmf_speer[CBUFSIZE];                /* peer for the synchronous line */
+-
+-static TMLN dmf_sldsc[1];
+-static TMXR dmf_sdesc = { 1, 0, 0, dmf_sldsc };
+ 
+ #define DMF_SYNC_UNIT   (&dmf_unit[3])
+ 
+@@ -1231,7 +1226,7 @@ static void dmf_sync_modem (void)
+ uint16 old = dmf_sind[4] & 0377;
+ uint16 now = 0;
+ 
+-if (dmf_sldsc[0].conn || (dmf_srcsr & SR_LOOP))
++if (combo_sync_up (&dmf_sl) || (dmf_srcsr & SR_LOOP))
+     now = SMR_DSR | SMR_CD | SMR_CTS;
+ if (now != old) {
+     sim_debug (DBG_MDM, &dmf_dev, "sync modem status %03o -> %03o\n", old, now);
+@@ -1260,28 +1255,21 @@ if (dmf_srcsr & done)                           /* no free buffer: wait */
+ if ((len <= 0) || (len > DMF_SFRAME))           /* (cannot happen) */
+     return TRUE;
+ switch (dmf_sync_proto ()) {
+-    case PROTO_DDCMP:                           /* header and data without CRCs */
+-        if (ddcmp_crc16 (0, msg, DDCMP_HEADER_SIZE) != 0) {
+-            sim_debug (DBG_SRCV, &dmf_dev, "sync DDCMP header CRC error - ignored\n");
++    case PROTO_DDCMP: {                         /* header and data without CRCs */
++        int32 r = combo_ddcmp_decode (msg, len, buf, &n);
++
++        if (r == CDD_DROP) {                    /* bad header, short frame */
++            sim_debug (DBG_SRCV, &dmf_dev, "sync DDCMP header error - ignored\n");
+             return TRUE;                        /* receiver resynchronizes */
+             }
+-        if ((dmf_srcsr & SR_TRIB) && (msg[5] != (dmf_sind[5] & 0377))) {
+-            sim_debug (DBG_SRCV, &dmf_dev, "sync DDCMP message for station %d ignored\n", msg[5]);
++        if ((dmf_srcsr & SR_TRIB) && (buf[5] != (dmf_sind[5] & 0377))) {
++            sim_debug (DBG_SRCV, &dmf_dev, "sync DDCMP message for station %d ignored\n", buf[5]);
+             return TRUE;                        /* not for this tributary */
+             }
+-        memcpy (buf, msg, 6);
+-        n = 6;
+-        if (msg[0] != DDCMP_ENQ) {
+-            int32 dlen = ((msg[2] & 077) << 8) | msg[1];
+-
+-            if ((dlen + DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE) > len)
+-                return TRUE;                    /* (short frame) */
+-            memcpy (buf + 6, msg + DDCMP_HEADER_SIZE, dlen);
+-            n += dlen;
+-            if (ddcmp_crc16 (0, msg + DDCMP_HEADER_SIZE, dlen + DDCMP_CRC_SIZE) != 0)
+-                err |= SRE_BCC;
+-            }
++        if (r == CDD_DCRC)
++            err |= SRE_BCC;
+         break;
++        }
+     case PROTO_SDLC:
+     case PROTO_HDLC:
+         if (len >= 1 && (dmf_srcsr & SR_TRIB) && (msg[0] != 0377) &&
+@@ -1378,45 +1366,36 @@ if (count - 1 == 0) {                           /* buffer full: done */
+ }
+ 
+ /* Take what the line has received.  DDCMP and HDLC messages are held in
+-   dmf_sframe until the receiver has a free buffer; a message that arrives
+-   while the receiver is disabled is lost, as on a real line. */
++   the link's frame buffer (dmf_sl.frame) until the receiver has a free
++   buffer; a message that arrives while the receiver is disabled is lost,
++   as on a real line. */
+ static void dmf_sync_hold (const uint8 *msg, int32 len)
+ {
+-if (len > DMF_SFRAME)
+-    len = DMF_SFRAME;
+-if (len <= 0)
+-    return;
+-memcpy (dmf_sframe, msg, len);
+-dmf_sframe_len = len;
++combo_sync_hold (&dmf_sl, msg, len);
+ }
+ 
+ static void dmf_sync_receive (void)
+ {
+-TMLN *lp = &dmf_sldsc[0];
++TMLN *lp = &dmf_sl.ln[0];
+ int32 proto = dmf_sync_proto ();
+ 
+ for (;;) {
+-    if (dmf_sframe_len) {                       /* a message is waiting */
++    if (dmf_sl.frame_len) {                     /* a message is waiting */
+         if (!(dmf_srcsr & SR_RE)) {
+             sim_debug (DBG_SRCV, &dmf_dev, "sync message dropped, receiver disabled\n");
+-            dmf_sframe_len = 0;
++            dmf_sl.frame_len = 0;
+             continue;
+             }
+-        if (!dmf_sync_deliver (dmf_sframe, dmf_sframe_len))
++        if (!dmf_sync_deliver (dmf_sl.frame, dmf_sl.frame_len))
+             return;                             /* wait for a buffer */
+-        dmf_sframe_len = 0;
++        dmf_sl.frame_len = 0;
+         continue;
+         }
+     if (!lp->conn || (dmf_srcsr & SR_LOOP))
+         return;
+     if (proto == PROTO_DDCMP) {
+-        const uint8 *pkt = NULL;
+-        uint16 size = 0;
+-
+-        ddcmp_tmxr_get_packet_ln (lp, &pkt, &size, 0);
+-        if (pkt == NULL)
++        if (!combo_ddcmp_fetch (&dmf_sl))       /* the frame waits in dmf_sl.frame */
+             return;
+-        dmf_sync_hold (pkt, size);
+         }
+     else if (proto == PROTO_GENBYTE) {
+         int32 c;
+@@ -1454,7 +1433,7 @@ for (;;) {
+    accepted it.  Without a connection the message is sent into the void. */
+ static void dmf_sync_transmit (void)
+ {
+-TMLN *lp = &dmf_sldsc[0];
++TMLN *lp = &dmf_sl.ln[0];
+ 
+ while (dmf_stcsr & ST_TE) {
+     int32 w = (dmf_stcsr & ST_PS) ? 1 : 0;
+@@ -1475,30 +1454,13 @@ while (dmf_stcsr & ST_TE) {
+         err |= STE_DMA;
+     else switch (proto) {
+         case PROTO_DDCMP: {                     /* insert the two CRCs */
+-            int32 dlen;
+-            uint16 crc;
++            static uint8 frame[COMBO_SFRAME];
+ 
+-            if ((count < 6) || ((msg[0] != DDCMP_SOH) && (msg[0] != DDCMP_ENQ) && (msg[0] != DDCMP_DLE))) {
+-                err |= STE_LEN;
+-                break;
+-                }
+-            dlen = (msg[0] == DDCMP_ENQ) ? 0 : (((msg[2] & 077) << 8) | msg[1]);
+-            if (count < 6 + dlen) {
+-                err |= STE_LEN;
++            if (combo_ddcmp_encode (msg, count, frame, &len) != CDE_OK) {
++                err |= STE_LEN;                 /* bad header or length */
+                 break;
+                 }
+-            if (dlen)                           /* data moves up past the header CRC */
+-                memmove (msg + DDCMP_HEADER_SIZE, msg + 6, dlen);
+-            crc = ddcmp_crc16 (0, msg, 6);
+-            msg[6] = crc & 0377;
+-            msg[7] = (crc >> 8) & 0377;
+-            len = DDCMP_HEADER_SIZE;
+-            if (dlen) {
+-                crc = ddcmp_crc16 (0, msg + DDCMP_HEADER_SIZE, dlen);
+-                msg[len + dlen] = crc & 0377;
+-                msg[len + dlen + 1] = (crc >> 8) & 0377;
+-                len += dlen + DDCMP_CRC_SIZE;
+-                }
++            memcpy (msg, frame, len);
+             break;
+             }
+         case PROTO_SDLC:
+@@ -1540,7 +1502,7 @@ while (dmf_stcsr & ST_TE) {
+             for (i = 0; i < len; i++)
+                 dmf_sync_gen_char (msg[i]);
+             }
+-        else if (dmf_sframe_len == 0)           /* (one message in flight) */
++        else if (dmf_sl.frame_len == 0)         /* (one message in flight) */
+             dmf_sync_hold (msg, len);
+         }
+     else if (lp->conn) {
+@@ -1574,19 +1536,13 @@ while (dmf_stcsr & ST_TE) {
+ /* Line service: connections, modem signals, receive and transmit. */
+ t_stat dmf_sync_svc (UNIT *uptr)
+ {
+-if (uptr->flags & UNIT_ATT) {
+-    if (tmxr_poll_conn (&dmf_sdesc) >= 0) {
+-        sim_debug (DBG_CON, &dmf_dev, "sync line connected\n");
+-        dmf_sldsc[0].rcve = 1;
+-        dmf_srxp_len = 0;
+-        }
+-    tmxr_poll_rx (&dmf_sdesc);
+-    }
++if (combo_sync_poll_rx (&dmf_sl, uptr))         /* newly connected */
++    dmf_srxp_len = 0;
+ dmf_sync_modem ();
+ dmf_sync_receive ();
+ dmf_sync_transmit ();
+ if (uptr->flags & UNIT_ATT) {
+-    tmxr_poll_tx (&dmf_sdesc);
++    combo_sync_poll_tx (&dmf_sl, uptr);
+     DMF_POLL (uptr);
+     }
+ return SCPE_OK;
+@@ -1604,7 +1560,7 @@ if (init) {
+     dmf_sind[4] = 0;                            /* modem registers */
+     dmf_smisc = 0;
+     }
+-dmf_sframe_len = 0;
++dmf_sl.frame_len = 0;
+ dmf_srxp_len = 0;
+ dmf_sgen_sync = FALSE;
+ dmf_sgen_syncs = 0;
+@@ -1719,53 +1675,27 @@ static int32 dmf_ack_stx (void)    { return dmf_vector (VEC_STX); }
+ /* SET/SHOW PEER for the synchronous line */
+ static t_stat dmf_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ {
+-char host[CBUFSIZE], port[CBUFSIZE];
+-
+-if ((cptr == NULL) || (*cptr == 0))
+-    return SCPE_ARG;
+-if (DMF_SYNC_UNIT->flags & UNIT_ATT)
+-    return SCPE_ALATT;
+-if (sim_parse_addr (cptr, host, sizeof (host), NULL, port, sizeof (port), NULL, NULL))
+-    return SCPE_ARG;
+-strlcpy (dmf_speer, cptr, sizeof (dmf_speer));
+-return SCPE_OK;
++return combo_sync_set_peer (&dmf_sl, DMF_SYNC_UNIT, cptr);
+ }
+ 
+ static t_stat dmf_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ {
+-fprintf (st, "peer=%s", dmf_speer[0] ? dmf_speer : "unspecified");
+-return SCPE_OK;
++return combo_sync_show_peer (st, &dmf_sl);
+ }
+ 
+ static t_stat dmf_sync_attach (UNIT *uptr, CONST char *cptr)
+ {
+-char attach[CBUFSIZE * 2 + 32];
+-t_stat r;
++t_stat r = combo_sync_attach (&dmf_sl, uptr, cptr);
+ 
+-if (dmf_speer[0])
+-    snprintf (attach, sizeof (attach), "Line=0,Connect=%s,%s", dmf_speer, cptr);
+-else
+-    snprintf (attach, sizeof (attach), "Line=0,%s", cptr);
+-r = tmxr_open_master (&dmf_sdesc, attach);
+-if (r != SCPE_OK)
+-    return r;
+-uptr->filename = (char *)malloc (strlen (cptr) + 1);
+-strcpy (uptr->filename, cptr);
+-uptr->flags |= UNIT_ATT;
+-dmf_sync_kick ();
+-return SCPE_OK;
++if (r == SCPE_OK)
++    dmf_sync_kick ();
++return r;
+ }
+ 
+ static t_stat dmf_sync_detach (UNIT *uptr)
+ {
+-t_stat r;
++t_stat r = combo_sync_detach (&dmf_sl, uptr);
+ 
+-if (!(uptr->flags & UNIT_ATT))
+-    return SCPE_OK;
+-r = tmxr_close_master (&dmf_sdesc);
+-uptr->flags &= ~UNIT_ATT;
+-free (uptr->filename);
+-uptr->filename = NULL;
+ dmf_sync_modem ();
+ return r;
+ }
+@@ -2466,11 +2396,7 @@ dmf_ddesc.uptr = DMF_DR_UNIT;
+ dmf_dr_reset (TRUE);
+ if (DMF_DR_UNIT->flags & UNIT_ATT)
+     DMF_POLL (DMF_DR_UNIT);
+-dmf_sdesc.packet = TRUE;                        /* message oriented, raw TCP */
+-dmf_sdesc.notelnet = TRUE;
+-dmf_sdesc.buffered = 16384;
+-dmf_sdesc.dptr = dptr;
+-dmf_sdesc.uptr = DMF_SYNC_UNIT;
++combo_sync_setup (&dmf_sl, dptr, DMF_SYNC_UNIT, DBG_CON);  /* message oriented raw TCP */
+ if (DMF_SYNC_UNIT->flags & UNIT_ATT)
+     dmf_sync_kick ();
+ else
+-- 
+2.43.0
+

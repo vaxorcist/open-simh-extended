@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v5, 2026-11-15 (v5: patch 8, P5 corrected (the CPU loop really runs now), DMA engine moved to vax_bi_dma.c; v4: section 10, results of P1-P3, P4a (printer) and P5; SIDRIVER missing; v3: all decisions D1–D6 made, Ulli's answers, VMS device names from the User Guide, ULTRIX phase; v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v6, 2026-11-17 (v6: sync line (P4) with VMS V5.5's SIDRIVER, DMF32 sync line on the shared code (P4a), patch 12; v5: patch 8, P5 corrected (the CPU loop really runs now), DMA engine moved to vax_bi_dma.c; v4: section 10, results of P1-P3, P4a (printer) and P5; SIDRIVER missing; v3: all decisions D1–D6 made, Ulli's answers, VMS device names from the User Guide, ULTRIX phase; v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
 # DMB32 on the VAX 8200/8300 (implementation plan)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **in progress** (branch `dmb32`): P1, P2, P3, P4a (printer part) and P5 done; P4 waits for SIDRIVER (section 10).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS** (patch 8 `opensimh_8_dmb32_v1.patch`, branch `dmb32`; the sync line in patch 12 `opensimh_12_dmb32_sync_v1.patch`, branch `dmb32-sync`): P1-P5 done, P4 with VMS V5.5's SIDRIVER (section 11); P5u (ULTRIX) and P6 (UETP) open (section 10).
 
 Sources:
 - EK-DMB32-TD-001 *DMB32 Technical Description* and EK-DMB32-UG-001 *DMB32 User Guide*, both supplied by Ulli.
@@ -151,7 +151,7 @@ Branch `dmb32` (on top of patch 7). Test scripts in `tests/dmb32/`.
 | P1 | **Pass.** VMS V4.7 configures the DMB32 at node 5: `TXA0`–`TXA7` and `LIA0`; `SYSGEN SHOW/ADAPTER`: "5 BI Combo Board (DMB32)". One fix: VMS resets the node (BICSR NRST) and then waits for **BROKE** (BICSR<12>) to clear, not for STS; the self-test now sets BROKE and clears it at the end (`p1.ini`) |
 | P2 | **Pass.** Telnet login on `TXA0`, SHOW TERMINAL, DIRECTORY (237 files: 2927 DMA transfers, no errors), XOFF/XON, LOGOUT (`p2.ini` + `p2.py`). VMS uses only the system virtual DMA mode; the other three modes wait for ULTRIX (P5u) |
 | P3 | **Pass.** COPY and DIRECTORY/OUTPUT to `LIA0:` and to `LPA0:` (LP11) give the same text (532 print transfers, no errors) (`p3.ini`) |
-| P4 | **Waiting:** `SIDRIVER.EXE` (DMB32 sync driver) is not on Ulli's VMS047_1.R81 (YIDRIVER, LIDRIVER and XGDRIVER are), so VMS does not configure `SIA0` and the sync line cannot be tested with VMS. Asked Ulli for the driver |
+| P4 | **Pass (2026-11-17, section 11).** Was waiting for `SIDRIVER.EXE`, which is not on VMS047_1.R81; Ulli's VMS V5.5 image (VMS055.R82) has it |
 | P4a (printer) | **Pass.** The DMF32 printer uses the shared formatter (`VAX/vax_combo_lib.c`); VMS print jobs with six printer settings on the vax780 give byte for byte the same `LCA0:` output before and after (`p4a_lp.ini`). The DDCMP engine part of P4a follows with P4 |
 | P5 | **Pass.** VAX 8300: after START/CPU and with two CPU-bound loop processes (attached processor in the EXECUTE state), the P2 checks pass. VMS sets INTRDES to KA0 only (`p5.ini` v2). Correction: the first run (v1) assumed `LOOP.EXE` on the disk, where it was not, so the loop never ran; v2 builds it |
 | P5u, P6 | Open: ULTRIX V2.2 image from Ulli; UETP prompts from Ulli |
@@ -159,3 +159,26 @@ Branch `dmb32` (on top of patch 7). Test scripts in `tests/dmb32/`.
 Also found on the way (known issues): case 66, `BICSR_HES` had the value of `BICSR_SES` (fixed); case 67, BI nodes could not supply their own vector (fixed, section 3).
 
 Patch 8 `opensimh_8_dmb32_v1.patch` (after patch 7) holds the DMB32 work; the sync line's DDCMP engine follows when a SIDRIVER is available. With the KDB50 (patch 9) the DMA engine moved to `VAX/vax_bi_dma.c` (KDB50 plan D3); the DMB32 tests P2 and P3 pass unchanged.
+
+## 11. Synchronous line (2026-11-17, patch 12)
+
+VMS V5.5 (Ulli's VMS055.R82) has SIDRIVER: it configures `SIA0` ("network device") and the DECnet line and circuit `DMB-0`. Implemented from the User Guide (3.3.28-3.3.43 sync registers, 3.3.52 SBUF, 3.4.6 DMA, 3.4.8 error codes, 3.4.11 sync modem control) and the Technical Description (2.7 DDCMP support), both supplied by Ulli again:
+
+| Item | Implementation |
+|---|---|
+| Framing | The board frames DDCMP only; SIDRIVER runs the protocol. Transmit: header (6) and data from the buffer, the board adds both CRCs; TBUFFCT then holds the characters still to send (0). Receive: header and data without the CRCs; RBUFFCT then holds the number of characters received. Bad header CRC or start character: frame dropped (resynchronize); bad data CRC: stored, message error 22; message longer than the buffer: 23 (24 with a bad CRC). Buffer errors 41 (header) and 42 (length); host abort 61 |
+| Buffers | Two per direction, DMA.START/ABORT in TLNCTRLn/RLNCTRLn, BUFCTRL TX/RX.BUFF.PRIO when both are ready; a completion is an SBUF entry (TX.ACT, SECOND.BUFFER, error) and the sync interrupt |
+| Line | LPR1 RX.ENABLE, LOOP (internal loopback), MODEM.SUPPRESS, LINE.RESET; LPR2 modem outputs, modem inputs <15:8> (all on while connected), PROTOCOL (only DDCMP; another protocol gives buffer error 41), MODEM.OVERRIDE (without it no transmission without DSR and CTS: modem error 52); a modem change is an SBUF entry; BUFCTRL reads a V.24 cable (SYNC.VALID) |
+| Link | Unit `DMB-SYNC`: `SET DMB-SYNC PEER=host:port`, `ATTACH DMB-SYNC port`; whole DDCMP frames over a SIMH TCP connection, as the DMC11 and DMF-SYNC, so the partner can be a DMC11, DMR11, DMP11, DMV11, DMF32 or DMB32 |
+| Shared code (D1) | The link and the DDCMP framing are in `vax_combo_lib.c` (taken from the DMF32); the DMF32 sync line uses them too (P4a, its own commit). Patch 12 holds both (Ulli, 2026-11-17: patch 9 had moved the DMB32 DMA engine to `vax_bi_dma.c`, so patch 8 could not take the sync line without changing patch 9) |
+
+Tests (`tests/dmb32/p4.sh`; VMS V5.5 on the 8200 from the KDB50, DECnet partner node MV2 = 1.2 with VMS V4.7):
+
+| Test | Result |
+|---|---|
+| P4, partner MicroVAX II with DMV11 (`p4_mv2.ini`, VMS line DMP-0) | **Pass.** Circuit DMB-0 up, HELPLIB.HLB (5675 blocks) there and back with 0 differences, remote DIRECTORY, NCP LOOP NODE, SET HOST; circuit counters about 3.1 MB each way, no errors |
+| P4, partner VAX-11/780 with DMF32 (`p4_780.ini`, line DMF-0) | **Pass**, before and after the DMF32 switch to the shared code |
+| P4a, VMS V4.7 XGDRIVER on the DMF32 of the 8200 (`p4a_8200.ini`, VMS047_1.R81) to the DMV11 | **Pass** (DMF32 on the shared code) |
+| Builds | vax730, vax750, vax780, vax8600, vax8200 without warnings |
+
+Found on the way (own code, fixed before the commit): the device reset did not keep an attached DMB-SYNC polling, and the link was set up as a Telnet line; it is a raw packet line, as for the DMF32. VMS V4.7 calls the DMV11 line `DMP-0` (XDDRIVER), not DMV-0.
