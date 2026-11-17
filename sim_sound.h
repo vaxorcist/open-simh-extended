@@ -195,10 +195,15 @@ void sim_sound_register_run_hook (void (*fn)(t_bool running));
    before it switches the realism mode on; a function returns SCPE_OK, or
    prints why the configuration cannot run in the realism mode and returns
    an error, which refuses SET SOUND ENABLED (e.g. the RQ: RC25 drives
-   only as pairs on a KLESI).  Registering the same function twice is
+   only as pairs on a KLESI).  Each function is called twice: first with
+   apply FALSE for all of them, where it must not change anything (a dry
+   run: only the refusal is printed), then, if none refused, with apply
+   TRUE, where it may adjust the configuration and say so (e.g. the RQ
+   disables RD54 units on an SDI controller).  So a refusal by one device
+   leaves every device as it was.  Registering the same function twice is
    harmless. */
 
-void sim_sound_register_enable_check (t_stat (*fn) (void));
+void sim_sound_register_enable_check (t_stat (*fn) (t_bool apply));
 
 /* Storage devices that are neither DEV_DISK nor DEV_TAPE (e.g. the VAX
    8600 console RL02, which does not use sim_disk): their attached units

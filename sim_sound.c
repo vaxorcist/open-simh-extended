@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   17-Nov-26    Ulli    SET SOUND ENABLED: the devices' checks first as a
+                        dry run, then applied (a refusal changes nothing)
    09-Nov-26    Ulli    Streamers: the reverse start of a reposition
                         follows the stop when it has died away
    09-Nov-26    Ulli    Streamers: SHOW TRANSPORT shows where the tape is
@@ -3455,18 +3457,18 @@ snd_audio_close ();
    ENABLED is refused if one of them fails.  The list grows as needed;
    registering the same function twice is harmless. */
 
-static t_stat (**snd_enable_checks) (void) = NULL;
+static t_stat (**snd_enable_checks) (t_bool apply) = NULL;
 static int32 snd_n_enable_checks = 0;
 
-void sim_sound_register_enable_check (t_stat (*fn) (void))
+void sim_sound_register_enable_check (t_stat (*fn) (t_bool apply))
 {
-t_stat (**n) (void);
+t_stat (**n) (t_bool apply);
 int32 i;
 
 for (i = 0; i < snd_n_enable_checks; i++)
     if (snd_enable_checks[i] == fn)
         return;
-n = (t_stat (**) (void)) realloc ((void *) snd_enable_checks, (snd_n_enable_checks + 1) * sizeof (*n));
+n = (t_stat (**) (t_bool)) realloc ((void *) snd_enable_checks, (snd_n_enable_checks + 1) * sizeof (*n));
 if (n == NULL)
     return;
 snd_enable_checks = n;
@@ -3484,12 +3486,15 @@ if (enable == snd_enabled)
 if (uptr != NULL)
     return sim_messagef (SCPE_ALATT, "SET SOUND %s is only allowed while no disk or tape is attached (%s is attached)\n",
                          enable ? "ENABLED" : "DISABLED", sim_uname (uptr));
-if (enable) {                                   /* the devices' rules */
+if (enable) {                                   /* the devices' rules: */
     int32 i;
     t_stat r;
 
-    for (i = 0; i < snd_n_enable_checks; i++)
-        if ((r = snd_enable_checks[i] ()) != SCPE_OK)
+    for (i = 0; i < snd_n_enable_checks; i++)   /* all as a dry run first, */
+        if ((r = snd_enable_checks[i] (FALSE)) != SCPE_OK)
+            return r;                           /* (nothing changed) */
+    for (i = 0; i < snd_n_enable_checks; i++)   /* then applied */
+        if ((r = snd_enable_checks[i] (TRUE)) != SCPE_OK)
             return r;
     }
 snd_enabled = enable;
