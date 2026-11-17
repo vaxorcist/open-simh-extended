@@ -23,6 +23,9 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   17-Nov-26    Ulli    SET REALISM ENABLED/DISABLED and SHOW REALISM: the
+                        realism mode under its own name (SET SOUND
+                        ENABLED/DISABLED stays as a synonym)
    17-Nov-26    Ulli    SET SOUND ENABLED: the devices' checks first as a
                         dry run, then applied (a refusal changes nothing)
    09-Nov-26    Ulli    Streamers: the reverse start of a reposition
@@ -100,7 +103,7 @@ static const char *snd_group_names[SND_GRP_COUNT] = {
 static const char *snd_sys_names[SND_SYS_COUNT] = {
     "STARTING", "RUNNING", "STOPPING" };
 
-static t_bool snd_enabled = FALSE;              /* SET SOUND ENABLED (realism mode) */
+static t_bool snd_enabled = FALSE;              /* SET REALISM ENABLED (realism mode) */
 static t_bool snd_power = FALSE;                /* system power state */
 static void flp_power (t_bool on, t_bool direct);   /* floppy drives (end of file) */
 static UNIT *flp_attached_unit (void);
@@ -178,7 +181,7 @@ static const char *snd_sys_file (int32 idx)
 return (snd_sys_user[idx][0] != '\0') ? snd_sys_user[idx] : snd_sys_default[idx];
 }
 
-/* Find the first attached disk or tape unit.  SET SOUND ENABLED/DISABLED is
+/* Find the first attached disk or tape unit.  SET REALISM ENABLED/DISABLED is
    refused while one exists, because the realism mode changes the timing
    and the operator behavior of these devices. */
 
@@ -1149,7 +1152,7 @@ if (enable) {
             snd_throttle_set = TRUE;
             /* realistic from power-on: no unthrottled warm-up phase */
             snd_throttle_delay = sim_throt_set_delay (0);
-            sim_printf ("Sound: realistic CPU speed, THROTTLE %s\n", snd_throttle);
+            sim_printf ("Realism: realistic CPU speed, THROTTLE %s\n", snd_throttle);
             }
         }
     }
@@ -1486,8 +1489,8 @@ static SND_TMR_CHUNK_T *snd_tmr_chunks = NULL;          /* all chunks, in order 
 static const char *snd_tmr_description (DEVICE *dptr)
 {
 if ((dptr->name != NULL) && (strncmp (dptr->name, "INT-REEL", 8) == 0))
-    return "Tape transport timers (sound realism mode)";
-return "Disk spindle timers (sound realism mode)";
+    return "Tape transport timers (realism mode)";
+return "Disk spindle timers (realism mode)";
 }
 
 /* A free slot of the given kind: its chunk and index (a new chunk if all
@@ -3451,7 +3454,7 @@ sim_sound_power_off (TRUE);
 snd_audio_close ();
 }
 
-/* Configuration checks for SET SOUND ENABLED: a device registers a
+/* Configuration checks for SET REALISM ENABLED: a device registers a
    function that returns SCPE_OK if its configuration may run in the
    realism mode, or prints why not and returns an error.  SET SOUND
    ENABLED is refused if one of them fails.  The list grows as needed;
@@ -3484,7 +3487,7 @@ UNIT *uptr = snd_attached_storage_unit ();
 if (enable == snd_enabled)
     return SCPE_OK;
 if (uptr != NULL)
-    return sim_messagef (SCPE_ALATT, "SET SOUND %s is only allowed while no disk or tape is attached (%s is attached)\n",
+    return sim_messagef (SCPE_ALATT, "SET REALISM %s is only allowed while no disk or tape is attached (%s is attached)\n",
                          enable ? "ENABLED" : "DISABLED", sim_uname (uptr));
 if (enable) {                                   /* the devices' rules: */
     int32 i;
@@ -3733,6 +3736,47 @@ return SCPE_OK;
 
 /* SHOW SOUND */
 
+/* SET REALISM ENABLED|DISABLED: the realism mode (realistic timing,
+   operator panels, configuration rules, CPU speed) and with it the sound
+   output; the same as SET SOUND ENABLED|DISABLED (kept as a synonym). */
+
+t_stat sim_realism_set (int32 flag, CONST char *cptr)
+{
+char kw[CBUFSIZE];
+size_t n;
+
+if ((cptr == NULL) || (*cptr == '\0'))
+    return sim_messagef (SCPE_2FARG, "Missing SET REALISM argument: ENABLED or DISABLED\n");
+while (isspace ((unsigned char)*cptr))
+    cptr++;
+for (n = 0; isalpha ((unsigned char)*cptr) && (n < sizeof (kw) - 1); n++)
+    kw[n] = (char)toupper ((unsigned char)*cptr++);
+kw[n] = '\0';
+while (isspace ((unsigned char)*cptr))
+    cptr++;
+if (*cptr != '\0')
+    return sim_messagef (SCPE_2MARG, "Unexpected SET REALISM argument: %s\n", cptr);
+if ((n >= 3) && (strncmp (kw, "ENABLED", n) == 0))
+    return snd_set_enabled (TRUE);
+if ((n >= 3) && (strncmp (kw, "DISABLED", n) == 0))
+    return snd_set_enabled (FALSE);
+return sim_messagef (SCPE_ARG, "SET REALISM ENABLED or DISABLED expected\n");
+}
+
+/* SHOW REALISM */
+
+t_stat sim_realism_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST char *cptr)
+{
+if ((cptr != NULL) && (*cptr != '\0'))
+    return SCPE_2MARG;
+fprintf (st, "Realism: %s\n", snd_enabled ? "enabled" : "disabled");
+if (snd_throttle[0] != '\0')
+    fprintf (st, "CPU:     realistic speed THROTTLE %s%s\n", snd_throttle,
+             snd_throttle_set ? " (set)" : (snd_enabled ? " (not used: THROTTLE set by the user)" : ""));
+fprintf (st, "Sound:   %s\n", snd_enabled ? "on (SHOW SOUND for the details)" : "off");
+return SCPE_OK;
+}
+
 t_stat sim_sound_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST char *cptr)
 {
 int32 i;
@@ -3875,7 +3919,7 @@ for (i = 0; i < SND_FLP_NSMP; i++) {
 f->loaded = TRUE;
 }
 
-/* SET SOUND DISABLED closes the audio output: the samples are gone */
+/* SET REALISM DISABLED closes the audio output: the samples are gone */
 
 static void flp_forget_sounds (void)
 {
@@ -3938,7 +3982,7 @@ regs->motorup_ms = type->motorup_ms;
 regs->motoroff_ms = type->motoroff_ms;
 }
 
-/* A diskette attached to a floppy drive keeps SET SOUND ENABLED/DISABLED
+/* A diskette attached to a floppy drive keeps SET REALISM ENABLED/DISABLED
    from changing the timing under it (the floppy devices are not DEV_DISK) */
 
 static UNIT *flp_attached_unit (void)
@@ -3951,7 +3995,7 @@ for (i = 0; i < flp_n; i++)
 return NULL;
 }
 
-/* Power on: the AC motors start (direct: SET SOUND ENABLED with the power
+/* Power on: the AC motors start (direct: SET REALISM ENABLED with the power
    already on, just the running loops); the heads step in and back (the
    drive's power-up homing).  Power off: they run down, the heads unload. */
 

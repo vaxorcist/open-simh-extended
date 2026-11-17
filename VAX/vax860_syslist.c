@@ -35,7 +35,7 @@ char sim_name[] = "VAX 8600";
 void vax_init(void)
 {
 sim_savename = "VAX 8600";
-/* Realistic CPU speed in the sound realism mode: a VAX 8600 is about 4.2
+/* Realistic CPU speed in the realism mode: a VAX 8600 is about 4.2
    times a VAX-11/780 (4.2 VUPs), so about 2100K instructions per second
    (VUPs times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
    Provisional: to be calibrated with a CPU benchmark on a real machine. */

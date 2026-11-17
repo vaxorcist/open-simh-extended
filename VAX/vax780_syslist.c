@@ -35,7 +35,7 @@ char sim_name[] = "VAX 11/780";
 void vax_init(void)
 {
 sim_savename = "VAX780";
-/* Realistic CPU speed in the sound realism mode: a VAX-11/780 is 1 VUP;
+/* Realistic CPU speed in the realism mode: a VAX-11/780 is 1 VUP;
    about 0.5 million VAX instructions per second (the reference of the 750
    and MicroVAX II values), so about 500K instructions per second (VUPs
    times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).

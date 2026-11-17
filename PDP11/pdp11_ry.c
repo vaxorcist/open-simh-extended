@@ -160,7 +160,7 @@ int32 ry_swait = 10;                                    /* seek, per track */
 int32 ry_xwait = 1;                                     /* tr set time */
 uint8 rx2xb[RY_NUMBY] = { 0 };                          /* sector buffer */
 
-/* Sound realism mode (SET SOUND ENABLED): the drive mechanics of each
+/* Realism mode (SET REALISM ENABLED): the drive mechanics of each
    RX02 drive (sim_sound SND_FLOPPY) and their adjustable times, shared by
    both drives (registers STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP). */
 
@@ -269,7 +269,7 @@ MTAB ry_mod[] = {
     { (UNIT_AUTO+UNIT_DEN),           UNIT_DEN, NULL,               "DOUBLE", 
         &ry_set_size, NULL, NULL, "Set to Double density (512Kb)" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO,          0, "DRIVE", NULL,
-        NULL, &ry_show_drive, NULL, "Display the drive mechanics (sound realism mode)" },
+        NULL, &ry_show_drive, NULL, "Display the drive mechanics (realism mode)" },
 #if defined (VM_PDP11)
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004, "ADDRESS", "ADDRESS",
       &set_addr, &show_addr, NULL, "Bus Address" },
@@ -733,7 +733,7 @@ if (uptr->flags & UNIT_ATT)
 return detach_unit (uptr);
 }
 
-/* Realistic times (sound realism mode), from the RX02 Floppy Disk System
+/* Realistic times (realism mode), from the RX02 Floppy Disk System
    Technical Manual EK-0RX02-TM-001:
    - Read/Write Sector: step 6 ms per track, then head load / settle
      25 ms, then wait until the sector comes round (360 rpm, 26 sectors
@@ -936,7 +936,7 @@ fprintf (st, "    not attached  1          report error and stop\n");
 fprintf (st, "                  0          disk not ready\n\n");
 fprintf (st, "RX02 data files are buffered in memory; therefore, end of file and OS I/O\n");
 fprintf (st, "errors cannot occur.\n\n");
-fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
+fprintf (st, "Realism mode (SET REALISM ENABLED, see HELP SET SOUND):\n\n");
 fprintf (st, "  - The RX02 drive motors are AC motors on the power line: they run while\n");
 fprintf (st, "    the system power is on (RUN/BOOT, SET SOUND POWER=ON), with or without\n");
 fprintf (st, "    a diskette.  ATTACH is inserting a diskette and closing the door, DETACH\n");

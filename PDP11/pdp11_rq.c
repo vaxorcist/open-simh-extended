@@ -1141,7 +1141,7 @@ int32 rq_itime4 = 10;                                   /* stage 4 */
 int32 rq_qtime = RQ_QTIME;                              /* queue time */
 int32 rq_xtime = RQ_XTIME;                              /* transfer time */
 
-/* Sound realism mode (SET SOUND ENABLED) for the drives with a RUN/STOP
+/* Realism mode (SET REALISM ENABLED) for the drives with a RUN/STOP
    button: every RA drive (RA60, RA70, RA71, RA72, RA73, RA80, RA81, RA82,
    RA90, RA92) and the RC25
 
@@ -1327,7 +1327,7 @@ typedef struct {
     SND_FLOPPY          flp;                            /* RX50: this diskette slot's mechanics */
     } RQ_RLZ;
 
-/* RX50 (sound realism mode): drive mechanics from sim_flp_rx50; the times
+/* RX50 (realism mode): drive mechanics from sim_flp_rx50; the times
    are registers of the RQ device (all controllers), defaults from the
    type.  Two RX50 units with consecutive unit numbers (DUAn, DUAn+1,
    pairing from the lowest number up) are the two slots of one drive:
@@ -1603,23 +1603,23 @@ REG rq_reg[] = {
     { DRDATAD (I4TIME,  rq_itime4,                  24, "init stage 4 delay"), PV_LEFT + REG_NZ },
     { DRDATAD (QTIME,   rq_qtime,                   24, "response time for 'immediate' packets"), PV_LEFT + REG_NZ },
     { DRDATAD (XTIME,   rq_xtime,                   24, "response time for data transfers"), PV_LEFT + REG_NZ },
-    { DRDATAD (SPINUP,  rq_spinup_ms,               24, "RA60 spin-up time in ms (sound realism mode)"), PV_LEFT },
-    { DRDATAD (SPINDOWN, rq_spindown_ms,            24, "RA60 spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINUP,  rq_spinup_ms,               24, "RA60 spin-up time in ms (realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, rq_spindown_ms,            24, "RA60 spin-down time in ms (realism mode)"), PV_LEFT },
     { DRDATAD (SEEKRA60S, rq_seek60s,               24, "RA60 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEKRA60M, rq_seek60m,               24, "RA60 medium seek sound up to n cylinders"), PV_LEFT },
-    { DRDATAD (SPINUPRC25, rq_spinup25_ms,          24, "RC25 spin-up time in ms (sound realism mode)"), PV_LEFT },
-    { DRDATAD (SPINDOWNRC25, rq_spindown25_ms,      24, "RC25 spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINUPRC25, rq_spinup25_ms,          24, "RC25 spin-up time in ms (realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWNRC25, rq_spindown25_ms,      24, "RC25 spin-down time in ms (realism mode)"), PV_LEFT },
     { DRDATAD (SEEKRC25S, rq_seek25s,               24, "RC25 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEKRC25M, rq_seek25m,               24, "RC25 medium seek sound up to n cylinders"), PV_LEFT },
 #define RQ_RA_REGS(n) \
-    { DRDATAD (SPINUPRA##n,   rq_spinup##n##_ms,    24, "RA" #n " spin-up time in ms (sound realism mode)"), PV_LEFT }, \
-    { DRDATAD (SPINDOWNRA##n, rq_spindown##n##_ms,  24, "RA" #n " spin-down time in ms (sound realism mode)"), PV_LEFT }, \
+    { DRDATAD (SPINUPRA##n,   rq_spinup##n##_ms,    24, "RA" #n " spin-up time in ms (realism mode)"), PV_LEFT }, \
+    { DRDATAD (SPINDOWNRA##n, rq_spindown##n##_ms,  24, "RA" #n " spin-down time in ms (realism mode)"), PV_LEFT }, \
     { DRDATAD (SEEKRA##n##S,  rq_seek##n##s,        24, "RA" #n " short seek sound up to n cylinders"), PV_LEFT }, \
     { DRDATAD (SEEKRA##n##M,  rq_seek##n##m,        24, "RA" #n " medium seek sound up to n cylinders"), PV_LEFT }
     RQ_RA_REGS (70), RQ_RA_REGS (71), RQ_RA_REGS (72), RQ_RA_REGS (73),
     RQ_RA_REGS (80), RQ_RA_REGS (81), RQ_RA_REGS (82),
     RQ_RA_REGS (90), RQ_RA_REGS (92),
-    { DRDATAD (RX50STEP,   rq_flp_regs.step_us,     24, "RX50 step time per track in us (sound realism mode)"), PV_LEFT },
+    { DRDATAD (RX50STEP,   rq_flp_regs.step_us,     24, "RX50 step time per track in us (realism mode)"), PV_LEFT },
     { DRDATAD (RX50SETTLE, rq_flp_regs.settle_us,   24, "RX50 head settle time in us"), PV_LEFT },
     { DRDATAD (RX50HDLOAD, rq_flp_regs.hdload_us,   24, "RX50 head load time in us"), PV_LEFT },
     { DRDATAD (RX50HDUNLOAD, rq_flp_regs.hdunload_ms, 24, "RX50 head unloaded after n ms idle (provisional)"), PV_LEFT },
@@ -3788,7 +3788,7 @@ if (cp->ctype == DEFAULT_CTYPE)
     cp->ctype = (UNIBUS    ? UDA50A_CTYPE :
                  MICROVAX1 ? RQDX1_CTYPE : RQDX3_CTYPE);
 
-sim_sound_register_enable_check (&rq_rlz_enable_check);/* SET SOUND ENABLED rules */
+sim_sound_register_enable_check (&rq_rlz_enable_check);/* SET REALISM ENABLED rules */
 if (!plugs_inited ) {
 #if !defined (VM_VAX)
     uint32 u = 0;
@@ -4102,7 +4102,7 @@ if (val & RQ_SH_UN) {
 return SCPE_OK;
 }
 
-/* Sound realism mode: the RA drives and the RC25 (see the description at
+/* Realism mode: the RA drives and the RC25 (see the description at
    rq_spinup_ms) */
 
 /* Unit index within its controller */
@@ -4551,7 +4551,7 @@ sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: %s LBN %u, %u blocks: from cylin
 return us;
 }
 
-/* RX50 (sound realism mode)
+/* RX50 (realism mode)
 
    Pairs: two enabled RX50 units of a controller with consecutive unit
    numbers (PLUG, SET RQn UNIT=) are the two slots of one RX50 drive, as
@@ -4700,9 +4700,9 @@ sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RX50 LBN %u, %u blocks: track %d
 return t;
 }
 
-/* Sound realism mode: configuration rules ("as realistic as possible")
+/* Realism mode: configuration rules ("as realistic as possible")
 
-   With SET SOUND ENABLED the RQ controllers must look like real ones:
+   With SET REALISM ENABLED the RQ controllers must look like real ones:
    - RC25 drives only on a KLESI controller (the RC25's bus adapter), and a
      KLESI only connects RC25 drives: a master and at most one slave, i.e.
      at most 4 enabled units, all RC25 or RCF25;
@@ -4722,13 +4722,13 @@ return t;
      drives (Ulli, 2026-11-11).  No bus rule for them: a PDP-11 keeps the
      RQDX3 chosen at start-up for the default (Qbus) CPU after SET CPU
      11/70 (known issues 50), so a bus rule would refuse every Unibus
-     PDP-11 configuration.  SET SOUND ENABLED and SET RQ <other controller
+     PDP-11 configuration.  SET REALISM ENABLED and SET RQ <other controller
      type> disable RX50 units on the other controllers (with a message)
      instead of refusing, so the default Unibus configuration (UDA50A with
      an RX50 at RQ3) keeps working; SET RQ RUX50 makes the units 0-3 RX50
      units (two drives) and disables the others, SET RQ <other type> on a
      RUX50 gives its units their initial drive types back.
-   SET SOUND ENABLED refuses a configuration that breaks a rule
+   SET REALISM ENABLED refuses a configuration that breaks a rule
    (rq_rlz_enable_check, registered with sim_sound).  While sound is
    enabled, SET RQ <controller type>, SET RQn <drive type>, SET RQn UNIT=,
    SET RQ DRIVES= and ATTACH keep to the rules:
@@ -4782,7 +4782,7 @@ return ((ct == RQDX1_CTYPE) || (ct == RQDX3_CTYPE) || (ct == RQDX4_CTYPE) || (ct
 static t_bool rq_is_sdi_ctype (int32 ct);
 
 /* Realism mode: units a controller cannot have are disabled, with a
-   message (SET SOUND ENABLED, SET RQ <controller type>):
+   message (SET REALISM ENABLED, SET RQ <controller type>):
    - RX50 units on a controller that is not an RX50 controller;
    - non-SDI drives (RD, RX33, RF, ...) on an SDI controller (UDA50,
      UDA50A, KDA50, KDB50), which only connects SDI drives (Ulli,
@@ -4948,7 +4948,7 @@ for (u = 0; u < n; u++) {
     }
 }
 
-/* SET SOUND ENABLED: every RQ controller must keep to the rules.  The
+/* SET REALISM ENABLED: every RQ controller must keep to the rules.  The
    units that do not fit their controller (RX50s off the RQDX/RUX50,
    non-SDI drives on SDI controllers) are disabled first.  In the dry run
    (apply FALSE, sim_sound.h) this happens quietly on snapshots that are
@@ -4964,9 +4964,9 @@ for (i = 0; i < RQ_NUMCT; i++)
     snap[i] = apply ? NULL : rq_snap_take (rq_devmap[i]);
 for (i = 0; i < RQ_NUMCT; i++)                          /* RX50s on other controllers: off */
     rq_rlz_rx50_disable (rq_devmap[i], rq_eff_ctype (rq_ctxmap[rq_devmap[i]->units[0].cnum]),
-                         apply ? "SET SOUND ENABLED: " : NULL);
+                         apply ? "SET REALISM ENABLED: " : NULL);
 for (i = 0; (i < RQ_NUMCT) && (r == SCPE_OK); i++)
-    r = rq_rlz_rules (rq_devmap[i], "SET SOUND ENABLED: ");
+    r = rq_rlz_rules (rq_devmap[i], "SET REALISM ENABLED: ");
 for (i = 0; i < RQ_NUMCT; i++)                          /* dry run: undo */
     if (snap[i] != NULL) {
         rq_snap_restore (rq_devmap[i], snap[i]);
@@ -5265,7 +5265,7 @@ fprintf (st, "an even unit to RC25) and the fixed platter (set the next unit to 
 fprintf (st, "e.g. SET RQ0 RC25, SET RQ1 RCF25).  The Run button acts on both units, so\n");
 fprintf (st, "SET RQ0 ONLINE and SET RQ1 ONLINE do the same.  An RCF25 that does not follow\n");
 fprintf (st, "an RC25 is a fixed disk of its own.\n\n");
-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
+fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND):\n");
 fprintf (st, "  - ATTACH of an RA drive or an RC25 only loads the pack, the disk or the\n");
 fprintf (st, "    cartridge; the drive stays stopped until SET RQn ONLINE (also the fixed\n");
 fprintf (st, "    RA drives: e.g. SET RQ0 ONLINE before BOOT RQ0).  Spin-up and spin-down\n");
@@ -5286,14 +5286,14 @@ fprintf (st, "  - the configuration must be realistic: RC25 drives only on a KLE
 fprintf (st, "    controller, which only connects RC25 drives (a master and at most one\n");
 fprintf (st, "    slave: 4 units); an RC25 drive is a pair, the RC25 at an even unit with\n");
 fprintf (st, "    an even unit number (SET RQn UNIT=), its RCF25 at the next unit with the\n");
-fprintf (st, "    next number.  SET SOUND ENABLED refuses other configurations.  While\n");
+fprintf (st, "    next number.  SET REALISM ENABLED refuses other configurations.  While\n");
 fprintf (st, "    sound is enabled, SET RQ KLESI sets units 0/1 and 2/3 to RC25/RCF25 and\n");
 fprintf (st, "    disables the others, SET RQ <other type> gives them their initial types\n");
 fprintf (st, "    back, SET RQn RC25 (or RCF25) also sets the other half of the pair, SET\n");
 fprintf (st, "    RQn UNIT=m also renumbers it, and settings or an ATTACH that would break\n");
 fprintf (st, "    a rule are refused.  RA drives (SDI drives) only on a UDA50, UDA50A,\n");
 fprintf (st, "    KDA50 or KDB50, which connect at most 4 drives, and only SDI drives:\n");
-fprintf (st, "    SET SOUND ENABLED and SET RQ <SDI controller type> disable the other\n");
+fprintf (st, "    SET REALISM ENABLED and SET RQ <SDI controller type> disable the other\n");
 fprintf (st, "    drives (RD, RX, RC25, ...) that are not attached, with a message (e.g.\n");
 fprintf (st, "    the RD54 units of the default Unibus configuration); an attached one is\n");
 fprintf (st, "    refused.  To make such a unit an RA drive, enable it first, one unit at\n");
@@ -5305,7 +5305,7 @@ fprintf (st, "    DRIVES= above 4 is refused on them.  The UDA50 and UDA50A only
 fprintf (st, "    Unibus, the KDA50 only on the Qbus.  RX50 drives only on an RQDX1\n");
 fprintf (st, "    (RQDX2), RQDX3, RQDX4 or RUX50 controller, and a RUX50 only connects\n");
 fprintf (st, "    RX50 drives:\n");
-fprintf (st, "    SET SOUND ENABLED and SET RQ <other controller type> disable RX50 units\n");
+fprintf (st, "    SET REALISM ENABLED and SET RQ <other controller type> disable RX50 units\n");
 fprintf (st, "    on the other controllers (with a message, e.g. RQ3 of the default\n");
 fprintf (st, "    Unibus configuration), SET RQ RUX50 makes units 0-3 RX50 units, SET\n");
 fprintf (st, "    RQ <other type> on a RUX50 gives them their initial types back;\n");

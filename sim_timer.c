@@ -1783,7 +1783,7 @@ return SCPE_OK;
 }
 
 /* Is a throttle (any mode) set?  Used by sim_sound to apply a simulator's
-   default throttle in the sound realism mode only if the user did not set
+   default throttle in the realism mode only if the user did not set
    one himself. */
 
 t_bool sim_throt_is_set (void)
@@ -1793,7 +1793,7 @@ return (sim_throt_type != SIM_THROT_NONE);
 
 /* The instruction rate a throttle set as SET THROTTLE xM or xK aims at,
    or 0.0 for no throttle or another throttle mode.  Devices that need
-   realistic durations (sound realism mode) convert microseconds to
+   realistic durations (realism mode) convert microseconds to
    instructions with it: the result does not depend on the state of the
    timer calibration, and with the throttle simulated time is real time. */
 

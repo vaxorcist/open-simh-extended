@@ -14,7 +14,7 @@ real drive yet.  They were made by tools/make_tu58_sounds.py v1
 - the cartridge slides into the drive (no door).
 
 The PDP-11 TDC device and the console TU58 (TD) of the VAX-11/730 and
-VAX-11/750 play them in the sound realism mode (SET SOUND ENABLED).
+VAX-11/750 play them in the realism mode (SET REALISM ENABLED).
 
 File               Content                                       Use
 -----------------  --------------------------------------------  ------------

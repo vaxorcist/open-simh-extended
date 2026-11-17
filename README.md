@@ -25,7 +25,7 @@ The work is by Ulli (vaxorcist), developed with Claude (Anthropic).
   cartridge is interchangeable with an RL02 on the RL11), the SIMH disk
   library (VHD, autosizing), and status, seek and range fixes.
 - **Sound**: a common SDL2 sound system for all simulators, with a realism mode
-  (`SET SOUND ENABLED`): power and blower sounds, RUN/STOP buttons with
+  (`SET REALISM ENABLED`): power and blower sounds, RUN/STOP buttons with
   spin-up and spin-down, realistic seek and transfer times, and seek sounds
   for the RK06/07, RL01/02, RP04–RP07, RM03/05/80, RA60 and RB02/RB80.
 

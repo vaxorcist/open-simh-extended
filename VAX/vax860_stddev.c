@@ -31,7 +31,7 @@
    tmr          interval timer
 
    26-Dec-2012  MB      First Version
-   12-Nov-2026  Ulli    Console RL02 (CS): sound realism mode (SET SOUND
+   12-Nov-2026  Ulli    Console RL02 (CS): realism mode (SET SOUND
                         ENABLED): LOAD button (SET CS ONLINE/OFFLINE, spin-up
                         40 s, spin-down 30 s), realistic seek, rotational and
                         sector times per block, seek sounds (sound/rl02, else
@@ -248,7 +248,7 @@ int32 rlcs_mp = 0;
 int32 rlcs_bcnt = 0;                                    /* byte count */
 uint16 *rlcs_buf = NULL;
 
-/* Sound realism mode (SET SOUND ENABLED)
+/* Realism mode (SET REALISM ENABLED)
 
    The console RL02 is an ordinary RL02 drive on the console processor's
    RLV12 (Qbus); the VAX reaches it through the console registers STXCS and
@@ -499,8 +499,8 @@ REG rlcs_reg[] = {
     { HRDATAD (MP,       rlcs_mp, 16, "") },
     { DRDATAD (BCNT,   rlcs_bcnt,  7, "byte count register")  },
     { DRDATAD (STIME, rlcs_swait, 24, "command time"), PV_LEFT },
-    { DRDATAD (SPINUP,   rlcs_spinup_ms,   24, "spin-up time in ms (sound realism mode)"), PV_LEFT },
-    { DRDATAD (SPINDOWN, rlcs_spindown_ms, 24, "spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD (SPINUP,   rlcs_spinup_ms,   24, "spin-up time in ms (realism mode)"), PV_LEFT },
+    { DRDATAD (SPINDOWN, rlcs_spindown_ms, 24, "spin-down time in ms (realism mode)"), PV_LEFT },
     { DRDATAD (SEEK2S,   rlcs_seek2s,      10, "short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD (SEEK2M,   rlcs_seek2m,      10, "medium seek sound up to n cylinders"), PV_LEFT },
     { NULL }
@@ -1579,7 +1579,7 @@ fprintf (st, "SYSGEN CONNECT CONSOLE.  A new (empty) image gets a bad block tabl
 fprintf (st, "SET CS ONLINE (or LOAD) and SET CS OFFLINE (or UNLOAD) are the drive's LOAD\n");
 fprintf (st, "button; while the drive is not up to speed a transfer ends with an error.\n");
 fprintf (st, "SHOW CS SPINDLE shows the spindle state.\n\n");
-fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n");
+fprintf (st, "Realism mode (SET REALISM ENABLED, see HELP SET SOUND):\n");
 fprintf (st, "  - ATTACH only loads the cartridge; the drive waits for SET CS ONLINE\n");
 fprintf (st, "    (spin-up register SPINUP, default 40000 ms; spin-down SPINDOWN, default\n");
 fprintf (st, "    30000 ms).  At the sim> prompt the commands wait until the drive is\n");

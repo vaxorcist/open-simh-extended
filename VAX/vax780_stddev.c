@@ -268,7 +268,7 @@ t_stat fl_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat fl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 static double fl_rw_us (UNIT *uptr, t_bool wr);
 
-/* Sound realism mode (SET SOUND ENABLED): the console floppy is an RX01
+/* Realism mode (SET REALISM ENABLED): the console floppy is an RX01
    drive on the RXV11 of the LSI-11 console processor; its mechanics are
    a sim_sound SND_FLOPPY (registers STEP, SETTLE, HDLOAD, HDUNLOAD,
    MOTORUP).  The LSI-11 reads or writes the whole sector between the
@@ -467,7 +467,7 @@ MTAB fl_mod[] = {
     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
         &set_writelock, NULL,   NULL, "Write lock floppy drive" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
-        NULL, &fl_show_drive, NULL, "Display the drive mechanics (sound realism mode)" },
+        NULL, &fl_show_drive, NULL, "Display the drive mechanics (realism mode)" },
     { 0 }
     };
 
@@ -1377,7 +1377,7 @@ fprintf (st, "tracks of 26 sectors of 128 bytes (256,256 bytes).\n\n");
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
-fprintf (st, "\nSound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
+fprintf (st, "\nRealism mode (SET REALISM ENABLED, see HELP SET SOUND):\n\n");
 fprintf (st, "  - The RX01 drive motor is an AC motor on the power line: it runs while\n");
 fprintf (st, "    the system power is on (RUN/BOOT, SET SOUND POWER=ON); at power on the\n");
 fprintf (st, "    head moves ten tracks in and back.  ATTACH is inserting a diskette and\n");

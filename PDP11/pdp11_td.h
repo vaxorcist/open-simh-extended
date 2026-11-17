@@ -56,7 +56,7 @@ t_stat td_wr_i_buf (CTLR *ctlr, int32 data);
 t_stat td_wr_o_csr (CTLR *ctlr, int32 data);
 t_stat td_wr_o_buf (CTLR *ctlr, int32 data);
 
-/* Sound realism mode (SET SOUND ENABLED): the TU58 tape model registers
+/* Realism mode (SET REALISM ENABLED): the TU58 tape model registers
    (shared by every TU58: TDC and the VAX console TD), the serial line
    speed, and the drive routines the console devices use */
 
@@ -84,7 +84,7 @@ t_stat td_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
 static DEBTAB td_deb[] = {
     { "OPS", TDDEB_OPS, "transactions" },
-    { "MOTION", TDDEB_MOT, "realistic tape motion and times (sound realism mode)" },
+    { "MOTION", TDDEB_MOT, "realistic tape motion and times (realism mode)" },
     { "PKT", TDDEB_PKT, "packet" },
     { "RRD", TDDEB_RRD, "reg reads"},
     { "IRD", TDDEB_IRD, "input reg reads" },

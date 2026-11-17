@@ -201,7 +201,7 @@ fprintf (st, "processors (RXCD register) with the console commands I, D/G and S,
 fprintf (st, "a real VAX 8300.  Both processors execute; they take turns on the host,\n");
 fprintf (st, "switching every CPU QUANTUM instructions (default 100) at an instruction\n");
 fprintf (st, "boundary.  Simulated time runs with the primary, so in guest time both run\n");
-fprintf (st, "at full speed; with SET SOUND ENABLED (THROTTLE 400K) each processor gets\n");
+fprintf (st, "at full speed; with SET REALISM ENABLED (THROTTLE 400K) each processor gets\n");
 fprintf (st, "400K instructions per second.  The host does not idle while KA1 runs.\n\n");
 fprintf (st, "VAX/VMS V4.4 and later (with the VMS/8300 multiprocessing key) run it as\n");
 fprintf (st, "an attached processor (asymmetric multiprocessing).  VMS V4.7, as tested:\n\n");

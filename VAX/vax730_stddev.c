@@ -395,7 +395,7 @@ MTAB td_mod[] = {
     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
         &set_writelock, NULL,   NULL, "Write lock TU58 drive" },
     { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
-        NULL, &td_show_drive, NULL, "Display the drive: cartridge, tape position (sound realism mode)" },
+        NULL, &td_show_drive, NULL, "Display the drive: cartridge, tape position (realism mode)" },
     { 0 }
     };
 

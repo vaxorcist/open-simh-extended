@@ -4,7 +4,7 @@ Default CPU sounds (sound/default_cpu)
 These recordings were made by Ulli (vaxorcist) on his own VAX-11/750.
 They are the default system sounds of every simulator that opts in to
 them (sim_sound_use_default_cpu () in its initialization; at present the
-vax750) when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND) and
+vax750) when sound is enabled (SET REALISM ENABLED; see HELP SET SOUND) and
 the simulator has no system sounds of its own.
 
 File          Content                                     Use

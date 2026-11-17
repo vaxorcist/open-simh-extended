@@ -591,7 +591,7 @@ int32 rp_stopioe = 1;                                   /* stop on error */
 int32 rp_swait = 26;                                    /* seek time */
 int32 rp_rwait = 10;                                    /* rotate time */
 
-/* Sound realism mode (SET SOUND ENABLED)
+/* Realism mode (SET REALISM ENABLED)
 
    Removable-pack drives (RM02/RM03, RP04, RP05, RP06, RM05) have a
    RUN/STOP button: SET RPn ONLINE spins the drive up, SET RPn OFFLINE
@@ -723,8 +723,8 @@ REG rp_reg[] = {
     { BRDATAD  (MR2,              rmmr2, DEV_RDX, 16, RP_NUMDR, "maintenance register 2 (RM only)") },
     { DRDATAD  (STIME,         rp_swait, 24,                    "seek time, per cylinder"), REG_NZ + PV_LEFT },
     { DRDATAD  (RTIME,         rp_rwait, 24,                    "rotational delay"), REG_NZ + PV_LEFT },
-    { DRDATAD  (SPINUP,    rp_spinup_ms, 24,                    "spin-up time in ms (sound realism mode)"), PV_LEFT },
-    { DRDATAD  (SPINDOWN, rp_spindown_ms, 24,                   "spin-down time in ms (sound realism mode)"), PV_LEFT },
+    { DRDATAD  (SPINUP,    rp_spinup_ms, 24,                    "spin-up time in ms (realism mode)"), PV_LEFT },
+    { DRDATAD  (SPINDOWN, rp_spindown_ms, 24,                   "spin-down time in ms (realism mode)"), PV_LEFT },
     { DRDATAD  (SEEKRM03S,  rp_seek_s[0], 10,                   "RM02/RM03 short seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD  (SEEKRM03M,  rp_seek_m[0], 10,                   "RM02/RM03 medium seek sound up to n cylinders"), PV_LEFT },
     { DRDATAD  (SEEKRP04S,  rp_seek_s[1], 10,                   "RP04 short seek sound up to n cylinders"), PV_LEFT },
@@ -1543,7 +1543,7 @@ if (!sim_is_running)                                    /* from console? */
 return sim_disk_detach (uptr);
 }
 
-/* Sound realism mode: spindles and timing */
+/* Realism mode: spindles and timing */
 
 /* Is the drive ready: pack attached and (removable packs) spun up? */
 
@@ -1820,7 +1820,7 @@ fprintf (st, "\nSET RPn ONLINE and SET RPn OFFLINE are the RUN/STOP button of th
 fprintf (st, "removable-pack drives (RM02/03, RP04/05/06, RM05): OFFLINE spins the drive\n");
 fprintf (st, "down (the pack stays attached), ONLINE spins it up.  SHOW RPn SPINDLE shows\n");
 fprintf (st, "the spindle state.  The RM80 and RP07 are fixed disks without this button.\n\n");
-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
+fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND):\n");
 fprintf (st, "  - ATTACH of a removable pack only loads it; the drive stays stopped until\n");
 fprintf (st, "    SET RPn ONLINE (spin-up time register SPINUP, spin-down SPINDOWN, both\n");
 fprintf (st, "    30000 ms by default); at the sim> prompt the commands wait until the\n");

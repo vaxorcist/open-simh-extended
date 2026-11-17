@@ -111,7 +111,7 @@
 #include "sim_tape.h"
 #include "sim_sound.h"
 
-/* Sound realism mode (SET SOUND ENABLED; 2026-11-08, Ulli), TK50 only
+/* Realism mode (SET REALISM ENABLED; 2026-11-08, Ulli), TK50 only
 
    The TK50 (TQK50 on the Qbus, TUK50 on the Unibus) becomes a cartridge
    streamer (SND_STREAMER in sim_sound; EK-OTK50-TM-002, EK-TUK50-OM-001):
@@ -345,7 +345,7 @@ int32 tq_qtime = 200;                                   /* queue time */
 int32 tq_xtime = 500;                                   /* transfer time */
 int32 tq_rwtime = 2000000;                              /* rewind time 2 sec (adjusted later) */
 
-/* TK50 cartridge streamer (sound realism mode, see above) */
+/* TK50 cartridge streamer (realism mode, see above) */
 
 static const SND_STRM_TYPE tq_tk50 = {
     "TK50", "tk50", "tk50",
@@ -1590,7 +1590,7 @@ int32 st;
 if (cptr != NULL)
     return SCPE_ARG;
 if (!tq_real ())
-    return sim_messagef (SCPE_ARG, "%s: the Load/Unload button exists in the sound realism mode of the TK50 only%s\n",
+    return sim_messagef (SCPE_ARG, "%s: the Load/Unload button exists in the realism mode of the TK50 only%s\n",
                          sim_uname (uptr), tq_hint ());
 if (!(uptr->flags & UNIT_ATT))
     return sim_messagef (SCPE_UNATT, "%s: no cartridge (ATTACH one first)\n", sim_uname (uptr));
@@ -1629,7 +1629,7 @@ return tq_set_panel_body (uptr, val, cptr, desc);
 static t_stat tq_show_transport_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 if (!tq_real ()) {
-    fprintf (st, "no transport model (sound realism mode of the TK50 only%s)\n", tq_hint ());
+    fprintf (st, "no transport model (realism mode of the TK50 only%s)\n", tq_hint ());
     return SCPE_OK;
     }
 fprintf (st, "TK50: ");
@@ -2888,7 +2888,7 @@ tq_set_ctx_unit (uptr);
 return tq_show_ctrl_body (st, uptr, val, desc);
 }
 
-/* Realism rule (SET SOUND ENABLED): a KLESI adapter only ever connected
+/* Realism rule (SET REALISM ENABLED): a KLESI adapter only ever connected
    TU81 drives (Ulli, 2026-11-17); SIMH allows the TK50 and TK70 on TB as
    well (VMS only sees TMSCP), which the normal mode keeps. */
 
@@ -3002,7 +3002,7 @@ fprintf (st, "include the ability to set units write enabled or write locked, an
 fprintf (st, "specify the controller type and tape length:\n");
 fprint_set_help (st, dptr);
 fprintf (st, "\nThe %s device supports the BOOT command.\n", devtype);
-fprintf (st, "\nSound realism mode (SET SOUND ENABLED), TK50 only:\n\n");
+fprintf (st, "\nRealism mode (SET REALISM ENABLED), TK50 only:\n\n");
 fprintf (st, "The TK50 is simulated as a cartridge streamer: 75 in/s, 45 KB/s, 22 serpentine\n");
 fprintf (st, "tracks on 600 ft of tape, a 32 KB buffer between host and tape.  A host that\n");
 fprintf (st, "keeps up keeps the tape streaming; a slower one gives the typical cycle of\n");
@@ -3225,13 +3225,13 @@ t_stat tb_port_reset (void)
 return tq_reset (&tb_dev);
 }
 
-/* SET SOUND ENABLED: an enabled TB must have TU81 drives (no changes,
+/* SET REALISM ENABLED: an enabled TB must have TU81 drives (no changes,
    so the dry run and the real run are the same) */
 
 static t_stat tb_rlz_enable_check (t_bool apply)
 {
 if ((tq_ctx1.dev != NULL) && !(tq_ctx1.dev->flags & DEV_DIS) && (tq_ctx1.typ != TQ8_TYPE))
-    return tb_rlz_msg ("SET SOUND ENABLED: ", tq_ctx1.typ);
+    return tb_rlz_msg ("SET REALISM ENABLED: ", tq_ctx1.typ);
 return SCPE_OK;
 }
 
@@ -3286,7 +3286,7 @@ fprintf (st, "the port's IP and SA registers are at Unibus address 774500 in the
 fprintf (st, "node's window.  ULTRIX supports it (V2.0: bla.c, tmscp.c).\n\n");
 fprintf (st, "SIMH also accepts SET TB TK50, TK70 or TKUSER (the guest only sees\n");
 fprintf (st, "TMSCP); no KLESI adapter ever connected those drives, so the sound\n");
-fprintf (st, "realism mode (SET SOUND ENABLED) allows the TU81 only.\n\n");
+fprintf (st, "realism mode (SET REALISM ENABLED) allows the TU81 only.\n\n");
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
