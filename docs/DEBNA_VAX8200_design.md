@@ -1,7 +1,7 @@
 <!-- open-simh-extended/docs/DEBNA_VAX8200_design.md  v5, 2026-11-17 (v5: section 10, VMS V5.5 (known issues 74, 75), patch 10 v2; v4: network boot open until further notice (Ulli); v3: P5: VMS V4.7's VMB.EXE tried, no DEBNA driver; v2: decisions D1-D6 accepted by Ulli; section 9, results P0-P4, P6, VMS findings, network boot (P5) open; v1: first implementation plan for Ulli's decision: DEBNA or DEBNK, sources, phases, open points) -->
 # DEBNA (and later DEBNK) on the VAX 8200/8300 (implementation plan and results)
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-16. Status: **done for VMS** (patch 10 `opensimh_10_debna_v1.patch`, branch `debna`, on `integration`); network boot (P5) open, see section 9; the DEBNK tape port maybe later (Ulli).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-16. Status: **done for VMS V4.7 and V5.5** (patch 10 `opensimh_10_debna_v2.patch`, branch `debna`, on `integration`); network boot (P5) open, see section 9; the DEBNK tape port maybe later (Ulli).
 
 Sources:
 - EK-DEBNX-IN-001 *DEBNA/DEBNK Installation Guide* (Aug 1987), supplied by Ulli. Appendix B has the registers, appendix C the network boot, appendix D the Ethernet address.
