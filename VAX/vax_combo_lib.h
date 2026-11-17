@@ -23,13 +23,26 @@
 
    - the line printer formatter (tabs, truncation, line wrap, automatic
      carriage return, form feed conversion, upper case, non printing
-     characters, DAVFU codes, prefix and suffix characters).
+     characters, DAVFU codes, prefix and suffix characters);
+   - the synchronous line's link to its peer and the DDCMP framing.
 
    Each board keeps a COMBO_LP for its printer, sets the option flags from
    its own registers before a print cycle and supplies the output routine.
 
+   For the synchronous line each board keeps a COMBO_SYNC: the one-line
+   TMXR connection to the peer (SET <unit> PEER=host:port, ATTACH <unit>
+   port), as DMF-SYNC and the DMC11 use it: whole DDCMP frames, CRCs
+   included.  In DDCMP mode the boards only frame messages (DMB32 TD 2.7,
+   DMF32 UG 4.11): the host software runs the protocol; the board takes
+   the 6-byte header and the data from a transmit buffer and inserts the
+   header and data CRCs, and on receive it checks and strips them and
+   stores header and data.  combo_ddcmp_encode/decode do that; the
+   register handling, buffers and interrupts stay with the board.
+
    Modification history:
 
+   17-Nov-26    Ulli/Claude  Synchronous line link and DDCMP framing (from
+                             vax_dmf.c), for the DMB32 sync line
    15-Nov-26    Ulli/Claude  First version: printer formatter (from vax_dmf.c)
 */
 
@@ -37,6 +50,7 @@
 #define VAX_COMBO_LIB_H_    0
 
 #include "sim_defs.h"
+#include "sim_tmxr.h"
 
 /* Printer formatter options (COMBO_LP.flags) */
 
@@ -76,5 +90,51 @@ void combo_lp_out (COMBO_LP *lp, int32 c);      /* one character, unformatted */
 void combo_lp_newline (COMBO_LP *lp);           /* "new line" (prefix 0, wrap) */
 void combo_lp_format (COMBO_LP *lp, int32 c);   /* one data character, formatted */
 void combo_lp_fix (COMBO_LP *lp, int32 count, int32 c);    /* prefix/suffix */
+
+/* Synchronous line: link to the peer and DDCMP framing */
+
+#define COMBO_SFRAME    (16384 + 16)            /* largest message + header/CRCs */
+
+/* combo_ddcmp_decode results */
+#define CDD_OK          0                       /* good message */
+#define CDD_DROP        1                       /* bad header (CRC, start
+                                                   character, short frame):
+                                                   the receiver resynchronizes,
+                                                   nothing is stored */
+#define CDD_DCRC        2                       /* stored, data CRC bad */
+
+/* combo_ddcmp_encode results */
+#define CDE_OK          0
+#define CDE_HDR         1                       /* not SOH, ENQ or DLE, or shorter
+                                                   than a header */
+#define CDE_LEN         2                       /* data count beyond the buffer */
+
+typedef struct combo_sync COMBO_SYNC;
+
+struct combo_sync {
+    TMLN    ln[1];                              /* the line */
+    TMXR    desc;                               /* its one-line multiplexer */
+    char    peer[CBUFSIZE];                     /* host:port to connect to */
+    uint8   frame[COMBO_SFRAME];                /* received frame waiting for a
+                                                   buffer (CRCs included) */
+    int32   frame_len;                          /* its length, 0 = none */
+    DEVICE  *dptr;                              /* for debug output */
+    uint32  dbg;                                /* debug flag of connection messages */
+    };
+
+void combo_sync_setup (COMBO_SYNC *cs, DEVICE *dptr, UNIT *uptr, uint32 dbg);
+t_stat combo_sync_set_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
+t_stat combo_sync_show_peer (FILE *st, COMBO_SYNC *cs);
+t_stat combo_sync_attach (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
+t_stat combo_sync_detach (COMBO_SYNC *cs, UNIT *uptr);
+t_bool combo_sync_poll_rx (COMBO_SYNC *cs, UNIT *uptr);    /* TRUE: new connection */
+void combo_sync_poll_tx (COMBO_SYNC *cs, UNIT *uptr);
+t_bool combo_sync_up (COMBO_SYNC *cs);          /* connected to the peer */
+t_bool combo_sync_tx_busy (COMBO_SYNC *cs);     /* previous frame still going */
+void combo_sync_send (COMBO_SYNC *cs, uint8 *frame, int32 len);
+void combo_sync_hold (COMBO_SYNC *cs, const uint8 *frame, int32 len);
+t_bool combo_ddcmp_fetch (COMBO_SYNC *cs);      /* a DDCMP frame waits in cs->frame */
+int32 combo_ddcmp_decode (const uint8 *frame, int32 len, uint8 *out, int32 *n);
+int32 combo_ddcmp_encode (const uint8 *msg, int32 count, uint8 *out, int32 *len);
 
 #endif
