@@ -27,6 +27,8 @@
                       structures as a host driver uses them (interface facts
                       only; no code taken)
      VMS V4.7 ETDRIVER: traced where the above leave a point open
+     VMS V5.5 ETDRIVER: no message free queue (entry length 0), free queue
+                      lengths set after INIT (17-Nov-26, known issues 74)
 
    The DEBNA is a MicroVAX with a LANCE behind a BIIC and a BCI3.  The host
    talks to its Ethernet ("NI") port through the BVP architecture: four port
@@ -374,6 +376,7 @@ static t_stat et_set_mac (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 static t_stat et_show_mac (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 static void et_port_instr (void);
 static void et_work_cmdq (int32 q);
+static t_bool et_load_fq_len (void);
 static void et_deliver (void);
 static void et_set_filter (void);
 static ET_PTDB *et_find_ptdb (uint32 index, t_bool alloc);
@@ -867,16 +870,8 @@ et_pt.spte &= 0x3FFFFFFF;
 et_pt.valid = TRUE;
 et_fqb_va = vfqb;
 et_nfq = (fq > FQ_MAX) ? FQ_MAX : fq;
-et_qe_max = 0;
-for (fq = 0; fq < FQ_MAX; fq++) {               /* entry lengths */
-    if (!et_vrl (et_fqb_va + fq * FQB_SIZE + FQB_LEN, &w))
-        return FALSE;
-    et_fq_len[fq] = (w > QE_SIZE) ? QE_SIZE : w;
-    if (et_fq_len[fq] > et_qe_max)
-        et_qe_max = et_fq_len[fq];
-    }
-if (et_qe_max < QE_DG_BUFS + 8)
-    et_qe_max = QE_DG_BUFS + 8;
+if (!et_load_fq_len ())                         /* entry lengths */
+    return FALSE;
 if (!bi_mem_rl (pa + PQB_VECLVL, &w))
     return FALSE;
 et_veclvl = w & 0xFFFF;
@@ -1206,12 +1201,39 @@ switch (fn) {
     }
 b[QE_STATUS] = sts;
 b[QE_OPCODE] = OPC_MSGRX;
-if ((QE_MSG_TEXT + resp_len - 6) > et_fq_len[FQ_MSG])  /* never past the entry */
-    resp_len = et_fq_len[FQ_MSG] - QE_MSG_TEXT + 6;
+if (et_fq_len[FQ_MSG] != 0) {                   /* entry from the message free queue */
+    if ((QE_MSG_TEXT + resp_len - 6) > et_fq_len[FQ_MSG])  /* never past the entry */
+        resp_len = et_fq_len[FQ_MSG] - QE_MSG_TEXT + 6;
+    }
+else if (resp_len > len)                        /* no message free queue (VMS V5.5): */
+    resp_len = len;                             /* the host's own entry, as long as the command */
 PW (b, QE_LEN, resp_len);
 if (!et_vxfer (e + QE_STATUS, b + QE_STATUS, QE_MSG_TEXT + resp_len - 6 - QE_STATUS, TRUE))
     return;
 et_respond (e);
+}
+
+/* The free queues' entry lengths (FQB).  Read at INIT and again before
+   each command queue is worked: VMS V5.5 sets some of them only after
+   INIT (free queue 2 with its first PTDB), and leaves the message free
+   queue (0) at 0 because it allocates its message entries itself. */
+
+static t_bool et_load_fq_len (void)
+{
+uint32 w;
+int32 fq;
+
+et_qe_max = 0;
+for (fq = 0; fq < FQ_MAX; fq++) {
+    if (!et_vrl (et_fqb_va + fq * FQB_SIZE + FQB_LEN, &w))
+        return FALSE;
+    et_fq_len[fq] = (w > QE_SIZE) ? QE_SIZE : w;
+    if (et_fq_len[fq] > et_qe_max)
+        et_qe_max = et_fq_len[fq];
+    }
+if (et_qe_max < QE_DG_BUFS + 8)
+    et_qe_max = QE_DG_BUFS + 8;
+return TRUE;
 }
 
 /* Work a command queue */
@@ -1222,6 +1244,7 @@ uint32 e;
 uint8 b[QE_SIZE];
 int32 r;
 
+et_load_fq_len ();                              /* lengths may have changed */
 while ((r = et_remqhi (et_pqb_va + PQB_CMDQ0 + q * 8, &e)) == Q_OK) {
     memset (b, 0, sizeof (b));
     if (!et_vxfer (e, b, et_qe_max, FALSE)) {
