@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/KLESIB_VAX8200_design.md  v1, 2026-11-16 (v1: KLESI-B (TB) and SET UBA DISABLE: design, decisions, implementation, VMS V4.7 results) -->
+<!-- open-simh-extended/docs/KLESIB_VAX8200_design.md  v2, 2026-11-17 (v2: realism mode TU81 only, patch 11 v3, known issues 77, b1r and tu81_rule tests; v1: KLESI-B (TB) and SET UBA DISABLE: design, decisions, implementation, VMS V4.7 results) -->
 # KLESI-B (TB) and the VAXBI-only mode on the VAX 8200/8300
 
-Prepared with Claude for Ulli (vaxorcist), 2026-11-16. Status: **done for VMS V4.7** (patch 11 `opensimh_11_klesib_v1.patch`, branch `klesib`, on `integration`).
+Prepared with Claude for Ulli (vaxorcist), 2026-11-16. Status: **done for VMS V4.7** (patch 11 `opensimh_11_klesib_v3.patch`, branch `klesib`, on `integration`); since v2 the realism mode allows TU81 drives only (section 6).
 
 ## 1. Request and decisions
 
@@ -17,6 +17,7 @@ Decisions (Ulli, 2026-11-16):
 | D4 | Default state | **Disabled**, drives **TU81** (`SET TB ENABLE`) |
 | D5 | `SET UBA DISABLE` with enabled Unibus devices | **Auto-disable**: refused while a Unibus unit is attached; otherwise all enabled Unibus devices are disabled and listed; `SET UBA ENABLE` brings them back |
 | D6 | Patch and branch | Patch 11, branch `klesib` (from `debna`) |
+| D7 | TK50, TK70 and user types on TB (Ulli, 2026-11-17) | "None of the KLESI adapters ever supported a TK50 or TK70." **In the realism mode TU81 only**; the normal mode keeps vanilla Open SIMH's choice of types. Patch 11 v2 (v3: known issues 77) |
 
 ## 2. Sources
 
@@ -79,3 +80,24 @@ Regression:
 - **The VMS names** depend on the order: with the DWBUA, TQ is PTA/MUA and TB is PTB/MUB; without it (VAXBI-only), TB is PTA/MUA.
 - **No boot from TB:** the 8200's VMB (built in, and VMS V4.7's VMB.EXE) has no tape boot driver (see case 69 for its driver table). `BOOT TB` is not offered.
 - **Open (known issues 70):** after SET UBA DISABLE a Unibus device can still be enabled by hand; it is unreachable. Decision for Ulli.
+
+## 6. Realism mode: TU81 only (patch 11 v2 and v3)
+
+A KLESI (KLESI-U on the Unibus, KLESI-Q on the Qbus, KLESI-B on the VAXBI) connected TU81 drives only; TK50 and TK70 had their own controllers (TQK50/TUK50, TQK70/TUK70). SIMH's TMSCP code offers every type on every controller, and VMS accepts any of them through TMSCP, so the normal mode keeps that. In the realism mode (`SET REALISM ENABLED`, formerly `SET SOUND ENABLED`, still a synonym) TB follows the hardware:
+
+| Command | Realism mode, TB not a TU81 |
+|---|---|
+| `SET TB TK50`, `TK70`, `TKUSER=n` | refused: "TB: a KLESI-B connects TU81 drives only, not a TK50 (realism mode; SET TB TU81)" |
+| `ATTACH TBn` | refused with the same message ("ATTACH: TB: ...") |
+| `SET REALISM ENABLED` with an enabled TB of another type | refused ("SET REALISM ENABLED: TB: ..."); nothing changes (known issues 76: the checks run as a dry run first) |
+| `SET TB ENABLE` (a type set while TB was disabled) | the type becomes TU81: "TB: realism mode: TK50 replaced by TU81 (a KLESI-B connects TU81 drives only)" (known issues 77; a reset cannot refuse) |
+
+TQ is not affected: the TQK50/TUK50 keeps the TK50 with its transport model, and TK70 and TU81 stay selectable there.
+
+Code (`PDP11/pdp11_tq.c`, VAX 8200 only): `tq_is_tb`, `tb_rlz_msg`, checks in `tq_set_type_body` and `tq_attach_body`, `tb_rlz_enable_check` (registered in `tb_reset`) and `tb_rlz_force_tu81` (in `tb_reset`). HELP TB describes the rule.
+
+Tests (2026-11-17):
+
+- `tests/klesib/tu81_rule.ini`: console test of all four cases and of TQ (TK70 and TK50 accepted). **Pass**.
+- `tests/klesib/b1r.ini`: b1 in the realism mode (TU81 on TB0, `SET KDB0 ONLINE` before the boot, since the RA81 stays stopped at ATTACH): 24 files, 4324 blocks, DIFFERENCES 0. **Pass**. b1 in the normal mode: **pass**.
+- `tests/sound/enable_dryrun.ini` (known issues 76) and `tests/kdb50/sdi_rule.sh`: **pass**.

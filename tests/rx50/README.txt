@@ -1,12 +1,12 @@
-open-simh-extended/tests/rx50/README.txt  v2 (2026-11-16; v2: SDI rule: RD54 units on the KDA50/UDA50A disabled)
+open-simh-extended/tests/rx50/README.txt  v3 (2026-11-16; v3: SET REALISM rename; v2: SDI rule: RD54 units on the KDA50/UDA50A disabled)
 
-RX50 tests for the sound realism mode (2026-11-11): RX50 diskettes on the
+RX50 tests for the realism mode (2026-11-11): RX50 diskettes on the
 MSCP controllers (RQ device).
 
 Rules of the realism mode (Ulli, 2026-11-11):
 - RX50 drives only on an RQDX1 (RQDX2), RQDX3, RQDX4 or RUX50 controller;
   a RUX50 only connects RX50 drives.
-- SET SOUND ENABLED and SET RQ <other controller type> disable RX50 units
+- SET REALISM ENABLED and SET RQ <other controller type> disable RX50 units
   on other controllers, with a message (the default Unibus configuration
   has an RX50 at RQ3 on the UDA50A).  SET RQ RUX50 makes units 0-3 RX50
   units; SET RQ <other type> on a RUX50 gives the units their initial
@@ -23,7 +23,7 @@ c1.ini   microvax2  realism  rules on the Qbus: default RQDX3 accepted;
                              pairs by
                              consecutive unit numbers (1/2 + lone 3, then
                              2/3 after RQ1 becomes an RD54)
-c2.ini   vax750     realism  rules on the Unibus: SET SOUND ENABLED
+c2.ini   vax750     realism  rules on the Unibus: SET REALISM ENABLED
                              disables RQ0-RQ2 (RD54, SDI rule) and RQ3
                              (RX50 on the UDA50A); SET RQ
                              RUX50: RQ0-RQ3 RX50 (drives 0/1, 2/3); an RD54

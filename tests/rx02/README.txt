@@ -1,6 +1,6 @@
-open-simh-extended/tests/rx02/README.txt  v2
+open-simh-extended/tests/rx02/README.txt  v3
 
-RX02 (RY device) tests for the sound realism mode (2026-11-11).
+RX02 (RY device) tests for the realism mode (2026-11-11).
 
 The scripts expect, in the current directory:
   rt.rx2      a copy of Ulli's RT11.RX2 (RT-11SB V05.07, double density;
@@ -32,7 +32,7 @@ sd0.ini  pdp11      normal   Set Media Density on an empty drive (crashed
                              before the fix: known issues 45)
 sd1.ini  pdp11      both     Set Media Density: empty drive (normal and
                              realism), new double-density diskette in drive 1
-                             (15.3 s), SET SOUND DISABLED refused while
+                             (15.3 s), SET REALISM DISABLED refused while
                              attached
 sd2.ini  pdp11      normal   the formatted new image stays an empty file
                              (known issues 46)
@@ -42,7 +42,7 @@ vms2.ini vax750     normal   VMS V4.7: INITIALIZE double (DYA0) and single
                              (DYA1), MOUNT, COPY, DIRECTORY, DISMOUNT; needs
                              a copy of VMS047.R81 (known issues 47: MOUNT
                              failed with DRVERR on double density)
-vms3.ini vax750     realism  as vms2.ini in the sound realism mode
+vms3.ini vax750     realism  as vms2.ini in the realism mode
 
 Results (2026-11-11): see docs/SIMH_Sound_handover.md (v30), floppy section.
 tools/rt11_dir_rx02.py lists the RT-11 directory of an RX02 image (it

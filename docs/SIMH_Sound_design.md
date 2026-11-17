@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_design.md  v1 (Phase 1 result: agreed design, no code yet) -->
+<!-- open-simh-extended/docs/SIMH_Sound_design.md  v2 (Phase 1 result: agreed design, no code yet) -->
 # SIMH Sound: design (Phase 1 result)
 
 Date: 2026-11-02. Prepared with Claude for Ulli (vaxorcist). Planning only; nothing is implemented yet and nothing will be pushed.
@@ -69,14 +69,14 @@ The seek pulses are about 11 dB louder than the fan; default gains compensate, f
 
 ## 5. SET SOUND and realism mode
 
-- `SET SOUND ENABLED|DISABLED`, `SET SOUND VOLUME=n`, group volumes, `SET SOUND PATH=…`, `SHOW SOUND`; commands to assign user sounds. Exact syntax is fixed in phase A.
-- `SET SOUND ENABLED|DISABLED` is only allowed while **no disk and no tape** is attached.
-- `SET SOUND ENABLED` switches on the **realism mode**, also when SDL2 or an audio device is missing (same script, same behavior on every host, just silent):
+- `SET REALISM ENABLED|DISABLED`, `SET SOUND VOLUME=n`, group volumes, `SET SOUND PATH=…`, `SHOW SOUND`; commands to assign user sounds. Exact syntax is fixed in phase A.
+- `SET REALISM ENABLED|DISABLED` is only allowed while **no disk and no tape** is attached.
+- `SET REALISM ENABLED` switches on the **realism mode**, also when SDL2 or an audio device is missing (same script, same behavior on every host, just silent):
   - realistic disk (and later tape) timing;
   - realistic CPU speed: a fixed default `THROTTLE` per simulator. If the user set THROTTLE explicitly, it is left untouched. The 11/750 default (≈ 0.6 × an 11/780) is calibrated against the real 11/750, e.g. VMS boot time to the login prompt;
   - UNLOAD goes OFFLINE instead of detaching;
   - ATTACH leaves the drive stopped until `SET <unit> ONLINE`.
-- With sound disabled everything behaves as today.
+- With realism disabled everything behaves as today.
 
 ## 6. OFFLINE / ONLINE (drive RUN/STOP button)
 

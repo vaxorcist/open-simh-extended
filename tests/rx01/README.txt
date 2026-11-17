@@ -1,6 +1,6 @@
-open-simh-extended/tests/rx01/README.txt  v1
+open-simh-extended/tests/rx01/README.txt  v2
 
-RX01 tests for the sound realism mode (2026-11-11): the RX device (RX11/
+RX01 tests for the realism mode (2026-11-11): the RX device (RX11/
 RXV11 with two RX01 drives) of the PDP-11 and the console floppy (CS
 device, the RX01 of the console LSI-11) of the VAX-11/780.
 
@@ -35,7 +35,7 @@ vms4.ini vax780     normal   VMS V4.7: SYSGEN CONNECT CONSOLE, MOUNT/FOREIGN
                              EXCHANGE COPY SYSGEN.EXE (129 blocks) to the
                              console floppy and back, DIFFERENCES (none),
                              DISMOUNT; needs a copy of VMS047.R81
-vms5.ini vax780     realism  the same in the sound realism mode
+vms5.ini vax780     realism  the same in the realism mode
                              (SDL_AUDIODRIVER=dummy is fine); SET CS
                              DEBUG=OPS to vms5.dbg
 

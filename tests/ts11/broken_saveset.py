@@ -1,4 +1,4 @@
-# open-simh-extended/tests/ts11/broken_saveset.py  v1
+# open-simh-extended/tests/ts11/broken_saveset.py  v2
 #
 # Generates a MicroVAX II test (VMS V4.7, TSV05): BACKUP/IMAGE to a
 # foreign-mounted tape, interrupted with Ctrl/Y (a save set without tape
@@ -13,7 +13,7 @@ import sys
 real = sys.argv[1] == "real"
 name = sys.argv[2]
 s = "; %s.ini v1 (mk.py): interrupted BACKUP, then BACKUP again without /REWIND\n" % name
-if real: s += "set sound enabled\n"
+if real: s += "set realism enabled\n"
 s += "set cpu 16m\nset rq0 ra81\nattach rq0 %s.vhd\nattach -n ts %s.tap\n" % (name, name)
 if real: s += "set ts online\n"
 s += "set debug %s.dbg\nset ts debug=req\nset runlimit 1800 seconds\n" % name

@@ -1,4 +1,4 @@
-open-simh-extended/tests/vax8300/README.txt  v2 (v2: reboot1.ini)
+open-simh-extended/tests/vax8300/README.txt  v3 (v3: SET REALISM rename; v2: reboot1.ini)
 
 Tests of the second KA820 (patch 7, VAX 8300: SET KA1 ENABLE).
 
@@ -16,7 +16,7 @@ The scripts enable multiprocessing in VMS with
 mp3.ini   normal mode: START/CPU, SHOW CPU (IDLE), STOP/CPU, SHOW CPU
           (VMS V4.7: DEVOFFLINE while stopped), START/CPU, SHOW CPU (IDLE).
           About 1 minute.
-mp2.ini   realism mode (SET SOUND ENABLED, THROTTLE 400K per processor):
+mp2.ini   realism mode (SET REALISM ENABLED, THROTTLE 400K per processor):
           a MACRO-32 loop of 4,000,000 SOBGTR alone without and with the
           attached processor (10.6 s each), then two at once, one in a
           subprocess (12-13 s; one after the other they need 21 s);

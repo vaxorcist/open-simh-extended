@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/VAX8200_dual_CPU_design.md  v2, 2026-11-15 (v2: implemented, results, KA820 manual findings; v1: first design plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/VAX8200_dual_CPU_design.md  v3, 2026-11-15 (v3: SET REALISM rename; v2: implemented, results, KA820 manual findings; v1: first design plan for Ulli's decision) -->
 # VAX 8200/8300: a running second KA820 (design plan)
 
 Prepared with Claude for Ulli (vaxorcist), 2026-11-14. Status: **implemented 2026-11-15** (patch 7, branch `vax8300-mp`); Ulli accepted all proposals of section 9. Results in section 10. Background: known issues case 65.
@@ -45,7 +45,7 @@ Prepared with Claude for Ulli (vaxorcist), 2026-11-14. Status: **implemented 202
 - **Time:** simulated time advances with the primary's instructions only.
   - The secondary's instructions cost no simulated time, so in guest time both processors run at full speed, as on a real 8300.
   - The realism THROTTLE (400K) then means 400K instructions per second per processor, i.e. up to 800K for the host. This is no problem on today's hosts.
-  - Device timing and the sound realism mode are unchanged.
+  - Device timing and the realism mode are unchanged.
 
 ### 4.2 Processor state: one context per CPU, swapped at the switch
 

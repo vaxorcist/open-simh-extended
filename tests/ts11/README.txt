@@ -1,6 +1,6 @@
-open-simh-extended/tests/ts11/README.txt  v2
+open-simh-extended/tests/ts11/README.txt  v3
 
-TS11/TSV05 tests of the sound realism mode (2026-11-07), see
+TS11/TSV05 tests of the realism mode (2026-11-07), see
 docs/SIMH_Sound_handover.md, "Phase D, step 1".
 
 tstest.py v1    VMS V4.7 tests with Ulli's image VMS047-1.R81 (RA81, VHD,

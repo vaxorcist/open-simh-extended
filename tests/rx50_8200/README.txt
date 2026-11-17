@@ -1,7 +1,7 @@
-open-simh-extended/tests/rx50_8200/README.txt  v3 (v3: physical track 0 crash, known issues 54: t0, stab1-3; v2: VMS tests vms1/vms2)
+open-simh-extended/tests/rx50_8200/README.txt  v4 (v4: SET REALISM rename; v3: physical track 0 crash, known issues 54: t0, stab1-3; v2: VMS tests vms1/vms2)
 
 VAX 8200 console floppy (CS device, an RX50 drive with two slots) in the
-sound realism mode (2026-11-11).
+realism mode (2026-11-11).
 
 Files
 -----
@@ -12,7 +12,7 @@ prog.ini    the do-file made by mkprog.py
 vms1.ini    VMS V4.7 on the vax8200, normal mode: CSA1/CSA2 (CS0/CS1, new
             blank diskettes), SYSGEN CONNECT CONSOLE, MOUNT/FOREIGN, EXCHANGE
             INITIALIZE/COPY/DIRECTORY, DIFFERENCES, DISMOUNT
-vms2.ini    the same in the sound realism mode (SET SOUND ENABLED, SET RQ0
+vms2.ini    the same in the realism mode (SET REALISM ENABLED, SET RQ0
             ONLINE)
 t0prog.ini  made by "mkprog.py 0,0,1": read track 0 sector 1 of slot A
 t0.ini      vax8200, normal mode: the track 0 read on an image that has

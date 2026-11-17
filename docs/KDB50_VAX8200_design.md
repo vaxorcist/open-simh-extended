@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v8, 2026-11-17 (v8: patch 9 v4, identity and poll after interrupt per the microcode (known issues 73); v7: microcode listing findings (IP poll), P4 valid; v6: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72), section 11; v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/KDB50_VAX8200_design.md  v9, 2026-11-17 (v9: SET REALISM rename; v8: patch 9 v4, identity and poll after interrupt per the microcode (known issues 73); v7: microcode listing findings (IP poll), P4 valid; v6: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72), section 11; v5: SDI rule (known issues 68 fixed), patch 9 v2; v4: section 10, results P0-P6, patch 9; v3: D1-D6 accepted by Ulli, DWBUA disable as a later wish; v2: Ulli's answers: ULTRIX postponed, KDB50 is the 8200's default system disk controller, UDA50 behind the DWBUA the alternative; v1: first implementation plan for Ulli's decision) -->
 # KDB50 on the VAX 8200/8300 (implementation plan)
 
 Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS V4.7 and V5.5** (patch 9 `opensimh_9_kdb50_v4.patch`, branch `kdb50`, on `integration`); ULTRIX postponed (section 10). Later wish (Ulli): the DWBUA can be disabled, which takes all Unibus options with it (section 8).
@@ -70,7 +70,7 @@ The tests use VMS V4.7 on the `vax8200` (Ulli's VMS047_1.R81). Per Ulli's rule, 
 | P2 | UQSSP initialization steps 1-4, rings, interrupts, MSCP with BI buffer descriptors | A second disk on `KDB1` (RA81): `INITIALIZE`, `MOUNT`, `COPY`, `DIRECTORY`, `ANALYZE/DISK`, `BACKUP` of a directory, `DISMOUNT` |
 | P3 | **Boot from the KDB50** (VMB `BTD$K_BDA`) | The system disk moved to `KDB0`; `BOOT KDB0` → VMS up, login (boot test) |
 | P4 | 8300: KA1 started, disk load while both CPUs are busy | `START/CPU`, copy jobs on both CPUs |
-| P5 | Realism mode: RA drives on the KDB50 (SDI rule, spindle buttons) | `SET SOUND ENABLED`, `SET KDB0 ONLINE`, boot; VMS SHUTDOWN spin-down |
+| P5 | Realism mode: RA drives on the KDB50 (SDI rule, spindle buttons) | `SET REALISM ENABLED`, `SET KDB0 ONLINE`, boot; VMS SHUTDOWN spin-down |
 | P6 | RQ regression (the bus layer touches all RQ controllers) | MicroVAX II (KDA50/RQDX3) and VAX-11/780 (UDA50) VMS boot and copy tests, as before |
 | P7 | Help, docs, ODS device table, known issues, patch 9 | `HELP KDB`; full patch series on 87eb7d5 |
 

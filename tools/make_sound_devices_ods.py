@@ -1,7 +1,7 @@
-# open-simh-extended/tools/make_sound_devices_ods.py  v18 (v18: RA drives also on the KDB50 (device KDB, VAX 8200); v17: Systems sheet: realism THROTTLE of every VAX simulator; v16: sheet TU58: TDC and the VAX-11/730/750 console TD; v15: VAX 8600 console RL02 (CS); v14: VAX 8200 console RX50; v13: RX50 (RQ); v12: RX01: RX device and the VAX-11/780 console floppy CS; v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
+# open-simh-extended/tools/make_sound_devices_ods.py  v19 (v19: SET REALISM rename; v18: RA drives also on the KDB50 (device KDB, VAX 8200); v17: Systems sheet: realism THROTTLE of every VAX simulator; v16: sheet TU58: TDC and the VAX-11/730/750 console TD; v15: VAX 8600 console RL02 (CS); v14: VAX 8200 console RX50; v13: RX50 (RQ); v12: RX01: RX device and the VAX-11/780 console floppy CS; v11: sheet Floppies: RX02; v10: RA81 start 20 s, RA80 40 s from the User Guides; v9: the fixed RA drives RA70-RA92; v8: sheet Streamers: TK50; MicroVAX II THROTTLE; v7: tapes, TS11 and TSV05; v6: default sounds; v5: RC25/RCF25 and the per-track model; v4: paths of the notes branch)
 #
 # Builds SIMH_Sound_devices.ods: the devices prepared for SIMH sound (realism
-# mode, SET SOUND ENABLED) with rotation speed, access times and spin times.
+# mode, SET REALISM ENABLED) with rotation speed, access times and spin times.
 #
 # The table is generated from the data below, which mirrors the constants in
 # the device sources (pdp11_hk.c, pdp11_rl.c, pdp11_rp.c, pdp11_rq.c,
@@ -344,7 +344,7 @@ for d in DISKS:
 add_table("Disks", ["3.6cm", "2.4cm", "2.0cm", "1.8cm", "1.8cm", "1.6cm", "1.8cm", "1.9cm", "2.2cm", "1.9cm",
                     "2.1cm", "2.2cm", "2.2cm", "1.9cm", "2.2cm", "2.2cm", "2.6cm", "1.6cm", "1.6cm", "5.0cm",
                     "2.0cm", "2.0cm", "5.2cm", "3.6cm", "6.0cm", "6.5cm"],
-          "SIMH sound: disk drives with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          "SIMH sound: disk drives with the realism mode (SET REALISM ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
           hdr, rows)
 
 # ---------------------------------------------------------------- sheet: tapes
@@ -381,7 +381,7 @@ for t in TAPES:
 add_table("Tapes", ["3.2cm", "3.2cm", "3.2cm", "1.8cm", "1.6cm", "1.4cm", "1.6cm", "1.8cm", "1.8cm",
                     "1.8cm", "1.8cm", "1.8cm", "2.2cm", "2.4cm", "2.6cm", "2.6cm", "2.0cm", "1.4cm", "2.6cm",
                     "1.4cm", "1.6cm", "5.0cm", "5.0cm", "5.0cm", "7.0cm", "7.0cm"],
-          "SIMH sound: tape transports with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          "SIMH sound: tape transports with the realism mode (SET REALISM ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
           thdr, trows)
 
 # ---------------------------------------------------------------- sheet: streamers
@@ -397,7 +397,7 @@ for t in STREAMERS:
 add_table("Streamers", ["3.4cm", "2.6cm", "1.6cm", "1.8cm", "1.4cm", "1.8cm", "1.6cm", "3.4cm", "1.8cm",
                         "1.8cm", "1.8cm", "2.4cm", "3.4cm", "1.8cm", "2.2cm", "1.8cm", "2.0cm", "2.4cm", "2.0cm",
                         "1.6cm", "6.0cm", "6.0cm", "7.0cm", "7.0cm"],
-          "SIMH sound: cartridge streamers with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          "SIMH sound: cartridge streamers with the realism mode (SET REALISM ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
           ["Device", "Drive", "Speed (in/s)", "Data rate (KB/s)", "Tracks", "Track (ft)", "Tape (ft)", "Capacity",
            "Buffer (bytes)", "Backup (in)", "Reposition (s)", "Cycle of a slow host (s)", "Start / stop distance",
            "One track pass (s)", "Worst access (min)", "Rewind (in/s)", "Longest rewind (s)", "Load (s)",
@@ -450,7 +450,7 @@ for f in FLOPPIES:
 add_table("Floppies", ["3.4cm", "1.6cm", "5.0cm", "1.4cm", "1.4cm", "1.4cm", "1.8cm", "1.8cm", "1.8cm",
                        "1.8cm", "1.8cm", "2.0cm", "2.2cm", "2.2cm", "5.5cm", "1.8cm", "6.0cm", "4.0cm",
                        "7.0cm", "7.0cm"],
-          "SIMH sound: floppy drives with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          "SIMH sound: floppy drives with the realism mode (SET REALISM ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
           ["Device", "Drive", "Medium", "Tracks", "Sectors", "rpm", "Revolution (ms)", "Sector (ms)",
            "Step per track (ms)", "Settle (ms)", "Head load (ms)", "Head unload after (ms)",
            "Model average access (ms)", "Published average access (ms)", "Motor", "Motor run-up (s)",
@@ -484,7 +484,7 @@ for u in TU58S:
                   "command; the host's bytes to the TU58 are not timed"])
 add_table("TU58", ["4.2cm", "3.4cm", "4.2cm", "1.4cm", "1.6cm", "1.8cm", "1.8cm", "1.6cm", "2.6cm", "1.8cm", "1.8cm",
                    "2.0cm", "2.0cm", "2.0cm", "2.0cm", "2.0cm", "3.4cm", "3.2cm", "5.5cm", "5.0cm", "5.0cm", "6.0cm", "8.0cm"],
-          "SIMH sound: TU58 DECtape II with the realism mode (SET SOUND ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
+          "SIMH sound: TU58 DECtape II with the realism mode (SET REALISM ENABLED), table %s, %s" % (TABLE_VERSION, TABLE_DATE),
           ["Device", "Units", "Cartridge", "Blocks", "Records (128 B)", "Read/write (in/s)", "Search (in/s)",
            "Density (bits/in)", "Data rate", "Record (ms)", "Slot at 30 in/s (ms)", "Block streaming (ms)",
            "Streaming (bytes/s)", "Full length at 60 in/s (s)", "A third of it (s)", "Published average / max access (s)",

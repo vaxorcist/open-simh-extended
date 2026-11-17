@@ -1,15 +1,15 @@
-# open-simh-extended/tests/ra/ratest.py  v2
+# open-simh-extended/tests/ra/ratest.py  v3
 #
 # v2 (2026-11-10): RA81 spin-up now 20 s (User Guide).
 #
-# Tests of the fixed RA drives in the sound realism mode of the RQ device
+# Tests of the fixed RA drives in the realism mode of the RQ device
 # (RUN/STOP button, realistic seek/rotation/transfer timing, seek sounds;
 # sound patch v23, 2026-11-10) with VMS V4.7 (Ulli's image VMS047-1.R81,
 # RA81, VHD; SYSTEM/MANAGER):
 #
 #   N1 normal mode, MicroVAX II (KDA50), RA81 system disk: boot, log in,
 #        the timed workload (DIRECTORY/SIZE, COPY, DELETE).  Regression and
-#        reference times: nothing may change without SET SOUND ENABLED.
+#        reference times: nothing may change without SET REALISM ENABLED.
 #   R1 realism mode, MicroVAX II (KDA50, THROTTLE 450K by default):
 #        - ATTACH leaves the RA81 stopped; SET RQ0 ONLINE waits for the
 #          spin-up (SPINUPRA81, 20 s); boot, log in, the timed workload;
@@ -101,7 +101,7 @@ def main():
             data = w("r1_ra92.dsk")
             if os.path.exists(data):
                 os.remove(data)
-            s += "set sound enabled\nset cpu 16m\nset rq kda50\nset rq0 ra81\nset rq1 ra92\n"
+            s += "set realism enabled\nset cpu 16m\nset rq kda50\nset rq0 ra81\nset rq1 ra92\n"
             s += "attach rq0 %s\nattach -n rq1 %s\n" % (disk, data)
             s += "echo ==== R1: after ATTACH\nshow rq0 spindle\nshow rq1 spindle\n"
             s += "set rq0 online\necho ==== R1: after SET RQ0 ONLINE\nshow rq0 spindle\n"
@@ -141,7 +141,7 @@ def main():
         elif test == "U1":
             sim = "vax750"
             disk = w("u1_ra82.raw"); flat(image, disk)
-            s += "set sound enabled\nset cpu 8m\nset rq0 ra82\nset rq0 noautosize\nset rq0 format=raw\n"
+            s += "set realism enabled\nset cpu 8m\nset rq0 ra82\nset rq0 noautosize\nset rq0 format=raw\n"
             s += "attach rq0 %s\nshow rq0\nset rq0 online\n" % disk
             s += "set debug %s\nset rq debug=trace\n" % trc
             s += "set runlimit 7200 seconds\n" + LOGIN + "boot rq0\n"
@@ -149,7 +149,7 @@ def main():
         elif test == "T1":
             sim = "microvax2"
             disk = w("t1.raw"); flat(image, disk)
-            s += "set sound enabled\nset cpu 16m\nset rq kda50\n"
+            s += "set realism enabled\nset cpu 16m\nset rq kda50\n"
             for n, ty in ((0, "ra72"), (1, "ra71")):
                 tg = "T" + str(n + 1)
                 s += "set rq0 %s\nset rq0 noautosize\nset rq0 format=raw\n" % ty

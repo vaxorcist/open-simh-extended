@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v43 (v43: realism THROTTLE for every VAX simulator, patch 5 v38; v42: boot tests: 750 console TU58, MicroVAX II RX50 standalone BACKUP; v41: VAX-11/780 BOOT CS unit fix (standalone BACKUP), patch 5 v37; v40: realism throttle without a full-speed measurement (VMS delay loops, SYSGEN CONNECT CONSOLE hang), patch 5 v36; v39: phase F step 1: the TU58 (TDC, VAX-11/730/750 console TD), realism clock fix, patch 5 v35; v38: VAX 8200 console floppy track 0 crash fixed (known issues 54), patch 5 v34; v37: the VAX 8600 console RL02, patch 5 v33; v36: VMS V4.7 on the VAX 8200 with the console RX50 CSA1/CSA2, both modes; v35: the VAX 8200 console RX50, patch 5 v32; v34: floppies step 3: the RX50 on the RQ, RX50 controller rules, patch 5 v31; v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
+<!-- open-simh-extended/docs/SIMH_Sound_handover.md  v44 (v44: SET REALISM rename; v43: realism THROTTLE for every VAX simulator, patch 5 v38; v42: boot tests: 750 console TU58, MicroVAX II RX50 standalone BACKUP; v41: VAX-11/780 BOOT CS unit fix (standalone BACKUP), patch 5 v37; v40: realism throttle without a full-speed measurement (VMS delay loops, SYSGEN CONNECT CONSOLE hang), patch 5 v36; v39: phase F step 1: the TU58 (TDC, VAX-11/730/750 console TD), realism clock fix, patch 5 v35; v38: VAX 8200 console floppy track 0 crash fixed (known issues 54), patch 5 v34; v37: the VAX 8600 console RL02, patch 5 v33; v36: VMS V4.7 on the VAX 8200 with the console RX50 CSA1/CSA2, both modes; v35: the VAX 8200 console RX50, patch 5 v32; v34: floppies step 3: the RX50 on the RQ, RX50 controller rules, patch 5 v31; v33: floppies step 2: the RX01 (RX device, VAX-11/780 console floppy CS), patch 5 v30; v32: RX02 VMS MOUNT DRVERR found and fixed (known issues 47), VMS tests vms2/vms3, patch 5 v29; v31: RX02 under VMS V4.7: MOUNT DRVERR (open), RY debug flags CMD/REG, patch 5 v28; v30: floppies, first the RX02 (RY), patch 5 v27; v29: SHUTDOWN spin-down confirmed, silent-sounds workaround; v28: RA81 start 20 s, RA80 40 s from the User Guides, patch 5 v26; v27: bus rule for SDI controllers, patch 5 v25; v26: Ulli's RA decisions, SDI rules, RA80 capacity, patch 5 v24; v25: the fixed RA drives RA70-RA92, patch 5 v23; v24: TK50 closed for now, patch 5 v22, next: the RA Winchester disks; v23: invalid records, calibration marker, throttle, patch 5 v21; v22: smooth TK50 sounds, streamer crossfades, patch 5 v20; v21: TQ position beyond the recorded data, patch 5 v19; v20: TK50 cartridge streamer, MicroVAX II THROTTLE 450K, patch 5 v18; v19: TS capacity display, blank tape OPI, patch 5 v17; v18: tapes, TS11 and TSV05, patch 5 v16; v17: patch 5 v15 on patch 6 v2; v16: default sounds; v15: RC25 rules, KLESI, geometry, unlimited spindles; v14: RC25 tested with VMS V3.5; v13: RC25/RCF25 on the RQ; v12: RB730 fixes, sound rebased on them; v11: RB02/RB80 on the RB730; v10: spindle sound generator; v9: device table; v8: RA60 on the RQ; v7: Massbus disks; v6: RL01/RL02, common spindle support; v5: ONLINE/OFFLINE wait at the prompt; v4: spin-up in wall time at the prompt, power on restores spindles, spin-up bug fixes; v3: VMS boot fixes; v2: phase B; v1: phase A) -->
 # SIMH Sound for Open SIMH: status and handover
 
 Date: 2026-11-02 (last update 2026-11-12, TU58). Prepared with Claude for Ulli (vaxorcist). Everything is pushed to the fork vaxorcist/open-simh-extended (branches `sound`, `integration`, `notes`). Design: `SIMH_Sound_design.md` (v1).
@@ -30,13 +30,13 @@ Date: 2026-11-02 (last update 2026-11-12, TU58). Prepared with Claude for Ulli (
 - **Mixer.** 64 voices, float sum, group gain × master × 0.5 (−6 dB headroom), soft limiter (tanh above 0.70, never above full scale). Fades for start/stop (minimum 5 ms against clicks). A one-shot can chain into a loop: 50 ms before its end the loop starts with a fade-in and takes over the handle (starting → running). `SND_F_RANDPHASE` starts loops at a random position so identical unit loops add up with √N.
 - **Groups:** SYSTEM, DISK, TAPE, EVENT, each 0–200 % and mutable; master 0–200 % and mutable.
 - **Power:** RUN and BOOT power on (starting, then running loop); GO/CONTINUE/STEP/NEXT, HALT, ^E, breakpoints and EXPECT stops change nothing. EXIT plays the stopping sound and waits for it (duration + 100 ms); `SET SOUND POWER=OFF` does the same without waiting.
-- **Realism mode:** `SET SOUND ENABLED` sets it even if no audio output is available. ENABLED/DISABLED are refused while a disk or tape unit is attached. Sound is **disabled by default**, so existing configurations behave exactly as before.
+- **Realism mode:** `SET REALISM ENABLED` sets it even if no audio output is available. ENABLED/DISABLED are refused while a disk or tape unit is attached. Sound is **disabled by default**, so existing configurations behave exactly as before.
 - **Files:** WAV, loaded once and converted with `SDL_AudioStream`. Search order: SET SOUND PATH (`dir/<sim>/file`, `dir/file`), `SIMH_SOUND_PATH`, `<exe>/sound/<sim>/`, `<exe>/../sound/<sim>/` (BIN directory of a source tree), `./sound/<sim>/`. The cache is keyed by the resolved file, so a changed PATH takes effect; missing files are reported once.
 
 ### Commands
 
 ```
-SET SOUND ENABLED | DISABLED
+SET REALISM ENABLED | DISABLED
 SET SOUND VOLUME=n | VOLUME=group:n          (0..200 %)
 SET SOUND MUTE[=group] | NOMUTE[=group]
 SET SOUND POWER=ON | POWER=OFF
@@ -62,12 +62,12 @@ Test files `test/t1.ini`–`t4.ini` (v1; t3 uses absolute paths of this workspac
 | make vax750 (gcc 13, `-Werror`) | ok |
 | make all (80 simulators, `-Werror`) | ok; every simulator links libSDL2 (video simulators such as microvax3900 open the sound device beside their own) |
 | CMake: default, `WITH_VIDEO=OFF` (sound still on), `WITH_SOUND=OFF` | ok; vax750 links libSDL2 and plays |
-| `NOSOUND=1` build (stubs): SET SOUND ENABLED → "built without SDL2 sound support", realism on, power tracked | ok |
+| `NOSOUND=1` build (stubs): SET REALISM ENABLED → "built without SDL2 sound support", realism on, power tracked | ok |
 | sim_sound.c with gcc `-Wall -Wextra`, clang, g++ (C++ syntax), with and without SDL2 | no warnings |
-| VAX-11/750 diagnostic test (`VAX/tests/vax-diag_test.ini`), sound disabled and enabled | all passed |
+| VAX-11/750 diagnostic test (`VAX/tests/vax-diag_test.ini`), realism disabled and enabled | all passed |
 | RUN: starting → running loop; halt keeps power; CONTINUE does not replay starting; EXIT plays stopping and waits | ok (rendered audio: relay click, loop at −22 dBFS = −16 dBFS recording − 6 dB headroom, run-down to silence) |
 | Loop at the prompt for 10 s; VOLUME=SYSTEM:50 (−6 dB), MUTE=SYSTEM (silence), NOMUTE | ok, no click at any loop wrap (largest step = the relay click in the recording) |
-| SET SOUND ENABLED/DISABLED with HK0 attached | refused with a message naming HK0 |
+| SET REALISM ENABLED/DISABLED with HK0 attached | refused with a message naming HK0 |
 | Bad POWER/VOLUME/group/keyword values | clear messages |
 | SET SOUND PATH + RUNNING= user file | the user file from the PATH is used |
 | STARTING= missing file | "file not found" once, previous sound kept |
@@ -91,7 +91,7 @@ Test files `test/t1.ini`–`t4.ini` (v1; t3 uses absolute paths of this workspac
 
 ### RK611 (HK) behavior
 
-| | Normal mode (sound disabled) | Realism mode (SET SOUND ENABLED) |
+| | Normal mode (realism disabled) | Realism mode (SET REALISM ENABLED) |
 |---|---|---|
 | ATTACH | drive ready at once (as before) | pack loaded, drive **stopped** until `SET HKn ONLINE` |
 | `SET HKn ONLINE` (RUN) | ready at once, attention | spin-up, register `SPINUP` (default 30000 ms simulated), then ready + attention |
@@ -111,7 +111,7 @@ Test files `test/t1.ini`–`t4.ini` (v1; t3 uses absolute paths of this workspac
 ### CPU speed
 
 - A simulator registers its realistic speed; the VAX-11/750 uses **THROTTLE 300K** (≈ 0.6 × an 11/780 at ≈ 0.5 MIPS). **Provisional**: calibrate it against your real 11/750, e.g. the time from BOOT to the VMS login prompt.
-- SET SOUND ENABLED sets it only if no throttle is set ("Sound: realistic CPU speed, THROTTLE 300K"); SET SOUND DISABLED removes it again. A throttle set by the user is never touched. SHOW SOUND shows the state.
+- SET REALISM ENABLED sets it only if no throttle is set ("Sound: realistic CPU speed, THROTTLE 300K"); SET REALISM DISABLED removes it again. A throttle set by the user is never touched. SHOW SOUND shows the state.
 - As with any SET THROTTLE, idling is switched off.
 
 ### Tests (phase B)
@@ -155,7 +155,7 @@ The pre-existing drive-type errors (er=40) on DCLR occur in the normal mode too:
 
 | Run | Boot time to "job terminated" | Notes |
 |---|---|---|
-| Sound disabled | 2–3 s | unchanged |
+| Realism disabled | 2–3 s | unchanged |
 | Realism mode, before the fixes | (seconds, unthrottled) | mount verification |
 | Realism mode, fixed | 63 s at THROTTLE 300K | no warning, no mount verification, 365 seek sounds |
 
@@ -178,7 +178,7 @@ Settled: the spin-up runs in wall time at the prompt and in simulated time while
 - **Spin-up timing (realism mode):** while the CPU runs, `SPINUP` (default 30000 ms) is simulated time, so the guest always sees the full spin-up (with THROTTLE 300K simulated time = real time). While the simulator is stopped at `sim>` the spin-up goes on in wall time: `SET HK0 ONLINE` at the prompt, wait 30 s, BOOT → the drive is ready at once. A spin-up that finishes at the prompt is completed when it is looked at (`SHOW HKn SPINDLE`, `SHOW HK`) or when execution resumes.
 - Implementation: `sim_sound` run hooks (`sim_sound_register_run_hook()`, `sim_sound_run_state()` called by `run_cmd()` just before the first instruction and after execution stops). The RK611 keeps the remaining time (`hk_spin_left_us`) and a wall-clock reference at the prompt and reschedules the rest when execution resumes.
 - **Power:** `SET SOUND POWER=OFF` silences everything; units that stay active (spindles online or spinning up) get their running loop back at the next power on (`SET SOUND POWER=ON`, RUN, BOOT), fading in over 0.5 s.
-- Normal mode (sound disabled): `SET HKn ONLINE` is instant.
+- Normal mode (realism disabled): `SET HKn ONLINE` is instant.
 
 ### Bugs found and fixed
 
@@ -233,7 +233,7 @@ Test files in `/home/claude/simh-sound/testC`: `c1.ini` (spin-up timing), `c2.in
 
 ### RL01/RL02 behavior
 
-- Decided: with sound enabled, `SET RLn ONLINE` and `SET RLn LOAD` are the LOAD button pressed in (spin up), `OFFLINE` and `UNLOAD` released (spin down). Without sound, ONLINE/OFFLINE are the drive select as before and LOAD/UNLOAD keep their old short sequence.
+- Decided: with realism enabled, `SET RLn ONLINE` and `SET RLn LOAD` are the LOAD button pressed in (spin up), `OFFLINE` and `UNLOAD` released (spin down). Without sound, ONLINE/OFFLINE are the drive select as before and LOAD/UNLOAD keep their old short sequence.
 - Realism mode:
   - ATTACH only loads the cartridge (drive state "Load Cartridge"); a SEEK or transfer fails (seek time out / drive error) until the drive is ready.
   - Spin-up `SPINUP` default 40000 ms (published "start time" 40 s; pdp-11.nl says about 45 s), then "Lock On" with volume check, like a real load. Spin-down `SPINDOWN` default 30000 ms, then "Load Cartridge" (the cover may be opened). A cover that is open (`SET RLn OPEN`) refuses ONLINE.
@@ -289,7 +289,7 @@ Test files: `testRL/rlprog.ini` (PDP-11 programs: get status with reset, wait re
 
 | Test | Result |
 |---|---|
-| VMS 3.5 on the VAX-11/750, sound disabled (p0): boot from the RP06 DBA0, log in | 2 s (the 750 asks for the date: answered by the script) |
+| VMS 3.5 on the VAX-11/750, realism disabled (p0): boot from the RP06 DBA0, log in | 2 s (the 750 asks for the date: answered by the script) |
 | Realism mode (p1): ONLINE DBA0 and a blank RP06 DBA1 (SPINUP 3000), boot, log in | ok |
 | INITIALIZE, MOUNT, COPY 2 files, DIRECTORY on DBA1 | ok (`%INIT-W-NOBADDATA` for the blank container, as with the RL02) |
 | `DISMOUNT/UNLOAD DBA1:` | VMS issued UNLOAD: "spinning down", pack still attached |
@@ -360,7 +360,7 @@ Test files: `testRA/n1.ini`, `n2.ini`, `n4.ini` (normal mode), `r1.ini`, `r2.ini
 - Branch `sound`: commit 2b4b1e4 on top of 66c600e. Patch **`opensimh_5_sound_v9.patch`** (cumulative, replaces v1–v8; checked by `git am --keep-cr` on a fresh 87eb7d5: identical tree).
 - Changed files:
   - `VAX/vax730_rb.c` (vax730 only);
-  - `sim_sound.c` / `sim_sound.h`: new `sim_sound_register_storage (DEVICE *)`. The RB730 does not use sim_disk, so its device is not `DEV_DISK`, and SET SOUND ENABLED/DISABLED would otherwise be allowed while an RB drive is attached.
+  - `sim_sound.c` / `sim_sound.h`: new `sim_sound_register_storage (DEVICE *)`. The RB730 does not use sim_disk, so its device is not `DEV_DISK`, and SET REALISM ENABLED/DISABLED would otherwise be allowed while an RB drive is attached.
 - No new sound directory: the RB02 uses `sound/rl02` (it is an RL02), the RB80 `sound/rm80` (the R80 is the RM80's drive).
 
 ### Behavior
@@ -566,7 +566,7 @@ Note: VMS `DISMOUNT` unloads by default (`/NOUNLOAD` keeps the volume loaded); t
 1. Host spin-down while the other platter is online: **the whole drive stops** and the other unit goes offline (realistic) — done in v13.
 2. Motor run-up 25 s within the 60 s start: **a good guess**, kept.
 3. Spiral read 31 ms per track (0.51 MB/s) instead of 0.57 MB/s: **ok**, kept.
-4. Lone RC25/RCF25: **refused by SET SOUND ENABLED**, allowed without sound — done in v13.
+4. Lone RC25/RCF25: **refused by SET REALISM ENABLED**, allowed without sound — done in v13.
 5. Pairing: by unit index **and** by unit number (even/odd, the drive's unit select plug); SET RQ0 UNIT=m also renumbers RQ1 — done in v13.
 6. Image: the system disk is the fixed platter DUA1 (settled 2026-11-06).
 
@@ -580,7 +580,7 @@ Note: VMS `DISMOUNT` unloads by default (`/NOUNLOAD` keeps the volume loaded); t
 
 ### Decisions (Ulli, 2026-11-07)
 
-- SET SOUND ENABLED means **"as realistic as possible"** in general; without sound the old behavior stays for quick setups.
+- SET REALISM ENABLED means **"as realistic as possible"** in general; without sound the old behavior stays for quick setups.
 - A KLESI connects only RC25 drives (TU81 and RV20: later; the TU81 is the separate TQ device for now).
 
 ### Behavior
@@ -589,7 +589,7 @@ Note: VMS `DISMOUNT` unloads by default (`/NOUNLOAD` keeps the volume loaded); t
 - **Configuration rules (realism mode only):**
   - RC25 drives only on a **KLESI**, and a KLESI only connects RC25 drives: a master and at most one slave, i.e. **at most 4 enabled units**, all RC25/RCF25.
   - An RC25 drive is a **pair**: the RC25 at an even unit with an **even unit number** (PLUG, `SET RQn UNIT=`), the RCF25 at the next unit with the next number.
-  - `SET SOUND ENABLED` refuses a configuration that breaks a rule (new `sim_sound_register_enable_check()`; the message names the unit and the rule).
+  - `SET REALISM ENABLED` refuses a configuration that breaks a rule (new `sim_sound_register_enable_check()`; the message names the unit and the rule).
   - While sound is enabled:
     - `SET RQ KLESI` sets units 0/1 and 2/3 to RC25/RCF25 (unit numbers as pairs) and disables the units from 4 on; refused if an attached unit would have to change;
     - `SET RQ <other type>` on a KLESI gives the RC25/RCF25 units their initial drive types back;
@@ -605,15 +605,15 @@ Note: VMS `DISMOUNT` unloads by default (`/NOUNLOAD` keeps the volume loaded); t
 
 | Test | Result |
 |---|---|
-| c10 (vax730, commands only): SET SOUND ENABLED with the default configuration | accepted |
+| c10 (vax730, commands only): SET REALISM ENABLED with the default configuration | accepted |
 | c10: `SET RQ0 RC25` on a UDA50 | refused: "an RC25 needs a KLESI controller (SET RQ KLESI)" |
 | c10: `SET RQ KLESI` | units 0–3 RC25/RCF25/RC25/RCF25 with UNIT=0–3, "KLESI, 4 units" |
 | c10: `SET RQ0 UNIT=300` / `SET RQ1 UNIT=303` | the other half becomes 301 / 302 |
 | c10: odd number on the RC25, even on the RCF25 | refused ("needs an even/odd unit number") |
 | c10: `SET RQ1 RD54` on the KLESI, `SET RQ DRIVES=6` | refused, unit unchanged |
 | c10: `SET RQ UDA50` | units back to RD54, RD54, RD54, RX50 |
-| c10: without sound a lone RC25 on a UDA50; then `SET SOUND ENABLED` | accepted / refused |
-| c10: KLESI set without sound with the default RD54 units; `SET SOUND ENABLED` | refused: "a KLESI only connects RC25 drives, RQ0 is an RD54" |
+| c10: without sound a lone RC25 on a UDA50; then `SET REALISM ENABLED` | accepted / refused |
+| c10: KLESI set without sound with the default RD54 units; `SET REALISM ENABLED` | refused: "a KLESI only connects RC25 drives, RQ0 is an RD54" |
 | c10: without sound `SET RQ0 RC25` | RQ1 stays RD54 |
 | c1 v2, c2 v4, c4 v5 (MicroVAX 3900, realism with `SET RQ KLESI`) | as before: Run button, no start without cartridge, `?4D DEVOFFLINE` with the drive stopped, transfer times identical (156,823 µs, shared actuator 646 cylinders back) |
 | c5 (RA60), c6 (normal mode) | unchanged |
@@ -669,7 +669,7 @@ Narrowed down, not fixed: it happens on plain Open SIMH with nothing attached af
 
 | Test | Result |
 |---|---|
-| d1 (vax750, realism): SHOW SOUND after SET SOUND ENABLED | system sounds from `default_cpu` (0.73 / 4.27 / 1.44 s), `Defaults: vax750 (system) -> default_cpu` |
+| d1 (vax750, realism): SHOW SOUND after SET REALISM ENABLED | system sounds from `default_cpu` (0.73 / 4.27 / 1.44 s), `Defaults: vax750 (system) -> default_cpu` |
 | d1: ATTACH of RK07, RL02, RP06, RA60 | no "not found" message; `Defaults:` lists rk07, rl02, rp06, ra60 (seek) -> default_disk |
 | d2: an own `vax750/running.wav` via SET SOUND PATH | RUNNING from the own file, STARTING/STOPPING from `default_cpu` |
 | d1 with the simulator copied to a directory without a sound tree | each missing default reported once (`seek-s.wav not found (sound directory "default_disk")`), later attaches silent |
@@ -982,9 +982,9 @@ Notes from testing:
 1. **All RA disks need `SET RQn ONLINE` before booting** in the realism mode (the wait of 40–60 s at the prompt, or `SET -N`): as implemented, unchanged.
 2. **Configuration rules:** RA drives only on a KDA50, UDA50 or UDA50A; at most 4 drives per such controller. Implemented (branch `sound` d826b92d, `integration` 84cc0aca):
    - the rule uses SIMH's SDI flag of the drive table (`RQDF_SDI`), so it covers all RA drives and also the ESE20/52/56/58 and the user-sized RA8U;
-   - `rq_eff_ctype` resolves the DEFAULT controller type before the first reset as reset will (Unibus UDA50A, MicroVAX I RQDX1, other Qbus RQDX3), so `SET SOUND ENABLED` before a reset checks the right type;
-   - `SET RQ UDA50/UDA50A/KDA50` disables the units from 4 on; `SET RQ <type without SDI>` gives the RA units their initial drive types back (RD54 if the initial type is an SDI drive); refused while a unit that would change is attached; `SET RQ DRIVES=` above 4 is refused on an SDI controller; `SET SOUND ENABLED` refuses a configuration that breaks a rule.
-   - The default configurations (RD54, RD54, RD54, RX50 on every simulator) keep to the rules, so `SET SOUND ENABLED` works as before; Qbus scripts need `SET RQ KDA50` before `SET RQ0 RA81`.
+   - `rq_eff_ctype` resolves the DEFAULT controller type before the first reset as reset will (Unibus UDA50A, MicroVAX I RQDX1, other Qbus RQDX3), so `SET REALISM ENABLED` before a reset checks the right type;
+   - `SET RQ UDA50/UDA50A/KDA50` disables the units from 4 on; `SET RQ <type without SDI>` gives the RA units their initial drive types back (RD54 if the initial type is an SDI drive); refused while a unit that would change is attached; `SET RQ DRIVES=` above 4 is refused on an SDI controller; `SET REALISM ENABLED` refuses a configuration that breaks a rule.
+   - The default configurations (RD54, RD54, RD54, RX50 on every simulator) keep to the rules, so `SET REALISM ENABLED` works as before; Qbus scripts need `SET RQ KDA50` before `SET RQ0 RA81`.
    - Test `tests/ra/ra5.ini` (MicroVAX II): all 6 refusals and the accepted cases as expected; ra1–ra4, the RC25/RA60 regression c1, c4, c5 (now with `SET RQ KDA50`, c5.ini v2) and c10 unchanged.
    - The VMS test drivers press the RA81 RUN/STOP button and use a KDA50 on the MicroVAX II: `tests/ts11/tstest.py` v2, `tests/tk50/tktest.py` v3 (TS Q1 run on the MicroVAX II: boots and runs).
 3. **Provisional values:** accepted as they are.
@@ -992,9 +992,9 @@ Notes from testing:
 
 Patch **`opensimh_5_sound_v24.patch`** replaces v23 (checked: 6 + 5 v24 on 87eb7d5 give the `sound` tree).
 
-**Bus rule (Ulli, 2026-11-10, evening):** in the realism mode the UDA50 and UDA50A only on the Unibus, the KDA50 only on the Qbus (`sound` 2f5ddece, `integration` 099fc04a). Like all realism rules it applies only with `SET SOUND ENABLED` (confirmed by Ulli), and the ESE/RA8U coverage of the SDI rule is fine with him.
-- `rq_rlz_rules` checks the controller type in effect against `UNIBUS` (VAX: fixed per model; PDP-11: `cpu_opt & BUS_U`, i.e. the current CPU model). `SET RQ <type>`, `SET SOUND ENABLED` and ATTACH refuse the wrong bus, e.g. "RQ: the KDA50 is a Qbus controller: on the Unibus use a UDA50 or UDA50A (SET RQ UDA50A)".
-- A PDP-11 `SET CPU` to the other bus while sound is enabled is not refused; the next ATTACH (or SET SOUND ENABLED) reports the broken rule.
+**Bus rule (Ulli, 2026-11-10, evening):** in the realism mode the UDA50 and UDA50A only on the Unibus, the KDA50 only on the Qbus (`sound` 2f5ddece, `integration` 099fc04a). Like all realism rules it applies only with `SET REALISM ENABLED` (confirmed by Ulli), and the ESE/RA8U coverage of the SDI rule is fine with him.
+- `rq_rlz_rules` checks the controller type in effect against `UNIBUS` (VAX: fixed per model; PDP-11: `cpu_opt & BUS_U`, i.e. the current CPU model). `SET RQ <type>`, `SET REALISM ENABLED` and ATTACH refuse the wrong bus, e.g. "RQ: the KDA50 is a Qbus controller: on the Unibus use a UDA50 or UDA50A (SET RQ UDA50A)".
+- A PDP-11 `SET CPU` to the other bus while sound is enabled is not refused; the next ATTACH (or SET REALISM ENABLED) reports the broken rule.
 - Tests: `tests/ra/ra6.ini` (microvax2: UDA50A/UDA50 refused, KDA50 accepted), `ra7.ini` (vax750: KDA50 refused, UDA50A accepted); pdp11 11/73 and 11/70 checked by hand; ra1–ra5, RC25/RA60 c1, c4, c5 (MicroVAX 3900) and c10 (vax730, identical to the build before the RA work) unchanged.
 
 Patch **`opensimh_5_sound_v25.patch`** replaces v24 (checked: 6 + 5 v25 on 87eb7d5 give the `sound` tree).
@@ -1051,11 +1051,11 @@ Not published (found): the RX01 head unload delay (200 ms as the RX02, provision
 ### Model (`SND_FLOPPY` in sim_sound)
 
 - Drive types `sim_flp_rx01`, `sim_flp_rx02` (rpm, tracks, sectors, motor kind, power-up steps, register defaults); device registers in an `SND_FLP_REGS` (STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP; MOTOROFF for the controller-switched motors, not yet used).
-- **Motor** `SND_FLP_MOTOR_AC`: starts with the power (RUN, BOOT, SET SOUND POWER=ON; SET SOUND ENABLED with the power on: just the loop), runs down at power off; at power on the heads step in and back (the drive's power-up homing: RX02 one track, RX01 ten). `SND_FLP_MOTOR_CTRL` (RX50/RX33/RX18) is prepared in the header but not implemented yet.
+- **Motor** `SND_FLP_MOTOR_AC`: starts with the power (RUN, BOOT, SET SOUND POWER=ON; SET REALISM ENABLED with the power on: just the loop), runs down at power off; at power on the heads step in and back (the drive's power-up homing: RX02 one track, RX01 ten). `SND_FLP_MOTOR_CTRL` (RX50/RX33/RX18) is prepared in the header but not implemented yet.
 - **Head:** `sim_floppy_seek` steps (one click per track: a repeated one-shot, one voice), then loads the head (clack, the `head` loop starts) and returns step time + the longer of settle and head load; `sim_floppy_end` (from the device's command end) starts the unload timer (a realtime timer: wall time at the prompt); `sim_floppy_unload` (another drive selected: the RX02 has one head load line).
 - **Rotation:** `sim_floppy_rotate` gives the time until a sector has passed under the head, from the realtime clock (`sim_sound_rt_us`) and a random phase per inserted diskette; sectors evenly spaced after the index.
 - **Door:** `sim_floppy_insert`/`_remove` (ATTACH/DETACH): door sounds, the `disk` loop while a diskette is in and the motor runs.
-- Floppy units count as attached storage for SET SOUND ENABLED/DISABLED (the RY device is not DEV_DISK).
+- Floppy units count as attached storage for SET REALISM ENABLED/DISABLED (the RY device is not DEV_DISK).
 - **Mixer:** `snd_play_repeat` (internal): a one-shot played n times, one every period, after a delay (the voice has `rep_left`, `rep_period`, `rep_pos`).
 - **Sounds:** `<dir>/<prefix>_<name>.wav`, else `default_floppy/<name>.wav`: motor_start, motor (loop), motor_stop, disk (loop), head (loop), head_load, head_unload, step, door_close, door_open. SHOW SOUND lists `rx02 (floppy) -> default_floppy` when a default is used.
 
@@ -1087,7 +1087,7 @@ Not published (found): the RX01 head unload delay (200 ms as the RX02, provision
 | t1 one Read Sector | 141 ms; SHOW RY0 DRIVE "head loaded (unloads in 0.20 s)", unloaded after 1 s at the prompt |
 | t2 DETACH during a Read Sector (realism) | RYCS 104446, error 0110, the simulator keeps running |
 | sd0/sd1 Set Media Density without a diskette | before: segmentation fault (exit 139); now error 0110 in both modes |
-| sd1 Set Media Density on a new double-density diskette (drive 1) | 15.3 s; SET SOUND DISABLED with RY1 attached refused |
+| sd1 Set Media Density on a new double-density diskette (drive 1) | 15.3 s; SET REALISM DISABLED with RY1 attached refused |
 | sd2 | the formatted new image stays an empty file, also in the unchanged build (known issues 46) |
 | v1 VAX-11/750 console | RY drive states, power on/off |
 | Build `-Werror` pdp11, vax730, vax750, vax780, vax8200, vax8600, microvax2, pdp8, altair; `sim_sound.c` and `pdp11_ry.c` with `-Wall -Wextra` (PDP-11 and VAX) | no warnings |
@@ -1108,7 +1108,7 @@ Notes from testing:
 ### RX02 under VMS V4.7: MOUNT fails with DRVERR (Ulli, 2026-11-11, fixed the same day)
 
 - VAX-11/750, VMS V4.7, a new double-density diskette in DYA0 (`TEST.RX02`): `SHOW DEVICE DY` shows DYA0/DYA1 online, device type RX02; `INITIALIZE/DENSITY=DOUBLE DYA0: RX02T` returns without a message; `MOUNT DYA0: RX02T` gives `%MOUNT-F-DRVERR, fatal drive error`.
-- Not yet known: whether the normal mode (sound disabled) fails the same way (then it is plain SIMH behaviour), and which RX211 status VMS's DYDRIVER saw. No VMS image here to reproduce it.
+- Not yet known: whether the normal mode (realism disabled) fails the same way (then it is plain SIMH behaviour), and which RX211 status VMS's DYDRIVER saw. No VMS image here to reproduce it.
 - New for the diagnosis (both modes): `SET RY DEBUG=CMD` (every function start with drive and density, INIT, busy GOs that are ignored, every completion with RYCS, RYES, error code, track and sector) and `SET RY DEBUG=REG` (every register access). Branch `sound` aebaeed4, `integration` 0807f9e3. Patch **`opensimh_5_sound_v28.patch`** replaces v27 (checked: 6 + 5 v28 on 87eb7d5 give the `sound` tree).
 - Ulli sent his VMS V4.7 image (`VMS047.R81`, SYSTEM/MANAGER); reproduced here in the **normal mode** too, so a plain SIMH bug.
 - **Cause (known issues 47):** VMS DYDRIVER (disassembled from the running system: SDA `SHOW DEVICE DYA` gives the driver addresses, then the SIMH command `EXAMINE -V -M`) determines the density at PACKACK with a **single density Read Status** and switches to double density only when RX2ES bit 4 (density error) comes back set. The RY never set the density error on Read Status, so MOUNT read the home block in single density, got error 0240 on each of its retries and gave up with DRVERR. In addition, `ry_done` set RX2CS Error whenever old error bits were still in RX2ES, so the Read Error Code and Read Status after the failed read ended with Error as well.
@@ -1181,7 +1181,7 @@ Notes from testing:
 
 1. RX50 drives only on the RQDXn and RUX50 controllers, only in the realism mode.
 2. Two RX50 units with **consecutive drive (unit) numbers** form one drive (not the RC25 even/odd scheme); pairing from the lowest number up.
-3. RX50 units on other controllers: SET SOUND ENABLED (and SET RQ <other type>) **disables them with a message** instead of refusing (the default Unibus configuration has an RX50 at RQ3 on the UDA50A).
+3. RX50 units on other controllers: SET REALISM ENABLED (and SET RQ <other type>) **disables them with a message** instead of refusing (the default Unibus configuration has an RX50 at RQ3 on the UDA50A).
 4. A RUX50 only connects RX50 drives.
 
 Not done, on purpose: a bus rule for the RQDXn (Qbus) and the RUX50 (Unibus). A PDP-11 keeps the RQDX3 chosen at start-up for the default 11/73 after `SET CPU 11/70` (known issues 50, also plain Open SIMH), so such a rule refused every Unibus PDP-11 configuration (found by the RX01/RX02 PDP-11/70 tests; removed again).
@@ -1216,7 +1216,7 @@ Not done, on purpose: a bus rule for the RQDXn (Qbus) and the RUX50 (Unibus). A 
 | c1 (MicroVAX II): default RQDX3 configuration | accepted |
 | c1: SET RQ KDA50 | "RQ3 disabled: an RX50 needs an RQDX1, RQDX3, RQDX4 or RUX50 controller, RQ is a KDA50" |
 | c1: RQ1, RQ2, RQ3 RX50 on the RQDX3 | drive 1/2 and a lone slot 3; after SET RQ1 RD54: drive 2/3 |
-| c2 (VAX-11/750): SET SOUND ENABLED | "SET SOUND ENABLED: RQ3 disabled: ..." (UDA50A default) |
+| c2 (VAX-11/750): SET REALISM ENABLED | "SET REALISM ENABLED: RQ3 disabled: ..." (UDA50A default) |
 | c2: SET RQ RUX50 / SET RQ1 RD54 / SET RQ UDA50A | RQ0-RQ3 RX50 (drives 0/1, 2/3) / refused / RD54 ×3, RQ3 disabled |
 | vms1 (normal) / vms2 (realism), VMS V4.7 on the MicroVAX II, RA81 on a KDA50, one RX50 drive (DUB1/DUB2) on the RQDX3 of RQB | INITIALIZE, MOUNT both, COPY SYSGEN.EXE (129 blocks) to DUB1 and from DUB1 to DUB2, DIFFERENCES: 0, DIRECTORY, DISMOUNT; both modes |
 | vms2 trace | 126 transfers, 53 s drive time; 127 blocks in 5.7 s; first transfer after motor off about 0.6 s; 15 slot changes |
@@ -1268,14 +1268,14 @@ Not done, on purpose: a bus rule for the RQDXn (Qbus) and the RUX50 (Unibus). A 
 - **LOAD button (both modes):** `SET CS ONLINE` (or `LOAD`) and `SET CS OFFLINE` (or `UNLOAD`), with the common spindle support; `SHOW CS SPINDLE`. While the drive is not up to speed a read or write ends with the hardware error status (as without a cartridge), the RL drive status shows the drive state (load, spin-up, spin-down, brushes home) and the CSR has drive ready clear. When it is up to speed: heads at cylinder 0, volume check.
 - **Realism mode:** ATTACH only loads the cartridge; the drive waits for `SET CS ONLINE` (SPINUP 40000 ms, SPINDOWN 30000 ms, as the RL02; at the prompt the commands wait unless `SET -N`). Reading a block (when its first word is asked for) and writing it (after its last word) take the seek (t(d) = a + b·d^0.67, 15 ms track to track, 100 ms full stroke; head switch alone 7 ms), the wait until the block's first sector comes round (2400 rpm, 40 sectors per track, the position follows the clock) and two sector times (0.625 ms each). Seek sounds `sound/rl02/rl02-s/m/l.wav`, else `default_disk` (registers SEEK2S/SEEK2M, 30/190 cylinders); optional `rl02_spinup/_running/_spindown.wav`. The words between the console and the VAX keep STIME (no published speed for that path).
 - `SET CS DEBUG=OPS` (new; the CS device had no debug): one line per block transfer with cylinder, head, sectors, distance and time, the seek sound class, the LOAD button. `HELP CS` (new).
-- The CS device is not DEV_DISK (it does not use sim_disk), so it registers with the new `sim_sound_register_storage ()`: SET SOUND ENABLED/DISABLED is refused while a cartridge is attached, as for the other disks.
+- The CS device is not DEV_DISK (it does not use sim_disk), so it registers with the new `sim_sound_register_storage ()`: SET REALISM ENABLED/DISABLED is refused while a cartridge is attached, as for the other disks.
 - **Normal mode:** ATTACH spins the drive up at once, ONLINE/OFFLINE take effect at once (OFFLINE makes the drive not ready), the timing is STIME per word as before.
 
 ### Tests (`tests/rl02_8600/`; VMS V4.7, SYSTEM/MANAGER, RA81 on the UDA50A)
 
 | Test | Result |
 |---|---|
-| c1 (prompt): ONLINE without cartridge; realism ATTACH; SET SOUND DISABLED; ONLINE/OFFLINE (SPINUP 2000, SPINDOWN 1500), -N; normal mode | refused; "offline"; refused ("CS is attached"); waits 2 s / 1.5 s, -N returns ("spinning down, 1.5 s left"); at once |
+| c1 (prompt): ONLINE without cartridge; realism ATTACH; SET REALISM DISABLED; ONLINE/OFFLINE (SPINUP 2000, SPINDOWN 1500), -N; normal mode | refused; "offline"; refused ("CS is attached"); waits 2 s / 1.5 s, -N returns ("spinning down, 1.5 s left"); at once |
 | vms1 (normal mode): SYSGEN CONNECT CONSOLE, MOUNT/FOREIGN CSA1, EXCHANGE INITIALIZE (RT-11), COPY SYSGEN.EXE and LOGINOUT.EXE to CSA1, SYSGEN.EXE back, DIFFERENCES, DIRECTORY, DISMOUNT | 0 differences; 2 files, 236 blocks, 20176 free; 21 s; the same on the `integration` build |
 | vms2 (realism mode) | the same results; 454 block transfers, average 25.3 ms, longest 38.2 ms, 20 short seek sounds; 121 s (60 s of it the RA81 and RL02 spin-ups at the prompt) |
 | vms3 (realism mode): MOUNT/FOREIGN with the drive stopped | `%MOUNT-I-OPRQST, Please mount device _CSA1:`; `SET -N CS ONLINE` from the expect action: `%MOUNT-I-RQSTDON ... mount completed successfully` |
@@ -1358,7 +1358,7 @@ Ulli: "although it is a tape drive, it is used like a disk drive, i.e. files are
 
 ## Phase F, step 1a: SYSGEN CONNECT CONSOLE hang on the VAX-11/750 (2026-11-14)
 
-- Ulli (VAX-11/750, VMS V4.7, sound enabled, his STABACKIT cartridge `staba047-1.T58` in TD): `MC SYSGEN`, `CONNECT CONSOLE` hung (PC 8017E73D, `SOBGTR (SP)`); after about 10 minutes it went on. The TU58 got no command and stayed at rest.
+- Ulli (VAX-11/750, VMS V4.7, realism enabled, his STABACKIT cartridge `staba047-1.T58` in TD): `MC SYSGEN`, `CONNECT CONSOLE` hung (PC 8017E73D, `SOBGTR (SP)`); after about 10 minutes it went on. The TU58 got no command and stayed at rest.
 - Reproduced here with Ulli's configuration and some time at the `sim>` prompt before the boot (his `SET ENV -P` prompts); 2 of 6 runs hung.
 - What the driver does: it sets BREAK on the console TU58 line (TX_CSR XBR), waits with the VMS TIMEWAIT macro (40000 × EXE$GL_TENUSEC outer loops of EXE$GL_UBDELAY `SOBGTR` loops, nominally 0.4 s), clears BREAK and sends the INIT bytes.
 - Cause: VMS calibrates TENUSEC and UBDELAY at boot by timing a loop. The realism throttle (no warm-up, known issues 40) measured the host rate by running the guest at full speed (24-35 MIPS here) for 100 ms or more; whatever part of the boot fell into it calibrated against that speed: TENUSEC 3-4, UBDELAY 19-150 instead of 1 (the 0.4 s wait became 8 s to several minutes). Every TIMEWAIT in VMS was affected, not only the console TU58. Known issues 63.
@@ -1374,7 +1374,7 @@ Ulli: "although it is a tape drive, it is used like a disk drive, i.e. files are
 - Ulli: the VAX 8600 boots standalone BACKUP from the console RL02 (CS) with and without sound; the VAX 8200 from the console RX50 with sound too.
 - VAX-11/780 console RX01: standalone BACKUP hung after the VMS banner, also on plain Open SIMH. Cause: BOOT CS passed unit 0 in R3; the VMS console floppy driver takes its console ID from the boot unit (CSA1). Fix: R3 = 1 (known issues 64). Tests `tests/rx01/stab1.ini`, `stab2.ini`: the BACKUP `$` prompt in both modes.
 - Branch `sound` f51fb212, `integration` b09b40eb. Patch **`opensimh_5_sound_v37.patch`** replaces v36 (checked: 6 + 5 v37 on 87eb7d5 give the `sound` tree).
-- VAX-11/750 console TU58: Ulli booted standalone BACKUP (`B TD`, STABA047-1..4.T58) with sound enabled: ok.
+- VAX-11/750 console TU58: Ulli booted standalone BACKUP (`B TD`, STABA047-1..4.T58) with realism enabled: ok.
 - MicroVAX II, RX50 on the RQDX3 (`>>> B DUB0`, STABA047-1..3.RX50): `%SYSBOOT-F-Unexpected Machine Check` after SYSTEM_2, also on plain Open SIMH; not a simulator bug. On the MicroVAX the first prompt already asks for the *next* volume (SYSTEM_1 is loaded); answering YES with SYSTEM_1 still in loads SYSTEM_1 again as part of SYS.EXE, and SYSBOOT's jump into the damaged image ends in the machine check. With SYSTEM_2 at the first prompt and BACKUP at "standalone application volume": the BACKUP `$` prompt in both modes (`tests/rx50/stab1.ini`, `stab2.ini`).
 
 ## Realistic CPU speed for every VAX simulator (2026-11-14)
@@ -1394,7 +1394,7 @@ Ulli: "although it is a tape drive, it is used like a disk drive, i.e. files are
   | microvax3900 | 3.8 | 1900K |
 
 - Changed: `VAX/vax780_syslist.c`, `vax730_syslist.c`, `vax820_syslist.c`, `vax860_syslist.c`, `vax610_syslist.c`, `vax_syslist.c` (MicroVAX 3900), `vax630_syslist.c` (rtVAX 1000).
-- Checks: all nine simulators build without warnings; SET SOUND ENABLED / DISABLED sets and removes the value; a busy loop reaches about 90 % of the value in the first 6 s (the first second runs low until the recalibration), so the host keeps up with 2100K; VAX diagnostics 780, 730, 8600, 8200 passed. Device table v16 (Systems sheet).
+- Checks: all nine simulators build without warnings; SET REALISM ENABLED / DISABLED sets and removes the value; a busy loop reaches about 90 % of the value in the first 6 s (the first second runs low until the recalibration), so the host keeps up with 2100K; VAX diagnostics 780, 730, 8600, 8200 passed. Device table v16 (Systems sheet).
 - Branch `sound` f54bc607, `integration` e842889e. Patch **`opensimh_5_sound_v38.patch`** replaces v37 (checked: 6 + 5 v38 on 87eb7d5 give the `sound` tree).
 
 ## Not done yet (after phase B)

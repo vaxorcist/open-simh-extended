@@ -1,0 +1,1438 @@
+From 018e6ab89bb2183307bccfe76344ea2bc7846dce Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 13:31:22 +0100
+Subject: [PATCH] Sound: SET REALISM ENABLED/DISABLED; enable checks as a dry
+ run first
+
+The realism mode gets its own name: SET REALISM ENABLED/DISABLED switches
+it (realistic timing, operator panels, configuration rules, CPU speed, and
+with it the sounds); SHOW REALISM shows it.  SET SOUND ENABLED/DISABLED
+stays as a synonym, so existing ini files keep working; volume, mute,
+power, path and sound files stay under SET SOUND.
+
+- scp.c: SET REALISM and SHOW REALISM; help topic SET Realism (the realism
+  mode text moves there from SET Sound).
+- sim_sound.c/.h: sim_realism_set and sim_realism_show; the messages name
+  SET REALISM ("Realism: realistic CPU speed, ...").
+- The devices' messages, help texts and comments name SET REALISM
+  (PDP11 hk, rl, rp, rq, rx, ry, td, tq, ts; VAX 730/750/780/820/860
+  stddev, vax730_rb, vax820_ka, the syslists, sim_timer.c, sound/*/README).
+
+Known issues 76: SET REALISM ENABLED runs the devices' enable checks first
+as a dry run (sim_sound_register_enable_check: t_stat fn (t_bool apply))
+and applies them only if none refuses.  Before, a refusal by a later
+check (the KLESI-B TU81 rule) left the RQ units already disabled by an
+earlier one (the SDI rule), although the command failed.
+
+Tested: VAX 8200 console tests (SET/SHOW REALISM, the synonym, errors,
+help, the TU81 rule, the dry run), the SDI rule regression, VMS V4.7 on
+the KDB50 with the TU81 on the KLESI-B in the realism mode (BACKUP,
+restore, DIFFERENCES).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtftJEqWTX7fajw6zWU
+---
+ PDP11/pdp11_hk.c              |  10 ++--
+ PDP11/pdp11_rl.c              |  12 ++--
+ PDP11/pdp11_rp.c              |  10 ++--
+ PDP11/pdp11_rq.c              | 102 ++++++++++++++++++++--------------
+ PDP11/pdp11_rx.c              |   8 +--
+ PDP11/pdp11_ry.c              |   8 +--
+ PDP11/pdp11_td.c              |   4 +-
+ PDP11/pdp11_td.h              |   4 +-
+ PDP11/pdp11_tq.c              |  21 +++----
+ PDP11/pdp11_ts.c              |   6 +-
+ VAX/vax610_syslist.c          |   2 +-
+ VAX/vax630_syslist.c          |   6 +-
+ VAX/vax730_rb.c               |  12 ++--
+ VAX/vax730_stddev.c           |   2 +-
+ VAX/vax730_syslist.c          |   2 +-
+ VAX/vax750_stddev.c           |   2 +-
+ VAX/vax750_syslist.c          |   2 +-
+ VAX/vax780_stddev.c           |   6 +-
+ VAX/vax780_syslist.c          |   2 +-
+ VAX/vax820_ka.c               |   2 +-
+ VAX/vax820_stddev.c           |   6 +-
+ VAX/vax820_syslist.c          |   2 +-
+ VAX/vax860_stddev.c           |  10 ++--
+ VAX/vax860_syslist.c          |   2 +-
+ VAX/vax_syslist.c             |   2 +-
+ scp.c                         |  35 ++++++++----
+ sim_sound.c                   |  83 +++++++++++++++++++++------
+ sim_sound.h                   |  25 ++++++---
+ sim_timer.c                   |   4 +-
+ sound/default_cpu/README.txt  |   2 +-
+ sound/default_disk/README.txt |   2 +-
+ sound/default_tape/README.txt |   2 +-
+ sound/tk50/README.txt         |   2 +-
+ sound/tu58/README.txt         |   2 +-
+ 34 files changed, 243 insertions(+), 159 deletions(-)
+
+diff --git a/PDP11/pdp11_hk.c b/PDP11/pdp11_hk.c
+index 53252168..d234223d 100644
+--- a/PDP11/pdp11_hk.c
++++ b/PDP11/pdp11_hk.c
+@@ -578,7 +578,7 @@ int16 hkdb[3] = { 0 };                                  /* data buffer silo */
+ int16 hk_off[HK_NUMDR] = { 0 };                         /* saved offset */
+ int16 hk_dif[HK_NUMDR] = { 0 };                         /* cylinder diff */
+ 
+-/* Drive RUN/STOP button and sound realism mode
++/* Drive RUN/STOP button and realism mode
+ 
+    Each drive has a spindle (SND_SPINDLE, common support in sim_sound).
+    A drive is ready for positioning and data transfers only when a pack is
+@@ -587,7 +587,7 @@ int16 hk_dif[HK_NUMDR] = { 0 };                         /* cylinder diff */
+    - Normal mode (sound disabled): ATTACH spins the drive up at once, as
+      before.  SET HKn OFFLINE stops the spindle (the pack stays attached),
+      SET HKn ONLINE spins it up again at once.
+-   - Realism mode (SET SOUND ENABLED): ATTACH only loads the pack; the
++   - Realism mode (SET REALISM ENABLED): ATTACH only loads the pack; the
+      drive stays stopped until SET HKn ONLINE (the RUN button), which takes
+      the spin-up time (HK SPINUP register, default 30 s); OFFLINE takes the
+      spin-down time (SPINDOWN, default 30 s).  At the sim> prompt both
+@@ -729,8 +729,8 @@ REG hk_reg[] = {
+     { DRDATAD (STIME,       hk_swait, 24,             "seek time, per cylinder"), REG_NZ + PV_LEFT },
+     { DRDATAD (RTIME,       hk_rwait, 24,             "rotational delay"), REG_NZ + PV_LEFT },
+     { DRDATAD (MIN2TIME, hk_min2wait, 24,             "minimum time between DONE and ATA"), REG_NZ + PV_LEFT },
+-    { DRDATAD (SPINUP,  hk_spinup_ms, 24,             "spin-up time in ms (sound realism mode)"), PV_LEFT },
+-    { DRDATAD (SPINDOWN, hk_spindown_ms, 24,          "spin-down time in ms (sound realism mode)"), PV_LEFT },
++    { DRDATAD (SPINUP,  hk_spinup_ms, 24,             "spin-up time in ms (realism mode)"), PV_LEFT },
++    { DRDATAD (SPINDOWN, hk_spindown_ms, 24,          "spin-down time in ms (realism mode)"), PV_LEFT },
+     { DRDATAD (SEEK6S,     hk_seek6s, 10,             "RK06 short seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEK6M,     hk_seek6m, 10,             "RK06 medium seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEK7S,     hk_seek7s, 10,             "RK07 short seek sound up to n cylinders"), PV_LEFT },
+@@ -1944,7 +1944,7 @@ fprintf (st, "In the realism mode SET HKn ONLINE and OFFLINE, given at the sim>
+ fprintf (st, "in a command file, wait until the drive is up to speed (SPINUP) or at rest\n");
+ fprintf (st, "(register SPINDOWN, default 30000 ms) before the next command; SET -N HKn\n");
+ fprintf (st, "ONLINE or OFFLINE returns at once.\n\n");
+-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
++fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND):\n");
+ fprintf (st, "  - ATTACH only loads the pack; the drive stays stopped until SET HKn ONLINE,\n");
+ fprintf (st, "    which takes the spin-up time (register SPINUP, default 30000 ms).  While\n");
+ fprintf (st, "    the CPU runs this is simulated time; while the simulator is stopped at\n");
+diff --git a/PDP11/pdp11_rl.c b/PDP11/pdp11_rl.c
+index 21990654..2d68f4eb 100644
+--- a/PDP11/pdp11_rl.c
++++ b/PDP11/pdp11_rl.c
+@@ -283,7 +283,7 @@ int32 rl_swait = 10;                                    /* seek wait */
+ int32 rl_rwait = 10;                                    /* rotate wait */
+ int32 rl_stopioe = 1;                                   /* stop on error */
+ 
+-/* Sound realism mode (SET SOUND ENABLED)
++/* Realism mode (SET REALISM ENABLED)
+ 
+    The RL01/RL02 front panel LOAD button is the drive's RUN/STOP button.
+    In the realism mode SET RLn ONLINE and SET RLn LOAD press it in (spin
+@@ -395,8 +395,8 @@ static const REG rl_reg[] = {
+     { FLDATAD (IE,                rlcs, CSR_V_IE,       "interrupt enable flag (CSR<6>)") },
+     { DRDATAD (STIME,         rl_swait, 24,             "seek time, per cylinder"), PV_LEFT },
+     { DRDATAD (RTIME,         rl_rwait, 24,             "rotational delay"), PV_LEFT },
+-    { DRDATAD (SPINUP,    rl_spinup_ms, 24,             "spin-up time in ms (sound realism mode)"), PV_LEFT },
+-    { DRDATAD (SPINDOWN, rl_spindown_ms, 24,            "spin-down time in ms (sound realism mode)"), PV_LEFT },
++    { DRDATAD (SPINUP,    rl_spinup_ms, 24,             "spin-up time in ms (realism mode)"), PV_LEFT },
++    { DRDATAD (SPINDOWN, rl_spindown_ms, 24,            "spin-down time in ms (realism mode)"), PV_LEFT },
+     { DRDATAD (SEEK1S,       rl_seek1s, 10,             "RL01 short seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEK1M,       rl_seek1m, 10,             "RL01 medium seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEK2S,       rl_seek2s, 10,             "RL02 short seek sound up to n cylinders"), PV_LEFT },
+@@ -1246,7 +1246,7 @@ t_stat rl_show_load (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+     return (SCPE_OK);
+ }
+ 
+-/* Sound realism mode: spindles */
++/* Realism mode: spindles */
+ 
+ /* The spindle is up to speed: heads loaded, seek home, lock on.  The
+    drive is ready; the new volume is flagged (volume check) as on ATTACH. */
+@@ -1508,7 +1508,7 @@ return SCPE_NOFNC;
+ t_stat rl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+ {
+ fprintf (st, "RL11/RL01/RL02 Cartridge Disk (RL)\n\n");
+-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND) the\n");
++fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND) the\n");
+ fprintf (st, "drive's LOAD button is SET RLn ONLINE or LOAD (spin up, 40 s, register\n");
+ fprintf (st, "SPINUP) and SET RLn OFFLINE or UNLOAD (spin down, 30 s, register SPINDOWN).\n");
+ fprintf (st, "ATTACH only loads the cartridge.  At the sim> prompt the commands wait until\n");
+@@ -1520,7 +1520,7 @@ fprintf (st, "missing, the default disk sounds seek-s/m/l.wav in default_disk) f
+ fprintf (st, "short, medium and long seeks; the limits are the registers SEEK1S/SEEK1M\n");
+ fprintf (st, "(RL01, default 15/95 cylinders) and SEEK2S/SEEK2M (RL02, default 30/190).\n");
+ fprintf (st, "Optional spindle sounds: rl02_spinup.wav, rl02_running.wav, rl02_spindown.wav.\n");
+-fprintf (st, "Without the sound realism mode ONLINE/OFFLINE only switch the drive select.\n\n");
++fprintf (st, "Without the realism mode ONLINE/OFFLINE only switch the drive select.\n\n");
+ fprintf (st, "RL11 options include the ability to set units write enabled or write locked,\n");
+ fprintf (st, "to set the drive type to RL01, RL02, or autosize, and to write a DEC standard\n");
+ fprintf (st, "144 compliant bad block table on the last track:\n\n");
+diff --git a/PDP11/pdp11_rp.c b/PDP11/pdp11_rp.c
+index bccf87ed..a6b1bc98 100644
+--- a/PDP11/pdp11_rp.c
++++ b/PDP11/pdp11_rp.c
+@@ -591,7 +591,7 @@ int32 rp_stopioe = 1;                                   /* stop on error */
+ int32 rp_swait = 26;                                    /* seek time */
+ int32 rp_rwait = 10;                                    /* rotate time */
+ 
+-/* Sound realism mode (SET SOUND ENABLED)
++/* Realism mode (SET REALISM ENABLED)
+ 
+    Removable-pack drives (RM02/RM03, RP04, RP05, RP06, RM05) have a
+    RUN/STOP button: SET RPn ONLINE spins the drive up, SET RPn OFFLINE
+@@ -723,8 +723,8 @@ REG rp_reg[] = {
+     { BRDATAD  (MR2,              rmmr2, DEV_RDX, 16, RP_NUMDR, "maintenance register 2 (RM only)") },
+     { DRDATAD  (STIME,         rp_swait, 24,                    "seek time, per cylinder"), REG_NZ + PV_LEFT },
+     { DRDATAD  (RTIME,         rp_rwait, 24,                    "rotational delay"), REG_NZ + PV_LEFT },
+-    { DRDATAD  (SPINUP,    rp_spinup_ms, 24,                    "spin-up time in ms (sound realism mode)"), PV_LEFT },
+-    { DRDATAD  (SPINDOWN, rp_spindown_ms, 24,                   "spin-down time in ms (sound realism mode)"), PV_LEFT },
++    { DRDATAD  (SPINUP,    rp_spinup_ms, 24,                    "spin-up time in ms (realism mode)"), PV_LEFT },
++    { DRDATAD  (SPINDOWN, rp_spindown_ms, 24,                   "spin-down time in ms (realism mode)"), PV_LEFT },
+     { DRDATAD  (SEEKRM03S,  rp_seek_s[0], 10,                   "RM02/RM03 short seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD  (SEEKRM03M,  rp_seek_m[0], 10,                   "RM02/RM03 medium seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD  (SEEKRP04S,  rp_seek_s[1], 10,                   "RP04 short seek sound up to n cylinders"), PV_LEFT },
+@@ -1543,7 +1543,7 @@ if (!sim_is_running)                                    /* from console? */
+ return sim_disk_detach (uptr);
+ }
+ 
+-/* Sound realism mode: spindles and timing */
++/* Realism mode: spindles and timing */
+ 
+ /* Is the drive ready: pack attached and (removable packs) spun up? */
+ 
+@@ -1820,7 +1820,7 @@ fprintf (st, "\nSET RPn ONLINE and SET RPn OFFLINE are the RUN/STOP button of th
+ fprintf (st, "removable-pack drives (RM02/03, RP04/05/06, RM05): OFFLINE spins the drive\n");
+ fprintf (st, "down (the pack stays attached), ONLINE spins it up.  SHOW RPn SPINDLE shows\n");
+ fprintf (st, "the spindle state.  The RM80 and RP07 are fixed disks without this button.\n\n");
+-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
++fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND):\n");
+ fprintf (st, "  - ATTACH of a removable pack only loads it; the drive stays stopped until\n");
+ fprintf (st, "    SET RPn ONLINE (spin-up time register SPINUP, spin-down SPINDOWN, both\n");
+ fprintf (st, "    30000 ms by default); at the sim> prompt the commands wait until the\n");
+diff --git a/PDP11/pdp11_rq.c b/PDP11/pdp11_rq.c
+index 96bac971..48a2df04 100644
+--- a/PDP11/pdp11_rq.c
++++ b/PDP11/pdp11_rq.c
+@@ -26,6 +26,9 @@
+ 
+    rq           MSCP disk controller
+ 
++   17-Nov-26    Ulli    Realism mode: SET SOUND ENABLED checks the rules on
++                        a snapshot first (dry run), so that a refusal by
++                        another device leaves the RQ units as they were
+    17-Nov-26    Ulli    KDB50 per its microcode listing (version 19): DTYPE
+                         1311010E, versions 19/0x11 to the host, poll after
+                         each ring interrupt
+@@ -1138,7 +1141,7 @@ int32 rq_itime4 = 10;                                   /* stage 4 */
+ int32 rq_qtime = RQ_QTIME;                              /* queue time */
+ int32 rq_xtime = RQ_XTIME;                              /* transfer time */
+ 
+-/* Sound realism mode (SET SOUND ENABLED) for the drives with a RUN/STOP
++/* Realism mode (SET REALISM ENABLED) for the drives with a RUN/STOP
+    button: every RA drive (RA60, RA70, RA71, RA72, RA73, RA80, RA81, RA82,
+    RA90, RA92) and the RC25
+ 
+@@ -1324,7 +1327,7 @@ typedef struct {
+     SND_FLOPPY          flp;                            /* RX50: this diskette slot's mechanics */
+     } RQ_RLZ;
+ 
+-/* RX50 (sound realism mode): drive mechanics from sim_flp_rx50; the times
++/* RX50 (realism mode): drive mechanics from sim_flp_rx50; the times
+    are registers of the RQ device (all controllers), defaults from the
+    type.  Two RX50 units with consecutive unit numbers (DUAn, DUAn+1,
+    pairing from the lowest number up) are the two slots of one drive:
+@@ -1452,7 +1455,7 @@ struct rq_usnap;                                        /* (rq_snap_take) */
+ static t_stat rq_rlz_rules (DEVICE *dptr, const char *prefix);
+ static int32 rq_eff_ctype (MSC *cp);
+ static t_bool rq_is_sdi_ctype (int32 ct);
+-static t_stat rq_rlz_enable_check (void);
++static t_stat rq_rlz_enable_check (t_bool apply);
+ static t_stat rq_rlz_set_type (UNIT *uptr, struct rq_usnap *s);
+ static t_stat rq_rlz_set_ctype (UNIT *uptr, int32 newtype);
+ static t_stat rq_rlz_set_plug (UNIT *uptr, uint32 plug);
+@@ -1600,23 +1603,23 @@ REG rq_reg[] = {
+     { DRDATAD (I4TIME,  rq_itime4,                  24, "init stage 4 delay"), PV_LEFT + REG_NZ },
+     { DRDATAD (QTIME,   rq_qtime,                   24, "response time for 'immediate' packets"), PV_LEFT + REG_NZ },
+     { DRDATAD (XTIME,   rq_xtime,                   24, "response time for data transfers"), PV_LEFT + REG_NZ },
+-    { DRDATAD (SPINUP,  rq_spinup_ms,               24, "RA60 spin-up time in ms (sound realism mode)"), PV_LEFT },
+-    { DRDATAD (SPINDOWN, rq_spindown_ms,            24, "RA60 spin-down time in ms (sound realism mode)"), PV_LEFT },
++    { DRDATAD (SPINUP,  rq_spinup_ms,               24, "RA60 spin-up time in ms (realism mode)"), PV_LEFT },
++    { DRDATAD (SPINDOWN, rq_spindown_ms,            24, "RA60 spin-down time in ms (realism mode)"), PV_LEFT },
+     { DRDATAD (SEEKRA60S, rq_seek60s,               24, "RA60 short seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEKRA60M, rq_seek60m,               24, "RA60 medium seek sound up to n cylinders"), PV_LEFT },
+-    { DRDATAD (SPINUPRC25, rq_spinup25_ms,          24, "RC25 spin-up time in ms (sound realism mode)"), PV_LEFT },
+-    { DRDATAD (SPINDOWNRC25, rq_spindown25_ms,      24, "RC25 spin-down time in ms (sound realism mode)"), PV_LEFT },
++    { DRDATAD (SPINUPRC25, rq_spinup25_ms,          24, "RC25 spin-up time in ms (realism mode)"), PV_LEFT },
++    { DRDATAD (SPINDOWNRC25, rq_spindown25_ms,      24, "RC25 spin-down time in ms (realism mode)"), PV_LEFT },
+     { DRDATAD (SEEKRC25S, rq_seek25s,               24, "RC25 short seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEKRC25M, rq_seek25m,               24, "RC25 medium seek sound up to n cylinders"), PV_LEFT },
+ #define RQ_RA_REGS(n) \
+-    { DRDATAD (SPINUPRA##n,   rq_spinup##n##_ms,    24, "RA" #n " spin-up time in ms (sound realism mode)"), PV_LEFT }, \
+-    { DRDATAD (SPINDOWNRA##n, rq_spindown##n##_ms,  24, "RA" #n " spin-down time in ms (sound realism mode)"), PV_LEFT }, \
++    { DRDATAD (SPINUPRA##n,   rq_spinup##n##_ms,    24, "RA" #n " spin-up time in ms (realism mode)"), PV_LEFT }, \
++    { DRDATAD (SPINDOWNRA##n, rq_spindown##n##_ms,  24, "RA" #n " spin-down time in ms (realism mode)"), PV_LEFT }, \
+     { DRDATAD (SEEKRA##n##S,  rq_seek##n##s,        24, "RA" #n " short seek sound up to n cylinders"), PV_LEFT }, \
+     { DRDATAD (SEEKRA##n##M,  rq_seek##n##m,        24, "RA" #n " medium seek sound up to n cylinders"), PV_LEFT }
+     RQ_RA_REGS (70), RQ_RA_REGS (71), RQ_RA_REGS (72), RQ_RA_REGS (73),
+     RQ_RA_REGS (80), RQ_RA_REGS (81), RQ_RA_REGS (82),
+     RQ_RA_REGS (90), RQ_RA_REGS (92),
+-    { DRDATAD (RX50STEP,   rq_flp_regs.step_us,     24, "RX50 step time per track in us (sound realism mode)"), PV_LEFT },
++    { DRDATAD (RX50STEP,   rq_flp_regs.step_us,     24, "RX50 step time per track in us (realism mode)"), PV_LEFT },
+     { DRDATAD (RX50SETTLE, rq_flp_regs.settle_us,   24, "RX50 head settle time in us"), PV_LEFT },
+     { DRDATAD (RX50HDLOAD, rq_flp_regs.hdload_us,   24, "RX50 head load time in us"), PV_LEFT },
+     { DRDATAD (RX50HDUNLOAD, rq_flp_regs.hdunload_ms, 24, "RX50 head unloaded after n ms idle (provisional)"), PV_LEFT },
+@@ -3785,7 +3788,7 @@ if (cp->ctype == DEFAULT_CTYPE)
+     cp->ctype = (UNIBUS    ? UDA50A_CTYPE :
+                  MICROVAX1 ? RQDX1_CTYPE : RQDX3_CTYPE);
+ 
+-sim_sound_register_enable_check (&rq_rlz_enable_check);/* SET SOUND ENABLED rules */
++sim_sound_register_enable_check (&rq_rlz_enable_check);/* SET REALISM ENABLED rules */
+ if (!plugs_inited ) {
+ #if !defined (VM_VAX)
+     uint32 u = 0;
+@@ -4099,7 +4102,7 @@ if (val & RQ_SH_UN) {
+ return SCPE_OK;
+ }
+ 
+-/* Sound realism mode: the RA drives and the RC25 (see the description at
++/* Realism mode: the RA drives and the RC25 (see the description at
+    rq_spinup_ms) */
+ 
+ /* Unit index within its controller */
+@@ -4548,7 +4551,7 @@ sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: %s LBN %u, %u blocks: from cylin
+ return us;
+ }
+ 
+-/* RX50 (sound realism mode)
++/* RX50 (realism mode)
+ 
+    Pairs: two enabled RX50 units of a controller with consecutive unit
+    numbers (PLUG, SET RQn UNIT=) are the two slots of one RX50 drive, as
+@@ -4697,9 +4700,9 @@ sim_debug (DBG_TRC, rq_devmap[uptr->cnum], "%s: RX50 LBN %u, %u blocks: track %d
+ return t;
+ }
+ 
+-/* Sound realism mode: configuration rules ("as realistic as possible")
++/* Realism mode: configuration rules ("as realistic as possible")
+ 
+-   With SET SOUND ENABLED the RQ controllers must look like real ones:
++   With SET REALISM ENABLED the RQ controllers must look like real ones:
+    - RC25 drives only on a KLESI controller (the RC25's bus adapter), and a
+      KLESI only connects RC25 drives: a master and at most one slave, i.e.
+      at most 4 enabled units, all RC25 or RCF25;
+@@ -4719,13 +4722,13 @@ return t;
+      drives (Ulli, 2026-11-11).  No bus rule for them: a PDP-11 keeps the
+      RQDX3 chosen at start-up for the default (Qbus) CPU after SET CPU
+      11/70 (known issues 50), so a bus rule would refuse every Unibus
+-     PDP-11 configuration.  SET SOUND ENABLED and SET RQ <other controller
++     PDP-11 configuration.  SET REALISM ENABLED and SET RQ <other controller
+      type> disable RX50 units on the other controllers (with a message)
+      instead of refusing, so the default Unibus configuration (UDA50A with
+      an RX50 at RQ3) keeps working; SET RQ RUX50 makes the units 0-3 RX50
+      units (two drives) and disables the others, SET RQ <other type> on a
+      RUX50 gives its units their initial drive types back.
+-   SET SOUND ENABLED refuses a configuration that breaks a rule
++   SET REALISM ENABLED refuses a configuration that breaks a rule
+    (rq_rlz_enable_check, registered with sim_sound).  While sound is
+    enabled, SET RQ <controller type>, SET RQn <drive type>, SET RQn UNIT=,
+    SET RQ DRIVES= and ATTACH keep to the rules:
+@@ -4779,7 +4782,7 @@ return ((ct == RQDX1_CTYPE) || (ct == RQDX3_CTYPE) || (ct == RQDX4_CTYPE) || (ct
+ static t_bool rq_is_sdi_ctype (int32 ct);
+ 
+ /* Realism mode: units a controller cannot have are disabled, with a
+-   message (SET SOUND ENABLED, SET RQ <controller type>):
++   message (SET REALISM ENABLED, SET RQ <controller type>):
+    - RX50 units on a controller that is not an RX50 controller;
+    - non-SDI drives (RD, RX33, RF, ...) on an SDI controller (UDA50,
+      UDA50A, KDA50, KDB50), which only connects SDI drives (Ulli,
+@@ -4803,14 +4806,16 @@ for (u = 0; u < n; u++) {
+         continue;
+     if ((dt == RX50_DTYPE) && !rq_is_rx50_ctype (ctype)) {
+         xptr->flags = xptr->flags | UNIT_DIS;
+-        sim_printf ("%s%s disabled: an RX50 needs an RQDX1, RQDX3, RQDX4 or RUX50 controller, %s is a%s %s\n",
+-                    prefix, sim_uname (xptr), dptr->name, art, ctlr_tab[ctype].name);
++        if (prefix != NULL)                     /* (NULL: quietly, dry run) */
++            sim_printf ("%s%s disabled: an RX50 needs an RQDX1, RQDX3, RQDX4 or RUX50 controller, %s is a%s %s\n",
++                        prefix, sim_uname (xptr), dptr->name, art, ctlr_tab[ctype].name);
+         }
+     else if (rq_is_sdi_ctype (ctype) && !rq_is_sdi_type (dt)) {
+         xptr->flags = xptr->flags | UNIT_DIS;
+-        sim_printf ("%s%s disabled: a%s %s only connects SDI drives (RA family, ESE), %s is an %s\n",
+-                    prefix, sim_uname (xptr), art, ctlr_tab[ctype].name, sim_uname (xptr),
+-                    drv_tab[dt].name);
++        if (prefix != NULL)
++            sim_printf ("%s%s disabled: a%s %s only connects SDI drives (RA family, ESE), %s is an %s\n",
++                        prefix, sim_uname (xptr), art, ctlr_tab[ctype].name, sim_uname (xptr),
++                        drv_tab[dt].name);
+         }
+     }
+ }
+@@ -4907,22 +4912,6 @@ if (sdi && (n_en > SDI_MAX_UNITS))
+ return SCPE_OK;
+ }
+ 
+-/* SET SOUND ENABLED: every RQ controller must keep to the rules */
+-
+-static t_stat rq_rlz_enable_check (void)
+-{
+-int32 i;
+-t_stat r;
+-
+-for (i = 0; i < RQ_NUMCT; i++)                          /* RX50s on other controllers: off */
+-    rq_rlz_rx50_disable (rq_devmap[i], rq_eff_ctype (rq_ctxmap[rq_devmap[i]->units[0].cnum]),
+-                         "SET SOUND ENABLED: ");
+-for (i = 0; i < RQ_NUMCT; i++)
+-    if ((r = rq_rlz_rules (rq_devmap[i], "SET SOUND ENABLED: ")) != SCPE_OK)
+-        return r;
+-return SCPE_OK;
+-}
+-
+ /* A snapshot of a controller's unit settings (flags, capacity, unit
+    number), so that a SET that would break a rule can be undone */
+ 
+@@ -4959,6 +4948,33 @@ for (u = 0; u < n; u++) {
+     }
+ }
+ 
++/* SET REALISM ENABLED: every RQ controller must keep to the rules.  The
++   units that do not fit their controller (RX50s off the RQDX/RUX50,
++   non-SDI drives on SDI controllers) are disabled first.  In the dry run
++   (apply FALSE, sim_sound.h) this happens quietly on snapshots that are
++   restored, so only a broken rule is printed and nothing changes. */
++
++static t_stat rq_rlz_enable_check (t_bool apply)
++{
++RQ_USNAP *snap[RQ_NUMCT];
++int32 i;
++t_stat r = SCPE_OK;
++
++for (i = 0; i < RQ_NUMCT; i++)
++    snap[i] = apply ? NULL : rq_snap_take (rq_devmap[i]);
++for (i = 0; i < RQ_NUMCT; i++)                          /* RX50s on other controllers: off */
++    rq_rlz_rx50_disable (rq_devmap[i], rq_eff_ctype (rq_ctxmap[rq_devmap[i]->units[0].cnum]),
++                         apply ? "SET REALISM ENABLED: " : NULL);
++for (i = 0; (i < RQ_NUMCT) && (r == SCPE_OK); i++)
++    r = rq_rlz_rules (rq_devmap[i], "SET REALISM ENABLED: ");
++for (i = 0; i < RQ_NUMCT; i++)                          /* dry run: undo */
++    if (snap[i] != NULL) {
++        rq_snap_restore (rq_devmap[i], snap[i]);
++        free (snap[i]);
++        }
++return r;
++}
++
+ /* After a change made with a snapshot: keep it if the rules hold, else
+    undo it.  Frees the snapshot. */
+ 
+@@ -5249,7 +5265,7 @@ fprintf (st, "an even unit to RC25) and the fixed platter (set the next unit to
+ fprintf (st, "e.g. SET RQ0 RC25, SET RQ1 RCF25).  The Run button acts on both units, so\n");
+ fprintf (st, "SET RQ0 ONLINE and SET RQ1 ONLINE do the same.  An RCF25 that does not follow\n");
+ fprintf (st, "an RC25 is a fixed disk of its own.\n\n");
+-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
++fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND):\n");
+ fprintf (st, "  - ATTACH of an RA drive or an RC25 only loads the pack, the disk or the\n");
+ fprintf (st, "    cartridge; the drive stays stopped until SET RQn ONLINE (also the fixed\n");
+ fprintf (st, "    RA drives: e.g. SET RQ0 ONLINE before BOOT RQ0).  Spin-up and spin-down\n");
+@@ -5270,14 +5286,14 @@ fprintf (st, "  - the configuration must be realistic: RC25 drives only on a KLE
+ fprintf (st, "    controller, which only connects RC25 drives (a master and at most one\n");
+ fprintf (st, "    slave: 4 units); an RC25 drive is a pair, the RC25 at an even unit with\n");
+ fprintf (st, "    an even unit number (SET RQn UNIT=), its RCF25 at the next unit with the\n");
+-fprintf (st, "    next number.  SET SOUND ENABLED refuses other configurations.  While\n");
++fprintf (st, "    next number.  SET REALISM ENABLED refuses other configurations.  While\n");
+ fprintf (st, "    sound is enabled, SET RQ KLESI sets units 0/1 and 2/3 to RC25/RCF25 and\n");
+ fprintf (st, "    disables the others, SET RQ <other type> gives them their initial types\n");
+ fprintf (st, "    back, SET RQn RC25 (or RCF25) also sets the other half of the pair, SET\n");
+ fprintf (st, "    RQn UNIT=m also renumbers it, and settings or an ATTACH that would break\n");
+ fprintf (st, "    a rule are refused.  RA drives (SDI drives) only on a UDA50, UDA50A,\n");
+ fprintf (st, "    KDA50 or KDB50, which connect at most 4 drives, and only SDI drives:\n");
+-fprintf (st, "    SET SOUND ENABLED and SET RQ <SDI controller type> disable the other\n");
++fprintf (st, "    SET REALISM ENABLED and SET RQ <SDI controller type> disable the other\n");
+ fprintf (st, "    drives (RD, RX, RC25, ...) that are not attached, with a message (e.g.\n");
+ fprintf (st, "    the RD54 units of the default Unibus configuration); an attached one is\n");
+ fprintf (st, "    refused.  To make such a unit an RA drive, enable it first, one unit at\n");
+@@ -5289,7 +5305,7 @@ fprintf (st, "    DRIVES= above 4 is refused on them.  The UDA50 and UDA50A only
+ fprintf (st, "    Unibus, the KDA50 only on the Qbus.  RX50 drives only on an RQDX1\n");
+ fprintf (st, "    (RQDX2), RQDX3, RQDX4 or RUX50 controller, and a RUX50 only connects\n");
+ fprintf (st, "    RX50 drives:\n");
+-fprintf (st, "    SET SOUND ENABLED and SET RQ <other controller type> disable RX50 units\n");
++fprintf (st, "    SET REALISM ENABLED and SET RQ <other controller type> disable RX50 units\n");
+ fprintf (st, "    on the other controllers (with a message, e.g. RQ3 of the default\n");
+ fprintf (st, "    Unibus configuration), SET RQ RUX50 makes units 0-3 RX50 units, SET\n");
+ fprintf (st, "    RQ <other type> on a RUX50 gives them their initial types back;\n");
+diff --git a/PDP11/pdp11_rx.c b/PDP11/pdp11_rx.c
+index dfd44d0e..9fb07546 100644
+--- a/PDP11/pdp11_rx.c
++++ b/PDP11/pdp11_rx.c
+@@ -129,7 +129,7 @@ uint8 rx_buf[RX_NUMBY] = { 0 };                         /* sector buffer */
+ int32 rx_bptr = 0;                                      /* buffer pointer */
+ int32 rx_enb = 1;                                       /* device enable */
+ 
+-/* Sound realism mode (SET SOUND ENABLED): the drive mechanics of each
++/* Realism mode (SET REALISM ENABLED): the drive mechanics of each
+    RX01 drive (sim_sound SND_FLOPPY) and their adjustable times, shared by
+    both drives (registers STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP). */
+ 
+@@ -223,7 +223,7 @@ MTAB rx_mod[] = {
+     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
+         &set_writelock, NULL,   NULL, "Write lock floppy drive" },
+     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
+-        NULL, &rx_show_drive, NULL, "Display the drive mechanics (sound realism mode)" },
++        NULL, &rx_show_drive, NULL, "Display the drive mechanics (realism mode)" },
+ #if defined (VM_PDP11)
+     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004, "ADDRESS", "ADDRESS",
+       &set_addr, &show_addr, NULL },
+@@ -596,7 +596,7 @@ else
+     sim_activate (uptr, rx_xwait);
+ }
+ 
+-/* Realistic times (sound realism mode), from the RX8/RX11 Floppy Disk
++/* Realistic times (realism mode), from the RX8/RX11 Floppy Disk
+    System Maintenance Manual EK-RX01-MM-002:
+    - Read/Write Sector: the other drive's head unloads (one head load line),
+      the head steps 10 ms per track, is loaded and the microcode waits
+@@ -688,7 +688,7 @@ fprintf (st, "    not attached  1          report error and stop\n");
+ fprintf (st, "                  0          disk not ready\n\n");
+ fprintf (st, "RX01 data files are buffered in memory; therefore, end of file and OS I/O\n");
+ fprintf (st, "errors cannot occur.\n\n");
+-fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
++fprintf (st, "Realism mode (SET REALISM ENABLED, see HELP SET SOUND):\n\n");
+ fprintf (st, "  - The RX01 drive motors are AC motors on the power line: they run while\n");
+ fprintf (st, "    the system power is on (RUN/BOOT, SET SOUND POWER=ON), with or without\n");
+ fprintf (st, "    a diskette; at power on the heads move ten tracks in and back.  ATTACH\n");
+diff --git a/PDP11/pdp11_ry.c b/PDP11/pdp11_ry.c
+index 874036be..94c5ee06 100644
+--- a/PDP11/pdp11_ry.c
++++ b/PDP11/pdp11_ry.c
+@@ -160,7 +160,7 @@ int32 ry_swait = 10;                                    /* seek, per track */
+ int32 ry_xwait = 1;                                     /* tr set time */
+ uint8 rx2xb[RY_NUMBY] = { 0 };                          /* sector buffer */
+ 
+-/* Sound realism mode (SET SOUND ENABLED): the drive mechanics of each
++/* Realism mode (SET REALISM ENABLED): the drive mechanics of each
+    RX02 drive (sim_sound SND_FLOPPY) and their adjustable times, shared by
+    both drives (registers STEP, SETTLE, HDLOAD, HDUNLOAD, MOTORUP). */
+ 
+@@ -269,7 +269,7 @@ MTAB ry_mod[] = {
+     { (UNIT_AUTO+UNIT_DEN),           UNIT_DEN, NULL,               "DOUBLE", 
+         &ry_set_size, NULL, NULL, "Set to Double density (512Kb)" },
+     { MTAB_XTD|MTAB_VUN|MTAB_NMO,          0, "DRIVE", NULL,
+-        NULL, &ry_show_drive, NULL, "Display the drive mechanics (sound realism mode)" },
++        NULL, &ry_show_drive, NULL, "Display the drive mechanics (realism mode)" },
+ #if defined (VM_PDP11)
+     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004, "ADDRESS", "ADDRESS",
+       &set_addr, &show_addr, NULL, "Bus Address" },
+@@ -733,7 +733,7 @@ if (uptr->flags & UNIT_ATT)
+ return detach_unit (uptr);
+ }
+ 
+-/* Realistic times (sound realism mode), from the RX02 Floppy Disk System
++/* Realistic times (realism mode), from the RX02 Floppy Disk System
+    Technical Manual EK-0RX02-TM-001:
+    - Read/Write Sector: step 6 ms per track, then head load / settle
+      25 ms, then wait until the sector comes round (360 rpm, 26 sectors
+@@ -936,7 +936,7 @@ fprintf (st, "    not attached  1          report error and stop\n");
+ fprintf (st, "                  0          disk not ready\n\n");
+ fprintf (st, "RX02 data files are buffered in memory; therefore, end of file and OS I/O\n");
+ fprintf (st, "errors cannot occur.\n\n");
+-fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
++fprintf (st, "Realism mode (SET REALISM ENABLED, see HELP SET SOUND):\n\n");
+ fprintf (st, "  - The RX02 drive motors are AC motors on the power line: they run while\n");
+ fprintf (st, "    the system power is on (RUN/BOOT, SET SOUND POWER=ON), with or without\n");
+ fprintf (st, "    a diskette.  ATTACH is inserting a diskette and closing the door, DETACH\n");
+diff --git a/PDP11/pdp11_td.c b/PDP11/pdp11_td.c
+index e45079b7..22d2d982 100644
+--- a/PDP11/pdp11_td.c
++++ b/PDP11/pdp11_td.c
+@@ -617,7 +617,7 @@ static int32 td_itime = 180;                            /* init time */
+ 
+ static int32 td_ctrls = 1;                              /* number of enabled controllers */
+ 
+-/* Sound realism mode: see the comments of SND_TU58 in sim_sound.h.  The
++/* Realism mode: see the comments of SND_TU58 in sim_sound.h.  The
+    tape times come from the model, the bytes on the serial line take
+    10 bits each at td_baud (38.4 kbaud, the TU58's factory setting).
+    Host to TU58 bytes are not timed (the host sees transmit done at once,
+@@ -1629,7 +1629,7 @@ static t_stat td_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const cha
+ {
+ fprintf (st, "%s (%s)\n\n", dptr->description (dptr), dptr->name);
+ fprintf (st, "DECtape TU58 Cartridge .\n\n");
+-fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n");
++fprintf (st, "Realism mode (SET REALISM ENABLED, see HELP SET SOUND):\n");
+ fprintf (st, "  - ATTACH inserts a cartridge (the tape at BOT), DETACH removes it; a command\n");
+ fprintf (st, "    in progress then ends with \"no cartridge\".\n");
+ fprintf (st, "  - The tape is modelled per drive: 512 blocks of four 128-byte records on two\n");
+diff --git a/PDP11/pdp11_td.h b/PDP11/pdp11_td.h
+index b960f1cd..3919f39b 100644
+--- a/PDP11/pdp11_td.h
++++ b/PDP11/pdp11_td.h
+@@ -56,7 +56,7 @@ t_stat td_wr_i_buf (CTLR *ctlr, int32 data);
+ t_stat td_wr_o_csr (CTLR *ctlr, int32 data);
+ t_stat td_wr_o_buf (CTLR *ctlr, int32 data);
+ 
+-/* Sound realism mode (SET SOUND ENABLED): the TU58 tape model registers
++/* Realism mode (SET REALISM ENABLED): the TU58 tape model registers
+    (shared by every TU58: TDC and the VAX console TD), the serial line
+    speed, and the drive routines the console devices use */
+ 
+@@ -84,7 +84,7 @@ t_stat td_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ 
+ static DEBTAB td_deb[] = {
+     { "OPS", TDDEB_OPS, "transactions" },
+-    { "MOTION", TDDEB_MOT, "realistic tape motion and times (sound realism mode)" },
++    { "MOTION", TDDEB_MOT, "realistic tape motion and times (realism mode)" },
+     { "PKT", TDDEB_PKT, "packet" },
+     { "RRD", TDDEB_RRD, "reg reads"},
+     { "IRD", TDDEB_IRD, "input reg reads" },
+diff --git a/PDP11/pdp11_tq.c b/PDP11/pdp11_tq.c
+index b707c203..2adf31d0 100644
+--- a/PDP11/pdp11_tq.c
++++ b/PDP11/pdp11_tq.c
+@@ -111,7 +111,7 @@
+ #include "sim_tape.h"
+ #include "sim_sound.h"
+ 
+-/* Sound realism mode (SET SOUND ENABLED; 2026-11-08, Ulli), TK50 only
++/* Realism mode (SET REALISM ENABLED; 2026-11-08, Ulli), TK50 only
+ 
+    The TK50 (TQK50 on the Qbus, TUK50 on the Unibus) becomes a cartridge
+    streamer (SND_STREAMER in sim_sound; EK-OTK50-TM-002, EK-TUK50-OM-001):
+@@ -345,7 +345,7 @@ int32 tq_qtime = 200;                                   /* queue time */
+ int32 tq_xtime = 500;                                   /* transfer time */
+ int32 tq_rwtime = 2000000;                              /* rewind time 2 sec (adjusted later) */
+ 
+-/* TK50 cartridge streamer (sound realism mode, see above) */
++/* TK50 cartridge streamer (realism mode, see above) */
+ 
+ static const SND_STRM_TYPE tq_tk50 = {
+     "TK50", "tk50", "tk50",
+@@ -1590,7 +1590,7 @@ int32 st;
+ if (cptr != NULL)
+     return SCPE_ARG;
+ if (!tq_real ())
+-    return sim_messagef (SCPE_ARG, "%s: the Load/Unload button exists in the sound realism mode of the TK50 only%s\n",
++    return sim_messagef (SCPE_ARG, "%s: the Load/Unload button exists in the realism mode of the TK50 only%s\n",
+                          sim_uname (uptr), tq_hint ());
+ if (!(uptr->flags & UNIT_ATT))
+     return sim_messagef (SCPE_UNATT, "%s: no cartridge (ATTACH one first)\n", sim_uname (uptr));
+@@ -1629,7 +1629,7 @@ return tq_set_panel_body (uptr, val, cptr, desc);
+ static t_stat tq_show_transport_body (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ {
+ if (!tq_real ()) {
+-    fprintf (st, "no transport model (sound realism mode of the TK50 only%s)\n", tq_hint ());
++    fprintf (st, "no transport model (realism mode of the TK50 only%s)\n", tq_hint ());
+     return SCPE_OK;
+     }
+ fprintf (st, "TK50: ");
+@@ -2888,7 +2888,7 @@ tq_set_ctx_unit (uptr);
+ return tq_show_ctrl_body (st, uptr, val, desc);
+ }
+ 
+-/* Realism rule (SET SOUND ENABLED): a KLESI adapter only ever connected
++/* Realism rule (SET REALISM ENABLED): a KLESI adapter only ever connected
+    TU81 drives (Ulli, 2026-11-17); SIMH allows the TK50 and TK70 on TB as
+    well (VMS only sees TMSCP), which the normal mode keeps. */
+ 
+@@ -3002,7 +3002,7 @@ fprintf (st, "include the ability to set units write enabled or write locked, an
+ fprintf (st, "specify the controller type and tape length:\n");
+ fprint_set_help (st, dptr);
+ fprintf (st, "\nThe %s device supports the BOOT command.\n", devtype);
+-fprintf (st, "\nSound realism mode (SET SOUND ENABLED), TK50 only:\n\n");
++fprintf (st, "\nRealism mode (SET REALISM ENABLED), TK50 only:\n\n");
+ fprintf (st, "The TK50 is simulated as a cartridge streamer: 75 in/s, 45 KB/s, 22 serpentine\n");
+ fprintf (st, "tracks on 600 ft of tape, a 32 KB buffer between host and tape.  A host that\n");
+ fprintf (st, "keeps up keeps the tape streaming; a slower one gives the typical cycle of\n");
+@@ -3225,12 +3225,13 @@ t_stat tb_port_reset (void)
+ return tq_reset (&tb_dev);
+ }
+ 
+-/* SET SOUND ENABLED: an enabled TB must have TU81 drives */
++/* SET REALISM ENABLED: an enabled TB must have TU81 drives (no changes,
++   so the dry run and the real run are the same) */
+ 
+-static t_stat tb_rlz_enable_check (void)
++static t_stat tb_rlz_enable_check (t_bool apply)
+ {
+ if ((tq_ctx1.dev != NULL) && !(tq_ctx1.dev->flags & DEV_DIS) && (tq_ctx1.typ != TQ8_TYPE))
+-    return tb_rlz_msg ("SET SOUND ENABLED: ", tq_ctx1.typ);
++    return tb_rlz_msg ("SET REALISM ENABLED: ", tq_ctx1.typ);
+ return SCPE_OK;
+ }
+ 
+@@ -3285,7 +3286,7 @@ fprintf (st, "the port's IP and SA registers are at Unibus address 774500 in the
+ fprintf (st, "node's window.  ULTRIX supports it (V2.0: bla.c, tmscp.c).\n\n");
+ fprintf (st, "SIMH also accepts SET TB TK50, TK70 or TKUSER (the guest only sees\n");
+ fprintf (st, "TMSCP); no KLESI adapter ever connected those drives, so the sound\n");
+-fprintf (st, "realism mode (SET SOUND ENABLED) allows the TU81 only.\n\n");
++fprintf (st, "realism mode (SET REALISM ENABLED) allows the TU81 only.\n\n");
+ fprint_set_help (st, dptr);
+ fprint_show_help (st, dptr);
+ fprint_reg_help (st, dptr);
+diff --git a/PDP11/pdp11_ts.c b/PDP11/pdp11_ts.c
+index b7acd369..f1a0e326 100644
+--- a/PDP11/pdp11_ts.c
++++ b/PDP11/pdp11_ts.c
+@@ -110,7 +110,7 @@
+ #include "sim_sound.h"
+ #define ADDRTEST        (UNIBUS? 0177774: 0177700)
+ 
+-/* Sound realism mode (SET SOUND ENABLED; 2026-11-07, Ulli)
++/* Realism mode (SET REALISM ENABLED; 2026-11-07, Ulli)
+ 
+    The controller is simulated as before; the tape transport behind it
+    gets an operator panel, realistic timing and sounds (SND_REEL in
+@@ -336,7 +336,7 @@ int32 ts_bcmd = 0;                                      /* boot cmd */
+ int32 ts_time = 2000;                                   /* record latency */
+ static uint16 cpy_buf[MAX_PLNT];                        /* copy buffer */
+ 
+-/* Transport (sound realism mode, see above) */
++/* Transport (realism mode, see above) */
+ 
+ static const SND_REEL_TYPE ts_type_ts11 = {
+     "TS11", "ts11", "ts11",
+@@ -1710,7 +1710,7 @@ fprintf (st, "The TS11 device supports the BOOT command.\n");
+ fprintf (st, "The TS11 does not support the BOOT command.\n");
+ #endif
+ fprint_reg_help (st, dptr);
+-fprintf (st, "\nSound realism mode (SET SOUND ENABLED):\n\n");
++fprintf (st, "\nRealism mode (SET REALISM ENABLED):\n\n");
+ fprintf (st, "On the Unibus the transport is a TS11 (45 in/s, start/stop for every record),\n");
+ fprintf (st, "on the Qbus a TSV05 (25 in/s, streaming).  The tape motion takes its real\n");
+ fprintf (st, "time and is heard: records, rewinds (the reel motors' pitch follows the\n");
+diff --git a/VAX/vax610_syslist.c b/VAX/vax610_syslist.c
+index 961c1c05..73b39519 100644
+--- a/VAX/vax610_syslist.c
++++ b/VAX/vax610_syslist.c
+@@ -36,7 +36,7 @@ char sim_name[] = "MicroVAX I (KA610)";
+ void vax_init(void)
+ {
+ sim_savename = "MicroVAX I (KA610)";
+-/* Realistic CPU speed in the sound realism mode: a MicroVAX I is about 0.3
++/* Realistic CPU speed in the realism mode: a MicroVAX I is about 0.3
+    of a VAX-11/780 (0.3 VUP), so about 150K instructions per second (VUPs
+    times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
+    Provisional: to be calibrated with a CPU benchmark on a real machine. */
+diff --git a/VAX/vax630_syslist.c b/VAX/vax630_syslist.c
+index 9beedc21..3df9d0ca 100644
+--- a/VAX/vax630_syslist.c
++++ b/VAX/vax630_syslist.c
+@@ -24,7 +24,7 @@
+    used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization from the author(s).
+ 
+-   08-Nov-2026  Ulli    Realistic CPU speed for the sound realism mode
++   08-Nov-2026  Ulli    Realistic CPU speed for the realism mode
+                         (MicroVAX II: THROTTLE 450K, provisional)
+    08-Nov-2012  MB      First version
+ */
+@@ -38,7 +38,7 @@ char sim_name[] = "rtVAX1000 (KA620)";
+ void vax_init(void)
+ {
+ sim_savename = "rtVAX1000 (KA620)";
+-/* Realistic CPU speed in the sound realism mode: an rtVAX 1000 (KA620,
++/* Realistic CPU speed in the realism mode: an rtVAX 1000 (KA620,
+    the KA630 processor) is about 0.9 of a VAX-11/780, so about 450,000
+    instructions per second, as the MicroVAX II.  Provisional. */
+ sim_sound_set_throttle ("450K");
+@@ -49,7 +49,7 @@ char sim_name[] = "MicroVAX II (KA630)";
+ void vax_init(void)
+ {
+ sim_savename = "MicroVAX II (KA630)";
+-/* Realistic CPU speed in the sound realism mode: a MicroVAX II is about
++/* Realistic CPU speed in the realism mode: a MicroVAX II is about
+    0.9 of a VAX-11/780 (roughly 0.5 million VAX instructions per second),
+    so about 450,000 instructions per second (the same method as the
+    VAX-11/750's 300K).  Provisional: to be calibrated with a CPU benchmark
+diff --git a/VAX/vax730_rb.c b/VAX/vax730_rb.c
+index fa97146b..b298e259 100644
+--- a/VAX/vax730_rb.c
++++ b/VAX/vax730_rb.c
+@@ -29,7 +29,7 @@
+    07-Nov-2026  Ulli    At most one RB80 (the IDC connects one R80 and up to
+                         three RL02, EK-RB730-TD-001 figure 3-2)
+    07-Nov-2026  Ulli    Help: seek sounds fall back to sound/default_disk
+-   04-Nov-2026  Ulli    Sound realism mode (SET SOUND ENABLED): SET RBn
++   04-Nov-2026  Ulli    Realism mode (SET REALISM ENABLED): SET RBn
+                         ONLINE/LOAD and OFFLINE/UNLOAD are the LOAD button of
+                         the RB02 (an RL02), ATTACH waits for ONLINE, spin-up/
+                         down (SPINUP, SPINDOWN); realistic RB02 and RB80 seek,
+@@ -257,7 +257,7 @@ int32 rb_swait = 150;                                   /* seek wait */
+ int32 rb_mwait = 300;                                   /* seek wait */
+ int32 rb_cwait = 50;                                    /* seek wait */
+ 
+-/* Sound realism mode (SET SOUND ENABLED)
++/* Realism mode (SET REALISM ENABLED)
+ 
+    The RB02 is an RL02 drive on the RB730 controller: its LOAD button is
+    SET RBn ONLINE (or LOAD) and SET RBn OFFLINE (or UNLOAD).  A spindle
+@@ -360,8 +360,8 @@ UNIT rb_unit[] = {
+     };
+ 
+ REG rb_reg[] = {
+-    { DRDATAD (SPINUP,   rb_spinup_ms,   24, "RB02 spin-up time in ms (sound realism mode)"), PV_LEFT },
+-    { DRDATAD (SPINDOWN, rb_spindown_ms, 24, "RB02 spin-down time in ms (sound realism mode)"), PV_LEFT },
++    { DRDATAD (SPINUP,   rb_spinup_ms,   24, "RB02 spin-up time in ms (realism mode)"), PV_LEFT },
++    { DRDATAD (SPINDOWN, rb_spindown_ms, 24, "RB02 spin-down time in ms (realism mode)"), PV_LEFT },
+     { DRDATAD (SEEK02S,  rb_seek02s,     10, "RB02 short seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEK02M,  rb_seek02m,     10, "RB02 medium seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEK80S,  rb_seek80s,     10, "RB80 short seek sound up to n cylinders"), PV_LEFT },
+@@ -955,7 +955,7 @@ fprintf (st, "\nSET RBn ONLINE (or LOAD) and SET RBn OFFLINE (or UNLOAD) are the
+ fprintf (st, "of an RB02: OFFLINE spins the drive down (the cartridge stays attached),\n");
+ fprintf (st, "ONLINE spins it up.  SHOW RBn SPINDLE shows the spindle state.  The RB80 is\n");
+ fprintf (st, "a fixed disk without this button.\n\n");
+-fprintf (st, "With SET SOUND ENABLED (the sound realism mode, see HELP SET SOUND):\n");
++fprintf (st, "With SET REALISM ENABLED (the realism mode, see HELP SET SOUND):\n");
+ fprintf (st, "  - ATTACH of an RB02 only loads the cartridge; the drive stays stopped until\n");
+ fprintf (st, "    SET RBn ONLINE (spin-up time register SPINUP, default 40000 ms, spin-down\n");
+ fprintf (st, "    SPINDOWN, default 30000 ms); at the sim> prompt the commands wait until\n");
+@@ -976,7 +976,7 @@ fprint_reg_help (st, dptr);
+ return SCPE_OK;
+ }
+ 
+-/* Sound realism mode (see the description at rb_spinup_ms) */
++/* Realism mode (see the description at rb_spinup_ms) */
+ 
+ /* Is the drive ready: attached and (RB02) spun up? */
+ 
+diff --git a/VAX/vax730_stddev.c b/VAX/vax730_stddev.c
+index c1b497ab..d797d5bc 100644
+--- a/VAX/vax730_stddev.c
++++ b/VAX/vax730_stddev.c
+@@ -395,7 +395,7 @@ MTAB td_mod[] = {
+     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
+         &set_writelock, NULL,   NULL, "Write lock TU58 drive" },
+     { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
+-        NULL, &td_show_drive, NULL, "Display the drive: cartridge, tape position (sound realism mode)" },
++        NULL, &td_show_drive, NULL, "Display the drive: cartridge, tape position (realism mode)" },
+     { 0 }
+     };
+ 
+diff --git a/VAX/vax730_syslist.c b/VAX/vax730_syslist.c
+index f109323b..9238f234 100644
+--- a/VAX/vax730_syslist.c
++++ b/VAX/vax730_syslist.c
+@@ -35,7 +35,7 @@ char sim_name[] = "VAX 11/730";
+ void vax_init(void)
+ {
+ sim_savename = "VAX730";
+-/* Realistic CPU speed in the sound realism mode: a VAX-11/730 is about 0.3
++/* Realistic CPU speed in the realism mode: a VAX-11/730 is about 0.3
+    of a VAX-11/780 (0.3 VUP), so about 150K instructions per second (VUPs
+    times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
+    Provisional: to be calibrated with a CPU benchmark on a real machine. */
+diff --git a/VAX/vax750_stddev.c b/VAX/vax750_stddev.c
+index 1ab5084d..9a64aa79 100644
+--- a/VAX/vax750_stddev.c
++++ b/VAX/vax750_stddev.c
+@@ -387,7 +387,7 @@ MTAB td_mod[] = {
+     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
+         &set_writelock, NULL,   NULL, "Write lock TU58 drive" },
+     { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
+-        NULL, &td_show_drive, NULL, "Display the drive: cartridge, tape position (sound realism mode)" },
++        NULL, &td_show_drive, NULL, "Display the drive: cartridge, tape position (realism mode)" },
+     { 0 }
+     };
+ 
+diff --git a/VAX/vax750_syslist.c b/VAX/vax750_syslist.c
+index 8196448a..fd60b556 100644
+--- a/VAX/vax750_syslist.c
++++ b/VAX/vax750_syslist.c
+@@ -44,7 +44,7 @@ sim_savename = "VAX750";
+    sound/default_cpu/, which this simulator uses (opt-in) */
+ sim_sound_set_system ("vax750", "starting.wav", "running.wav", "stopping.wav");
+ sim_sound_use_default_cpu ();
+-/* Realistic CPU speed in the sound realism mode: about 0.6 of a
++/* Realistic CPU speed in the realism mode: about 0.6 of a
+    VAX-11/780 (roughly 0.5 million VAX instructions per second), so about
+    300,000 instructions per second.  Provisional: to be calibrated against
+    a real VAX-11/750 (e.g. the time of a VMS boot). */
+diff --git a/VAX/vax780_stddev.c b/VAX/vax780_stddev.c
+index 130df102..bba1057f 100644
+--- a/VAX/vax780_stddev.c
++++ b/VAX/vax780_stddev.c
+@@ -268,7 +268,7 @@ t_stat fl_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ t_stat fl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+ static double fl_rw_us (UNIT *uptr, t_bool wr);
+ 
+-/* Sound realism mode (SET SOUND ENABLED): the console floppy is an RX01
++/* Realism mode (SET REALISM ENABLED): the console floppy is an RX01
+    drive on the RXV11 of the LSI-11 console processor; its mechanics are
+    a sim_sound SND_FLOPPY (registers STEP, SETTLE, HDLOAD, HDUNLOAD,
+    MOTORUP).  The LSI-11 reads or writes the whole sector between the
+@@ -467,7 +467,7 @@ MTAB fl_mod[] = {
+     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
+         &set_writelock, NULL,   NULL, "Write lock floppy drive" },
+     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
+-        NULL, &fl_show_drive, NULL, "Display the drive mechanics (sound realism mode)" },
++        NULL, &fl_show_drive, NULL, "Display the drive mechanics (realism mode)" },
+     { 0 }
+     };
+ 
+@@ -1377,7 +1377,7 @@ fprintf (st, "tracks of 26 sectors of 128 bytes (256,256 bytes).\n\n");
+ fprint_set_help (st, dptr);
+ fprint_show_help (st, dptr);
+ fprint_reg_help (st, dptr);
+-fprintf (st, "\nSound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
++fprintf (st, "\nRealism mode (SET REALISM ENABLED, see HELP SET SOUND):\n\n");
+ fprintf (st, "  - The RX01 drive motor is an AC motor on the power line: it runs while\n");
+ fprintf (st, "    the system power is on (RUN/BOOT, SET SOUND POWER=ON); at power on the\n");
+ fprintf (st, "    head moves ten tracks in and back.  ATTACH is inserting a diskette and\n");
+diff --git a/VAX/vax780_syslist.c b/VAX/vax780_syslist.c
+index 7f6cfe11..78d5dff1 100644
+--- a/VAX/vax780_syslist.c
++++ b/VAX/vax780_syslist.c
+@@ -35,7 +35,7 @@ char sim_name[] = "VAX 11/780";
+ void vax_init(void)
+ {
+ sim_savename = "VAX780";
+-/* Realistic CPU speed in the sound realism mode: a VAX-11/780 is 1 VUP;
++/* Realistic CPU speed in the realism mode: a VAX-11/780 is 1 VUP;
+    about 0.5 million VAX instructions per second (the reference of the 750
+    and MicroVAX II values), so about 500K instructions per second (VUPs
+    times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
+diff --git a/VAX/vax820_ka.c b/VAX/vax820_ka.c
+index 6d84b905..d174d264 100644
+--- a/VAX/vax820_ka.c
++++ b/VAX/vax820_ka.c
+@@ -201,7 +201,7 @@ fprintf (st, "processors (RXCD register) with the console commands I, D/G and S,
+ fprintf (st, "a real VAX 8300.  Both processors execute; they take turns on the host,\n");
+ fprintf (st, "switching every CPU QUANTUM instructions (default 100) at an instruction\n");
+ fprintf (st, "boundary.  Simulated time runs with the primary, so in guest time both run\n");
+-fprintf (st, "at full speed; with SET SOUND ENABLED (THROTTLE 400K) each processor gets\n");
++fprintf (st, "at full speed; with SET REALISM ENABLED (THROTTLE 400K) each processor gets\n");
+ fprintf (st, "400K instructions per second.  The host does not idle while KA1 runs.\n\n");
+ fprintf (st, "VAX/VMS V4.4 and later (with the VMS/8300 multiprocessing key) run it as\n");
+ fprintf (st, "an attached processor (asymmetric multiprocessing).  VMS V4.7, as tested:\n\n");
+diff --git a/VAX/vax820_stddev.c b/VAX/vax820_stddev.c
+index 1ef93da2..a2fe6432 100644
+--- a/VAX/vax820_stddev.c
++++ b/VAX/vax820_stddev.c
+@@ -272,7 +272,7 @@ t_stat fl_detach (UNIT *uptr);
+ t_stat fl_show_drive (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ t_stat fl_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+ 
+-/* Sound realism mode (SET SOUND ENABLED): CS0 and CS1 are the two
++/* Realism mode (SET REALISM ENABLED): CS0 and CS1 are the two
+    diskette slots of the console's RX50 drive: one spindle motor switched
+    by the controller, one head carriage (CS1 shares the mechanics of CS0),
+    a head load solenoid per side (sim_sound SND_FLOPPY, sim_flp_rx50).
+@@ -470,7 +470,7 @@ MTAB fl_mod[] = {
+     { MTAB_XTD|MTAB_VUN, 1, NULL, "LOCKED", 
+         &set_writelock, NULL,   NULL, "Write lock floppy drive" },
+     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DRIVE", NULL,
+-        NULL, &fl_show_drive, NULL, "Display the RX50 drive mechanics (sound realism mode)" },
++        NULL, &fl_show_drive, NULL, "Display the RX50 drive mechanics (realism mode)" },
+     { 0 }
+     };
+ 
+@@ -1389,7 +1389,7 @@ fprintf (st, "diskette.  The CPU reaches it through the floppy controller regist
+ fprint_set_help (st, dptr);
+ fprint_show_help (st, dptr);
+ fprint_reg_help (st, dptr);
+-fprintf (st, "\nSound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n\n");
++fprintf (st, "\nRealism mode (SET REALISM ENABLED, see HELP SET SOUND):\n\n");
+ fprintf (st, "  - Both slots turn on one spindle motor and share one head carriage.  The\n");
+ fprintf (st, "    controller switches the motor on for a command (at speed in MOTORUP,\n");
+ fprintf (st, "    500 ms) and off after MOTOROFF (2000 ms, provisional) without one.\n");
+diff --git a/VAX/vax820_syslist.c b/VAX/vax820_syslist.c
+index f9f3f8ff..b44feffb 100644
+--- a/VAX/vax820_syslist.c
++++ b/VAX/vax820_syslist.c
+@@ -33,7 +33,7 @@ char sim_name[] = "VAX 8200 (KA820)";
+ void vax_init(void)
+ {
+ sim_savename = "VAX820";
+-/* Realistic CPU speed in the sound realism mode: a VAX 8200 (one KA820) is
++/* Realistic CPU speed in the realism mode: a VAX 8200 (one KA820) is
+    about 0.8 of a VAX-11/780 (0.8 VUP), so about 400K instructions per
+    second (VUPs times the VAX-11/780's 500K, the method of the VAX-11/750's
+    300K). Provisional: to be calibrated with a CPU benchmark on a real
+diff --git a/VAX/vax860_stddev.c b/VAX/vax860_stddev.c
+index 36f4abe9..8d069f5d 100644
+--- a/VAX/vax860_stddev.c
++++ b/VAX/vax860_stddev.c
+@@ -31,7 +31,7 @@
+    tmr          interval timer
+ 
+    26-Dec-2012  MB      First Version
+-   12-Nov-2026  Ulli    Console RL02 (CS): sound realism mode (SET SOUND
++   12-Nov-2026  Ulli    Console RL02 (CS): realism mode (SET SOUND
+                         ENABLED): LOAD button (SET CS ONLINE/OFFLINE, spin-up
+                         40 s, spin-down 30 s), realistic seek, rotational and
+                         sector times per block, seek sounds (sound/rl02, else
+@@ -248,7 +248,7 @@ int32 rlcs_mp = 0;
+ int32 rlcs_bcnt = 0;                                    /* byte count */
+ uint16 *rlcs_buf = NULL;
+ 
+-/* Sound realism mode (SET SOUND ENABLED)
++/* Realism mode (SET REALISM ENABLED)
+ 
+    The console RL02 is an ordinary RL02 drive on the console processor's
+    RLV12 (Qbus); the VAX reaches it through the console registers STXCS and
+@@ -499,8 +499,8 @@ REG rlcs_reg[] = {
+     { HRDATAD (MP,       rlcs_mp, 16, "") },
+     { DRDATAD (BCNT,   rlcs_bcnt,  7, "byte count register")  },
+     { DRDATAD (STIME, rlcs_swait, 24, "command time"), PV_LEFT },
+-    { DRDATAD (SPINUP,   rlcs_spinup_ms,   24, "spin-up time in ms (sound realism mode)"), PV_LEFT },
+-    { DRDATAD (SPINDOWN, rlcs_spindown_ms, 24, "spin-down time in ms (sound realism mode)"), PV_LEFT },
++    { DRDATAD (SPINUP,   rlcs_spinup_ms,   24, "spin-up time in ms (realism mode)"), PV_LEFT },
++    { DRDATAD (SPINDOWN, rlcs_spindown_ms, 24, "spin-down time in ms (realism mode)"), PV_LEFT },
+     { DRDATAD (SEEK2S,   rlcs_seek2s,      10, "short seek sound up to n cylinders"), PV_LEFT },
+     { DRDATAD (SEEK2M,   rlcs_seek2m,      10, "medium seek sound up to n cylinders"), PV_LEFT },
+     { NULL }
+@@ -1579,7 +1579,7 @@ fprintf (st, "SYSGEN CONNECT CONSOLE.  A new (empty) image gets a bad block tabl
+ fprintf (st, "SET CS ONLINE (or LOAD) and SET CS OFFLINE (or UNLOAD) are the drive's LOAD\n");
+ fprintf (st, "button; while the drive is not up to speed a transfer ends with an error.\n");
+ fprintf (st, "SHOW CS SPINDLE shows the spindle state.\n\n");
+-fprintf (st, "Sound realism mode (SET SOUND ENABLED, see HELP SET SOUND):\n");
++fprintf (st, "Realism mode (SET REALISM ENABLED, see HELP SET SOUND):\n");
+ fprintf (st, "  - ATTACH only loads the cartridge; the drive waits for SET CS ONLINE\n");
+ fprintf (st, "    (spin-up register SPINUP, default 40000 ms; spin-down SPINDOWN, default\n");
+ fprintf (st, "    30000 ms).  At the sim> prompt the commands wait until the drive is\n");
+diff --git a/VAX/vax860_syslist.c b/VAX/vax860_syslist.c
+index 51e037d9..1c11d365 100644
+--- a/VAX/vax860_syslist.c
++++ b/VAX/vax860_syslist.c
+@@ -35,7 +35,7 @@ char sim_name[] = "VAX 8600";
+ void vax_init(void)
+ {
+ sim_savename = "VAX 8600";
+-/* Realistic CPU speed in the sound realism mode: a VAX 8600 is about 4.2
++/* Realistic CPU speed in the realism mode: a VAX 8600 is about 4.2
+    times a VAX-11/780 (4.2 VUPs), so about 2100K instructions per second
+    (VUPs times the VAX-11/780's 500K, the method of the VAX-11/750's 300K).
+    Provisional: to be calibrated with a CPU benchmark on a real machine. */
+diff --git a/VAX/vax_syslist.c b/VAX/vax_syslist.c
+index 92ce6af5..9b8f7288 100644
+--- a/VAX/vax_syslist.c
++++ b/VAX/vax_syslist.c
+@@ -38,7 +38,7 @@ char sim_name[] = "MicroVAX 3900";
+ void vax_init(void)
+ {
+ sim_savename = "VAX";
+-/* Realistic CPU speed in the sound realism mode: a MicroVAX 3900 (KA655)
++/* Realistic CPU speed in the realism mode: a MicroVAX 3900 (KA655)
+    is about 3.8 times a VAX-11/780 (3.8 VUPs), so about 1900K instructions
+    per second (VUPs times the VAX-11/780's 500K, the method of the
+    VAX-11/750's 300K). Provisional: to be calibrated with a CPU benchmark
+diff --git a/scp.c b/scp.c
+index e4690354..45a3aa8d 100644
+--- a/scp.c
++++ b/scp.c
+@@ -1471,13 +1471,28 @@ static const char simh_help1[] =
+       "3Asynch\n"
+       "+SET ASYNCH                  enable asynchronous I/O\n"
+       "+SET NOASYNCH                disable asynchronous I/O\n"
++#define HLP_SET_REALISM "*Commands SET Realism"
++      "3Realism\n"
++      "+SET REALISM ENABLED          enable the realism mode (and the sounds)\n"
++      "+SET REALISM DISABLED         disable the realism mode (and the sounds)\n\n"
++      " The realism mode makes the simulated hardware behave like the real\n"
++      " one, even if no audio output is available: devices use realistic\n"
++      " timing and operator behavior (e.g. HELP HK), configurations the real\n"
++      " hardware did not allow are refused (e.g. HELP RQ), and the CPU runs at\n"
++      " a realistic speed with SET THROTTLE if the simulator defines one and no\n"
++      " throttle was set by the user (SHOW REALISM shows it; SET REALISM\n"
++      " DISABLED removes it again).  The sounds of the devices and the system\n"
++      " (HELP SET SOUND) come with it.  SET REALISM ENABLED and DISABLED are\n"
++      " only allowed while no disk or tape unit is attached.  SET SOUND\n"
++      " ENABLED and SET SOUND DISABLED do the same (older name).\n"
+ #define HLP_SET_SOUND "*Commands SET Sound"
+       "3Sound\n"
+       " Sound output with SDL2 audio: system sounds (power relay, fans), unit\n"
+-      " loops (spindles) and events (seeks).  Without SDL2 or without an audio\n"
+-      " device, sounds are silently ignored.\n\n"
+-      "+SET SOUND ENABLED            enable sound and the realism mode\n"
+-      "+SET SOUND DISABLED           disable sound and the realism mode\n"
++      " loops (spindles) and events (seeks), in the realism mode (HELP SET\n"
++      " REALISM).  Without SDL2 or without an audio device, sounds are\n"
++      " silently ignored.\n\n"
++      "+SET SOUND ENABLED            the same as SET REALISM ENABLED\n"
++      "+SET SOUND DISABLED           the same as SET REALISM DISABLED\n"
+       "+SET SOUND VOLUME=n           set the master volume (0..200 %%)\n"
+       "+SET SOUND VOLUME=group:n     set a group volume (0..200 %%)\n"
+       "+SET SOUND MUTE{=group}       mute everything or one group\n"
+@@ -1490,14 +1505,6 @@ static const char simh_help1[] =
+       " Several items can be given, separated by commas.  PATH, STARTING,\n"
+       " RUNNING and STOPPING take the rest of the line; an empty value\n"
+       " restores the default.  The groups are SYSTEM, DISK, TAPE and EVENT.\n\n"
+-      "4Realism mode\n"
+-      " SET SOUND ENABLED also switches on the realism mode, even if no audio\n"
+-      " output is available: devices use realistic timing and operator\n"
+-      " behavior (e.g. HELP HK), and the CPU runs at a realistic speed with\n"
+-      " SET THROTTLE if the simulator defines one and no throttle was set by\n"
+-      " the user (SHOW SOUND shows it; SET SOUND DISABLED removes it again).\n"
+-      " SET SOUND ENABLED and DISABLED are only allowed while no disk or tape\n"
+-      " unit is attached.\n"
+       "4Power\n"
+       " The system power is switched on by the first RUN or BOOT command, which\n"
+       " plays the starting sound followed by the running loop.  It stays on\n"
+@@ -1664,6 +1671,7 @@ static const char simh_help2[] =
+       "+sh{ow} video                show video capabilities\n"
+       "+sh{ow} clocks               show calibrated timer information\n"
+       "+sh{ow} throttle             show throttle info\n"
++      "+sh{ow} realism              show the realism mode and the CPU speed\n"
+       "+sh{ow} sound                show sound settings and state\n"
+       "+sh{ow} on                   show on condition actions\n"
+       "+sh{ow} do                   show do nesting state\n"
+@@ -1686,6 +1694,7 @@ static const char simh_help2[] =
+ #define HLP_SHOW_LOG            "*Commands SHOW"
+ #define HLP_SHOW_DEBUG          "*Commands SHOW"
+ #define HLP_SHOW_THROTTLE       "*Commands SHOW"
++#define HLP_SHOW_REALISM        "*Commands SHOW"
+ #define HLP_SHOW_SOUND          "*Commands SHOW"
+ #define HLP_SHOW_ASYNCH         "*Commands SHOW"
+ #define HLP_SHOW_ETHERNET       "*Commands SHOW"
+@@ -2685,6 +2694,7 @@ static CTAB set_glob_tab[] = {
+     { "NODEBUG",    &sim_set_deboff,            0, HLP_SET_DEBUG  },
+     { "THROTTLE",   &sim_set_throt,             1, HLP_SET_THROTTLE },
+     { "NOTHROTTLE", &sim_set_throt,             0, HLP_SET_THROTTLE },
++    { "REALISM",    &sim_realism_set,           1, HLP_SET_REALISM },
+     { "SOUND",      &sim_sound_set,             1, HLP_SET_SOUND },
+     { "CLOCKS",     &sim_set_timers,            1, HLP_SET_CLOCK },
+     { "ASYNCH",     &sim_set_asynch,            1, HLP_SET_ASYNCH },
+@@ -2749,6 +2759,7 @@ static SHTAB show_glob_tab[] = {
+     { "TELNET",         &sim_show_telnet,           0 },    /* deprecated */
+     { "DEBUG",          &sim_show_debug,            0, HLP_SHOW_DEBUG },
+     { "THROTTLE",       &sim_show_throt,            0, HLP_SHOW_THROTTLE },
++    { "REALISM",        &sim_realism_show,          0, HLP_SHOW_REALISM },
+     { "SOUND",          &sim_sound_show,            0, HLP_SHOW_SOUND },
+     { "ASYNCH",         &sim_show_asynch,           0, HLP_SHOW_ASYNCH },
+     { "ETHERNET",       &eth_show_devices,          0, HLP_SHOW_ETHERNET },
+diff --git a/sim_sound.c b/sim_sound.c
+index 642e4615..aa81166c 100644
+--- a/sim_sound.c
++++ b/sim_sound.c
+@@ -23,6 +23,11 @@
+    used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization from the author.
+ 
++   17-Nov-26    Ulli    SET REALISM ENABLED/DISABLED and SHOW REALISM: the
++                        realism mode under its own name (SET SOUND
++                        ENABLED/DISABLED stays as a synonym)
++   17-Nov-26    Ulli    SET SOUND ENABLED: the devices' checks first as a
++                        dry run, then applied (a refusal changes nothing)
+    09-Nov-26    Ulli    Streamers: the reverse start of a reposition
+                         follows the stop when it has died away
+    09-Nov-26    Ulli    Streamers: SHOW TRANSPORT shows where the tape is
+@@ -98,7 +103,7 @@ static const char *snd_group_names[SND_GRP_COUNT] = {
+ static const char *snd_sys_names[SND_SYS_COUNT] = {
+     "STARTING", "RUNNING", "STOPPING" };
+ 
+-static t_bool snd_enabled = FALSE;              /* SET SOUND ENABLED (realism mode) */
++static t_bool snd_enabled = FALSE;              /* SET REALISM ENABLED (realism mode) */
+ static t_bool snd_power = FALSE;                /* system power state */
+ static void flp_power (t_bool on, t_bool direct);   /* floppy drives (end of file) */
+ static UNIT *flp_attached_unit (void);
+@@ -176,7 +181,7 @@ static const char *snd_sys_file (int32 idx)
+ return (snd_sys_user[idx][0] != '\0') ? snd_sys_user[idx] : snd_sys_default[idx];
+ }
+ 
+-/* Find the first attached disk or tape unit.  SET SOUND ENABLED/DISABLED is
++/* Find the first attached disk or tape unit.  SET REALISM ENABLED/DISABLED is
+    refused while one exists, because the realism mode changes the timing
+    and the operator behavior of these devices. */
+ 
+@@ -1147,7 +1152,7 @@ if (enable) {
+             snd_throttle_set = TRUE;
+             /* realistic from power-on: no unthrottled warm-up phase */
+             snd_throttle_delay = sim_throt_set_delay (0);
+-            sim_printf ("Sound: realistic CPU speed, THROTTLE %s\n", snd_throttle);
++            sim_printf ("Realism: realistic CPU speed, THROTTLE %s\n", snd_throttle);
+             }
+         }
+     }
+@@ -1484,8 +1489,8 @@ static SND_TMR_CHUNK_T *snd_tmr_chunks = NULL;          /* all chunks, in order
+ static const char *snd_tmr_description (DEVICE *dptr)
+ {
+ if ((dptr->name != NULL) && (strncmp (dptr->name, "INT-REEL", 8) == 0))
+-    return "Tape transport timers (sound realism mode)";
+-return "Disk spindle timers (sound realism mode)";
++    return "Tape transport timers (realism mode)";
++return "Disk spindle timers (realism mode)";
+ }
+ 
+ /* A free slot of the given kind: its chunk and index (a new chunk if all
+@@ -3449,24 +3454,24 @@ sim_sound_power_off (TRUE);
+ snd_audio_close ();
+ }
+ 
+-/* Configuration checks for SET SOUND ENABLED: a device registers a
++/* Configuration checks for SET REALISM ENABLED: a device registers a
+    function that returns SCPE_OK if its configuration may run in the
+    realism mode, or prints why not and returns an error.  SET SOUND
+    ENABLED is refused if one of them fails.  The list grows as needed;
+    registering the same function twice is harmless. */
+ 
+-static t_stat (**snd_enable_checks) (void) = NULL;
++static t_stat (**snd_enable_checks) (t_bool apply) = NULL;
+ static int32 snd_n_enable_checks = 0;
+ 
+-void sim_sound_register_enable_check (t_stat (*fn) (void))
++void sim_sound_register_enable_check (t_stat (*fn) (t_bool apply))
+ {
+-t_stat (**n) (void);
++t_stat (**n) (t_bool apply);
+ int32 i;
+ 
+ for (i = 0; i < snd_n_enable_checks; i++)
+     if (snd_enable_checks[i] == fn)
+         return;
+-n = (t_stat (**) (void)) realloc ((void *) snd_enable_checks, (snd_n_enable_checks + 1) * sizeof (*n));
++n = (t_stat (**) (t_bool)) realloc ((void *) snd_enable_checks, (snd_n_enable_checks + 1) * sizeof (*n));
+ if (n == NULL)
+     return;
+ snd_enable_checks = n;
+@@ -3482,14 +3487,17 @@ UNIT *uptr = snd_attached_storage_unit ();
+ if (enable == snd_enabled)
+     return SCPE_OK;
+ if (uptr != NULL)
+-    return sim_messagef (SCPE_ALATT, "SET SOUND %s is only allowed while no disk or tape is attached (%s is attached)\n",
++    return sim_messagef (SCPE_ALATT, "SET REALISM %s is only allowed while no disk or tape is attached (%s is attached)\n",
+                          enable ? "ENABLED" : "DISABLED", sim_uname (uptr));
+-if (enable) {                                   /* the devices' rules */
++if (enable) {                                   /* the devices' rules: */
+     int32 i;
+     t_stat r;
+ 
+-    for (i = 0; i < snd_n_enable_checks; i++)
+-        if ((r = snd_enable_checks[i] ()) != SCPE_OK)
++    for (i = 0; i < snd_n_enable_checks; i++)   /* all as a dry run first, */
++        if ((r = snd_enable_checks[i] (FALSE)) != SCPE_OK)
++            return r;                           /* (nothing changed) */
++    for (i = 0; i < snd_n_enable_checks; i++)   /* then applied */
++        if ((r = snd_enable_checks[i] (TRUE)) != SCPE_OK)
+             return r;
+     }
+ snd_enabled = enable;
+@@ -3728,6 +3736,47 @@ return SCPE_OK;
+ 
+ /* SHOW SOUND */
+ 
++/* SET REALISM ENABLED|DISABLED: the realism mode (realistic timing,
++   operator panels, configuration rules, CPU speed) and with it the sound
++   output; the same as SET SOUND ENABLED|DISABLED (kept as a synonym). */
++
++t_stat sim_realism_set (int32 flag, CONST char *cptr)
++{
++char kw[CBUFSIZE];
++size_t n;
++
++if ((cptr == NULL) || (*cptr == '\0'))
++    return sim_messagef (SCPE_2FARG, "Missing SET REALISM argument: ENABLED or DISABLED\n");
++while (isspace ((unsigned char)*cptr))
++    cptr++;
++for (n = 0; isalpha ((unsigned char)*cptr) && (n < sizeof (kw) - 1); n++)
++    kw[n] = (char)toupper ((unsigned char)*cptr++);
++kw[n] = '\0';
++while (isspace ((unsigned char)*cptr))
++    cptr++;
++if (*cptr != '\0')
++    return sim_messagef (SCPE_2MARG, "Unexpected SET REALISM argument: %s\n", cptr);
++if ((n >= 3) && (strncmp (kw, "ENABLED", n) == 0))
++    return snd_set_enabled (TRUE);
++if ((n >= 3) && (strncmp (kw, "DISABLED", n) == 0))
++    return snd_set_enabled (FALSE);
++return sim_messagef (SCPE_ARG, "SET REALISM ENABLED or DISABLED expected\n");
++}
++
++/* SHOW REALISM */
++
++t_stat sim_realism_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST char *cptr)
++{
++if ((cptr != NULL) && (*cptr != '\0'))
++    return SCPE_2MARG;
++fprintf (st, "Realism: %s\n", snd_enabled ? "enabled" : "disabled");
++if (snd_throttle[0] != '\0')
++    fprintf (st, "CPU:     realistic speed THROTTLE %s%s\n", snd_throttle,
++             snd_throttle_set ? " (set)" : (snd_enabled ? " (not used: THROTTLE set by the user)" : ""));
++fprintf (st, "Sound:   %s\n", snd_enabled ? "on (SHOW SOUND for the details)" : "off");
++return SCPE_OK;
++}
++
+ t_stat sim_sound_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST char *cptr)
+ {
+ int32 i;
+@@ -3870,7 +3919,7 @@ for (i = 0; i < SND_FLP_NSMP; i++) {
+ f->loaded = TRUE;
+ }
+ 
+-/* SET SOUND DISABLED closes the audio output: the samples are gone */
++/* SET REALISM DISABLED closes the audio output: the samples are gone */
+ 
+ static void flp_forget_sounds (void)
+ {
+@@ -3933,7 +3982,7 @@ regs->motorup_ms = type->motorup_ms;
+ regs->motoroff_ms = type->motoroff_ms;
+ }
+ 
+-/* A diskette attached to a floppy drive keeps SET SOUND ENABLED/DISABLED
++/* A diskette attached to a floppy drive keeps SET REALISM ENABLED/DISABLED
+    from changing the timing under it (the floppy devices are not DEV_DISK) */
+ 
+ static UNIT *flp_attached_unit (void)
+@@ -3946,7 +3995,7 @@ for (i = 0; i < flp_n; i++)
+ return NULL;
+ }
+ 
+-/* Power on: the AC motors start (direct: SET SOUND ENABLED with the power
++/* Power on: the AC motors start (direct: SET REALISM ENABLED with the power
+    already on, just the running loops); the heads step in and back (the
+    drive's power-up homing).  Power off: they run down, the heads unload. */
+ 
+diff --git a/sim_sound.h b/sim_sound.h
+index bdc550ed..cf46c3c9 100644
+--- a/sim_sound.h
++++ b/sim_sound.h
+@@ -71,10 +71,10 @@
+ 
+    Realism mode
+    ------------
+-   SET SOUND ENABLED switches on the realism mode (see sim_sound_enabled()),
++   SET REALISM ENABLED switches on the realism mode (see sim_sound_enabled()),
+    independent of whether audio output is actually available.  Devices use
+    it to select realistic timing and operator behavior (OFFLINE/ONLINE).
+-   Because this changes device behavior, SET SOUND ENABLED/DISABLED is
++   Because this changes device behavior, SET REALISM ENABLED/DISABLED is
+    rejected while any disk or tape unit is attached.  A simulator can also
+    register a realistic CPU speed (sim_sound_set_throttle ()); it is set
+    with SET THROTTLE when sound is enabled, unless the user has already set
+@@ -132,6 +132,8 @@ typedef int32 SND_HANDLE;
+ 
+ t_stat sim_sound_set (int32 flag, CONST char *cptr);
+ t_stat sim_sound_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST char *cptr);
++t_stat sim_realism_set (int32 flag, CONST char *cptr);      /* SET REALISM ENABLED|DISABLED */
++t_stat sim_realism_show (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, CONST char *cptr);
+ 
+ /* Simulator defaults: the sound directory name (e.g. "vax750") and the
+    file names of the system sounds.  Called once by a simulator during its
+@@ -171,7 +173,7 @@ void sim_sound_set_throttle (const char *spec);
+ 
+ /* State queries */
+ 
+-t_bool sim_sound_enabled (void);                /* SET SOUND ENABLED: realism mode is on */
++t_bool sim_sound_enabled (void);                /* SET REALISM ENABLED: realism mode is on */
+ t_bool sim_sound_available (void);              /* audio output is actually open */
+ t_bool sim_sound_powered (void);                /* system power is on */
+ 
+@@ -191,18 +193,23 @@ void sim_sound_run_state (t_bool running);      /* instruction execution starts/
+ 
+ void sim_sound_register_run_hook (void (*fn)(t_bool running));
+ 
+-/* Configuration checks: SET SOUND ENABLED calls every registered function
++/* Configuration checks: SET REALISM ENABLED calls every registered function
+    before it switches the realism mode on; a function returns SCPE_OK, or
+    prints why the configuration cannot run in the realism mode and returns
+-   an error, which refuses SET SOUND ENABLED (e.g. the RQ: RC25 drives
+-   only as pairs on a KLESI).  Registering the same function twice is
++   an error, which refuses SET REALISM ENABLED (e.g. the RQ: RC25 drives
++   only as pairs on a KLESI).  Each function is called twice: first with
++   apply FALSE for all of them, where it must not change anything (a dry
++   run: only the refusal is printed), then, if none refused, with apply
++   TRUE, where it may adjust the configuration and say so (e.g. the RQ
++   disables RD54 units on an SDI controller).  So a refusal by one device
++   leaves every device as it was.  Registering the same function twice is
+    harmless. */
+ 
+-void sim_sound_register_enable_check (t_stat (*fn) (void));
++void sim_sound_register_enable_check (t_stat (*fn) (t_bool apply));
+ 
+ /* Storage devices that are neither DEV_DISK nor DEV_TAPE (e.g. the VAX
+    8600 console RL02, which does not use sim_disk): their attached units
+-   keep SET SOUND ENABLED/DISABLED from changing the timing under them, as
++   keep SET REALISM ENABLED/DISABLED from changing the timing under them, as
+    the units of disk and tape devices do.  Registering the same device
+    twice is harmless. */
+ 
+@@ -755,7 +762,7 @@ int32 sim_sound_seek (SND_SAMPLE *smp[3], int32 dist, int32 s_lim, int32 m_lim,
+    that it calls do nothing).
+ 
+    sim_floppy_init ()      once per drive (device reset); registers the
+-                           drive, so that SET SOUND ENABLED/DISABLED is
++                           drive, so that SET REALISM ENABLED/DISABLED is
+                            refused while a diskette is attached.
+    sim_floppy_set_defaults () register defaults from the type.
+    sim_floppy_insert ()    ATTACH: diskette in, door closed.
+diff --git a/sim_timer.c b/sim_timer.c
+index 5dfbd0c7..c052a71c 100644
+--- a/sim_timer.c
++++ b/sim_timer.c
+@@ -1783,7 +1783,7 @@ return SCPE_OK;
+ }
+ 
+ /* Is a throttle (any mode) set?  Used by sim_sound to apply a simulator's
+-   default throttle in the sound realism mode only if the user did not set
++   default throttle in the realism mode only if the user did not set
+    one himself. */
+ 
+ t_bool sim_throt_is_set (void)
+@@ -1793,7 +1793,7 @@ return (sim_throt_type != SIM_THROT_NONE);
+ 
+ /* The instruction rate a throttle set as SET THROTTLE xM or xK aims at,
+    or 0.0 for no throttle or another throttle mode.  Devices that need
+-   realistic durations (sound realism mode) convert microseconds to
++   realistic durations (realism mode) convert microseconds to
+    instructions with it: the result does not depend on the state of the
+    timer calibration, and with the throttle simulated time is real time. */
+ 
+diff --git a/sound/default_cpu/README.txt b/sound/default_cpu/README.txt
+index 1c9f8ffb..2c891efe 100644
+--- a/sound/default_cpu/README.txt
++++ b/sound/default_cpu/README.txt
+@@ -4,7 +4,7 @@ Default CPU sounds (sound/default_cpu)
+ These recordings were made by Ulli (vaxorcist) on his own VAX-11/750.
+ They are the default system sounds of every simulator that opts in to
+ them (sim_sound_use_default_cpu () in its initialization; at present the
+-vax750) when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND) and
++vax750) when sound is enabled (SET REALISM ENABLED; see HELP SET SOUND) and
+ the simulator has no system sounds of its own.
+ 
+ File          Content                                     Use
+diff --git a/sound/default_disk/README.txt b/sound/default_disk/README.txt
+index 33b67d3e..9b5bc277 100644
+--- a/sound/default_disk/README.txt
++++ b/sound/default_disk/README.txt
+@@ -3,7 +3,7 @@ Default disk sounds (sound/default_disk)
+ 
+ These seek sounds were made by Ulli (vaxorcist); they are synthetic (they
+ were the RK07 seek sounds).  Every disk drive with sound support uses them
+-when sound is enabled (SET SOUND ENABLED; see HELP SET SOUND) and the
++when sound is enabled (SET REALISM ENABLED; see HELP SET SOUND) and the
+ drive has no seek sounds of its own.
+ 
+ File          Content                                     Use
+diff --git a/sound/default_tape/README.txt b/sound/default_tape/README.txt
+index c97c0e03..1cc14e14 100644
+--- a/sound/default_tape/README.txt
++++ b/sound/default_tape/README.txt
+@@ -5,7 +5,7 @@ These tape transport sounds are synthetic: there are no recordings of a
+ real drive.  They model a TS11 (TS04 transport: capstan, tension arms, AC
+ reel motors) and were made by tools/make_tape_sounds.py (open-simh-extended,
+ branch notes).  Every tape transport with sound support uses them when
+-sound is enabled (SET SOUND ENABLED; see HELP SET SOUND) and the transport
++sound is enabled (SET REALISM ENABLED; see HELP SET SOUND) and the transport
+ has no sound of its own.
+ 
+ File               Content                                  Use
+diff --git a/sound/tk50/README.txt b/sound/tk50/README.txt
+index 1bee3aac..ca75d45b 100644
+--- a/sound/tk50/README.txt
++++ b/sound/tk50/README.txt
+@@ -6,7 +6,7 @@ Synthetic sounds of the TK50 cartridge streamer (also the TZ30): 75 in/s,
+ by tools/make_tape_sounds.py v3 (open-simh-extended, branch notes), shaped
+ after measurements of a TZ30 recording (pitch 457 Hz with harmonics,
+ octave band levels, durations of the 3 s reposition cycle); the recording
+-itself is not included.  Used by the TK50 in the sound realism mode
++itself is not included.  Used by the TK50 in the realism mode
+ (PDP11/pdp11_tq.c, SND_STREAMER in sim_sound.c).
+ 
+ File                Content                                      Use
+diff --git a/sound/tu58/README.txt b/sound/tu58/README.txt
+index 065c3c78..bcca8c8e 100644
+--- a/sound/tu58/README.txt
++++ b/sound/tu58/README.txt
+@@ -14,7 +14,7 @@ real drive yet.  They were made by tools/make_tu58_sounds.py v1
+ - the cartridge slides into the drive (no door).
+ 
+ The PDP-11 TDC device and the console TU58 (TD) of the VAX-11/730 and
+-VAX-11/750 play them in the sound realism mode (SET SOUND ENABLED).
++VAX-11/750 play them in the realism mode (SET REALISM ENABLED).
+ 
+ File               Content                                       Use
+ -----------------  --------------------------------------------  ------------
+-- 
+2.43.0
+

@@ -1,6 +1,6 @@
-open-simh-extended/tests/rl02_8600/README.txt  v1
+open-simh-extended/tests/rl02_8600/README.txt  v2
 
-VAX 8600 console RL02 (CS device) in the sound realism mode (2026-11-12).
+VAX 8600 console RL02 (CS device) in the realism mode (2026-11-12).
 The console RL02 is an RL02 on the console processor's RLV12; the VAX
 reaches it through STXCS/STXDB, one 512-byte block per transfer, moved a
 word at a time.  VMS calls it CSA1 (SYSGEN CONNECT CONSOLE).
@@ -8,7 +8,7 @@ word at a time.  VMS calls it CSA1 (SYSGEN CONNECT CONSOLE).
 Files
 -----
 c1.ini      vax8600 at the sim> prompt: SET CS ONLINE without a cartridge
-            (refused), ATTACH (realism: "offline"), SET SOUND DISABLED
+            (refused), ATTACH (realism: "offline"), SET REALISM DISABLED
             refused while CS is attached, ONLINE waits (SPINUP 2000),
             -N OFFLINE / OFFLINE waits (SPINDOWN 1500), -N LOAD, DETACH;
             normal mode: OFFLINE/ONLINE at once
@@ -34,7 +34,7 @@ directory; the console cartridge is created new (blank).
 
 Results (2026-11-12)
 --------------------
-c1      as described; "SET SOUND DISABLED is only allowed while no disk or
+c1      as described; "SET REALISM DISABLED is only allowed while no disk or
         tape is attached (CS is attached)"
 vms1    CSA1: Online; initialized, 2 files / 236 blocks, 20176 blocks
         free; DIFFERENCES: 0 records; 21 s for the whole run; the same on

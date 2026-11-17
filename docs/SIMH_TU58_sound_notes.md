@@ -1,5 +1,5 @@
-<!-- open-simh-extended/docs/SIMH_TU58_sound_notes.md  v4 (v4: step done: sound 3aff591b, patch 5 v35; v3: clock fix, sounds, VAX-11/730 and PDP-11 RT-11 tests, Ulli's cartridges; v2: model coded (branch tu58-wip), first VMS results; v1: facts, current SIMH code, planned model, progress; written before the code so the work survives a stop) -->
-# TU58 DECtape II in the sound realism mode: working notes
+<!-- open-simh-extended/docs/SIMH_TU58_sound_notes.md  v5 (v5: SET REALISM rename; v4: step done: sound 3aff591b, patch 5 v35; v3: clock fix, sounds, VAX-11/730 and PDP-11 RT-11 tests, Ulli's cartridges; v2: model coded (branch tu58-wip), first VMS results; v1: facts, current SIMH code, planned model, progress; written before the code so the work survives a stop) -->
+# TU58 DECtape II in the realism mode: working notes
 
 Started 2026-11-12 for Ulli (vaxorcist). Phase F, step 1 of the sound project. This file is the running record of the TU58 work: facts, design, progress. It is updated at every step so the work can be picked up after an interruption (weekly limit). The handover (`SIMH_Sound_handover.md`) gets the summary when the step is done.
 

@@ -1,5 +1,5 @@
-<!-- open-simh-extended/docs/SIMH_session_handover.md  v2, 2026-11-17 (v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
-# Session handover (2026-11-17, after patch 12)
+<!-- open-simh-extended/docs/SIMH_session_handover.md  v3, 2026-11-17 (v3: patches 11 v3 and 13, SET REALISM, topic branches restacked; v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
+# Session handover (2026-11-17, after patch 13)
 
 For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–75).
 
@@ -15,7 +15,7 @@ git clone https://github.com/vaxorcist/open-simh-extended oss
 cd oss
 git worktree add -b integration-wip ../integ origin/integration
 git worktree add -b notes-tmp ../notes origin/notes
-git worktree add ../klb origin/klesib       # topic branch of the last work (detached; branch with -b if needed)
+git worktree add ../rlz origin/realism      # topic branch of the last work (detached; branch with -b if needed)
 cd ../integ
 make vax8200 microvax2 vax780 vax750       # build only what the change affects, plus representatives
 ```
@@ -47,15 +47,15 @@ make vax8200 microvax2 vax780 vax750       # build only what the change affects,
 
 ## 3. State of the work
 
-- **Patch chain:** patches 1–12 on Open SIMH 87eb7d5, applied with `git am --keep-cr` in the order 1, 2, 3, 4, 6, 5, 7, 8, 9 (v4), 10 (v2), 11, 12. The result equals the `integration` branch except `README.md` and `.github/workflows/cmake-builds.yml`.
+- **Patch chain:** patches 1–13 on Open SIMH 87eb7d5, applied with `git am --keep-cr` in the order 1, 2, 3, 4, 6, 5, 7, 8, 9 (v4), 10 (v2), 11 (v3), 12, 13. The result equals the `integration` branch except `README.md` and `.github/workflows/cmake-builds.yml`.
 - **How a patch is made** (patch 11 as the example):
   - apply the series in a scratch worktree on 87eb7d5;
-  - cherry-pick the topic commit with `git am --keep-cr` and reset its author to Claude;
+  - cherry-pick the topic commits (`git cherry-pick <integration commits>`; plain `git am` without `--keep-cr` breaks the CR LF files), squash them with `git reset --soft`, and commit as Claude; leave README.md out (fork only);
   - `git format-patch -1 --stdout` into `notes/patches/opensimh_<n>_<topic>_v<k>.patch`;
   - `git diff --stat integration <scratch>` must show only README.md and the workflow file.
-- **Last commits (2026-11-17):** `integration` 1420058d, `kdb50` 86631fc2, `debna` b9d7e456, `dmb32-sync` 9c2acafa, `notes` with this handover.
+- **Last commits (2026-11-17):** `integration` 739eba8b, `kdb50` 86631fc2, `debna` f7cacad4, `klesib` 9cd59d1c, `dmb32-sync` e901fc9c, `realism` 3174cd71, `notes` with this handover. The topic chain kdb50 → debna → klesib → dmb32-sync → realism was restacked that day; a fix to a lower topic branch needs the branches above it rebased (`git rebase --onto <new base> <old base> <branch>`), and the top must equal the patch series.
 - **Work of 2026-11-17 (VMS V5.5):** KDB50 boot (known issues 71-73, patch 9 v3/v4, also from the KDB50 microcode listing), DEBNA with V5.5 (74, 75, patch 10 v2), DMB32 sync line with V5.5's SIDRIVER and the DMF32 sync line on the shared code (patch 12).
-- **Last work:** the KLESI-B (device TB) and `SET UBA DISABLE`; see `docs/KLESIB_VAX8200_design.md` and `tests/klesib/`.
+- **Last work:** the realism rule "a KLESI-B connects TU81 drives only" (patch 11 v2/v3, known issues 77, `docs/KLESIB_VAX8200_design.md` section 6, `tests/klesib/tu81_rule.ini`, `b1r.ini`) and the realism mode under its own name, `SET REALISM ENABLED/DISABLED` and `SHOW REALISM`, with the enable checks as a dry run (patch 13, known issues 76, `tests/sound/realism_cmd.ini`, `enable_dryrun.ini`). `SET SOUND ENABLED/DISABLED` stays as a synonym; volume, mute, power, path and sound files stay `SET SOUND`. New tests and docs use `SET REALISM`.
 - **VAX 8200/8300 devices done:** second KA820 (patch 7), DMB32 (8), KDB50 (9), DEBNA (10), KLESI-B and VAXBI-only mode (11).
 
 ## 4. Test images and other material from Ulli
@@ -126,5 +126,6 @@ None of these is in the repository; Ulli uploads them again when needed.
   - VAXBI-only: TB is PTA/MUA;
   - DEBNA: ETA0, DECnet line BNT-0 (VMS V4.7) or BNA-0 (VMS V5.5);
   - DMB32 sync line: SIA0, DECnet line DMB-0 (VMS V5.5 SIDRIVER); the DMV11 on VMS V4.7: DMP-0.
+- **Realism mode and fixed RA drives:** ATTACH leaves the drive stopped; `SET <dev>n ONLINE` (RUN/STOP) spins it up. A boot script in the realism mode needs it before BOOT, or VMB says "%BOOT-F-Failed to initialize device" (expected, `tests/ra/ra2`).
 - **VMS error count 1** on PTA0, PUA0 and PUB0 after the startup is normal (port start); it is not a device fault.
 - **The pdp11_tq.c code serves several controllers.** The per-controller state is `TQ_CTX` (`tq_ctx0` TQ, `tq_ctx1` TB), the names are macros for the current controller (`tqc`), and every entry point selects the controller. New code in pdp11_tq.c must keep this up: set `tqc` in any new entry point.

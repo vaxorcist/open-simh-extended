@@ -1,6 +1,6 @@
-open-simh-extended/tests/tu58/README.txt  v1
+open-simh-extended/tests/tu58/README.txt  v2
 
-TU58 DECtape II in the sound realism mode (2026-11-12): the PDP-11 TDC
+TU58 DECtape II in the realism mode (2026-11-12): the PDP-11 TDC
 device and the console TU58 (TD) of the VAX-11/730 and 750.  Background,
 model and results: docs/SIMH_TU58_sound_notes.md, docs/SIMH_Sound_handover.md.
 
