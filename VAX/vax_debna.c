@@ -433,7 +433,7 @@ REG et_reg[] = {
 
 MTAB et_mod[] = {
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "NODE", "NODE=n",
-      &et_set_node, &et_show_node, NULL, "BI node number (2-15, default 7)" },
+      &et_set_node, &et_show_node, NULL, "VAXBI node number (0-15, default 7)" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "MAC", "MAC=xx:xx:xx:xx:xx:xx",
       &et_set_mac, &et_show_mac, NULL, "Ethernet hardware address" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "ETH", NULL,
@@ -1504,13 +1504,10 @@ static t_stat et_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 t_stat r;
 int32 node;
 
-if (cptr == NULL)
-    return SCPE_ARG;
-node = (int32) get_uint (cptr, 10, 15, &r);
-if (r != SCPE_OK)
-    return r;
-if (node < 2)                                   /* 0, 1: the KA820s */
-    return sim_messagef (SCPE_ARG, "Node %d is a KA820 node\n", node);
+if ((r = bi_get_node (cptr, &et_dev, -1, &node)) != SCPE_OK)
+    return r;                                   /* 0-15, free */
+if ((r = bi_set_node_rules (&et_dev, node)) != SCPE_OK)
+    return r;                                   /* realism: above the KLESI-B */
 et_irq = FALSE;
 et_update_int ();
 et_dib.ba = (uint32) node;
@@ -1570,7 +1567,8 @@ fprintf (st, "SHOW/ADAPTER) and calls it ETA0; its DECnet line and circuit are B
 fprintf (st, "(named after the DEBNT, the DEBNA's earlier name).  It is disabled by\n");
 fprintf (st, "default:\n\n");
 fprintf (st, "   sim> SET ET ENABLE\n");
-fprintf (st, "   sim> SET ET NODE=7                 (BI node 2-15, default 7)\n");
+fprintf (st, "   sim> SET ET NODE=7                 (BI node 0-15, default 7; in the\n");
+fprintf (st, "                                      realism mode above the KLESI-B's)\n");
 fprintf (st, "   sim> SET ET MAC=08:00:2B:12:34:56  (hardware address, before ATTACH)\n");
 fprintf (st, "   sim> ATTACH ET <interface>         (as for XU and XQ, see HELP ET ATTACH)\n\n");
 fprintf (st, "Two simulators can be connected without a host interface, e.g.\n\n");

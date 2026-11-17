@@ -3639,6 +3639,13 @@ uint32 *nM = NULL;
 
 if ((val <= 0) || (val > MAXMEMSIZE_X))
     return SCPE_ARG;
+#if defined (VAX_820)                                   /* VAX 8200: memory boards */
+if (desc != MCTL_RESIZE) {                              /* SET CPU nM: */
+    t_stat r = mctl_cpu_size_check (uval);              /* (realism: up to 128M) */
+    if (r != SCPE_OK)
+        return r;
+    }
+#endif
 for (i = val; i < MEMSIZE; i = i + 4)
     mc = mc | M[i >> 2];
 if ((mc != 0) && !get_yn ("Really truncate memory [N]?", FALSE))
@@ -3652,6 +3659,10 @@ for (i = 0; i < clim; i = i + 4)
 free (M);
 M = nM;
 MEMSIZE = uval; 
+#if defined (VAX_820)
+if (desc != MCTL_RESIZE)                                /* SET CPU nM: the board */
+    mctl_cpu_size (uval);                               /* table for the size */
+#endif
 reset_all (0);
 return SCPE_OK;
 }

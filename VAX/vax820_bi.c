@@ -30,6 +30,7 @@
 */
 
 #include "vax_defs.h"
+#include "sim_sound.h"
 
 #ifdef DONT_USE_INTERNAL_ROM
 #define BOOT_CODE_FILENAME "vmb.exe"
@@ -90,6 +91,11 @@ extern int32 tmr_int, tti_int, tto_int, fl_int;
 extern int32 cur_cpu;
 
 t_stat bi_reset (DEVICE *dptr);
+t_stat bi_show_nodes (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat bi_count_rules (const char *prefix);
+static t_stat bi_rlz_enable_check (t_bool apply);
+extern DEVICE mctl_dev;
+extern void mctl_board_text (int32 i, char *buf, size_t lnt);
 t_stat vax820_boot (int32 flag, CONST char *ptr);
 t_stat vax820_boot_parse (int32 flag, CONST char *ptr);
 t_stat cpu_boot (int32 unitno, DEVICE *dptr);
@@ -137,8 +143,14 @@ REG bi_reg[] = {
     { NULL }
     };
 
+MTAB bi_mod[] = {
+    { MTAB_XTD|MTAB_VDV, 0, "NODES", NULL,
+      NULL, &bi_show_nodes, NULL, "Display the VAXBI nodes" },
+    { 0 }
+    };
+
 DEVICE bi_dev = {
-    "BI", &bi_unit, bi_reg, NULL,
+    "BI", &bi_unit, bi_reg, bi_mod,
     1, 16, 16, 1, 16, 8,
     NULL, NULL, &bi_reset,
     NULL, NULL, NULL,
@@ -248,8 +260,8 @@ if (lvl > IPL_HMAX) {                                   /* error req lvl? */
     }
 if ((lvl <= IPL_HMAX) && (lvl >= IPL_HMIN)) {           /* nexus? */
     l = lvl - IPL_HMIN;
-    if (nexus_req[l] & (1u << TR_UBA)) {                /* unibus int? */
-        nexus_req[l] = nexus_req[l] & ~(1u << TR_UBA);
+    if (nexus_req[l] & (1u << uba_node ())) {           /* unibus int? */
+        nexus_req[l] = nexus_req[l] & ~(1u << uba_node ());
         vec = uba_get_ubvector(l);
         return vec;                                     /* return vector */
         }
@@ -400,7 +412,7 @@ switch (rg) {
         break;
 
     case MT_BINID:                                      /* BINID */
-        val = TR_KA0 + cur_cpu;
+        val = ka_node (cur_cpu);
         break;
 
     case MT_RXCD:                                       /* RXCD */
@@ -420,8 +432,12 @@ void WriteIPR (int32 rg, int32 val)
 {
 switch (rg) {
 
-    case MT_IPIR:                                       /* IPIR */
-        ipir = val;
+    case MT_IPIR:                                       /* IPIR: a node mask */
+        ipir = 0;                                       /* (as processor mask) */
+        if ((val >> ka_node (0)) & 1)
+            ipir |= 1;
+        if ((val >> ka_node (1)) & 1)
+            ipir |= 2;
         break;
 
     case MT_ICCS:                                       /* ICCS */
@@ -669,6 +685,11 @@ t_stat r;
 
 if (!ptr || !*ptr)
     return SCPE_2FARG;
+if ((r = bi_count_rules ("BOOT: ")) != SCPE_OK)        /* VAXBI configuration */
+    return r;
+if (sim_sound_enabled () &&
+    ((r = bi_realism_rules (NULL, 0, "BOOT: ")) != SCPE_OK))
+    return r;
 if ((ptr = get_sim_sw (ptr)) == NULL)                   /* get switches */
     return SCPE_INVSW;
 regptr = get_glyph (ptr, gbuf, 0);                      /* get glyph */
@@ -705,7 +726,7 @@ for (i = 0; boot_tab[i].name != NULL; i++) {
             R[2] = 0;                                   /* Unibus address */
             }
         else {
-            R[1] = TR_UBA;
+            R[1] = uba_node ();
             R[2] = boot_tab[i].let | (ba & UBADDRMASK);
             }
         R[3] = unitno;
@@ -741,6 +762,7 @@ ipr_int = 0;
 rxcd_int = 0;
 ipir = 0;
 sim_vm_cmd = vax820_cmd;
+sim_sound_register_enable_check (&bi_rlz_enable_check); /* realism: BI rules */
 return SCPE_OK;
 }
 
@@ -824,6 +846,294 @@ for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {     /* loop thru dev */
             }                                           /* end else */
         }                                               /* end if enabled */
     }                                                   /* end for */
+return mctl_build_nexus ();                             /* the memory boards */
+}
+
+/* VAXBI configuration
+
+   Every BI device keeps its node in its DIB's base address (SET dev
+   NODE=n); the memory boards are the units of the MCTL device, with their
+   own nodes (vax820_mem.c).  The helpers below are shared by all of them.
+
+   bi_node_owner        the enabled device (or present memory board, unit
+                        returned) on a node; skip/skip_unit: the one being
+                        changed */
+
+DEVICE *bi_node_owner (int32 node, DEVICE *skip, int32 skip_unit, int32 *unit)
+{
+int32 i, n, bn;
+DEVICE *dptr;
+DIB *dibp;
+
+if (unit)
+    *unit = -1;
+for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+    if (dptr == &mctl_dev) {                            /* memory boards */
+        for (n = 0; n < MCTL_NUM; n++) {
+            if ((dptr == skip) && (n == skip_unit))
+                continue;
+            if (mctl_board_node (n, &bn) && (bn == node)) {
+                if (unit)
+                    *unit = n;
+                return dptr;
+                }
+            }
+        continue;
+        }
+    dibp = (DIB *) dptr->ctxt;
+    if ((dptr == skip) || !(dptr->flags & DEV_NEXUS) ||
+        (dptr->flags & DEV_DIS) || (dibp == NULL))
+        continue;
+    if ((int32) (dibp->ba & 0xF) == node)
+        return dptr;
+    }
+return NULL;
+}
+
+/* bi_get_node: SET dev NODE=n (decimal 0-15, or a hex digit A-F as in
+   DEC's documents); refused when an enabled device or a present memory
+   board has the node */
+
+t_stat bi_get_node (CONST char *cptr, DEVICE *dptr, int32 unit, int32 *node)
+{
+char who[16];
+int32 n, ou;
+DEVICE *owner;
+t_stat r;
+
+if (unit >= 0)
+    snprintf (who, sizeof (who), "%s%d", dptr->name, unit);
+else
+    snprintf (who, sizeof (who), "%s", dptr->name);
+if ((cptr == NULL) || (*cptr == 0))
+    return sim_messagef (SCPE_ARG, "%s: NODE=n expected (VAXBI node 0-15)\n", who);
+if ((cptr[1] == 0) && isxdigit ((unsigned char) cptr[0]) && isalpha ((unsigned char) cptr[0]))
+    n = 10 + (toupper ((unsigned char) cptr[0]) - 'A');
+else {
+    n = (int32) get_uint (cptr, 10, NEXUS_NUM - 1, &r);
+    if (r != SCPE_OK)
+        return sim_messagef (SCPE_ARG, "%s: the VAXBI node is 0 to 15 (or A to F)\n", who);
+    }
+owner = bi_node_owner (n, dptr, unit, &ou);
+if (owner != NULL) {
+    if (ou >= 0)
+        return sim_messagef (SCPE_ARG, "%s: VAXBI node %d is in use by %s%d\n",
+                             who, n, owner->name, ou);
+    return sim_messagef (SCPE_ARG, "%s: VAXBI node %d is in use by %s\n", who, n, owner->name);
+    }
+*node = n;
+return SCPE_OK;
+}
+
+/* A node's BI device type (DTYPE <15:0>), read from the device itself;
+   -1 if it has no register access */
+
+static int32 bi_dtype (DEVICE *dptr, int32 node)
+{
+DIB *dibp = (DIB *) dptr->ctxt;
+int32 val = 0;
+
+if (dptr == &mctl_dev)
+    return DTYPE_MS820;
+if ((dibp == NULL) || (dibp->rd == NULL))
+    return -1;
+if (dibp->rd (&val, REGBASE + (node << REG_V_NEXUS) + (BI_DTYPE << 2), L_LONG) != SCPE_OK)
+    return -1;
+return val & 0xFFFF;
+}
+
+#define BI_IS_KLESIB(t) ((t) == 0x0103)                 /* KLESI-B */
+#define BI_IS_DEBNA(t)  (((t) & 0x3FFF) == 0x010F)      /* DEBNT 010F, DEBNA 410F */
+#define BI_IS_STOR(t)   (((t) == 0x010E) || ((t) == 0x0108) || ((t) == 0x010B))
+                                                        /* KDB50, CIBCA, CIBCI */
+typedef struct {
+    int32       n_klesi, n_debna, n_stor;
+    int32       klesi_max, debna_min;                   /* nodes */
+    DEVICE      *klesi_dev, *debna_dev;
+    } BI_CENSUS;
+
+/* The enabled BI devices by kind; chg (if not NULL) counts at chg_node */
+
+static void bi_census (DEVICE *chg, int32 chg_node, BI_CENSUS *c)
+{
+int32 i, t, node;
+DEVICE *dptr;
+DIB *dibp;
+
+memset (c, 0, sizeof (*c));
+c->klesi_max = -1;
+c->debna_min = NEXUS_NUM;
+for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+    dibp = (DIB *) dptr->ctxt;
+    if ((dptr == &mctl_dev) || !(dptr->flags & DEV_NEXUS) ||
+        ((dptr->flags & DEV_DIS) && (dptr != chg)) ||   /* (the one being */
+        (dibp == NULL))                                 /* changed counts) */
+        continue;
+    t = bi_dtype (dptr, (int32) (dibp->ba & 0xF));
+    node = (dptr == chg) ? chg_node : (int32) (dibp->ba & 0xF);
+    if (BI_IS_KLESIB (t)) {
+        c->n_klesi++;
+        if (node > c->klesi_max) {
+            c->klesi_max = node;
+            c->klesi_dev = dptr;
+            }
+        }
+    if (BI_IS_DEBNA (t)) {
+        c->n_debna++;
+        if (node < c->debna_min) {
+            c->debna_min = node;
+            c->debna_dev = dptr;
+            }
+        }
+    if (BI_IS_STOR (t))
+        c->n_stor++;
+    }
+}
+
+/* Limits of the 24-slot VAXBI configuration (DEC field service rules):
+   at most 3 KLESI-B, 2 DEBNT/DEBNA, 4 storage options; 16 nodes */
+
+static t_stat bi_count_rules (const char *prefix)
+{
+BI_CENSUS c;
+
+bi_census (NULL, 0, &c);
+if (c.n_klesi > 3)
+    return sim_messagef (SCPE_ARG, "%sat most 3 KLESI-B on the VAXBI (%d enabled)\n", prefix, c.n_klesi);
+if (c.n_debna > 2)
+    return sim_messagef (SCPE_ARG, "%sat most 2 DEBNT/DEBNA on the VAXBI (%d enabled)\n", prefix, c.n_debna);
+if (c.n_stor > 4)
+    return sim_messagef (SCPE_ARG, "%sat most 4 storage options (KDB50, CIBCA, CIBCI) on the VAXBI (%d enabled)\n",
+                         prefix, c.n_stor);
+return SCPE_OK;
+}
+
+/* Realism mode: every DEBNT/DEBNA on a higher node than any KLESI-B */
+
+t_stat bi_realism_rules (DEVICE *chg, int32 chg_node, const char *prefix)
+{
+BI_CENSUS c;
+
+bi_census (chg, chg_node, &c);
+if ((c.n_klesi > 0) && (c.n_debna > 0) && (c.debna_min <= c.klesi_max))
+    return sim_messagef (SCPE_ARG, "%sthe DEBNA %s (node %d) needs a higher VAXBI node than the "
+                         "KLESI-B %s (node %d) (realism mode)\n", prefix, c.debna_dev->name,
+                         c.debna_min, c.klesi_dev->name, c.klesi_max);
+return SCPE_OK;
+}
+
+/* SET dev NODE=n of a BI device: the realism rule with the new node */
+
+t_stat bi_set_node_rules (DEVICE *dptr, int32 node)
+{
+char prefix[32];
+
+if (!sim_sound_enabled ())
+    return SCPE_OK;
+snprintf (prefix, sizeof (prefix), "%s: ", dptr->name);
+return bi_realism_rules (dptr, node, prefix);
+}
+
+/* SET REALISM ENABLED: refused while the realism rule is broken (no
+   changes, so the dry run and the real run are the same) */
+
+static t_stat bi_rlz_enable_check (t_bool apply)
+{
+return bi_realism_rules (NULL, 0, "SET REALISM ENABLED: ");
+}
+
+/* SHOW BI: the VAXBI nodes */
+
+static const char *bi_type_name (int32 t, DEVICE *dptr)
+{
+switch (t) {
+    case 0x0001: return "MS820 memory";
+    case 0x0102: return "DWBUA Unibus adapter";
+    case 0x0103: return "KLESI-B tape adapter";
+    case 0x0105: return "KA820 processor";
+    case 0x0108: return "CIBCA CI adapter";
+    case 0x0109: return "DMB32 communications interface";
+    case 0x010B: return "CIBCI CI adapter";
+    case 0x010E: return "KDB50 disk controller";
+    case 0x010F: return "DEBNT Ethernet adapter";
+    case 0x410F: return "DEBNA Ethernet adapter";
+    default:
+        break;
+    }
+return (dptr->description != NULL) ? dptr->description (dptr) : "";
+}
+
+t_stat bi_show_nodes (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+int32 node, i, n, cnt, used = 0, t, bn;
+DEVICE *dptr, *owner;
+DIB *dibp;
+char buf[96], extra[96];
+t_stat r;
+
+fprintf (st, "VAXBI nodes:\n");
+for (node = 0; node < NEXUS_NUM; node++) {
+    owner = bi_node_owner (node, NULL, -1, &n);
+    if (owner == NULL) {
+        fprintf (st, "  %2d (%X)  -\n", node, node);
+        continue;
+        }
+    used++;
+    t = bi_dtype (owner, node);
+    extra[0] = 0;
+    if (owner == &mctl_dev) {
+        mctl_board_text (n, extra, sizeof (extra));
+        snprintf (buf, sizeof (buf), "MCTL%d", n);
+        }
+    else {
+        snprintf (buf, sizeof (buf), "%s", owner->name);
+        if (t == 0x0105)
+            snprintf (extra, sizeof (extra), "%s", (ka_cpu_of_node (node) == 0) ? "primary" : "attached");
+        if (t == 0x0102)
+            snprintf (extra, sizeof (extra), "Unibus window %08X", uba_winbase);
+        }
+    cnt = 0;                                            /* conflicts */
+    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+        dibp = (DIB *) dptr->ctxt;
+        if (dptr == &mctl_dev) {
+            for (bn = 0; bn < MCTL_NUM; bn++) {
+                int32 nn;
+                if (mctl_board_node (bn, &nn) && (nn == node))
+                    cnt++;
+                }
+            continue;
+            }
+        if ((dptr->flags & DEV_NEXUS) && !(dptr->flags & DEV_DIS) &&
+            (dibp != NULL) && ((int32) (dibp->ba & 0xF) == node))
+            cnt++;
+        }
+    fprintf (st, "  %2d (%X)  %-7s ", node, node, buf);
+    if (t >= 0)
+        fprintf (st, "%04X  ", t);
+    else
+        fprintf (st, "      ");
+    fprintf (st, "%s%s%s%s\n", bi_type_name (t, owner), extra[0] ? ", " : "", extra,
+             (cnt > 1) ? "  ** CONFLICT: more than one device on this node **" : "");
+    }
+fprintf (st, "  %d of %d nodes in use\n", used, NEXUS_NUM);
+buf[0] = 0;                                             /* disabled BI devices */
+for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+    dibp = (DIB *) dptr->ctxt;
+    if ((dptr == &mctl_dev) || !(dptr->flags & DEV_NEXUS) ||
+        !(dptr->flags & DEV_DIS) || (dibp == NULL))
+        continue;
+    snprintf (extra, sizeof (extra), "%s%s (node %d)", buf[0] ? ", " : "",
+              dptr->name, (int32) (dibp->ba & 0xF));
+    if ((strlen (buf) + strlen (extra)) < sizeof (buf))
+        strcat (buf, extra);
+    }
+if (buf[0])
+    fprintf (st, "  disabled: %s\n", buf);
+r = bi_count_rules ("  rule broken: ");
+if ((r == SCPE_OK) && sim_sound_enabled ())
+    r = bi_realism_rules (NULL, 0, "  realism rule broken: ");
+if (r == SCPE_OK)
+    fprintf (st, "  configuration rules: met%s", sim_sound_enabled () ? " (realism mode)" : "");
 return SCPE_OK;
 }
 
@@ -855,7 +1165,11 @@ return SCPE_OK;
 
 t_stat cpu_model_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
-fprintf (st, "Initial memory size is 32MB.\n\n");
+fprintf (st, "Initial memory size is 4MB (two MS820-AA boards).  SET CPU nM sets the\n");
+fprintf (st, "memory boards from a table (HELP MCTL); SET MCTLn TYPE=... configures each\n");
+fprintf (st, "of the twelve boards by hand.  SHOW BI shows the VAXBI nodes; every BI\n");
+fprintf (st, "device has SET dev NODE=n (KA0 2, KA1 1, UBA 0, KDB 4, DMB 5, TB 6, ET 7,\n");
+fprintf (st, "MCTL0-MCTL7 15-8 by default).\n\n");
 fprintf (st, "The simulator is booted with the BOOT command:\n\n");
 fprintf (st, "   sim> BO{OT} <device>{/R5:flags}\n\n");
 fprintf (st, "where <device> is one of:\n\n");

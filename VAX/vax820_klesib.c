@@ -55,7 +55,7 @@
 #include "vax_defs.h"
 
 #define DTYPE_KLESIB    0x0103                          /* KLESI-B (BI_BLA) */
-#define KB_DEF_NODE     8                               /* default node */
+#define KB_DEF_NODE     6                               /* default node (below the DEBNA's) */
 #define KB_NDPATH       6                               /* data paths */
 #define KB_NMAPR        512                             /* map registers */
 #define KB_NMAPU        496                             /* usable */
@@ -539,23 +539,10 @@ t_stat kb_set_node (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 t_stat r;
 int32 node;
 
-if (cptr == NULL)
-    return SCPE_ARG;
-DEVICE *dptr;
-DIB *dibp;
-int32 i;
-
-node = (int32) get_uint (cptr, 10, 15, &r);
-if ((r != SCPE_OK) || (node < 2))
-    return sim_messagef (SCPE_ARG, "TB: the BI node is 2 to 15\n");
-for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {    /* node in use? */
-    dibp = (DIB *) dptr->ctxt;
-    if ((dptr == &tb_dev) || !(dptr->flags & DEV_NEXUS) ||
-        (dptr->flags & DEV_DIS) || (dibp == NULL))
-        continue;
-    if ((int32) (dibp->ba & 0xF) == node)
-        return sim_messagef (SCPE_ARG, "TB: BI node %d is %s's\n", node, dptr->name);
-    }
+if ((r = bi_get_node (cptr, &tb_dev, -1, &node)) != SCPE_OK)
+    return r;                                           /* 0-15, free */
+if ((r = bi_set_node_rules (&tb_dev, node)) != SCPE_OK)
+    return r;                                           /* realism: below the DEBNA */
 kb_clrint ();
 tb_dib.ba = (uint32) node;
 return kb_reset (&tb_dev);
