@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/VMS35_4MB_pool_stall.md  v6 -->
+<!-- open-simh-extended/docs/VMS35_4MB_pool_stall.md  v5 -->
 # VMS 3.5 on the vax750, 4 MB: the startup stall (idle pauses)
 
 Finding of 03-Nov-2026.
@@ -15,7 +15,7 @@ Test scripts:
 ## Symptom
 With SET CPU 4M, booting VAX/VMS V3.5 from the RP06 can stop after one to three
 `%SYSGEN-F-INSFMEM` messages. The system then runs only the null process and does no disk
-I/O. The stall is intermittent, and happens both with and without SET REALISM ENABLED.
+I/O. The stall is intermittent, and happens both with and without SET SOUND ENABLED.
 
 ## Result in one sentence
 VMS 3.5 lets nonpaged pool grow only while the remaining pageable memory stays above
@@ -60,10 +60,10 @@ AUTOCONFIGURE and waits forever in MWAIT. The simulator is not at fault.
 - At 8 MB the startup needs about 109 KB of pool and gets it.
 
 ### 4. Confirmation runs
-- WSMAX 4000, default NPAGEDYN, 4 MB, realism enabled: 3 of 3 boots finish with no INSFMEM.
+- WSMAX 4000, default NPAGEDYN, 4 MB, sound enabled: 3 of 3 boots finish with no INSFMEM.
   The pool grew to 96 KB.
-- NPAGEDYN 120000, 4 MB, realism disabled: 3 of 3 boots finish with no INSFMEM.
-- Default parameters, 4 MB, realism disabled: 2 of 5 boots stall. The timing (and so
+- NPAGEDYN 120000, 4 MB, sound disabled: 3 of 3 boots finish with no INSFMEM.
+- Default parameters, 4 MB, sound disabled: 2 of 5 boots stall. The timing (and so
   which allocation hits the wall first) varies with the wall-clock calibration.
 
 ## Why it looked related to sound
