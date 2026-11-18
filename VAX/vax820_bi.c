@@ -435,12 +435,11 @@ void WriteIPR (int32 rg, int32 val)
 switch (rg) {
 
     case MT_IPIR:                                       /* IPIR: a node mask */
-        ipir = 0;                                       /* (as processor mask) */
-        if ((val >> ka_node (0)) & 1)
-            ipir |= 1;
-        if ((val >> ka_node (1)) & 1)
-            ipir |= 2;
-        break;
+        if ((val >> ka_node (0)) & 1)                   /* sends an IPINTR to */
+            ipir |= 1;                                  /* each node in it (as */
+        if ((val >> ka_node (1)) & 1)                   /* processor mask); */
+            ipir |= 2;                                  /* pending requests stay */
+        break;                                          /* until taken */
 
     case MT_ICCS:                                       /* ICCS */
         iccs_wr (val);
