@@ -99,7 +99,7 @@
 
 /* Internal I/O interrupts - relative except for clock and console */
 
-#define IPL_CLKINT      0x18                            /* clock IPL */
+#define IPL_CLKINT      0x16                            /* clock IPL (KA820 TM table 5-2) */
 #define IPL_IPRINT      0x14                            /* interprocessor IPL */
 #define IPL_RXCDINT     0x14                            /* RXCD IPL */
 #define IPL_TTINT       0x14                            /* console IPL */
