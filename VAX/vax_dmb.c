@@ -289,6 +289,7 @@
 
 /* sync LPR2 (3.3.35) */
 #define L2_OUTPUTS      0x0000001F              /* modem control outputs */
+#define  L2_RTS          0x00000010             /* request to send */
 #define L2_V_INPUTS     8
 #define L2_INPUTS       0x0000FF00              /* modem status inputs (ro) */
 #define  SM_RXCLK        0x0100                 /* receive clock running */
@@ -1224,11 +1225,15 @@ dmb_sreg[SY_BUFCTRL] = BC_CABLE;
 dmb_sl.frame_len = 0;
 }
 
-/* The modem inputs: all on while connected to the peer or looped. */
+/* The modem inputs: on while connected to the peer or looped, CTS only
+   while RTS is on (as from a modem, or a null-modem cable that loops RTS to
+   CTS).  VMS V5.5's SIDRIVER as a DDCMP multipoint tributary raises RTS to
+   transmit, waits for CTS, and after the message drops RTS and waits for CTS
+   to drop before it may transmit again (known issues 84). */
 static uint32 dmb_sync_inputs (void)
 {
 if (combo_sync_up (&dmb_sl) || (dmb_sreg[SY_LPR1] & L1_LOOP))
-    return SM_UP;
+    return (SM_UP & ~SM_CTS) | ((dmb_sreg[SY_LPR2] & L2_RTS) ? SM_CTS : 0);
 return 0;
 }
 
@@ -1432,6 +1437,7 @@ switch (idx) {
         break;
     case SY_LPR2:                               /* modem inputs are read only */
         dmb_sreg[idx] = (data & ~L2_INPUTS) | (dmb_sreg[idx] & L2_INPUTS);
+        dmb_sync_modem ();                      /* CTS follows RTS */
         dmb_sync_kick ();
         break;
     case SY_BUFCTRL:                            /* cable fields are read only */
