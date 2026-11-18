@@ -1,5 +1,5 @@
-<!-- open-simh-extended/docs/SIMH_session_handover.md  v5, 2026-11-18 (v5: patch 15, KA820 clock IPL 16 and IPIR; VMS055_1.R82; v4: patch 14, VAXBI configuration and memory boards; v3: patches 11 v3 and 13, SET REALISM, topic branches restacked; v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
-# Session handover (2026-11-18, after patch 15)
+<!-- open-simh-extended/docs/SIMH_session_handover.md  v6, 2026-11-18 (v6: patch 16, DMB32 sync line as DDCMP tributary (CTS follows RTS), branch dmb32-trib; v5: patch 15, KA820 clock IPL 16 and IPIR; VMS055_1.R82; v4: patch 14, VAXBI configuration and memory boards; v3: patches 11 v3 and 13, SET REALISM, topic branches restacked; v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
+# Session handover (2026-11-18, after patch 16)
 
 For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–82).
 
@@ -15,7 +15,7 @@ git clone https://github.com/vaxorcist/open-simh-extended oss
 cd oss
 git worktree add -b integration-wip ../integ origin/integration
 git worktree add -b notes-tmp ../notes origin/notes
-git worktree add ../clk origin/ka820-clock  # topic branch of the last work (detached; branch with -b if needed)
+git worktree add ../trb origin/dmb32-trib  # topic branch of the last work (detached; branch with -b if needed)
 cd ../integ
 make vax8200 microvax2 vax780 vax750       # build only what the change affects, plus representatives
 ```
@@ -53,9 +53,9 @@ make vax8200 microvax2 vax780 vax750       # build only what the change affects,
   - cherry-pick the topic commits (`git cherry-pick <integration commits>`; plain `git am` without `--keep-cr` breaks the CR LF files), squash them with `git reset --soft`, and commit as Claude; leave README.md out (fork only);
   - `git format-patch -1 --stdout` into `notes/patches/opensimh_<n>_<topic>_v<k>.patch`;
   - `git diff --stat integration <scratch>` must show only README.md and the workflow file.
-- **Last commits (2026-11-18):** `integration` d857ded7, `ka820-clock` 6f6cdd91 (on `vaxbi-config` ab555b9e, on `realism` 3174cd71), `kdb50` 86631fc2, `debna` f7cacad4, `klesib` 9cd59d1c, `dmb32-sync` e901fc9c, `notes` with this handover. The topic chain is kdb50 → debna → klesib → dmb32-sync → realism → vaxbi-config → ka820-clock; a fix to a lower topic branch needs the branches above it rebased (`git rebase --onto <new base> <old base> <branch>`), and the top must equal the patch series.
+- **Last commits (2026-11-18):** `integration` 7b931664, `dmb32-trib` e7b98c1b (on `ka820-clock` 6f6cdd91, on `vaxbi-config` ab555b9e, on `realism` 3174cd71), `kdb50` 86631fc2, `debna` f7cacad4, `klesib` 9cd59d1c, `dmb32-sync` e901fc9c, `notes` with this handover. The topic chain is kdb50 → debna → klesib → dmb32-sync → realism → vaxbi-config → ka820-clock → dmb32-trib; a fix to a lower topic branch needs the branches above it rebased (`git rebase --onto <new base> <old base> <branch>`), and the top must equal the patch series.
 - **Work of 2026-11-17 (VMS V5.5):** KDB50 boot (known issues 71-73, patch 9 v3/v4, also from the KDB50 microcode listing), DEBNA with V5.5 (74, 75, patch 10 v2), DMB32 sync line with V5.5's SIDRIVER and the DMF32 sync line on the shared code (patch 12).
-- **Last work:** Ulli's VAX 8300 with VMS V5.5 stopped with "Exception in interrupt or exception" in the realism mode; reproduced as VMS bugcheck SPLRELERR at THROTTLE 400K: the KA820 interval timer was at IPL 18 instead of 16 (patch 15, known issues 81; IPIR fix 82; EVKAA skipped in the 8200 diagnostic test). Before that: the VAXBI configuration (patch 14, `docs/VAXBI_config_VAX8200_design.md`): configurable BI nodes, twelve MS820 boards, `SHOW BI`, rules.
+- **Last work:** the DMB32 sync line as a DDCMP multipoint tributary under VMS V5.5 (`tests/dmb32/dmb_trib.com`, against a VAX-11/780 DMP11 control station) stayed in -starting: SIDRIVER does multipoint in software with an RTS/CTS handshake and waited for CTS to drop after its first transmission; SIMH kept CTS on. Patch 16: CTS follows RTS (known issues 84). Before that: Ulli's VAX 8300 with VMS V5.5 stopped with "Exception in interrupt or exception" in the realism mode; reproduced as VMS bugcheck SPLRELERR at THROTTLE 400K: the KA820 interval timer was at IPL 18 instead of 16 (patch 15, known issues 81; IPIR fix 82; EVKAA skipped in the 8200 diagnostic test). Before that: the VAXBI configuration (patch 14, `docs/VAXBI_config_VAX8200_design.md`): configurable BI nodes, twelve MS820 boards, `SHOW BI`, rules.
 - **VAX 8200/8300 devices done:** second KA820 (patch 7), DMB32 (8), KDB50 (9), DEBNA (10), KLESI-B and VAXBI-only mode (11).
 
 ## 4. Test images and other material from Ulli

@@ -1,0 +1,72 @@
+From e7b98c1bb2e3fe7c1696c7b1bdd54cd5ff52c3bc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 18:36:45 +0100
+Subject: [PATCH] VAX8200: DMB32 sync line, CTS follows RTS (DDCMP tributary)
+
+The DMB32 synchronous line reported its modem inputs as constant while
+connected: clocks, CTS, DCD and DSR all on.  VMS V5.5's SIDRIVER as a
+DDCMP multipoint tributary (DECnet line DMB-0 PROTOCOL DDCMP TRIBUTARY)
+drives an RTS/CTS handshake: to transmit it raises RTS and waits for CTS,
+after the message it drops RTS and waits for CTS to drop before it is
+idle again.  With CTS stuck on, SIDRIVER hung in the "wait for CTS off"
+state after its first transmission, never sent DECnet's reply and
+restarted the line: the circuit stayed "on -starting" against a DMP11
+control station.
+
+Now, while the line is up (connected or looped), CTS follows RTS
+(LPR2 bit 4), as with a modem or a null-modem cable; a write of LPR2
+updates the inputs at once and a CTS change is a modem status entry in
+SBUF (unless LPR1 MODEM.SUPPRESS).  Point-to-point operation keeps RTS on
+and is unchanged.
+
+Tests: VAX 8200 VMS V5.5 tributary 4 against a VAX-11/780 VMS V4.7 DMP11
+control station: circuit up, NCP LOOP NODE 20 x 500, DIRECTORY and COPY;
+DMB32 point-to-point against a MicroVAX II DMV11 (tests/dmb32/p4.sh): PASS.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtftJEqWTX7fajw6zWU
+---
+ VAX/vax_dmb.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/VAX/vax_dmb.c b/VAX/vax_dmb.c
+index 01b79d3a..e55e0def 100644
+--- a/VAX/vax_dmb.c
++++ b/VAX/vax_dmb.c
+@@ -289,6 +289,7 @@
+ 
+ /* sync LPR2 (3.3.35) */
+ #define L2_OUTPUTS      0x0000001F              /* modem control outputs */
++#define  L2_RTS          0x00000010             /* request to send */
+ #define L2_V_INPUTS     8
+ #define L2_INPUTS       0x0000FF00              /* modem status inputs (ro) */
+ #define  SM_RXCLK        0x0100                 /* receive clock running */
+@@ -1224,11 +1225,15 @@ dmb_sreg[SY_BUFCTRL] = BC_CABLE;
+ dmb_sl.frame_len = 0;
+ }
+ 
+-/* The modem inputs: all on while connected to the peer or looped. */
++/* The modem inputs: on while connected to the peer or looped, CTS only
++   while RTS is on (as from a modem, or a null-modem cable that loops RTS to
++   CTS).  VMS V5.5's SIDRIVER as a DDCMP multipoint tributary raises RTS to
++   transmit, waits for CTS, and after the message drops RTS and waits for CTS
++   to drop before it may transmit again (known issues 84). */
+ static uint32 dmb_sync_inputs (void)
+ {
+ if (combo_sync_up (&dmb_sl) || (dmb_sreg[SY_LPR1] & L1_LOOP))
+-    return SM_UP;
++    return (SM_UP & ~SM_CTS) | ((dmb_sreg[SY_LPR2] & L2_RTS) ? SM_CTS : 0);
+ return 0;
+ }
+ 
+@@ -1432,6 +1437,7 @@ switch (idx) {
+         break;
+     case SY_LPR2:                               /* modem inputs are read only */
+         dmb_sreg[idx] = (data & ~L2_INPUTS) | (dmb_sreg[idx] & L2_INPUTS);
++        dmb_sync_modem ();                      /* CTS follows RTS */
+         dmb_sync_kick ();
+         break;
+     case SY_BUFCTRL:                            /* cable fields are read only */
+-- 
+2.43.0
+
