@@ -201,9 +201,9 @@ if (hlt_pin)                                            /* hlt pin int */
     return IPL_HLTPIN;
 if ((ipl < IPL_CRDERR) && crd_err)                      /* crd err int */
     return IPL_CRDERR;
-if ((ipl < IPL_CLKINT) && (tmr_int & cpu_msk))          /* its clock int */
-    return IPL_CLKINT;
 if (cur_cpu != 0) {                                     /* attached processor: */
+    if ((ipl < IPL_CLKINT) && (tmr_int & cpu_msk))      /* its clock, */
+        return IPL_CLKINT;
     if ((ipl < IPL_IPRINT) && (ipir & cpu_msk))         /* only its IPI, its */
         return IPL_IPRINT;                              /* console output and */
     if ((ipl < IPL_TTINT) && (tto_int & cpu_msk))       /* software interrupts; */
@@ -214,6 +214,8 @@ uba_eval_int ();                                        /* update UBA */
 for (i = IPL_HMAX; i >= IPL_HMIN; i--) {                /* chk hwre int */
     if (i <= ipl)                                       /* at ipl? no int */
         return 0;
+    if ((i == IPL_CLKINT) && (tmr_int & cpu_msk))       /* its clock (IPL 16, */
+        return i;                                       /* first in its level) */
     if (nexus_req[i - IPL_HMIN])                        /* req != 0? int */
         return i;
     }
@@ -251,8 +253,8 @@ if (lvl == IPL_CRDERR) {                                /* CRD error? */
     crd_err = 0;
     return SCB_CRDERR;
     }
-if (lvl == IPL_CLKINT) {                                /* clock? */
-    tmr_int = tmr_int & ~(1u << cur_cpu);               /* clear req */
+if ((lvl == IPL_CLKINT) && (tmr_int & cpu_msk)) {      /* its clock? (IPL 16 is */
+    tmr_int = tmr_int & ~(1u << cur_cpu);               /* also a BI level) */
     return SCB_INTTIM;                                  /* return vector */
     }
 if (lvl > IPL_HMAX) {                                   /* error req lvl? */
