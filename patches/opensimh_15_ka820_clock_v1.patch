@@ -1,0 +1,126 @@
+From c8a512ddc3d89bfcaed5edc0b57a457a1f12107e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 11:25:02 +0100
+Subject: [PATCH] VAX8200: KA820 interval timer at IPL 16, IPIR adds requests
+
+The KA820 interval timer interrupts at IPL 16 (hex) (KA820/KA825 Processor
+Technical Manual EK-KA820-TM-003, table 5-2); SIMH had IPL 18.  VMS V5.5
+SMP protects the clock with an IPL 22 spinlock: with the clock at IPL 24 a
+tick could interrupt the lock holder on the same processor and take the
+lock again (owner check passes, only the count goes up), so a later release
+found it free.  VAX 8300 with THROTTLE 400K or the realism mode: bugcheck
+SPLRELERR, or "Exception in interrupt or exception" in the spinlock wait
+loop.
+
+IPL 16 is a VAXBI device level (14-17): eval_int checks the clock inside the
+hardware level loop (first within IPL 16, after IPL 17 devices), get_vector
+takes IPL 16 as the clock only if the processor's clock is pending.  The
+VAX 8200 diagnostic test skips EVKAA, whose test 13.5 waits for the clock at
+IPL 17 (the 11/7xx's architectural IPL 18); EVKAB and EVKAC run.
+
+A write of IPIR sends an IPINTR to the nodes in its mask.  SIMH replaced
+the pending requests with the new mask, so a request the other processor
+had not taken yet could be lost; requests are now added and cleared only
+when taken (or by a PCSR write, as before).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtftJEqWTX7fajw6zWU
+---
+ VAX/tests/vax-diag_test.ini |  9 ++++++++-
+ VAX/vax820_bi.c             | 21 +++++++++++----------
+ VAX/vax820_defs.h           |  2 +-
+ 3 files changed, 20 insertions(+), 12 deletions(-)
+
+diff --git a/VAX/tests/vax-diag_test.ini b/VAX/tests/vax-diag_test.ini
+index bcf3af02..5fccfb91 100644
+--- a/VAX/tests/vax-diag_test.ini
++++ b/VAX/tests/vax-diag_test.ini
+@@ -62,10 +62,17 @@ go -q 200
+ if (PC != 0x80018AD1) echof "\r\n*** FAILED - %SIM_NAME% Hardware Core Instruction test EHKAA\n"; exit 1
+ else                  echof "\r\n*** PASSED - %SIM_NAME% Hardware Core Instruction test EHKAA\n"; exit 0
+ 
++:DIAG_VAX8200
++# The KA820 interval timer interrupts at IPL 16 (KA820 Technical Manual
++# EK-KA820-TM-003, table 5-2).  EVKAA test 13.5 waits for a clock interrupt
++# at IPL 17 (the architectural IPL 18 of the 11/7xx) and fails on it, so the
++# VAX 8200 goes on to the Diagnostic Supervisor tests.
++echo Skipping Hardware Core Test (EVKAA): KA820 interval timer at IPL 16
++goto extended_tests
++
+ :DIAG_VAX730
+ :DIAG_VAX750
+ :DIAG_VAX780
+-:DIAG_VAX8200
+ :DIAG_VAX8600
+ echo Running Hardware Core Test (EVKAA)
+ if not exist evkaa.exe echof "\r\nMISSING - Diagnostic '%~p0evkaa.exe' is missing\n"; exit 1
+diff --git a/VAX/vax820_bi.c b/VAX/vax820_bi.c
+index 2bbc5a16..49290885 100644
+--- a/VAX/vax820_bi.c
++++ b/VAX/vax820_bi.c
+@@ -201,9 +201,9 @@ if (hlt_pin)                                            /* hlt pin int */
+     return IPL_HLTPIN;
+ if ((ipl < IPL_CRDERR) && crd_err)                      /* crd err int */
+     return IPL_CRDERR;
+-if ((ipl < IPL_CLKINT) && (tmr_int & cpu_msk))          /* its clock int */
+-    return IPL_CLKINT;
+ if (cur_cpu != 0) {                                     /* attached processor: */
++    if ((ipl < IPL_CLKINT) && (tmr_int & cpu_msk))      /* its clock, */
++        return IPL_CLKINT;
+     if ((ipl < IPL_IPRINT) && (ipir & cpu_msk))         /* only its IPI, its */
+         return IPL_IPRINT;                              /* console output and */
+     if ((ipl < IPL_TTINT) && (tto_int & cpu_msk))       /* software interrupts; */
+@@ -214,6 +214,8 @@ uba_eval_int ();                                        /* update UBA */
+ for (i = IPL_HMAX; i >= IPL_HMIN; i--) {                /* chk hwre int */
+     if (i <= ipl)                                       /* at ipl? no int */
+         return 0;
++    if ((i == IPL_CLKINT) && (tmr_int & cpu_msk))       /* its clock (IPL 16, */
++        return i;                                       /* first in its level) */
+     if (nexus_req[i - IPL_HMIN])                        /* req != 0? int */
+         return i;
+     }
+@@ -251,8 +253,8 @@ if (lvl == IPL_CRDERR) {                                /* CRD error? */
+     crd_err = 0;
+     return SCB_CRDERR;
+     }
+-if (lvl == IPL_CLKINT) {                                /* clock? */
+-    tmr_int = tmr_int & ~(1u << cur_cpu);               /* clear req */
++if ((lvl == IPL_CLKINT) && (tmr_int & cpu_msk)) {      /* its clock? (IPL 16 is */
++    tmr_int = tmr_int & ~(1u << cur_cpu);               /* also a BI level) */
+     return SCB_INTTIM;                                  /* return vector */
+     }
+ if (lvl > IPL_HMAX) {                                   /* error req lvl? */
+@@ -433,12 +435,11 @@ void WriteIPR (int32 rg, int32 val)
+ switch (rg) {
+ 
+     case MT_IPIR:                                       /* IPIR: a node mask */
+-        ipir = 0;                                       /* (as processor mask) */
+-        if ((val >> ka_node (0)) & 1)
+-            ipir |= 1;
+-        if ((val >> ka_node (1)) & 1)
+-            ipir |= 2;
+-        break;
++        if ((val >> ka_node (0)) & 1)                   /* sends an IPINTR to */
++            ipir |= 1;                                  /* each node in it (as */
++        if ((val >> ka_node (1)) & 1)                   /* processor mask); */
++            ipir |= 2;                                  /* pending requests stay */
++        break;                                          /* until taken */
+ 
+     case MT_ICCS:                                       /* ICCS */
+         iccs_wr (val);
+diff --git a/VAX/vax820_defs.h b/VAX/vax820_defs.h
+index 98591663..eb35bc90 100644
+--- a/VAX/vax820_defs.h
++++ b/VAX/vax820_defs.h
+@@ -99,7 +99,7 @@
+ 
+ /* Internal I/O interrupts - relative except for clock and console */
+ 
+-#define IPL_CLKINT      0x18                            /* clock IPL */
++#define IPL_CLKINT      0x16                            /* clock IPL (KA820 TM table 5-2) */
+ #define IPL_IPRINT      0x14                            /* interprocessor IPL */
+ #define IPL_RXCDINT     0x14                            /* RXCD IPL */
+ #define IPL_TTINT       0x14                            /* console IPL */
+-- 
+2.43.0
+

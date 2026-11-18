@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/VAX8200_dual_CPU_design.md  v2, 2026-11-15 (v2: implemented, results, KA820 manual findings; v1: first design plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/VAX8200_dual_CPU_design.md  v3, 2026-11-18 (v3: section 11, clock IPL 16 and IPIR (patch 15); v2: implemented, results, KA820 manual findings; v1: first design plan for Ulli's decision) -->
 # VAX 8200/8300: a running second KA820 (design plan)
 
 Prepared with Claude for Ulli (vaxorcist), 2026-11-14. Status: **implemented 2026-11-15** (patch 7, branch `vax8300-mp`); Ulli accepted all proposals of section 9. Results in section 10. Background: known issues case 65.
@@ -203,3 +203,11 @@ Normal mode (no throttle): both processors share one host thread, so two CPU-bou
 - KA1's interval timer ticks with the primary's (VMS uses 10 ms on both); single step and ICR reads come from the primary's timer.
 - No breakpoint per processor; the CPU history does not mark the processor.
 - Model name (decision 5): with KA1 enabled SHOW CPU says VAX 8300 (VAX 8350 with SET CPU MODEL=8250); the start-up banner is printed before the configuration and still says VAX 8200.
+
+## 11. Clock IPL and IPIR (2026-11-18, patch 15)
+
+- **Finding:** VMS V5.5 SMP on the 8300 crashed in about half of the runs at THROTTLE 400K or in the realism mode (bugcheck SPLRELERR, or SIMH's "Exception in interrupt or exception" in the spinlock wait loop; known issues 81). SIMH had the KA820 interval timer at IPL 18; the KA820 Technical Manual (EK-KA820-TM-003, table 5-2) gives IPL 16. VMS guards the clock with an IPL 22 spinlock, so with the clock at 24 a tick could interrupt the holder on the same processor and take the lock again as its "owner".
+- **How VMS V5.5 identifies the processor:** `MFPR #4` (ISP) and a mask give the per-CPU database; the spinlock's owner field holds that address. An acquire by the owner only counts up.
+- **Change:** `IPL_CLKINT` 0x16; the clock is checked inside the hardware level loop of `eval_int` (IPL 16 is also a VAXBI level), `get_vector` takes IPL 16 as the clock only when the processor's clock is pending. The 8200 diagnostic test skips EVKAA (test 13.5 waits for the clock at IPL 17).
+- **IPIR:** writes now add requests instead of replacing the pending ones (known issues 82; no loss was observed).
+- **Testing lesson:** SMP timing bugs show with few instructions per clock tick. Test 8300 changes also at THROTTLE 400K and repeat the runs (`tests/vax8300/smp55.ini`, `smp55_rep.sh`); a single pass proves little. Finer interleaving (CPU QUANTUM 2 or 5) did not show this bug.

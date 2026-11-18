@@ -1,4 +1,4 @@
-open-simh-extended/tests/vax8300/README.txt  v3 (v3: SET REALISM rename; v2: reboot1.ini)
+open-simh-extended/tests/vax8300/README.txt  v4 (v4: smp55.ini, smp55_rep.sh (known issues 81); v3: SET REALISM rename; v2: reboot1.ini)
 
 Tests of the second KA820 (patch 7, VAX 8300: SET KA1 ENABLE).
 
@@ -33,3 +33,13 @@ Run, e.g.:  SDL_AUDIODRIVER=dummy BIN/vax8200 mp2.ini > mp2.out < /dev/null
 
 Note: send at most a few DCL commands per expect action; a long type-ahead
 overruns the VMS terminal buffer (%RMS-F-RER, DATAOVERUN).
+
+smp55.ini, smp55_rep.sh (2026-11-18, known issues 81, patch 15): VMS V5.5
+SMP on the 8300 in Ulli's configuration (128MB, VAXBI-only), boot, login,
+SYSGEN HELP PARAMETERS.  Run it slow, several times, e.g. four runs at
+THROTTLE 400K (about 10 minutes each):
+
+    IMG=<copy of the V5.5 RA82 image> ./smp55_rep.sh <path>/BIN/vax8200 t400 4 3000 "set throttle 400k"
+
+Each line should end in "*** h1 done"; before patch 15 about half ended in
+"FATAL BUG CHECK ... SPLRELERR" or "Exception in interrupt or exception".

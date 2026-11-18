@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_session_handover.md  v4, 2026-11-17 (v4: patch 14, VAXBI configuration and memory boards; v3: patches 11 v3 and 13, SET REALISM, topic branches restacked; v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
-# Session handover (2026-11-17, after patch 14)
+<!-- open-simh-extended/docs/SIMH_session_handover.md  v5, 2026-11-18 (v5: patch 15, KA820 clock IPL 16 and IPIR; VMS055_1.R82; v4: patch 14, VAXBI configuration and memory boards; v3: patches 11 v3 and 13, SET REALISM, topic branches restacked; v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
+# Session handover (2026-11-18, after patch 15)
 
-For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–80).
+For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–82).
 
 **A new session starts with an empty workspace.** Everything Claude had locally (worktrees, built simulators, test directories, Ulli's uploads) is gone. The code, docs, tests and tools are in the fork on GitHub. Ulli's images must be uploaded again (section 4).
 
@@ -15,7 +15,7 @@ git clone https://github.com/vaxorcist/open-simh-extended oss
 cd oss
 git worktree add -b integration-wip ../integ origin/integration
 git worktree add -b notes-tmp ../notes origin/notes
-git worktree add ../vbc origin/vaxbi-config # topic branch of the last work (detached; branch with -b if needed)
+git worktree add ../clk origin/ka820-clock  # topic branch of the last work (detached; branch with -b if needed)
 cd ../integ
 make vax8200 microvax2 vax780 vax750       # build only what the change affects, plus representatives
 ```
@@ -47,15 +47,15 @@ make vax8200 microvax2 vax780 vax750       # build only what the change affects,
 
 ## 3. State of the work
 
-- **Patch chain:** patches 1–14 on Open SIMH 87eb7d5, applied with `git am --keep-cr` in the order 1, 2, 3, 4, 6, 5, 7, 8, 9 (v4), 10 (v2), 11 (v3), 12, 13, 14. The result equals the `integration` branch except `README.md` and `.github/workflows/cmake-builds.yml`.
+- **Patch chain:** patches 1–15 on Open SIMH 87eb7d5, applied with `git am --keep-cr` in the order 1, 2, 3, 4, 6, 5, 7, 8, 9 (v4), 10 (v2), 11 (v3), 12, 13, 14, 15. The result equals the `integration` branch except `README.md` and `.github/workflows/cmake-builds.yml`.
 - **How a patch is made** (patch 11 as the example):
   - apply the series in a scratch worktree on 87eb7d5;
   - cherry-pick the topic commits (`git cherry-pick <integration commits>`; plain `git am` without `--keep-cr` breaks the CR LF files), squash them with `git reset --soft`, and commit as Claude; leave README.md out (fork only);
   - `git format-patch -1 --stdout` into `notes/patches/opensimh_<n>_<topic>_v<k>.patch`;
   - `git diff --stat integration <scratch>` must show only README.md and the workflow file.
-- **Last commits (2026-11-17):** `integration` 3d6a2b45, `vaxbi-config` ab555b9e (on `realism` 3174cd71), `kdb50` 86631fc2, `debna` f7cacad4, `klesib` 9cd59d1c, `dmb32-sync` e901fc9c, `notes` with this handover. The topic chain is kdb50 → debna → klesib → dmb32-sync → realism → vaxbi-config; a fix to a lower topic branch needs the branches above it rebased (`git rebase --onto <new base> <old base> <branch>`), and the top must equal the patch series.
+- **Last commits (2026-11-18):** `integration` d857ded7, `ka820-clock` 6f6cdd91 (on `vaxbi-config` ab555b9e, on `realism` 3174cd71), `kdb50` 86631fc2, `debna` f7cacad4, `klesib` 9cd59d1c, `dmb32-sync` e901fc9c, `notes` with this handover. The topic chain is kdb50 → debna → klesib → dmb32-sync → realism → vaxbi-config → ka820-clock; a fix to a lower topic branch needs the branches above it rebased (`git rebase --onto <new base> <old base> <branch>`), and the top must equal the patch series.
 - **Work of 2026-11-17 (VMS V5.5):** KDB50 boot (known issues 71-73, patch 9 v3/v4, also from the KDB50 microcode listing), DEBNA with V5.5 (74, 75, patch 10 v2), DMB32 sync line with V5.5's SIDRIVER and the DMF32 sync line on the shared code (patch 12).
-- **Last work:** the VAXBI configuration of the VAX 8200/8300 (patch 14, `docs/VAXBI_config_VAX8200_design.md`, `tests/vaxbi/`): every BI node configurable, new defaults (DWBUA 0, KA1 1, KA0 2, KDB50 4, DMB32 5, KLESI-B 6, DEBNA 7), twelve MS820 memory boards (`SET CPU nM` from a table, `SET MCTLn TYPE/NODE`), `SHOW BI`, `SHOW MCTL`, rules. VMS uses at most 8 memory boards (known issues 80, a warning). Before that: the realism rule "a KLESI-B connects TU81 drives only" (patch 11 v3) and `SET REALISM` (patch 13).
+- **Last work:** Ulli's VAX 8300 with VMS V5.5 stopped with "Exception in interrupt or exception" in the realism mode; reproduced as VMS bugcheck SPLRELERR at THROTTLE 400K: the KA820 interval timer was at IPL 18 instead of 16 (patch 15, known issues 81; IPIR fix 82; EVKAA skipped in the 8200 diagnostic test). Before that: the VAXBI configuration (patch 14, `docs/VAXBI_config_VAX8200_design.md`): configurable BI nodes, twelve MS820 boards, `SHOW BI`, rules.
 - **VAX 8200/8300 devices done:** second KA820 (patch 7), DMB32 (8), KDB50 (9), DEBNA (10), KLESI-B and VAXBI-only mode (11).
 
 ## 4. Test images and other material from Ulli
@@ -66,6 +66,7 @@ None of these is in the repository; Ulli uploads them again when needed.
 |---|---|---|
 | `VMS047_1.R81` | VMS V4.7 on an RA81, for the VAX 8200/8300 tests (KDB50 unit 0: `set kdb0 ra81`, `attach kdb0 VMS047_1.R81`, `boot kdb0`); login SYSTEM / MANAGER | Tests always work on a copy |
 | `VMS047.R81` | VMS V4.7 for the MicroVAX II and other VAXen (tktest.py, `set rq0 ra81`) | The test copy had the SYSTEM password set to MANAGER with `AUTHORIZE MODIFY SYSTEM/NETWORK/PASSWORD=MANAGER/NOPWDEXPIRED`; ask Ulli if a fresh upload does not accept SYSTEM/MANAGER |
+| `VMS055_1.R82` (2026-11-18) | Ulli's current VMS V5.5 RA82 image (his 8300 configuration; the reproducer of known issues 81) | Same rules as VMS055.R82: confidential, copies in the workspace only |
 | **`VMS055.R82`** (new, 2026-11-16) | VMS V5.5 on an RA82, for testing | **Confidential: it contains license data. It must not go anywhere else**: not into the fork, not into the project, not into any delivered file or doc, and no license data may be quoted. Work on a copy inside the workspace only. Its purpose has not been discussed yet: ask Ulli. |
 | `ult020src.tap` | ULTRIX V2.0 sources (VAXBI drivers: bla.c, bua.c, buareg.h, ...) | DEC copyright: stays out of the fork and the project; extracts go to Ulli only |
 | `KDB50_Microcode_Listing_Sep88_O.pdf` (new, 2026-11-17) | KDB50 microcode listing (version 19), OCR text | DEC copyright: facts only, in our own words; stays out of the fork and the project |
@@ -127,6 +128,7 @@ None of these is in the repository; Ulli uploads them again when needed.
   - DEBNA: ETA0, DECnet line BNT-0 (VMS V4.7) or BNA-0 (VMS V5.5);
   - DMB32 sync line: SIA0, DECnet line DMB-0 (VMS V5.5 SIDRIVER); the DMV11 on VMS V4.7: DMP-0.
 - **Realism mode and fixed RA drives:** ATTACH leaves the drive stopped; `SET <dev>n ONLINE` (RUN/STOP) spins it up. A boot script in the realism mode needs it before BOOT, or VMB says "%BOOT-F-Failed to initialize device" (expected, `tests/ra/ra2`).
+- **Throttled SMP tests:** timing bugs of the 8300 show at THROTTLE 400K / in the realism mode (few instructions per clock tick), not at host speed: test SMP changes there too (`tests/vax8300/smp55_rep.sh`: repeated runs; one run proves little).
 - **VMS and memory boards:** VMS (V4.7, V5.5) uses at most 8 MS820 boards; more give a warning (known issues 80).
 - **VMS error count 1** on PTA0, PUA0 and PUB0 after the startup is normal (port start); it is not a device fault.
 - **The pdp11_tq.c code serves several controllers.** The per-controller state is `TQ_CTX` (`tq_ctx0` TQ, `tq_ctx1` TB), the names are macros for the current controller (`tqc`), and every entry point selects the controller. New code in pdp11_tq.c must keep this up: set `tqc` in any new entry point.
