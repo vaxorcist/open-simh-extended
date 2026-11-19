@@ -1,0 +1,54 @@
+# open-simh-extended/tools/sidriver_v47/sidport.log  v1 (2026-11-19): summary output of sidport.py v3 (system addresses, SMP, timers, quota, offsets, DPT, init table, DDT)
+system address 80002060 COM$DELATTNAST         -> 8000E066
+system address 80002080 COM$DRVDEALMEM         -> 8000E0F5
+system address 80002088 COM$FLUSHATTNS         -> 8000E0B5
+system address 80002098 COM$POST               -> 8000E0E7
+system address 800020A8 COM$SETATTNAST         -> 8000E13B
+system address 80002138 EXE$ABORTIO            -> 80009C1C
+system address 80002180 EXE$ALONONPAGED        -> 8000A901
+system address 800023C0 EXE$FINISHIO           -> 80009C2B
+system address 800023D0 EXE$FORK               -> 8000A048
+system address 80002438 EXE$INIT_DEVICE        -> 800041BF
+system address 80002450 EXE$INSTIMQ            -> 80008A78
+system address 800025E8 EXE$QIORETURN          -> 80009C75
+system address 80002608 EXE$READCHK            -> 800095D2
+system address 80002710 EXE$WRITECHK           -> 800095D8
+system address 80002718 EXE$WRITECHKR          -> 80009644
+system address 800028D8 IOC$INITIATE           -> 8000CF4C
+system address 800029D8 IOC$REQCOM             -> 8000CEB4
+system address 8000404C SCH$GL_PCBVEC          -> 80002988
+system address 80004448 EXE$GL_ABSTIM          -> 80002B38
+system address 80004450 EXE$GQ_SYSTIME         -> 80002B40
+system address 80008430 MMG$GL_GPTBASE         -> 80003F2C
+system address 80008438 MMG$GL_MAXGPTE         -> 80003F34
+system address 80008448 MMG$GL_SPTLEN          -> 80003F40
+system address 8000845C MMG$GL_SBR             -> 80003F54
+SMP: 170 BLBC @#SMP$GL_FLAGS -> BRW, 57 device lock paths -> MTPR #14, 23 fork lock paths -> MTPR R0
+02279 MOVB #36,B(Rn): spinlock index -> IPL 6
+per-CPU delay loops -> EXE$GL_TENUSEC/UBDELAY: 5
+040E7 JSB quota routine -> appended routine at 05F0C
+01CFE JSB quota routine -> appended routine at 05ECC
+01755 JSB quota routine -> appended routine at 05EED
+018FD JSB quota routine -> appended routine at 05ECC
+010CD JSB quota routine -> appended routine at 05ECC
+0089F JSB quota routine -> appended routine at 05ECC
+03B2D EXE$AR_TQENOREPT -> dummy TQE 05E98
+03984 EXE$AR_TQENOREPT -> dummy TQE 05E98
+0593A EXE$AR_TQENOREPT -> dummy TQE 05E98
+05AEB EXE$AR_TQENOREPT -> dummy TQE 05E98
+field offsets: {'UCB$L_DLCK (left)': 107, 'UCB same': 57, 'IDB same': 5, 'IDB changed': 2, 'CRB changed': 3, 'UCB changed': 207, 'PCB same': 7, 'PCB changed': 2}
+param table 17A: UCB$W_DEVBUFSIZ 4E -> 42
+04A8F DPT$B_FLAGS reference 10 -> 0D
+04ADA DPT$B_FLAGS reference 10 -> 0D
+DPT: V4.7 layout, size 5F1B, flags 00, version 4
+init entry 82: struct 2 off B op 0 val 8 -> struct 10 off B
+init entry 86: struct 2 off 72 op 0 val 14 -> struct 10 off 5E
+init entry 8A: struct 2 off 3C op 3 val C042000 -> struct 10 off 38
+init entry 91: struct 2 off 4C op 0 val 20 -> struct 10 off 40
+init entry 95: struct 2 off 4D op 0 val 1B -> struct 10 off 41
+init entry 99: struct 2 off 7C op 1 val 0 -> struct 10 off 68
+init entry 9E: struct 4 off C op 2 val B4 -> struct 06 off C
+init entry A3: struct 5 off 54 op 2 val 312E -> struct 05 off 28
+init entry A8: struct 5 off 5C op 2 val 61E -> struct 05 off 30
+init entry AD: struct 5 off 68 op 2 val 714 -> struct 05 off 3C
+DDT: IOC$RETURN/IOC$MNTVER entries mapped

@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v7, 2026-11-18 (v7: sync line CTS follows RTS, DDCMP tributary under VMS V5.5 (patch 16, known issues 84); v6: sync line (P4) with VMS V5.5's SIDRIVER, DMF32 sync line on the shared code (P4a), patch 12; v5: patch 8, P5 corrected (the CPU loop really runs now), DMA engine moved to vax_bi_dma.c; v4: section 10, results of P1-P3, P4a (printer) and P5; SIDRIVER missing; v3: all decisions D1–D6 made, Ulli's answers, VMS device names from the User Guide, ULTRIX phase; v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
+<!-- open-simh-extended/docs/DMB32_VAX8200_design.md  v8, 2026-11-19 (v8: section 12, the sync line under VMS V4.7 with the backported SIDRIVER; v7: sync line CTS follows RTS, DDCMP tributary under VMS V5.5 (patch 16, known issues 84); v6: sync line (P4) with VMS V5.5's SIDRIVER, DMF32 sync line on the shared code (P4a), patch 12; v5: patch 8, P5 corrected (the CPU loop really runs now), DMA engine moved to vax_bi_dma.c; v4: section 10, results of P1-P3, P4a (printer) and P5; SIDRIVER missing; v3: all decisions D1–D6 made, Ulli's answers, VMS device names from the User Guide, ULTRIX phase; v2: D1 decided: shared library for printer formatter and DDCMP sync engine; v1: first implementation plan for Ulli's decision) -->
 # DMB32 on the VAX 8200/8300 (implementation plan)
 
 Prepared with Claude for Ulli (vaxorcist), 2026-11-15. Status: **done for VMS** (patch 8 `opensimh_8_dmb32_v1.patch`, branch `dmb32`; the sync line in patch 12 `opensimh_12_dmb32_sync_v1.patch`, branch `dmb32-sync`): P1-P5 done, P4 with VMS V5.5's SIDRIVER (section 11); P5u (ULTRIX) and P6 (UETP) open (section 10).
@@ -182,3 +182,7 @@ Tests (`tests/dmb32/p4.sh`; VMS V5.5 on the 8200 from the KDB50, DECnet partner 
 | Builds | vax730, vax750, vax780, vax8600, vax8200 without warnings |
 
 Found on the way (own code, fixed before the commit): the device reset did not keep an attached DMB-SYNC polling, and the link was set up as a Telnet line; it is a raw packet line, as for the DMF32. VMS V4.7 calls the DMV11 line `DMP-0` (XDDRIVER), not DMV-0.
+
+## 12. Sync line under VMS V4.7 (2026-11-19)
+
+VMS V4.7 has no SIDRIVER. Ulli asked for V5.5's driver to be backported; it was done by binary patching (`docs/SIDRIVER_V47_backport.md`). Under V4.7 SYSGEN configures SIA0, and DECnet runs over line DMB-0 as DDCMP POINT (to a MicroVAX II DMV11) and as DDCMP TRIBUTARY (to a VAX-11/780 DMP11 control station). Tests: `tests/dmb32/p4b_8200.ini`, `p4g_8200.ini`, `p4c_8200.ini` + `p4c_780.ini`. DDCMP CONTROL is not supported by SIDRIVER (V5.5 and the backport answer NCP with "Invalid parameter value, Protocol").
