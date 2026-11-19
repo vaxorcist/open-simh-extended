@@ -1568,6 +1568,9 @@ ts_check_online ();
 if (!(sim_switches & SWMASK ('N')))                     /* at the prompt: wait */
     sim_reel_wait (&ts_reel);
 ts_check_online ();
+if ((val == TS_PNL_LOAD) && !ts_is_online ())           /* LOAD does not put it on-line */
+    return sim_messagef (SCPE_OK, "%s: tape loaded, the transport is off-line (SET %s ONLINE)\n",
+                         sim_uname (uptr), sim_uname (uptr));
 return SCPE_OK;
 }
 
@@ -1617,8 +1620,11 @@ return sim_tape_set_capac (uptr, val, cptr, desc);
 
 static t_stat ts_show_capac (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
-if (TS_REAL)
-    return ts_show_reel (st, uptr, val, desc);
+if (TS_REAL) {                                          /* reel and ON-LINE switch */
+    ts_show_reel (st, uptr, val, desc);
+    fprintf (st, ", %s", ts_is_online () ? "on-line" : "off-line");
+    return SCPE_OK;
+    }
 return sim_tape_show_capac (st, uptr, val, desc);
 }
 
