@@ -855,10 +855,12 @@ typedef struct dmc_controller {
         size_t  last_len;
         t_bool  last_unsent;        /* line was busy: send it again soon */
         uint32  last_time;          /* when it was sent (sim_os_msec) */
-        uint16  saved[4];           /* loaded image words at 24, 26, 34, 36,
+        uint16  saved[4];           /* loaded image words at 24, 26, 400, 402,
                                        put back after the start trap */
         uint32  xfer;               /* transfer address of the loaded program */
         } dmv_boot;
+    t_bool dmv_keep_line;           /* the master clear of a boot keeps DTR (and
+                                       so the TCP connection of the line) */
     uint8  *dmv_held;               /* remote load detect: a packet read ahead
                                        while the host had no receive buffer */
     uint16 dmv_held_size;
@@ -1344,7 +1346,7 @@ t_stat dmv_show_switches (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmv_boot (int32 unitno, DEVICE *dptr);
 t_bool dmv_boot_active (CTLR *controller);
 t_bool dmv_boot_receive (CTLR *controller);
-void dmv_boot_invoke (CTLR *controller, uint8 soft_address);
+t_bool dmv_boot_invoke (CTLR *controller, uint8 soft_address);
 void dmv_boot_finish (CTLR *controller);
 void dmv_boot_cancel (CTLR *controller);
 t_bool dmv_remote_load_watch (CTLR *controller);
@@ -2369,12 +2371,12 @@ const char helpDmvBoot[] =
     " file (the DMV11 asks for a secondary loader, MOP device type 34).\n"
     "\n"
     " The DMV11 takes the CPU over through the power-fail/restart vector at\n"
-    " 24: it puts a waiting routine (MOV #40,SP; WAIT) at 40 and enters it at\n"
+    " 24: it puts a waiting routine (MOV #404,SP; WAIT) at 40 and enters it at\n"
     " priority 7 with memory management off.  It stores each Memory Load it\n"
     " gets and asks for the next one, and starts the program at the transfer\n"
     " address of the Memory Load with Transfer Address (or Parameter Load\n"
     " with Transfer Address) message, again through vector 24.  The\n"
-    " program's own words at 24-26 and 34-36 are put back after the start.\n"
+    " program's own words at 24-26 and 400-402 are put back after the start.\n"
     " A request the control station does not answer is sent again every 5\n"
     " seconds.\n"
     "2 Power-on boot\n"
@@ -3049,7 +3051,8 @@ if (dmv_is_dmv(controller)) {
         dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMV_SEL0_M_PMOP, DBG_RGC);
     }
 dmc_clear_master_clear(controller);
-dmc_clr_modem_dtr(controller);
+if (!dmv_invoke && !controller->dmv_keep_line)  /* DMV11 boot: the line stays up */
+    dmc_clr_modem_dtr(controller);
 controller->link.state = Halt;
 controller->state = Initialised;
 while ((control = controller->control_out)) {
@@ -3103,8 +3106,8 @@ dmc_buffer_queue_init_all(controller);
 controller->transfer_state = Idle;
 if (dmc_is_attached(controller->unit))
     dmc_set_run(controller);
-if (dmv_invoke)
-    dmv_boot_invoke(controller, dmv_soft_address);
+if (dmv_invoke && !dmv_boot_invoke(controller, dmv_soft_address))
+    dmc_clr_modem_dtr(controller);          /* no boot: an ordinary master clear */
 }
 
 void dmc_start_input_transfer(CTLR *controller)
@@ -5696,13 +5699,14 @@ if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller))
    The manual describes the takeover only in outline: the DMV11 "NPRs a
    tight-loop routine into main memory", "transfers control to the routine
    through the powerfail/restart vector", sends Request Program, loads the
-   program it gets and starts it.  Here the routine is MOV #40,SP / WAIT /
+   program it gets and starts it.  Here the routine is MOV #404,SP / WAIT /
    BR .-2 at 40 (reserved vector locations), entered through vector 24 at
    priority 7 with memory management off, as after a power-up.  In the
    WAIT the CPU fetches nothing, so the program may be loaded over the
    routine.  The start goes through vector 24 again; the trap pushes two
-   words at 34-36 (below SP = 40), and the program's own words at 24-26 and
-   34-36 are put back right after the trap.  The DMV11 keeps its host
+   words at 400-402 (below SP = 404: a kernel stack below 400 would be a
+   stack limit violation), and the program's own words at 24-26 and
+   400-402 are put back right after the trap.  The DMV11 keeps its host
    interface master-cleared during the boot and afterwards.
 
    MOP messages (MOP V3 AA-X436A-TK; DMV11 device type 34 from the MOP
@@ -5721,8 +5725,9 @@ if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller))
 #define DMV_MOP_PARAM_XFER  20      /* Parameter Load with Transfer Address */
 #define DMV_MOP_DEVTYPE     34      /* MOP device type of the DMV11 */
 #define DMV_BOOT_RETRY      5000    /* msec without an answer before a request is repeated */
-#define DMV_PARK            0000040 /* the CPU's waiting routine (and its SP) */
-#define DMV_PUSH            0000034 /* the start trap pushes PC, PSW at 34, 36 */
+#define DMV_PARK            0000040 /* the CPU's waiting routine */
+#define DMV_PARK_SP         0000404 /* its SP: the lowest without a stack limit trap */
+#define DMV_PUSH            0000400 /* the start trap pushes PC, PSW at 400, 402 */
 
 static const char *dmv_mode_names[8] = {
     "HDXDMC", "FDXDMC", "HDXPOINT", "FDXPOINT",
@@ -6021,7 +6026,7 @@ static void dmv_park_cpu (CTLR *controller, t_bool trap)
 {
 #if DMV_BOOT_SUPPORTED
 static const uint16 park[4] = {
-    0012706, DMV_PARK,              /* MOV #40,SP */
+    0012706, DMV_PARK_SP,           /* MOV #404,SP */
     0000001,                        /* WAIT */
     0000776 };                      /* BR .-2 */
 uint16 vector[2];
@@ -6047,7 +6052,10 @@ static void dmv_boot_begin (CTLR *controller, int how, uint8 address, t_bool tra
 {
 static const char *hows[] = {"", "power-on boot", "remote load detect", "invoke primary MOP"};
 
+controller->dmv_keep_line = TRUE;           /* the line it boots over stays up */
 dmc_process_master_clear (controller);
+controller->dmv_keep_line = FALSE;
+dmc_set_modem_dtr (controller);             /* DTR on (power-on boot: not yet) */
 memset (&controller->dmv_boot, 0, sizeof(controller->dmv_boot));
 controller->dmv_boot.how = how;
 controller->dmv_boot.address = address;
@@ -6072,10 +6080,10 @@ uint8 address = 1;                          /* point-to-point */
 if ((unitno < 0) || (unitno >= (int32)dptr->numunits - 2) || (unitno >= DMP_NUMDEVICE))
     return SCPE_ARG;
 controller = (CTLR *)dptr->units[unitno].ctlr;
-if ((why = dmv_boot_refused (controller)))
-    return sim_messagef (SCPE_ARG, "%s\n", why);
 if (!(dmv_e101[unitno] & DMV_E101_POWERON))
     return sim_messagef (SCPE_ARG, "The power-on boot switch (E101 SW4) is off: SET %s%d POWERONBOOT\n", dptr->name, unitno);
+if ((why = dmv_boot_refused (controller)))
+    return sim_messagef (SCPE_ARG, "%s\n", why);
 if (!(dptr->units[unitno].flags & UNIT_ATT))
     return sim_messagef (SCPE_UNATT, "%s%d is not attached to its line\n", dptr->name, unitno);
 if (dmv_switch_mode(controller) & 4) {      /* multipoint tributary */
@@ -6089,8 +6097,9 @@ return SCPE_OK;
 
 /* Invoke primary MOP (from the master clear): as the power-on boot.  A
    multipoint tributary without a switch address uses the first tributary
-   the program established, not with the power-on boot switch (4.7.4.2). */
-void dmv_boot_invoke (CTLR *controller, uint8 soft_address)
+   the program established, not with the power-on boot switch (4.7.4.2).
+   TRUE if the boot started. */
+t_bool dmv_boot_invoke (CTLR *controller, uint8 soft_address)
 {
 const char *why = dmv_boot_refused (controller);
 uint8 address = 1;
@@ -6107,9 +6116,10 @@ if (!why && (dmv_switch_mode(controller) & 4)) {
 if (why) {
     sim_debug(DBG_WRN, controller->device, "%s%d: Invoke primary MOP ignored: %s\n",
               controller->device->name, controller->index, why);
-    return;
+    return FALSE;
     }
 dmv_boot_begin (controller, DMVB_HOW_INVOKE, address, TRUE);
+return TRUE;
 }
 
 /* Remote load detect is armed */
@@ -6230,7 +6240,7 @@ sim_activate_abs (controller->unit, 1);     /* dmv_boot_finish() */
 #endif
 }
 
-/* After the start trap: the program's own words at 24-26 and 34-36 */
+/* After the start trap: the program's own words at 24-26 and 400-402 */
 void dmv_boot_finish (CTLR *controller)
 {
 #if DMV_BOOT_SUPPORTED
