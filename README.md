@@ -1,4 +1,4 @@
-<!-- open-simh-extended/README.md  v2 (v2: VAX 8200/8300 VAXBI devices: second CPU, DMB32, KDB50, DEBNA, KLESI-B, VAXBI-only mode; branches; v1: integration branch: fork introduction above the Open SIMH README) -->
+<!-- open-simh-extended/README.md  v3 (v3: DMV11 switch packs and MOP boot of the PDP-11; all topic branches listed; v2: VAX 8200/8300 VAXBI devices: second CPU, DMB32, KDB50, DEBNA, KLESI-B, VAXBI-only mode; branches; v1: integration branch: fork introduction above the Open SIMH README) -->
 # open-simh-extended
 
 **A fork of [Open SIMH](https://github.com/open-simh/simh) with new devices and
@@ -16,6 +16,9 @@ The work is by Ulli (vaxorcist), developed with Claude (Anthropic).
 - **DMV11 and DMP11** synchronous communications controllers (Qbus MicroVAXen,
   Unibus VAXen, PDP-11), with DDCMP multipoint: control station and up to
   12 (DMV11) or 32 (DMP11) tributaries. Tested with VMS V3.5–V4.7 DECnet.
+  The DMV11 has its switch packs (`SET DMVn MODE`, `TRIBUTARY`, ...) and, in
+  the PDP-11 simulator, the primary MOP boot (`BOOT DMVn`, remote load detect,
+  invoke primary MOP).
 - **DMF32** multi-function interface for the Unibus VAXen: 8 asynchronous
   lines, a synchronous line (DDCMP, HDLC/SDLC), a line printer port and a
   DR11-C compatible parallel interface.
@@ -39,7 +42,7 @@ The work is by Ulli (vaxorcist), developed with Claude (Anthropic).
 | Branch | Content |
 |---|---|
 | `integration` | everything below, together (default branch) |
-| `dmv11-dmp11`, `dmf32`, `dmc-ultrix`, `vax8200-uba`, `rb730`, `sound`, `vax8300-mp`, `dmb32`, `kdb50`, `debna`, `klesib` | one topic each |
+| `dmv11-dmp11`, `dmf32`, `dmc-ultrix`, `vax8200-uba`, `rb730`, `sound`, `vax8300-mp`, `dmb32`, `kdb50`, `debna`, `klesib`, `dmb32-sync`, `realism`, `vaxbi-config`, `ka820-clock`, `dmb32-trib`, `ts-online`, `dmv-boot` | one topic each |
 | `notes` | documentation, tools, test scripts and the same work as patch files |
 | `master` | Open SIMH, unchanged |
 
