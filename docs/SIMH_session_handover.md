@@ -1,7 +1,7 @@
-<!-- open-simh-extended/docs/SIMH_session_handover.md  v8, 2026-11-19 (v8: patch 17, TS ON-LINE switch visible, branch ts-online; v7: SIDRIVER backported to VMS V4.7; v6: patch 16, DMB32 sync line as DDCMP tributary (CTS follows RTS), branch dmb32-trib; v5: patch 15, KA820 clock IPL 16 and IPIR; VMS055_1.R82; v4: patch 14, VAXBI configuration and memory boards; v3: patches 11 v3 and 13, SET REALISM, topic branches restacked; v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
-# Session handover (2026-11-18, after patch 16)
+<!-- open-simh-extended/docs/SIMH_session_handover.md  v9, 2026-11-20 (v9: patch 18, DMV11 switch packs and primary MOP boot (PDP-11), branch dmv-boot; push access via the session's add_repo; v8: patch 17, TS ON-LINE switch visible, branch ts-online; v7: SIDRIVER backported to VMS V4.7; v6: patch 16, DMB32 sync line as DDCMP tributary (CTS follows RTS), branch dmb32-trib; v5: patch 15, KA820 clock IPL 16 and IPIR; VMS055_1.R82; v4: patch 14, VAXBI configuration and memory boards; v3: patches 11 v3 and 13, SET REALISM, topic branches restacked; v2: state after the VMS V5.5 session: patches 9 v4, 10 v2, 12; open points; v1: handover after the KLESI-B session: workspace setup, rules, state, test images, test methods, open points) -->
+# Session handover (2026-11-20, after patch 18)
 
-For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–82).
+For the next Claude session working with Ulli on the SIMH project. Read this first, then `docs/SIMH_overview.md` (current state, patch chain, device facts) and `docs/SIMH_known_issues.md` (cases 1–91).
 
 **A new session starts with an empty workspace.** Everything Claude had locally (worktrees, built simulators, test directories, Ulli's uploads) is gone. The code, docs, tests and tools are in the fork on GitHub. Ulli's images must be uploaded again (section 4).
 
@@ -15,13 +15,14 @@ git clone https://github.com/vaxorcist/open-simh-extended oss
 cd oss
 git worktree add -b integration-wip ../integ origin/integration
 git worktree add -b notes-tmp ../notes origin/notes
-git worktree add ../ts origin/ts-online  # topic branch of the last work (detached; branch with -b if needed)
+git worktree add ../dmvb origin/dmv-boot  # topic branch of the last work (detached; branch with -b if needed)
 cd ../integ
-make vax8200 microvax2 vax780 vax750       # build only what the change affects, plus representatives
+make vax8200 microvax2 vax780 vax750 pdp11  # build only what the change affects, plus representatives
 ```
 
 - **Edits of the CR LF sources:** use small Python scripts with `notes/tools/crlfedit.py` (`F(path)`, `.rep(old, new)` stops unless the old text occurs exactly once, `.save()` keeps CR LF). Strings in the scripts use plain `\n`.
 - **Push targets:** `integration-wip:integration`, `notes-tmp:notes`, the topic branch by its name. Push only to `vaxorcist/open-simh-extended`, never to open-simh/simh or Mark Pizzolato's repository.
+- **Push access:** if a push is refused by the git proxy ("not in this session's authorized repository set"), add the repository to the session (add_repo `vaxorcist/open-simh-extended`, access push); the existing clone can then push.
 - **Commit messages** end with:
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -47,15 +48,15 @@ make vax8200 microvax2 vax780 vax750       # build only what the change affects,
 
 ## 3. State of the work
 
-- **Patch chain:** patches 1–17 on Open SIMH 87eb7d5, applied with `git am --keep-cr` in the order 1, 2, 3, 4, 6, 5, 7, 8, 9 (v4), 10 (v2), 11 (v3), 12, 13, 14, 15, 16, 17. The result equals the `integration` branch except `README.md` and `.github/workflows/cmake-builds.yml`.
+- **Patch chain:** patches 1–18 on Open SIMH 87eb7d5, applied with `git am --keep-cr` in the order 1, 2, 3, 4, 6, 5, 7, 8, 9 (v4), 10 (v2), 11 (v3), 12, 13, 14, 15, 16, 17, 18. The result equals the `integration` branch except `README.md` and `.github/workflows/cmake-builds.yml`.
 - **How a patch is made** (patch 11 as the example):
   - apply the series in a scratch worktree on 87eb7d5;
   - cherry-pick the topic commits (`git cherry-pick <integration commits>`; plain `git am` without `--keep-cr` breaks the CR LF files), squash them with `git reset --soft`, and commit as Claude; leave README.md out (fork only);
   - `git format-patch -1 --stdout` into `notes/patches/opensimh_<n>_<topic>_v<k>.patch`;
   - `git diff --stat integration <scratch>` must show only README.md and the workflow file.
-- **Last commits (2026-11-19):** `integration` 50d910b9, `ts-online` 318276b3 (on `dmb32-trib` e7b98c1b, on `ka820-clock` 6f6cdd91, on `vaxbi-config` ab555b9e, on `realism` 3174cd71), `kdb50` 86631fc2, `debna` f7cacad4, `klesib` 9cd59d1c, `dmb32-sync` e901fc9c, `notes` with this handover. The topic chain is kdb50 → debna → klesib → dmb32-sync → realism → vaxbi-config → ka820-clock → dmb32-trib → ts-online; a fix to a lower topic branch needs the branches above it rebased (`git rebase --onto <new base> <old base> <branch>`), and the top must equal the patch series.
+- **Last commits (2026-11-20):** `integration` abd3743d, `dmv-boot` 48316bfd (on `ts-online` 318276b3, on `dmb32-trib` e7b98c1b, on `ka820-clock` 6f6cdd91, on `vaxbi-config` ab555b9e, on `realism` 3174cd71), `kdb50` 86631fc2, `debna` f7cacad4, `klesib` 9cd59d1c, `dmb32-sync` e901fc9c, `notes` with this handover. The topic chain is kdb50 → debna → klesib → dmb32-sync → realism → vaxbi-config → ka820-clock → dmb32-trib → ts-online → dmv-boot; a fix to a lower topic branch needs the branches above it rebased (`git rebase --onto <new base> <old base> <branch>`), and the top must equal the patch series.
 - **Work of 2026-11-17 (VMS V5.5):** KDB50 boot (known issues 71-73, patch 9 v3/v4, also from the KDB50 microcode listing), DEBNA with V5.5 (74, 75, patch 10 v2), DMB32 sync line with V5.5's SIDRIVER and the DMF32 sync line on the shared code (patch 12).
-- **Last work:** TS realism mode: the ON-LINE switch made visible (patch 17, known issues 87). Before that: VMS V5.5's SIDRIVER backported to VMS V4.7 (`docs/SIDRIVER_V47_backport.md`). Before that: the DMB32 sync line as a DDCMP multipoint tributary under VMS V5.5 (`tests/dmb32/dmb_trib.com`, against a VAX-11/780 DMP11 control station) stayed in -starting: SIDRIVER does multipoint in software with an RTS/CTS handshake and waited for CTS to drop after its first transmission; SIMH kept CTS on. Patch 16: CTS follows RTS (known issues 84). Before that: Ulli's VAX 8300 with VMS V5.5 stopped with "Exception in interrupt or exception" in the realism mode; reproduced as VMS bugcheck SPLRELERR at THROTTLE 400K: the KA820 interval timer was at IPL 18 instead of 16 (patch 15, known issues 81; IPIR fix 82; EVKAA skipped in the 8200 diagnostic test). Before that: the VAXBI configuration (patch 14, `docs/VAXBI_config_VAX8200_design.md`): configurable BI nodes, twelve MS820 boards, `SHOW BI`, rules.
+- **Last work (2026-11-20):** DMV11 switch packs E101/E113 and the primary MOP boot in the PDP-11 simulator, from Ulli's real DMV11 and its User's Guide EK-DMVQM-UG-003 (patch 18, `docs/DMV11_switches_boot_design.md`, tests `tests/dmv11_boot/` T1-T6 PASS; known issues 88-91). Ulli's decisions: the address switch is `TRIBUTARY=n` (ADDRESS is the CSR); boot only on the PDP-11 (no DMV11 boot on a MicroVAX, Ulli checked); BOOT refuses with the power-on boot switch off; manual defaults. Before that: TS realism mode: the ON-LINE switch made visible (patch 17, known issues 87). Before that: VMS V5.5's SIDRIVER backported to VMS V4.7 (`docs/SIDRIVER_V47_backport.md`). Before that: the DMB32 sync line as a DDCMP multipoint tributary under VMS V5.5 (`tests/dmb32/dmb_trib.com`, against a VAX-11/780 DMP11 control station) stayed in -starting: SIDRIVER does multipoint in software with an RTS/CTS handshake and waited for CTS to drop after its first transmission; SIMH kept CTS on. Patch 16: CTS follows RTS (known issues 84). Before that: Ulli's VAX 8300 with VMS V5.5 stopped with "Exception in interrupt or exception" in the realism mode; reproduced as VMS bugcheck SPLRELERR at THROTTLE 400K: the KA820 interval timer was at IPL 18 instead of 16 (patch 15, known issues 81; IPIR fix 82; EVKAA skipped in the 8200 diagnostic test). Before that: the VAXBI configuration (patch 14, `docs/VAXBI_config_VAX8200_design.md`): configurable BI nodes, twelve MS820 boards, `SHOW BI`, rules.
 - **VAX 8200/8300 devices done:** second KA820 (patch 7), DMB32 (8), KDB50 (9), DEBNA (10), KLESI-B and VAXBI-only mode (11).
 
 ## 4. Test images and other material from Ulli
@@ -70,6 +71,7 @@ None of these is in the repository; Ulli uploads them again when needed.
 | **`VMS055.R82`** (new, 2026-11-16) | VMS V5.5 on an RA82, for testing | **Confidential: it contains license data. It must not go anywhere else**: not into the fork, not into the project, not into any delivered file or doc, and no license data may be quoted. Work on a copy inside the workspace only. Its purpose has not been discussed yet: ask Ulli. |
 | `ult020src.tap` | ULTRIX V2.0 sources (VAXBI drivers: bla.c, bua.c, buareg.h, ...) | DEC copyright: stays out of the fork and the project; extracts go to Ulli only |
 | `KDB50_Microcode_Listing_Sep88_O.pdf` (new, 2026-11-17) | KDB50 microcode listing (version 19), OCR text | DEC copyright: facts only, in our own words; stays out of the fork and the project |
+| `EK-DMVQM-UG-003_QMA_DMV11_Synchronous_Controller_Users_Guide_1988_Ot.pdf` (2026-11-20) | DMV11 User's Guide (switch packs: Figure 2-5, 2-6, Table 2-6, 4-5; boot: section 4.7; registers chapter 3) | DEC copyright: facts only, in our own words; stays out of the fork and the project |
 | `EK-DMB32-UG-001`, `EK-DMB32-TD-001` (PDF) | DMB32 User Guide and Technical Description (sync line: UG 3.3.28-3.3.43, 3.3.52, 3.4.8, 3.4.11; TD 2.7) | Upload again when needed |
 | Standalone BACKUP kits (`STABA047-*.RX50`, `.RX1`, `.T58`), RT-11 images, DEC manuals (KA820, DMB32, KDB50, DEBNX, RX02) | earlier tests and sources | Upload again when needed |
 
@@ -109,6 +111,7 @@ None of these is in the repository; Ulli uploads them again when needed.
 | DMB32 sync line | Done with VMS V5.5's SIDRIVER (patch 12, patch 16). VMS V4.7: V5.5's SIDRIVER backported by binary patching (2026-11-19, `docs/SIDRIVER_V47_backport.md`, tools in `tools/sidriver_v47/`); POINT and TRIBUTARY pass; the patched SIDRIVER.EXE is DEC software from Ulli's VMS055.R82: Ulli only, never in the fork or the project. Known issues 86 (circuit fault at circuit OFF) open |
 | Second KDB50, DEBNK tape port | Postponed by Ulli |
 | MicroVAX II THROTTLE results | Waiting for Ulli's results |
+| DMV11 after patch 18 | VMS DECnet regressions with the DMV11/DMP11 (point-to-point, multipoint; the multipoint MOP address change of known issues 88) not run yet: they need VMS047.R81 from Ulli. A boot with a VMS control station (`NCP TRIGGER NODE ... SERVICE PASSWORD`, `LOAD NODE`) needs a PDP-11 load file VMS can serve: ask Ulli. Known issues 89 (boot unit number) needs the DMV11 technical manual |
 
 ## 7. Facts worth keeping in mind
 
@@ -122,6 +125,7 @@ None of these is in the repository; Ulli uploads them again when needed.
   - memory boards MCTL0-MCTL7 on 15-8 (MCTL8-11 without a default node).
   
   `SET dev NODE=n` refuses a node in use (`bi_get_node`); `SHOW BI` lists them; BI devices supply their own vectors via `nexusA` (patch 8). Test scripts that name nodes (the diagnostic supervisor's ATTACH lines) use these numbers.
+- **DMV11 switches (patch 18):** `SET DMVn MODE=...` acts at the next master clear (a running guest master-clears first; a test program without a master clear sees the old mode). Booting needs the mode from the switches and an attached line; T1-T6 in `tests/dmv11_boot/` connect the Python control station to the ATTACH port (known issues 91).
 - **VMS device names:**
   - TQ and TB together: PTA/MUA = TQ, PTB/MUB = TB;
   - VAXBI-only: TB is PTA/MUA;

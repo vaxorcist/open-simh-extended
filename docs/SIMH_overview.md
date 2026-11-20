@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/SIMH_overview.md  v47, 2026-11-19 (v47: patch 17, TS realism mode shows the ON-LINE switch (known issues 87), branch ts-online; v46: VMS V5.5's SIDRIVER backported to VMS V4.7 (DMB32 sync line under V4.7, POINT and TRIBUTARY), docs/SIDRIVER_V47_backport.md; v45: patch 16, DMB32 sync line CTS follows RTS: DDCMP tributary under VMS V5.5 (known issues 84), branch dmb32-trib; v44: patch 15, KA820 interval timer at IPL 16 (VMS V5.5 SMP crash, known issues 81) and IPIR (82), branch ka820-clock; v43: patch 14, configurable VAXBI nodes and twelve MS820 memory boards, branch vaxbi-config; v42: patch 11 v3 (KLESI-B TU81 only in the realism mode, known issues 77), patch 13 (SET REALISM ENABLED/DISABLED, known issues 76), topic branches restacked, branch realism; v41: patch 12, DMB32 sync line, DMF32 sync line on the shared code; v40: patch 10 v2, DEBNA with VMS V5.5 (known issues 74, 75); v39: patch 9 v4, KDB50 per its microcode listing (known issues 73); v38: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72, 9); v37: patch 11, KLESI-B (TB) and SET UBA DISABLE; v36: patch 10, DEBNA; v35: patch 9 v2, SDI rule (known issues 68); v34: patches 8 (DMB32) and 9 (KDB50); v33: patch 7, VAX 8300 dual KA820; v32: patch 5 v38, realism THROTTLE for every VAX; v31: patch 5 v37, 780 BOOT CS unit; v30: patch 5 v36, realism throttle starts at once; v29: patch 3 third commit, BOOT CS on the VAX 8200; v28: patch 5 v35, TU58; v27: patch 5 v34, VAX 8200 console floppy track 0 fix; v26: patch 5 v33, VAX 8600 console RL02; v25: patch 5 v32, VAX 8200 console RX50; v24: patch 5 v31, RX50, RX50 controller rules; v23: patch 5 v30, RX01 (RX, 11/780 console floppy); v22: patch 5 v29, RX02 density error on Read Status (VMS MOUNT); v21: patch 5 v28, RY debug flags; v20: patch 5 v27, RX02 floppy; v19: patch 5 v26, RA81 start 20 s, RA80 40 s; v18: patch 5 v25, SDI bus rule; v17: patch 5 v24, SDI rules, RA80 capacity; v16: patch 5 v23, the fixed RA drives, RA facts; v15: patch 5 v22; next the RA disks; v14: patch 5 v21; v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
+<!-- open-simh-extended/docs/SIMH_overview.md  v48, 2026-11-20 (v48: patch 18, DMV11 switch packs and primary MOP boot (PDP-11), branch dmv-boot, docs/DMV11_switches_boot_design.md, known issues 88-91; v47: patch 17, TS realism mode shows the ON-LINE switch (known issues 87), branch ts-online; v46: VMS V5.5's SIDRIVER backported to VMS V4.7 (DMB32 sync line under V4.7, POINT and TRIBUTARY), docs/SIDRIVER_V47_backport.md; v45: patch 16, DMB32 sync line CTS follows RTS: DDCMP tributary under VMS V5.5 (known issues 84), branch dmb32-trib; v44: patch 15, KA820 interval timer at IPL 16 (VMS V5.5 SMP crash, known issues 81) and IPIR (82), branch ka820-clock; v43: patch 14, configurable VAXBI nodes and twelve MS820 memory boards, branch vaxbi-config; v42: patch 11 v3 (KLESI-B TU81 only in the realism mode, known issues 77), patch 13 (SET REALISM ENABLED/DISABLED, known issues 76), topic branches restacked, branch realism; v41: patch 12, DMB32 sync line, DMF32 sync line on the shared code; v40: patch 10 v2, DEBNA with VMS V5.5 (known issues 74, 75); v39: patch 9 v4, KDB50 per its microcode listing (known issues 73); v38: patch 9 v3, VMS V5.5 boots from the KDB50 (known issues 71, 72, 9); v37: patch 11, KLESI-B (TB) and SET UBA DISABLE; v36: patch 10, DEBNA; v35: patch 9 v2, SDI rule (known issues 68); v34: patches 8 (DMB32) and 9 (KDB50); v33: patch 7, VAX 8300 dual KA820; v32: patch 5 v38, realism THROTTLE for every VAX; v31: patch 5 v37, 780 BOOT CS unit; v30: patch 5 v36, realism throttle starts at once; v29: patch 3 third commit, BOOT CS on the VAX 8200; v28: patch 5 v35, TU58; v27: patch 5 v34, VAX 8200 console floppy track 0 fix; v26: patch 5 v33, VAX 8600 console RL02; v25: patch 5 v32, VAX 8200 console RX50; v24: patch 5 v31, RX50, RX50 controller rules; v23: patch 5 v30, RX01 (RX, 11/780 console floppy); v22: patch 5 v29, RX02 density error on Read Status (VMS MOUNT); v21: patch 5 v28, RY debug flags; v20: patch 5 v27, RX02 floppy; v19: patch 5 v26, RA81 start 20 s, RA80 40 s; v18: patch 5 v25, SDI bus rule; v17: patch 5 v24, SDI rules, RA80 capacity; v16: patch 5 v23, the fixed RA drives, RA facts; v15: patch 5 v22; next the RA disks; v14: patch 5 v21; v13: patch 5 v20, smooth TK50 sounds; v12: patch 5 v19, TQ position fix; v11: patch 5 v18, TK50, MicroVAX II THROTTLE; v10: patch 5 v17; v9: patch 5 v16, tapes TS11/TSV05, TS facts; v8: patch 6 v2: one RB80, patch 5 v15, RB730 facts; v7: patch 1 v11: DMV11 on the MicroVAX I; v6: patch 5 v14, default sounds; v5: patch 5 v13; v4: 2026-11-06 RC25, patch 5 v12; v3: 2026-11-05 fork and branches; v2: 2026-11-01) -->
 # SIMH project – current state
 
 Read this first in every new session. It says what is current; the other docs
@@ -46,8 +46,9 @@ CR LF, so apply with `git am --keep-cr`, in this order (the files are in
 | 15 | `opensimh_15_ka820_clock_v1.patch` | VAX 8200/8300: the KA820 interval timer interrupts at IPL 16 as in the KA820 manual (was 18; VMS V5.5 SMP crashed with SPLRELERR at THROTTLE 400K / in the realism mode, known issues 81); IPIR adds inter-processor interrupt requests (82); the 8200 diagnostic test skips EVKAA (it expects the clock above IPL 17) | after 14 |
 | 16 | `opensimh_16_dmb32_trib_v1.patch` | VAX 8200/8300: the DMB32 sync line's CTS follows RTS (as with a modem or null-modem cable), so VMS V5.5 SIDRIVER works as a DDCMP multipoint tributary (DECnet line DMB-0 TRIBUTARY; known issues 84) | after 15 |
 | 17 | `opensimh_17_ts_online_v1.patch` | TS realism mode: SHOW TS shows the ON-LINE switch (on-line/off-line), SET TS LOAD says that the transport stays off-line until SET TS ONLINE (known issues 87) | after 16 |
+| 18 | `opensimh_18_dmv11_boot_v1.patch` | DMV11 switch packs E101/E113 (`SET DMVn MODE`, `TRIBUTARY`, `BOOTUNIT`, `{NO}POWERONBOOT`, `{NO}REMOTELOAD`, `SHOW DMVn SWITCHES`; defaults as in the manual) and, in the PDP-11 simulator, the primary MOP boot (remote load detect, power-on boot with `BOOT DMVn`, invoke primary MOP); multipoint MOP messages carry the tributary address (known issues 88) | after 17 |
 
-Patch 6 comes before patch 5; patches 7 to 17 come last, in that order. The whole series:
+Patch 6 comes before patch 5; patches 7 to 18 come last, in that order. The whole series:
 
 ```
 git checkout -b <branch> 87eb7d5
@@ -57,7 +58,7 @@ git am --keep-cr opensimh_1_dmv11_v11.patch opensimh_2_dmf32_v6.patch opensimh_3
                  opensimh_10_debna_v2.patch opensimh_11_klesib_v3.patch opensimh_12_dmb32_sync_v1.patch \
                  opensimh_13_realism_v1.patch opensimh_14_vaxbi_config_v1.patch \
                  opensimh_15_ka820_clock_v1.patch opensimh_16_dmb32_trib_v1.patch \
-                 opensimh_17_ts_online_v1.patch
+                 opensimh_17_ts_online_v1.patch opensimh_18_dmv11_boot_v1.patch
 ```
 
 The same work as git branches of the fork:
@@ -82,7 +83,8 @@ The same work as git branches of the fork:
 | `ka820-clock` | patch 15 (two commits: clock IPL 16 and the diagnostic test; IPIR) | `vaxbi-config` |
 | `dmb32-trib` | patch 16 (CTS follows RTS on the DMB32 sync line) | `ka820-clock` |
 | `ts-online` | patch 17 (TS ON-LINE switch visible) | `dmb32-trib` |
-| `integration` | patches 1, 2, 3, 4, 6, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 (as work commits) | `master` |
+| `dmv-boot` | patch 18 (two commits: switch packs and boot; line kept up, SP 404) | `ts-online` |
+| `integration` | patches 1, 2, 3, 4, 6, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 (as work commits) | `master` |
 | `notes` | these docs, tools, tests and patch files (no SIMH code) | |
 
 The chain `kdb50` → `debna` → `klesib` → `dmb32-sync` → `realism` was restacked on 2026-11-17 (the fixes of that day had gone onto `kdb50` and `debna` separately); the top of the chain has the same code as the patch series and `integration`.
@@ -104,6 +106,15 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
 - **VAXBI configuration (VAX 8200/8300, patch 14):** 16 nodes, all configurable (`SET dev NODE=n`, 0-15 or A-F, refused when used). Defaults as on a real machine: DWBUA 0, KA1 1, KA0 2 (VMS: primary CPU 02), KDB50 4, DMB32 5, KLESI-B 6, DEBNA 7, MCTL0-MCTL7 on 15-8. Memory: MS820-AA 2MB (T1008), MS820-BA 4MB (T1019), MS820-CA 16MB (T1040), all BI device type 0001; up to 12 boards; `SET CPU` 4M 2xAA, 8M 2xBA, 16M 4xBA, 32M 2xCA, 48M 3xCA, 64M 4xCA, 128M 8xCA (realism: the end), 256M/512M on SIMH-only 128MB boards. VMS (V4.7, V5.5) uses at most 8 memory boards (known issues 80). Rules: at most 3 KLESI-B, 2 DEBNT/DEBNA, 4 storage options; realism: DEBNA above every KLESI-B. `SHOW BI`, `SHOW MCTL`, `HELP MCTL` (`docs/VAXBI_config_VAX8200_design.md`).
 - **KA820 interrupt levels** (EK-KA820-TM-003 tables 5-1, 5-2; patch 15): interval timer IPL 16 (not the 11/7xx's 18; VMS V5.5 SMP relies on it, known issues 81), VAXBI devices 14-17, IPINTR, RXCD, console RX50 and serial lines 14, CRD 1A. DEC's generic EVKAA expects the clock above IPL 17 and is skipped on the 8200.
 - **DMV11** only on Qbus (MicroVAX I, MicroVAX II, MicroVAX 3900, Qbus PDP-11): `SET DMV ENABLE`.
+  One DMV11 board is one synchronous line; `SET DMV LINES=n` gives n boards.
+- **DMV11 switch packs and boot** (EK-DMVQM-UG-003, patch 18, `docs/DMV11_switches_boot_design.md`):
+  E101 (mode enable, boot unit, auto answer, power-on boot, remote load detect,
+  mode SW6-8, speed, interface) and E113 (tributary address/password); every
+  switch ON by default. The mode switches act at master clear. The address
+  switch is `TRIBUTARY=n`, because `ADDRESS` is the CSR address. The MOP boot
+  is PDP-11 only (a MicroVAX cannot boot from a DMV11, Ulli): MOP device type
+  34, Request Program for a secondary loader, takeover through the
+  power-fail vector 24.
 - **Test CPUs (Ulli, 2026-11-07):** Qbus changes are tested on the **microvax2** (the one Ulli uses most); a change for specific CPUs (e.g. the DMV11 on the MicroVAX I) is tested on the affected CPU(s).
   **DMP11** only on Unibus (VAX-11/730/750/780, 8200, 8600, Unibus PDP-11):
   `SET DMP ENABLE`. There is no DMP11 on Qbus VAXen. The DMC device has only
@@ -151,11 +162,16 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
   Test scripts in Claude's workspace: hop.sh, hello25.sh, restart1.sh,
   restart4.sh (delivered to Ulli).
 - VMS V3.5 on the VAX-11/730 with DMF-SYNC attached: 1.2 % host CPU.
+- DMV11 switch packs and MOP boot, PDP-11 (`tests/dmv11_boot/run_tests.sh`,
+  T1-T6): PASS; DMV11 master clear signature on microvax1/2/3900: PASS
+  (2026-11-20). The VMS DECnet regressions with the DMV/DMP after patch 18
+  are still to be run.
 
 ## Other docs on this branch
 
 | File | What it is |
 |---|---|
+| `docs/DMV11_switches_boot_design.md`, `tests/dmv11_boot/` | the DMV11 switch packs and primary MOP boot (patch 18): manual facts, commands, implementation, tests T1-T6 with a Python MOP control station |
 | `docs/SIDRIVER_V47_backport.md`, `tools/sidriver_v47/` | VMS V5.5's SIDRIVER (DMB32 sync line) backported to VMS V4.7: method, patches, installation, tests (the patched driver itself goes to Ulli only) |
 | `docs/VAXBI_config_VAX8200_design.md`, `tests/vaxbi/` | the VAXBI configuration of the VAX 8200/8300 (patch 14): nodes, memory boards, rules, VMS results (VMS uses at most 8 memory boards) |
 | `docs/KLESIB_VAX8200_design.md`, `tests/klesib/` | the KLESI-B (TB) and the VAXBI-only mode: design, decisions, VMS V4.7 tests (b1-b4) |
