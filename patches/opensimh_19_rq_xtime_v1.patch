@@ -1,0 +1,45 @@
+From 1a9dd5253bd6eec14b3ceab9e0b480c6da46b929 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 22:03:39 +0100
+Subject: [PATCH] RQ (VAX): default transfer time XTIME 1000 instructions (was
+ 200)
+
+VMS V4.7 froze at boot, right after the date, when SYSINIT's 60 KB read
+of F11BXQP.EXE completed within about 200 instructions of the poll:
+SYSINIT then waits in RWAST for ever (known issues 97).  It happened
+every time with SET NOASYNCH, and sometimes with asynchronous I/O when
+the host was fully loaded (the I/O thread then completes within very few
+simulated instructions).  Plain Open SIMH 87eb7d5 behaves the same.
+XTIME 400 and more never froze; a real RQDX3/UDA50 takes milliseconds.
+rq_io_complete() schedules a completion not before iostarttime + XTIME,
+so the new default is also the minimum with asynchronous I/O.  The
+PDP-11 version keeps 500.
+
+Tested: microvax2 SET NOASYNCH 3 of 3 boots (before 0 of 3); two
+simultaneous boots without IDLE 10 of 10 (before about half froze), with
+SET NOASYNCH 6 of 6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_rq.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/PDP11/pdp11_rq.c b/PDP11/pdp11_rq.c
+index 2dc49e3e..446acbc2 100644
+--- a/PDP11/pdp11_rq.c
++++ b/PDP11/pdp11_rq.c
+@@ -154,7 +154,9 @@
+ #elif defined (VM_VAX)                                  /* VAX version */
+ #include "vax_defs.h"
+ #define RQ_QTIME        100
+-#define RQ_XTIME        200
++#define RQ_XTIME        1000                            /* VMS V4.7 boot misses a
++                                                           read that completes
++                                                           within ~200 instructions */
+ #define OLDPC           fault_PC
+ extern int32 fault_PC;
+ 
+-- 
+2.43.0
+
