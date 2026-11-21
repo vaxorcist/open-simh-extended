@@ -34,6 +34,8 @@
                   BOOTUNIT, POWERONBOOT, REMOTELOAD; SHOW DMVn SWITCHES) and
                   the primary MOP boot (remote load detect, power-on boot
                   with BOOT DMVn, invoke primary MOP) on the PDP-11
+  21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
+                  request); a sent DDCMP maintenance message completes at once
   25-Jan-13  RJ   Error checking for already attached in dmc_settype() fixed.
   25-Jan-13  RJ   If attach when already attached then detach first.
   23-Jan-13  RJ   Don't do anything if not attached. See https://github.com/simh/simh/issues/28
@@ -855,7 +857,7 @@ typedef struct dmc_controller {
         size_t  last_len;
         t_bool  last_unsent;        /* line was busy: send it again soon */
         uint32  last_time;          /* when it was sent (sim_os_msec) */
-        uint16  saved[4];           /* loaded image words at 24, 26, 400, 402,
+        uint16  saved[4];           /* loaded image words at 24, 26, 774, 776,
                                        put back after the start trap */
         uint32  xfer;               /* transfer address of the loaded program */
         } dmv_boot;
@@ -1343,6 +1345,8 @@ t_stat dmv_show_bootunit (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmv_set_bootswitch (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat dmv_show_bootswitch (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmv_show_switches (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat dmv_set_program (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmv_boot (int32 unitno, DEVICE *dptr);
 t_bool dmv_boot_active (CTLR *controller);
 t_bool dmv_boot_receive (CTLR *controller);
@@ -1430,6 +1434,13 @@ int32 dmp_corruption[DMC_NUMDEVICE];
 uint16 dmv_e101[DMP_NUMDEVICE];             /* switch selectable features */
 uint8 dmv_e113[DMP_NUMDEVICE];              /* DDCMP address register:
                                                tributary address/password */
+/* Not a switch: the MOP program type of the boot's Request Program (0
+   secondary loader, 1 tertiary loader, 2 system image).  The manuals do not
+   give the message; a primary loader that takes a single Memory Load with
+   Transfer Address asks for a secondary loader, so 0 is the default.  2
+   lets a load host send the load file itself (SET DMVn PROGRAM=SYSTEM). */
+uint8 dmv_program[DMP_NUMDEVICE];
+static const char *dmv_program_names[] = {"SECONDARY", "TERTIARY", "SYSTEM"};
 #define DMV_E101_MODE_ENABLE 0x001  /* SW1 OFF: mode from SW6-8, not software */
 #define DMV_E101_UNIT1       0x002  /* SW2 OFF: unit number for booting 1 (ON: 0) */
 #define DMV_E101_AUTOANSWER  0x004  /* SW3: auto answer (no effect here) */
@@ -1544,6 +1555,7 @@ REG dmv_reg[] = {
     { BRDATAD (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE,         "modem control bits") },
     { BRDATAD (E101,              dmv_e101, DEV_RDX, 10, DMP_NUMDEVICE,         "switch pack E101 (bit n-1 = switch n OFF)") },
     { BRDATAD (E113,              dmv_e113, DEV_RDX,  8, DMP_NUMDEVICE,         "switch pack E113: tributary address/password") },
+    { BRDATAD (PROGRAM,        dmv_program, DEV_RDX,  8, DMP_NUMDEVICE,         "MOP program type of the boot request (0-2)") },
     { NULL }  };
 
 extern DEVICE dmc_dev;
@@ -1644,6 +1656,8 @@ MTAB dmv_mod[] = {
         &dmv_set_bootswitch, &dmv_show_bootswitch, NULL, "Remote load detect, E101 SW5" },
     { MTAB_XTD|MTAB_VUN, DMV_E101_REMOTELOAD|0x10000, NULL, "NOREMOTELOAD",
         &dmv_set_bootswitch, NULL, NULL, "No remote load detect, E101 SW5" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "PROGRAM", "PROGRAM={SECONDARY|TERTIARY|SYSTEM}",
+        &dmv_set_program, &dmv_show_program, NULL, "MOP program type the boot requests (not a switch)" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SWITCHES", NULL,
         NULL, &dmv_show_switches, NULL, "Display the switch packs E101 and E113 and the boot state" },
     { 0 } };
@@ -2281,8 +2295,10 @@ const char helpDmvSet[] =
     "+sim> SET %U BOOTUNIT={0|1}\n"
     "+sim> SET %U {NO}POWERONBOOT\n"
     "+sim> SET %U {NO}REMOTELOAD\n"
+    "+sim> SET %U PROGRAM={SECONDARY|TERTIARY|SYSTEM}\n"
     "\n"
-    " BOOTUNIT is E101 SW2, POWERONBOOT SW4 and REMOTELOAD SW5.  SW3 (auto\n"
+    " BOOTUNIT is E101 SW2, POWERONBOOT SW4 and REMOTELOAD SW5.  PROGRAM is\n"
+    " not a switch of the board but a simulator setting (see Booting).  SW3 (auto\n"
     " answer), SW9 (line speed) and SW10 (interface select) have no effect in\n"
     " the simulation and cannot be set.  The bus address and vector are set\n"
     " with SET %D ADDRESS and SET %D VECTOR.\n"
@@ -2368,15 +2384,23 @@ const char helpDmvBoot[] =
     " a multipoint tributary with its mode set by the mode switches (SET %U\n"
     " MODE=...).  The control station loads the program with MOP; with\n"
     " DECnet this is a circuit with SERVICE ENABLED and a node with a load\n"
-    " file (the DMV11 asks for a secondary loader, MOP device type 34).\n"
+    " file (MOP device type 34).\n"
+    "\n"
+    " SET %U PROGRAM selects the program the DMV11 asks for: SECONDARY (the\n"
+    " default: a secondary loader, DECnet SECONDARY LOADER), TERTIARY (TERTIARY\n"
+    " LOADER) or SYSTEM (the system image, DECnet LOAD FILE).  The manuals do\n"
+    " not say which one the real board asks for; SECONDARY is the most likely,\n"
+    " SYSTEM loads a program directly, without a secondary loader.  VMS V4.7\n"
+    " sends a secondary loader as one message at address 6.\n"
     "\n"
     " The DMV11 takes the CPU over through the power-fail/restart vector at\n"
-    " 24: it puts a waiting routine (MOV #404,SP; WAIT) at 40 and enters it at\n"
+    " 24: it puts a waiting routine (MOV #1000,SP; WAIT) at 40 and enters it at\n"
     " priority 7 with memory management off.  It stores each Memory Load it\n"
     " gets and asks for the next one, and starts the program at the transfer\n"
     " address of the Memory Load with Transfer Address (or Parameter Load\n"
     " with Transfer Address) message, again through vector 24.  The\n"
-    " program's own words at 24-26 and 400-402 are put back after the start.\n"
+    " program's own words at 24-26 and 774-776 are put back after the start;\n"
+    " the program starts with SP 774.\n"
     " A request the control station does not answer is sent again every 5\n"
     " seconds.\n"
     "2 Power-on boot\n"
@@ -5712,14 +5736,15 @@ if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller))
    The manual describes the takeover only in outline: the DMV11 "NPRs a
    tight-loop routine into main memory", "transfers control to the routine
    through the powerfail/restart vector", sends Request Program, loads the
-   program it gets and starts it.  Here the routine is MOV #404,SP / WAIT /
+   program it gets and starts it.  Here the routine is MOV #1000,SP / WAIT /
    BR .-2 at 40 (reserved vector locations), entered through vector 24 at
    priority 7 with memory management off, as after a power-up.  In the
    WAIT the CPU fetches nothing, so the program may be loaded over the
    routine.  The start goes through vector 24 again; the trap pushes two
-   words at 400-402 (below SP = 404: a kernel stack below 400 would be a
-   stack limit violation), and the program's own words at 24-26 and
-   400-402 are put back right after the trap.  The DMV11 keeps its host
+   words at 774-776 (below SP = 1000), and the program's own words at 24-26
+   and 774-776 are put back right after the trap.  The program starts with
+   SP 774, so it has the usual stack below 1000 (SP 404 at first left a
+   program that sets up no stack of its own, such as remwrt, without one).  The DMV11 keeps its host
    interface master-cleared during the boot and afterwards.
 
    MOP messages (MOP V3 AA-X436A-TK; DMV11 device type 34 from the MOP
@@ -5739,8 +5764,10 @@ if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller))
 #define DMV_MOP_DEVTYPE     34      /* MOP device type of the DMV11 */
 #define DMV_BOOT_RETRY      5000    /* msec without an answer before a request is repeated */
 #define DMV_PARK            0000040 /* the CPU's waiting routine */
-#define DMV_PARK_SP         0000404 /* its SP: the lowest without a stack limit trap */
-#define DMV_PUSH            0000400 /* the start trap pushes PC, PSW at 400, 402 */
+#define DMV_PARK_SP         0001000 /* its SP, also the started program's stack
+                                       (below 1000, as usual for standalone
+                                       programs; 404 left remwrt no stack) */
+#define DMV_PUSH            0000774 /* the start trap pushes PC, PSW at 774, 776 */
 
 static const char *dmv_mode_names[8] = {
     "HDXDMC", "FDXDMC", "HDXPOINT", "FDXPOINT",
@@ -5897,6 +5924,37 @@ fprintf (st, "BOOTUNIT=%d\n", (dmv_e101[ln] & DMV_E101_UNIT1) ? 1 : 0);
 return SCPE_OK;
 }
 
+/* SET DMVn PROGRAM={SECONDARY|TERTIARY|SYSTEM}: MOP program type of the
+   boot's Request Program (PDP-11 only) */
+t_stat dmv_set_program (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+int ln = dmv_unit_line(uptr);
+uint8 i;
+
+if (ln < 0)
+    return SCPE_IERR;
+if (!DMV_BOOT_SUPPORTED)
+    return dmv_boot_switch_refused ();
+if ((cptr == NULL) || (*cptr == '\0'))
+    return SCPE_MISVAL;
+for (i = 0; i < 3; i++)
+    if (MATCH_CMD (cptr, dmv_program_names[i]) == 0) {
+        dmv_program[ln] = i;
+        return SCPE_OK;
+        }
+return sim_messagef (SCPE_ARG, "PROGRAM must be SECONDARY, TERTIARY or SYSTEM\n");
+}
+
+t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+int ln = dmv_unit_line(uptr);
+
+if (ln < 0)
+    return SCPE_IERR;
+fprintf (st, "PROGRAM=%s\n", dmv_program_names[dmv_program[ln] % 3]);
+return SCPE_OK;
+}
+
 /* POWERONBOOT/NOPOWERONBOOT (SW4), REMOTELOAD/NOREMOTELOAD (SW5): val is
    the switch bit, plus 0x10000 for the NO form */
 t_stat dmv_set_bootswitch (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
@@ -5960,6 +6018,9 @@ fprintf (st, "switch pack E113 (M8053; E119 on the M8064), tributary address/pas
 for (sw = 0; sw < 8; sw++)
     fprintf (st, " %s", (dmv_e113[ln] & (1 << sw)) ? "OFF" : "ON");
 fprintf (st, "\n  value %d (%03o octal)\n", dmv_e113[ln], dmv_e113[ln]);
+if (DMV_BOOT_SUPPORTED)
+    fprintf (st, "program requested at boot (simulator setting, not a switch): %s\n",
+             dmv_program_names[dmv_program[ln] % 3]);
 controller = (CTLR *)uptr->ctlr;
 fprintf (st, "boot: %s\n", DMV_BOOT_SUPPORTED ? ((controller && (controller->dmv_boot.state <= DMVB_START)) ?
                                                 boot_states[controller->dmv_boot.state] : "none")
@@ -6013,8 +6074,11 @@ sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message %d sent%s\n", co
 
 static void dmv_boot_request_program (CTLR *controller)
 {
-/* code, device type, format version 1, program type 0 (secondary loader) */
-static const uint8 request[4] = {DMV_MOP_REQ_PROGRAM, DMV_MOP_DEVTYPE, 1, 0};
+/* code, device type, format version 1, program type (SET DMVn PROGRAM:
+   0 secondary loader, 1 tertiary loader, 2 system image) */
+uint8 request[4] = {DMV_MOP_REQ_PROGRAM, DMV_MOP_DEVTYPE, 1, 0};
+
+request[3] = dmv_program[dmv_line(controller)];
 
 controller->dmv_boot.state = DMVB_REQUEST;
 dmv_boot_send (controller, request, sizeof(request));
@@ -6039,7 +6103,7 @@ static void dmv_park_cpu (CTLR *controller, t_bool trap)
 {
 #if DMV_BOOT_SUPPORTED
 static const uint16 park[4] = {
-    0012706, DMV_PARK_SP,           /* MOV #404,SP */
+    0012706, DMV_PARK_SP,           /* MOV #1000,SP */
     0000001,                        /* WAIT */
     0000776 };                      /* BR .-2 */
 uint16 vector[2];
@@ -6261,7 +6325,7 @@ sim_activate_abs (controller->unit, 1);     /* dmv_boot_finish() */
 #endif
 }
 
-/* After the start trap: the program's own words at 24-26 and 400-402 */
+/* After the start trap: the program's own words at 24-26 and 774-776 */
 void dmv_boot_finish (CTLR *controller)
 {
 #if DMV_BOOT_SUPPORTED
