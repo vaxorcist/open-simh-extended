@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v1, 2026-11-20 (v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v2, 2026-11-21 (v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -24,7 +24,7 @@ Decisions (Ulli, 2026-11-20):
   program (no load image from DEC was available).
 
 Source: `PDP11/pdp11_dmc.c`, topic branch `dmv-boot` (on `ts-online`),
-patch `patches/opensimh_18_dmv11_boot_v1.patch`, tests
+patch `patches/opensimh_18_dmv11_boot_v2.patch`, tests
 `tests/dmv11_boot/`.
 
 ## 1. What the manual says
@@ -252,10 +252,84 @@ Other checks:
   microvax2 and microvax3900: PASS.
 - The microvax2, vax780 and microvax3900 builds compile with `-Werror`.
 
-Not tested yet (needs Ulli's VMS images):
+Not tested yet: the VMS DECnet regressions with the DMV11 and DMP11
+(point-to-point and multipoint) with patch 18 v2.
 
-- the VMS DECnet regressions with the DMV11 and DMP11 (point-to-point and
-  multipoint);
-- a boot with a VMS control station (`NCP TRIGGER NODE ... SERVICE
-  PASSWORD`, `LOAD NODE`), which needs a PDP-11 load file that VMS can
-  serve.
+## 6. VMS V4.7 as the load host (2026-11-21, patch 18 v2)
+
+Test: `tests/dmv11_vmsload/` (MicroVAX II with Ulli's VMS047.R81, PDP-11/73).
+
+### What the technical manual adds (EK-DMV11-TM-001)
+
+- Appendix D (modem control): with remote load detect, power-on boot or a
+  boot request selected, the DMV11 asserts DTR again by itself. Patch 18 v2:
+  with remote load detect on, DTR comes back right after every master clear
+  and at ATTACH, so the control station can reach a halted station.
+- Section 4.7 describes the same three boot sequences as the User's Guide.
+  The manual names no format for the Request Program message and says
+  nothing about how a loaded program learns the boot unit (known issue 89
+  stays open).
+
+### Setup
+
+PDP-11 (no PEER, it only listens; known issue 93):
+
+```
+set cpu 11/73
+set cpu 256k
+set dmv enable
+set dmv0 mode=fdxpoint
+set dmv0 tributary=123
+set dmv0 remoteload
+attach dmv0 21202
+dep 1000 000001
+dep 1002 000776
+dep PSW 0
+dep SP 1000
+go 1000
+```
+
+MicroVAX II: `set dmv enable`, `set dmv0 peer=127.0.0.1:21202`,
+`attach dmv0 21201`. NCP on VMS (password 7B hex = 123):
+
+```
+DEFINE LINE DMP-0 STATE ON PROTOCOL DDCMP POINT
+DEFINE CIRCUIT DMP-0 STATE ON SERVICE ENABLED
+DEFINE NODE 1.5 NAME PDP SERVICE CIRCUIT DMP-0 SERVICE PASSWORD 7B SERVICE DEVICE DMV CPU PDP11
+DEFINE NODE PDP SECONDARY LOADER SYS$SYSTEM:HELLO.TSK LOAD FILE SYS$SYSTEM:HELLO.TSK
+LOAD NODE PDP
+```
+
+### What happens
+
+1. NCP puts DMP-0 into maintenance mode and sends Enter MOP Mode
+   (`06 7B 00 00 00 00`, 5 verification bytes, DDCMP address 1).
+2. The PDP-11's DMV11 checks address and password, parks the CPU and sends
+   Request Program `08 22 01 00` (DMV, MOP format 1, secondary loader).
+3. VMS answers with one Memory Load with Transfer Address: load 0,
+   address 6, the task image's L$BLDZ x 64 bytes (128 for the 72-byte
+   test program), transfer address 6.
+4. The DMV11 writes the data and starts the program at 6. The PDP-11
+   console shows "HELLO from the DMV11 secondary loader".
+
+First this hung after step 1: the Enter MOP Mode message never came back
+to VMS as transmitted (known issue 92, fixed in patch 18 v2 for all
+DMC/DMR/DMP/DMV types).
+
+### Findings
+
+- **VMS loads a secondary loader at address 6**, whatever the task base
+  (L$BSA 0) and the transfer address (0) say, and pads it to L$BLDZ x 64
+  bytes. A secondary loader must therefore be position independent. The
+  first non-PIC try printed rubbish.
+- **After the secondary loader NCP waits** for the next Request Program
+  (tertiary loader or system image). A program that is not a loader leaves
+  NCP waiting until its timeout.
+- **remwrt** (32548 bytes, Lee Gleason's LOCALWRITE client for DEQNA +
+  RQDX3) cannot be a secondary loader. Loading it over the DMV11 needs a
+  DMV11 secondary loader: a small PIC program that drives the DMV11 in
+  maintenance mode, sends Request Program for the system image, answers
+  each Memory Load with Request Memory Load n+1 and jumps to the transfer
+  address. Not written yet. remwrt itself was assembled with macro11 v0.3
+  (0 errors) and converted to `remwrt.tsk` (66 blocks, transfer 0); see
+  known issues 95 and 96.

@@ -1,0 +1,28 @@
+# open-simh-extended/tests/dmv11_vmsload/macro11_v0.3_local.diff  v1
+# Local fix to github.com/shattered/macro11 v0.3 (parse.c): a hex number after ^X that
+# starts with a digit (^X0FF) is a number, not the global symbol 0FF.  Apply in the
+# macro11 source directory with: patch -p1 < macro11_v0.3_local.diff
+diff --git a/parse.c b/parse.c
+index c6c2f75..5f30b86 100644
+--- a/parse.c
++++ b/parse.c
+@@ -750,6 +750,19 @@ EX_TREE        *parse_unary(
+ 
+     /* Numeric constants are trickier than they need to be, */
+     /* since local labels start with a digit too. */
++    /* Claude, 2026-11-21: in the ^X (hexadecimal) radix a number may
++       contain letters (^X0FF); it was taken as a symbol "0FF". */
++    if (radix == 16 && isxdigit(*cp)) {
++        char           *endcp;
++        unsigned long   value = strtoul(cp, &endcp, 16);
++
++        tp = new_ex_tree();
++        tp->type = EX_LIT;
++        tp->data.lit = value;
++        tp->cp = endcp;
++        return tp;
++    }
++
+     if (isdigit(*cp)) {
+         char           *label;
+         int             local;

@@ -1,0 +1,27 @@
+; open-simh-extended/tests/dmv11_vmsload/hello.mac  v3 (v3: position independent, as VMS V4.7
+; loads a secondary loader at address 6, not at its task base 0; v2: the text is split into .BYTE and
+; .ASCII lines, as macro11 read <12>/HELLO as the expression 12 divided by HELLO)
+; Tiny PDP-11 test program for the DMV11 MOP boot test: used as SECONDARY
+; LOADER to find out whether VMS V4.7 answers the DMV11's Request Program
+; at all (remwrt is 32548 bytes, too big for one secondary-loader message).
+; It prints a line on the console terminal (DL11 at 177560) and halts.
+        .TITLE  HELLO
+        .ENABL  LC
+TPS     = 177564                ; console transmitter status
+TPB     = 177566                ; console transmitter buffer
+START:  MOV     #1000,SP        ; a stack above the program
+        MOV     PC,R1           ; R1 = run-time address of the next word
+BASE:   ADD     #MSG-BASE,R1    ; R1 -> text, wherever the program was loaded
+1$:     MOVB    (R1)+,R0        ; next character
+        BEQ     3$              ; zero byte: end of text
+2$:     TSTB    @#TPS           ; transmitter ready?
+        BPL     2$              ; no: wait
+        MOVB    R0,@#TPB        ; send the character
+        BR      1$
+3$:     HALT                    ; done: the simulator stops here
+        BR      3$
+MSG:    .BYTE   15,12           ; CR LF
+        .ASCII  /HELLO from the DMV11 secondary loader/
+        .BYTE   15,12,0         ; CR LF and the end mark
+        .EVEN
+        .END    START

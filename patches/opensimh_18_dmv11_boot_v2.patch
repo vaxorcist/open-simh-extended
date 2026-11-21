@@ -1,42 +1,37 @@
-From 75522d7c52b4800f93a0c34f9d86cd2f21554df8 Mon Sep 17 00:00:00 2001
+From ad3a8e6724181196b30c90595fc6bf4fb3bd1479 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Fri, 20 Nov 2026 23:11:07 +0100
+Date: Fri, 20 Nov 2026 22:41:15 +0100
 Subject: [PATCH] DMV11: switch packs E101/E113 and primary MOP boot (PDP-11)
+
+Patch 18 v2 (replaces v1).  Everything of v1, plus:
+- DMV11 with remote load detect: DTR comes back right after a master
+  clear and at ATTACH (EK-DMV11-TM-001 Appendix D, modem control).
+- Debug INFO for maintenance messages seen by remote load detect and for
+  every MOP message the boot engine receives.
+- Fix for all DMC11/DMR11/DMP11/DMV11: a sent DDCMP maintenance message
+  stayed on the ack-wait queue and was never returned to the host, so
+  VMS NCP LOAD/TRIGGER NODE hung after Enter MOP Mode.
 
 The DMV11 switch packs of EK-DMVQM-UG-003 (Figure 2-6, Tables 2-6 and 4-5)
 per DMV line, every switch ON by default as in the manual:
-  SET DMVn MODE={SOFTWARE|HDXDMC|FDXDMC|HDXPOINT|FDXPOINT|HDXCONTROL|
-                 FDXCONTROL|HDXTRIBUTARY|FDXTRIBUTARY}   (E101 SW1, SW6-8)
-  SET DMVn TRIBUTARY=n          tributary address/password (E113)
-  SET DMVn BOOTUNIT={0|1}       unit number for booting (E101 SW2)
-  SET DMVn {NO}POWERONBOOT      power-on boot (E101 SW4)
-  SET DMVn {NO}REMOTELOAD       remote load detect (E101 SW5)
-  SHOW DMVn SWITCHES            both switch packs as set on the board
-The mode switches set the station type at every master clear; a mode
-definition for another mode gets error 104 unless the diagnostic mode bit
-(BSEL1 bit 3) is set.  A multipoint tributary with a switch address
-answers only to it: other tributary addresses in commands are replaced.
+  SET DMVn MODE=...            mode (E101 SW1, SW6-8)
+  SET DMVn TRIBUTARY=n         tributary address/password (E113)
+  SET DMVn BOOTUNIT={0|1}      unit number for booting (E101 SW2)
+  SET DMVn {NO}POWERONBOOT     power-on boot (E101 SW4)
+  SET DMVn {NO}REMOTELOAD      remote load detect (E101 SW5)
+  BOOT DMVn                    power-on boot (PDP-11 only)
 
-The primary MOP boot (manual section 4.7) in the PDP-11 simulator: remote
-load detect (Enter MOP Mode with the switch password), power-on boot
-(BOOT DMVn) and invoke primary MOP (BSEL1 bits 5 and 6).  The DMV11 takes
-the CPU over through the power-fail/restart vector (waiting routine at
-40, priority 7, memory management off), sends Request Program (device
-type 34, secondary loader), stores the Memory Load messages and starts
-the program at the transfer address through vector 24.  The boot
-switches are refused in the VAX simulators.
-
-Multipoint maintenance (MOP) messages now carry the tributary address
-(they had address 1, so only tributary 1 got them).
+Tested: VMS V4.7 on a MicroVAX II as load host (LOAD NODE) loads and
+starts a PDP-11 program in a PDP-11/73; tests/dmv11_boot T1-T6 pass.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
 ---
- PDP11/pdp11_dmc.c | 1027 ++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1014 insertions(+), 13 deletions(-)
+ PDP11/pdp11_dmc.c | 1068 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1054 insertions(+), 14 deletions(-)
 
 diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
-index a2a54109..d5b10672 100644
+index a2a54109..3936e0a1 100644
 --- a/PDP11/pdp11_dmc.c
 +++ b/PDP11/pdp11_dmc.c
 @@ -30,6 +30,10 @@
@@ -409,16 +404,38 @@ index a2a54109..d5b10672 100644
  controller->link.state = Halt;
  controller->state = Initialised;
  while ((control = controller->control_out)) {
-@@ -2849,6 +3106,8 @@ dmc_buffer_queue_init_all(controller);
+@@ -2849,6 +3106,13 @@ dmc_buffer_queue_init_all(controller);
  controller->transfer_state = Idle;
  if (dmc_is_attached(controller->unit))
      dmc_set_run(controller);
 +if (dmv_invoke && !dmv_boot_invoke(controller, dmv_soft_address))
 +    dmc_clr_modem_dtr(controller);          /* no boot: an ordinary master clear */
++/* DMV11 with remote load detect: DTR comes back at once, the DMV11 keeps
++   scanning the line for an Enter MOP Mode message (EK-DMV11-TM-001
++   Appendix D, modem control) */
++if (dmv_remote_load_watch(controller))
++    dmc_set_modem_dtr(controller);
  }
  
  void dmc_start_input_transfer(CTLR *controller)
-@@ -2916,6 +3175,12 @@ DEVICE *dptr = controller->device;
+@@ -2901,7 +3165,15 @@ buffer->actual_bytes_transferred = buffer->count;
+ controller->buffers_transmitted_to_net++;
+ if (buffer->type == TransmitData) {
+     buffer->actual_bytes_transferred = buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
+-    ASSURE (insqueue (&buffer->hdr, controller->ack_wait_queue->hdr.prev));
++    /* A maintenance (MOP) message is never acknowledged: it is complete
++       once sent.  On the ack-wait queue it would never be returned to
++       the host (VMS NCP TRIGGER/LOAD NODE then hangs). */
++    if (buffer->transfer_buffer[0] == DDCMP_DLE) {
++        ASSURE (insqueue (&buffer->hdr, controller->completion_queue->hdr.prev));
++        }
++    else {
++        ASSURE (insqueue (&buffer->hdr, controller->ack_wait_queue->hdr.prev));
++        }
+     }
+ else {
+     ASSURE (insqueue (&buffer->hdr, &controller->free_queue->hdr));
+@@ -2916,6 +3188,12 @@ DEVICE *dptr = controller->device;
  
  sim_debug(DBG_TRC, dptr, "dmc_svc(%s%d)\n", controller->device->name, controller->index);
  
@@ -431,7 +448,7 @@ index a2a54109..d5b10672 100644
  /* DMP/DMV multipoint: ddcmp_dispatch() calls this routine directly at the
     end of a recursive scan.  If that happens while a tributary session is
     loaded, come back later instead of nesting another session load. */
-@@ -3232,14 +3497,16 @@ t_bool dmc_buffer_fill_receive_buffers(CTLR *controller)
+@@ -3232,14 +3510,16 @@ t_bool dmc_buffer_fill_receive_buffers(CTLR *controller)
  {
  int ans = FALSE;
  
@@ -451,7 +468,7 @@ index a2a54109..d5b10672 100644
          if (!controller->link.rcv_pkt)
              break;
          ans = TRUE;
-@@ -3249,6 +3516,10 @@ if (controller->state == Running) {
+@@ -3249,6 +3529,10 @@ if (controller->state == Running) {
          buffer = dmc_buffer_queue_head(controller->rcv_queue);
          }
      }
@@ -462,7 +479,7 @@ index a2a54109..d5b10672 100644
  return ans;
  }
  
-@@ -3363,6 +3634,16 @@ controller->dmp_gss[034] = 013560;
+@@ -3363,6 +3647,16 @@ controller->dmp_gss[034] = 013560;
  controller->dmp_gss[035] = 0310;
  controller->dmp_gss[036] = 017500;
  controller->dmp_gss[037] = 0;
@@ -479,7 +496,7 @@ index a2a54109..d5b10672 100644
  }
  
  /* Default tributary parameters (Table 4-2), set when a tributary is
-@@ -3961,6 +4242,18 @@ uint8 station = (uint8)(sel2 >> DMP_SEL2_V_STATION);
+@@ -3961,6 +4255,18 @@ uint8 station = (uint8)(sel2 >> DMP_SEL2_V_STATION);
  uint32 addr = dmc_get_addr(controller);
  uint16 count = dmc_get_count(controller);
  
@@ -498,7 +515,7 @@ index a2a54109..d5b10672 100644
  switch (controller->transfer_type) {
      case DMP_C_TYPE_MODE:
          {
-@@ -3971,8 +4264,11 @@ switch (controller->transfer_type) {
+@@ -3971,8 +4277,11 @@ switch (controller->transfer_type) {
          uint16 mode = *controller->csrs->sel6 & DMP_TYPE_INPUT_MASK;
  
          /* Bit 2 = multipoint, bit 1 = tributary, bit 0 = full duplex.  The
@@ -512,7 +529,7 @@ index a2a54109..d5b10672 100644
              dmp_procedural_error(controller, station, DMP_ERR_BAD_MODE);
          else {
              controller->dmp_station_type = mode;
-@@ -4239,7 +4535,7 @@ for (i = 0; i < nlines; i++) {
+@@ -4239,7 +4548,7 @@ for (i = 0; i < nlines; i++) {
          DMP_TRIB *trib;
          size_t pool_before;
  
@@ -521,7 +538,7 @@ index a2a54109..d5b10672 100644
          if (!pkt)
              break;
          ans = TRUE;
-@@ -4324,7 +4620,10 @@ if (ddcmp_tmxr_put_packet_crc_ln (lp, poll, DDCMP_HEADER_SIZE, 0) == SCPE_OK) {
+@@ -4324,7 +4633,10 @@ if (ddcmp_tmxr_put_packet_crc_ln (lp, poll, DDCMP_HEADER_SIZE, 0) == SCPE_OK) {
  }
  
  /* Send what the loaded session has queued, with its tributary address in
@@ -533,7 +550,7 @@ index a2a54109..d5b10672 100644
  static void dmp_mp_send_session(CTLR *controller)
  {
  DMP_TRIB *trib = &controller->dmp_trib[controller->dmp_loaded];
-@@ -4346,8 +4645,8 @@ while ((buffer = dmc_buffer_queue_head(controller->xmt_queue)) != NULL) {
+@@ -4346,8 +4658,8 @@ while ((buffer = dmc_buffer_queue_head(controller->xmt_queue)) != NULL) {
          return;
      if ((controller->link.state != Maintenance) && (msg[DDCMP_RESP_OFFSET] != controller->link.R))
          msg[DDCMP_RESP_OFFSET] = controller->link.R;    /* latest acknowledgement */
@@ -543,7 +560,7 @@ index a2a54109..d5b10672 100644
          if (dmp_control_station(controller)) {
              if (trib->ses.holds_select)         /* do not select it again */
                  msg[2] &= ~(DDCMP_FLAG_SELECT << 6);
-@@ -5378,6 +5677,705 @@ if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller))
+@@ -5378,6 +5690,727 @@ if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller))
      }
  }
  
@@ -1022,10 +1039,18 @@ index a2a54109..d5b10672 100644
 +size_t len, vlen, i;
 +t_bool match;
 +
-+if ((pkt[0] != DDCMP_DLE) || (size < DDCMP_HEADER_SIZE + 1 + DDCMP_CRC_SIZE) ||
-+    ddcmp_crc16 (0, pkt, DDCMP_HEADER_SIZE) || ddcmp_crc16 (0, mop, size - DDCMP_HEADER_SIZE))
++if (pkt[0] != DDCMP_DLE)
 +    return FALSE;
++if ((size < DDCMP_HEADER_SIZE + 1 + DDCMP_CRC_SIZE) ||
++    ddcmp_crc16 (0, pkt, DDCMP_HEADER_SIZE) || ddcmp_crc16 (0, mop, size - DDCMP_HEADER_SIZE)) {
++    sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: damaged maintenance message (%d bytes) ignored\n",
++              controller->device->name, controller->index, size);
++    return FALSE;
++    }
 +len = size - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
++sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: MOP message %d, %d bytes, address %d, data %02X %02X %02X %02X %02X\n",
++          controller->device->name, controller->index, mop[0], (int)len, pkt[5],
++          (len > 1) ? mop[1] : 0, (len > 2) ? mop[2] : 0, (len > 3) ? mop[3] : 0, (len > 4) ? mop[4] : 0, (len > 5) ? mop[5] : 0);
 +if ((mop[0] != DMV_MOP_ENTER) || (len < 5))
 +    return FALSE;
 +if (dmv_switch_mode(controller) & 4) {      /* tributary: its own address only */
@@ -1137,6 +1162,20 @@ index a2a54109..d5b10672 100644
 +
 +if (len < 1)
 +    return;
++if (sim_deb && (controller->device->dctrl & DBG_INF)) {
++    char hex[3 * 16 + 8] = "";
++    size_t k, o = 0;
++
++    for (k = 0; (k < len) && (k < 12); k++)        /* the first 12 bytes */
++        o += sprintf (hex + o, " %02X", mop[k]);
++    if (len > 12) {                                /* ... and the last 4 */
++        o += sprintf (hex + o, " ..");
++        for (k = (len > 16) ? len - 4 : 12; k < len; k++)
++            o += sprintf (hex + o, " %02X", mop[k]);
++        }
++    sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message received, %d bytes:%s\n",
++              controller->device->name, controller->index, (int)len, hex);
++    }
 +switch (mop[0]) {
 +    case DMV_MOP_LOAD:                      /* code, load number, address, data */
 +        if (len < 6)
@@ -1249,7 +1288,7 @@ index a2a54109..d5b10672 100644
  t_stat dmc_rd(int32 *data, int32 PA, int32 access)
  {
  CTLR *controller = dmc_get_controller_from_address(PA);
-@@ -5654,6 +6652,9 @@ if (!(dptr->flags & DEV_DIS)) {
+@@ -5654,6 +6687,9 @@ if (!(dptr->flags & DEV_DIS)) {
              dmc_clrinint(controller);
              dmc_clroutint(controller);
              controller->dmc_wr_delay = 0;
@@ -1259,6 +1298,24 @@ index a2a54109..d5b10672 100644
              for (j=0; j<dptr->numunits-1; j++) {
                  sim_cancel (&dptr->units[j]); /* stop poll */
                  if (dptr->units[j].flags & UNIT_ATT)
+@@ -5714,6 +6750,8 @@ if ((((CTLR *)uptr->ctlr)->dev_type == DMP) && !peer[0] && strncasecmp (cptr, "S
+     strcpy (uptr->filename, port);
+     uptr->flags |= UNIT_ATT;
+     sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
++    if (dmv_remote_load_watch(controller))  /* DMV11 remote load detect: DTR on */
++        dmc_set_modem_dtr(controller);
+     return SCPE_OK;
+     }
+ if (0 == strncasecmp (cptr, "SYNC", 4)) {
+@@ -5736,6 +6774,8 @@ uptr->filename = (char *)malloc (strlen(port)+1);
+ strcpy (uptr->filename, port);
+ uptr->flags |= UNIT_ATT;
+ sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
++if (uptr->ctlr && dmv_remote_load_watch((CTLR *)uptr->ctlr))    /* DMV11 remote load detect: DTR on */
++    dmc_set_modem_dtr((CTLR *)uptr->ctlr);
+ return ans;
+ }
+ 
 -- 
 2.43.0
 
