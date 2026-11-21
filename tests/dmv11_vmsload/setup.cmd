@@ -1,7 +1,7 @@
-! open-simh-extended/tests/dmv11_vmsload/setup.cmd  v1 (2026-11-21)
-! DCL commands for vmsrun.py, run once: copy HELLO.TSK from the tape to
-! SYS$SYSTEM and define line, circuit and the node PDP (1.5) in the
-! permanent database.  Password 7B hex = 123, the PDP-11's E113 setting.
+# open-simh-extended/tests/dmv11_vmsload/setup.cmd  v2 (v2: comments start with #, which vmsrun.py skips; with ! they went to DCL) (2026-11-21)
+# DCL commands for vmsrun.py, run once: copy HELLO.TSK from the tape to
+# SYS$SYSTEM and define line, circuit and the node PDP (1.5) in the
+# permanent database.  Password 7B hex = 123, the PDP-11's E113 setting.
 MOUNT/FOREIGN/BLOCKSIZE=512/RECORDSIZE=512 MSA0:
 COPY MSA0: SYS$SYSTEM:HELLO.TSK
 DISMOUNT MSA0:
