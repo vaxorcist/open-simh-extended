@@ -1,5 +1,5 @@
 #!/bin/bash
-# open-simh-extended/tests/dmv11_boot/run_tests.sh  v4 (v4: T5 BOOT refusals, T6 switch mode and address with the host interface; v3: also 400-402; v2: mopctl.py connects to the ATTACH port)
+# open-simh-extended/tests/dmv11_boot/run_tests.sh  v5 (v5: checks 774-776 instead of 400-402 (start trap at SP 1000); v4: T5 BOOT refusals, T6 switch mode and address with the host interface; v3: also 400-402; v2: mopctl.py connects to the ATTACH port)
 # Runs the DMV11 boot tests T1-T4: for each, the MOP control station
 # (mopctl.py) is started in the background, then the PDP-11 simulator with
 # the test's ini file.  A test passes when mopctl.py reports PASS, the
@@ -53,7 +53,7 @@ for t in $TESTS; do
     grep -q "^PASS" $t.mop || ok=0
     grep -q "DMV BOOT OK" $t.out || ok=0
     grep -q "HALT instruction, PC: 001032" $t.out || ok=0
-    for w in "24:	100012" "26:	100013" "34:	100016" "36:	100017" "40:	100020" "400:	100200" "402:	100201"; do
+    for w in "24:	100012" "26:	100013" "34:	100016" "36:	100017" "40:	100020" "774:	100376" "776:	100377"; do
         grep -q "$w" $t.out || ok=0
     done
     if [ $ok = 1 ]; then echo "$t PASS"; else echo "$t FAIL"; fail=1; fi

@@ -1,4 +1,4 @@
-open-simh-extended/tests/dmv11_boot/README.txt  v1 (2026-11-20)
+open-simh-extended/tests/dmv11_boot/README.txt  v2 (2026-11-21; v2: the start trap words are at 774-776)
 
 DMV11 switch packs and primary MOP boot (patch 18, PDP-11 simulator).
 
@@ -15,7 +15,7 @@ mopctl.py   a minimal DDCMP/MOP control station in Python: connects to the
 mkini.py    writes t3.ini, t4.ini and t6.ini (their PDP-11 programs are
             assembled there, with computed branch offsets).
 common_check.ini  memory after the halt: the program's own words at 24-40
-            and 400-402 (the DMV11 puts back what its start trap changed).
+            and 774-776 (the DMV11 puts back what its start trap changed).
 
 T1  power-on boot, point-to-point (MODE=FDXPOINT, POWERONBOOT, BOOT DMV0);
     the first Request Program is not answered: repeated after 5 s.

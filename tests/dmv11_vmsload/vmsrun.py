@@ -1,4 +1,4 @@
-# open-simh-extended/tests/dmv11_vmsload/vmsrun.py  v3 (v3: lines end with CR, as typed on a terminal; v2: answers the date prompt during the boot)
+# open-simh-extended/tests/dmv11_vmsload/vmsrun.py  v4 (v4: if VMS shows nothing for 60 s after the date was typed, CR is typed again (a CR was lost twice while the other node connected); v3: lines end with CR, as typed on a terminal; v2: answers the date prompt during the boot)
 # Runs one simulator with VMS in the foreground (pexpect), logs in and
 # types a list of DCL commands, one at a time: each command is followed by
 # a marker line (WRITE SYS$OUTPUT "=Sn","END=") and the next command waits
@@ -40,11 +40,23 @@ def login():
             sendline("")
             p.expect(r"\$ $")
 
+typed_date = False
 # a boot of VMS V4.7 may ask for the date, and ends with "job terminated"
 # before the login works
-while p.expect([r"job terminated", r"\(DD-MMM-YYYY +HH:MM\) +"], timeout=timeout) == 1:
-    time.sleep(1)
-    sendline("21-NOV-2026 12:00")
+t_end = time.time() + timeout
+while True:
+    i = p.expect([r"job terminated", r"\(DD-MMM-YYYY +HH:MM\) +", pexpect.TIMEOUT],
+                 timeout=60 if typed_date else max(1, t_end - time.time()))
+    if i == 0:
+        break
+    if i == 1:
+        time.sleep(1)
+        sendline("21-NOV-2026 12:00")
+        typed_date = True
+    elif typed_date and time.time() < t_end:
+        p.send("\r")                       # the CR may have been lost
+    else:
+        raise SystemExit("boot did not finish")
 time.sleep(2)
 sendline("")
 login()

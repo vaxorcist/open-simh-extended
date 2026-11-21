@@ -1,40 +1,42 @@
-From ad3a8e6724181196b30c90595fc6bf4fb3bd1479 Mon Sep 17 00:00:00 2001
+From e7ac0031ef21e087d68e4a7915b4c27bb7ee6f15 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Fri, 20 Nov 2026 22:41:15 +0100
+Date: Sat, 21 Nov 2026 17:13:03 +0100
 Subject: [PATCH] DMV11: switch packs E101/E113 and primary MOP boot (PDP-11)
 
-Patch 18 v2 (replaces v1).  Everything of v1, plus:
-- DMV11 with remote load detect: DTR comes back right after a master
-  clear and at ATTACH (EK-DMV11-TM-001 Appendix D, modem control).
-- Debug INFO for maintenance messages seen by remote load detect and for
-  every MOP message the boot engine receives.
-- Fix for all DMC11/DMR11/DMP11/DMV11: a sent DDCMP maintenance message
-  stayed on the ack-wait queue and was never returned to the host, so
-  VMS NCP LOAD/TRIGGER NODE hung after Enter MOP Mode.
-
-The DMV11 switch packs of EK-DMVQM-UG-003 (Figure 2-6, Tables 2-6 and 4-5)
-per DMV line, every switch ON by default as in the manual:
+Patch 18 v3 (replaces v1 and v2).  The DMV11 switch packs of
+EK-DMVQM-UG-003 (Figure 2-6, Tables 2-6 and 4-5) per DMV line, every
+switch ON by default as in the manual:
   SET DMVn MODE=...            mode (E101 SW1, SW6-8)
   SET DMVn TRIBUTARY=n         tributary address/password (E113)
   SET DMVn BOOTUNIT={0|1}      unit number for booting (E101 SW2)
   SET DMVn {NO}POWERONBOOT     power-on boot (E101 SW4)
   SET DMVn {NO}REMOTELOAD      remote load detect (E101 SW5)
-  BOOT DMVn                    power-on boot (PDP-11 only)
+  SHOW DMVn SWITCHES
+In the PDP-11 simulator the primary MOP boot: remote load detect, power-on
+boot (BOOT DMVn), invoke primary MOP.
+  SET DMVn PROGRAM={SECONDARY|TERTIARY|SYSTEM}  (simulator setting) MOP
+  program type requested; SYSTEM loads the LOAD FILE directly.
+v2: DTR rule of EK-DMV11-TM-001 Appendix D for remote load detect; MOP
+debug; fix for all DMC/DMR/DMP/DMV types: a sent DDCMP maintenance
+message was never returned to the host (VMS NCP LOAD NODE hung).
+v3: SET DMVn PROGRAM; the started program gets SP 774 (stack below 1000).
+Multipoint MOP messages carry the tributary address.
 
-Tested: VMS V4.7 on a MicroVAX II as load host (LOAD NODE) loads and
-starts a PDP-11 program in a PDP-11/73; tests/dmv11_boot T1-T6 pass.
+Tested: VMS V4.7 on a MicroVAX II (LOAD NODE) loads a PDP-11/73: a
+secondary loader (default) and, with PROGRAM=SYSTEM, a 32 KB load file
+(remwrt) that then runs; tests/dmv11_boot T1-T6 pass.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
 ---
- PDP11/pdp11_dmc.c | 1068 ++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1054 insertions(+), 14 deletions(-)
+ PDP11/pdp11_dmc.c | 1132 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1118 insertions(+), 14 deletions(-)
 
 diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
-index a2a54109..3936e0a1 100644
+index a2a54109..fc13eafa 100644
 --- a/PDP11/pdp11_dmc.c
 +++ b/PDP11/pdp11_dmc.c
-@@ -30,6 +30,10 @@
+@@ -30,6 +30,12 @@
  
    Modification history:
  
@@ -42,10 +44,12 @@ index a2a54109..3936e0a1 100644
 +                  BOOTUNIT, POWERONBOOT, REMOTELOAD; SHOW DMVn SWITCHES) and
 +                  the primary MOP boot (remote load detect, power-on boot
 +                  with BOOT DMVn, invoke primary MOP) on the PDP-11
++  21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
++                  request); a sent DDCMP maintenance message completes at once
    25-Jan-13  RJ   Error checking for already attached in dmc_settype() fixed.
    25-Jan-13  RJ   If attach when already attached then detach first.
    23-Jan-13  RJ   Don't do anything if not attached. See https://github.com/simh/simh/issues/28
-@@ -112,6 +116,19 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
+@@ -112,6 +118,19 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
  #include "sim_tmxr.h"
  #include "pdp11_ddcmp.h"
  
@@ -65,7 +69,7 @@ index a2a54109..3936e0a1 100644
  #define DMC_CONNECT_POLL    2   /* Seconds */
  
  extern int32 IREQ (HLVL);
-@@ -169,6 +186,12 @@ extern int32 tmr_poll;                                  /* instructions per tick
+@@ -169,6 +188,12 @@ extern int32 tmr_poll;                                  /* instructions per tick
  #define DMP_SEL0_M_IEO      0x0010
  #define DMP_SEL0_V_RQI       7
  #define DMP_SEL0_M_RQI      0x0080
@@ -78,7 +82,7 @@ index a2a54109..3936e0a1 100644
  
  /* DMC/DMR register SEL2 */
  #define DMC_SEL2_V_CODE      0
-@@ -821,6 +844,27 @@ typedef struct dmc_controller {
+@@ -821,6 +846,27 @@ typedef struct dmc_controller {
      TMXR *dmp_hub;                  /* DMP/DMV attached without a PEER: the
                                         multiplexer it listens on, else NULL */
      t_bool dmp_down_reported;       /* 304 already sent for this line outage */
@@ -93,7 +97,7 @@ index a2a54109..3936e0a1 100644
 +        size_t  last_len;
 +        t_bool  last_unsent;        /* line was busy: send it again soon */
 +        uint32  last_time;          /* when it was sent (sim_os_msec) */
-+        uint16  saved[4];           /* loaded image words at 24, 26, 400, 402,
++        uint16  saved[4];           /* loaded image words at 24, 26, 774, 776,
 +                                       put back after the start trap */
 +        uint32  xfer;               /* transfer address of the loaded program */
 +        } dmv_boot;
@@ -106,7 +110,7 @@ index a2a54109..3936e0a1 100644
      uint32 in_int;
      uint32 out_int;
      uint32 dmc_wr_delay;
-@@ -1285,6 +1329,30 @@ t_bool dmp_mp_receive (CTLR *controller);
+@@ -1285,6 +1331,32 @@ t_bool dmp_mp_receive (CTLR *controller);
  void dmp_mp_transmit (CTLR *controller);
  void dmp_mp_timers (CTLR *controller, int32 *active);
  int32 dmp_hub_poll (CTLR *controller);
@@ -124,6 +128,8 @@ index a2a54109..3936e0a1 100644
 +t_stat dmv_set_bootswitch (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 +t_stat dmv_show_bootswitch (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 +t_stat dmv_show_switches (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++t_stat dmv_set_program (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 +t_stat dmv_boot (int32 unitno, DEVICE *dptr);
 +t_bool dmv_boot_active (CTLR *controller);
 +t_bool dmv_boot_receive (CTLR *controller);
@@ -137,7 +143,7 @@ index a2a54109..3936e0a1 100644
  
  /* debugging bitmaps */
  #define DBG_TRC  0x0001                                 /* trace routine calls */
-@@ -1352,6 +1420,39 @@ uint16 dmp_basesize[DMP_NUMDEVICE];
+@@ -1352,6 +1424,46 @@ uint16 dmp_basesize[DMP_NUMDEVICE];
  uint8 dmp_modem[DMP_NUMDEVICE];
  int32 dmp_corruption[DMC_NUMDEVICE];
  
@@ -151,6 +157,13 @@ index a2a54109..3936e0a1 100644
 +uint16 dmv_e101[DMP_NUMDEVICE];             /* switch selectable features */
 +uint8 dmv_e113[DMP_NUMDEVICE];              /* DDCMP address register:
 +                                               tributary address/password */
++/* Not a switch: the MOP program type of the boot's Request Program (0
++   secondary loader, 1 tertiary loader, 2 system image).  The manuals do not
++   give the message; a primary loader that takes a single Memory Load with
++   Transfer Address asks for a secondary loader, so 0 is the default.  2
++   lets a load host send the load file itself (SET DMVn PROGRAM=SYSTEM). */
++uint8 dmv_program[DMP_NUMDEVICE];
++static const char *dmv_program_names[] = {"SECONDARY", "TERTIARY", "SYSTEM"};
 +#define DMV_E101_MODE_ENABLE 0x001  /* SW1 OFF: mode from SW6-8, not software */
 +#define DMV_E101_UNIT1       0x002  /* SW2 OFF: unit number for booting 1 (ON: 0) */
 +#define DMV_E101_AUTOANSWER  0x004  /* SW3: auto answer (no effect here) */
@@ -177,7 +190,7 @@ index a2a54109..3936e0a1 100644
  TMLN dmc_ldsc[DMC_NUMDEVICE];               /* line descriptors */
  TMXR dmc_desc = { 1, NULL, 0, dmc_ldsc };   /* mux descriptor */
  uint32 dmc_connect_poll = DMC_CONNECT_POLL; /* seconds between polls when no connection */
-@@ -1424,6 +1525,27 @@ REG dmp_reg[] = {
+@@ -1424,6 +1536,28 @@ REG dmp_reg[] = {
      { BRDATAD (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE,         "modem control bits") },
      { NULL }  };
  
@@ -200,12 +213,13 @@ index a2a54109..3936e0a1 100644
 +    { BRDATAD (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE,         "modem control bits") },
 +    { BRDATAD (E101,              dmv_e101, DEV_RDX, 10, DMP_NUMDEVICE,         "switch pack E101 (bit n-1 = switch n OFF)") },
 +    { BRDATAD (E113,              dmv_e113, DEV_RDX,  8, DMP_NUMDEVICE,         "switch pack E113: tributary address/password") },
++    { BRDATAD (PROGRAM,        dmv_program, DEV_RDX,  8, DMP_NUMDEVICE,         "MOP program type of the boot request (0-2)") },
 +    { NULL }  };
 +
  extern DEVICE dmc_dev;
  
  MTAB dmc_mod[] = {
-@@ -1506,6 +1628,24 @@ MTAB dmv_mod[] = {
+@@ -1506,6 +1640,26 @@ MTAB dmv_mod[] = {
          &set_addr, &show_addr, NULL, "Bus address" },
      { MTAB_XTD|MTAB_VDV|MTAB_VALR,          1, "VECTOR", "VECTOR",
          &set_vec,  &show_vec,  NULL, "Interrupt vector" },
@@ -225,12 +239,14 @@ index a2a54109..3936e0a1 100644
 +        &dmv_set_bootswitch, &dmv_show_bootswitch, NULL, "Remote load detect, E101 SW5" },
 +    { MTAB_XTD|MTAB_VUN, DMV_E101_REMOTELOAD|0x10000, NULL, "NOREMOTELOAD",
 +        &dmv_set_bootswitch, NULL, NULL, "No remote load detect, E101 SW5" },
++    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "PROGRAM", "PROGRAM={SECONDARY|TERTIARY|SYSTEM}",
++        &dmv_set_program, &dmv_show_program, NULL, "MOP program type the boot requests (not a switch)" },
 +    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SWITCHES", NULL,
 +        NULL, &dmv_show_switches, NULL, "Display the switch packs E101 and E113 and the boot state" },
      { 0 } };
  
  #define IOLN_DMC        010
-@@ -1550,8 +1690,14 @@ DEVICE dmp_dev =
+@@ -1550,8 +1704,14 @@ DEVICE dmp_dev =
      NULL, NULL, &dmc_help, &dmc_help_attach, NULL, &dmp_description };
  
  DEVICE dmv_dev =
@@ -247,7 +263,7 @@ index a2a54109..3936e0a1 100644
      &dmp_dib, DEV_DISABLE | DEV_DIS | DEV_QBUS | DEV_DEBUG | DEV_DONTAUTO, 0, dmc_debug,
      NULL, NULL, &dmc_help, &dmc_help_attach, NULL, &dmp_description };
  
-@@ -2099,6 +2245,52 @@ const char helpType[] =
+@@ -2099,6 +2259,54 @@ const char helpType[] =
      " listening port.  The DMP11 and DMV11 are separate devices (DMP, DMV).\n"
  #endif
      "";
@@ -287,8 +303,10 @@ index a2a54109..3936e0a1 100644
 +    "+sim> SET %U BOOTUNIT={0|1}\n"
 +    "+sim> SET %U {NO}POWERONBOOT\n"
 +    "+sim> SET %U {NO}REMOTELOAD\n"
++    "+sim> SET %U PROGRAM={SECONDARY|TERTIARY|SYSTEM}\n"
 +    "\n"
-+    " BOOTUNIT is E101 SW2, POWERONBOOT SW4 and REMOTELOAD SW5.  SW3 (auto\n"
++    " BOOTUNIT is E101 SW2, POWERONBOOT SW4 and REMOTELOAD SW5.  PROGRAM is\n"
++    " not a switch of the board but a simulator setting (see Booting).  SW3 (auto\n"
 +    " answer), SW9 (line speed) and SW10 (interface select) have no effect in\n"
 +    " the simulation and cannot be set.  The bus address and vector are set\n"
 +    " with SET %D ADDRESS and SET %D VECTOR.\n"
@@ -300,7 +318,7 @@ index a2a54109..3936e0a1 100644
  const char helpMid[] =
      "3 Corruption\n"
      " Corruption Troll - the DDCMP emulation includes a process that will\n"
-@@ -2168,6 +2360,55 @@ const char helpMpExample[] =
+@@ -2168,6 +2376,63 @@ const char helpMpExample[] =
      "+sim> SET %U PEER=controlhost:1111\n"
      "+sim> ATTACH %U 2222\n"
      ;
@@ -312,15 +330,23 @@ index a2a54109..3936e0a1 100644
 +    " a multipoint tributary with its mode set by the mode switches (SET %U\n"
 +    " MODE=...).  The control station loads the program with MOP; with\n"
 +    " DECnet this is a circuit with SERVICE ENABLED and a node with a load\n"
-+    " file (the DMV11 asks for a secondary loader, MOP device type 34).\n"
++    " file (MOP device type 34).\n"
++    "\n"
++    " SET %U PROGRAM selects the program the DMV11 asks for: SECONDARY (the\n"
++    " default: a secondary loader, DECnet SECONDARY LOADER), TERTIARY (TERTIARY\n"
++    " LOADER) or SYSTEM (the system image, DECnet LOAD FILE).  The manuals do\n"
++    " not say which one the real board asks for; SECONDARY is the most likely,\n"
++    " SYSTEM loads a program directly, without a secondary loader.  VMS V4.7\n"
++    " sends a secondary loader as one message at address 6.\n"
 +    "\n"
 +    " The DMV11 takes the CPU over through the power-fail/restart vector at\n"
-+    " 24: it puts a waiting routine (MOV #404,SP; WAIT) at 40 and enters it at\n"
++    " 24: it puts a waiting routine (MOV #1000,SP; WAIT) at 40 and enters it at\n"
 +    " priority 7 with memory management off.  It stores each Memory Load it\n"
 +    " gets and asks for the next one, and starts the program at the transfer\n"
 +    " address of the Memory Load with Transfer Address (or Parameter Load\n"
 +    " with Transfer Address) message, again through vector 24.  The\n"
-+    " program's own words at 24-26 and 400-402 are put back after the start.\n"
++    " program's own words at 24-26 and 774-776 are put back after the start;\n"
++    " the program starts with SP 774.\n"
 +    " A request the control station does not answer is sent again every 5\n"
 +    " seconds.\n"
 +    "2 Power-on boot\n"
@@ -356,7 +382,7 @@ index a2a54109..3936e0a1 100644
  const char helpMonitor[] =
      "1 Monitoring\n"
      " The %D device and %U line configuration and state can be displayed with\n"
-@@ -2283,17 +2524,21 @@ sprintf (devcount, "%d", dmc ? DMC_NUMDEVICE : DMP_NUMDEVICE);
+@@ -2283,17 +2548,21 @@ sprintf (devcount, "%d", dmc ? DMC_NUMDEVICE : DMP_NUMDEVICE);
  sprintf (connectpoll, "%d", DMC_CONNECT_POLL);
  /* The help is put together from the parts that apply to this device: the
     DMC device has SET TYPE, the DMP and DMV devices multipoint. */
@@ -380,7 +406,7 @@ index a2a54109..3936e0a1 100644
  strcat (help, helpMonitor);
  if (!dmc)
      strcat (help, helpMp);
-@@ -2792,10 +3037,22 @@ dmc_setreg(controller, 2, (*controller->csrs->sel2 & ~DMC_SEL2_M_CODE) | (type &
+@@ -2792,10 +3061,22 @@ dmc_setreg(controller, 2, (*controller->csrs->sel2 & ~DMC_SEL2_M_CODE) | (type &
  void dmc_process_master_clear(CTLR *controller)
  {
  CONTROL_OUT *control;
@@ -404,7 +430,7 @@ index a2a54109..3936e0a1 100644
  controller->link.state = Halt;
  controller->state = Initialised;
  while ((control = controller->control_out)) {
-@@ -2849,6 +3106,13 @@ dmc_buffer_queue_init_all(controller);
+@@ -2849,6 +3130,13 @@ dmc_buffer_queue_init_all(controller);
  controller->transfer_state = Idle;
  if (dmc_is_attached(controller->unit))
      dmc_set_run(controller);
@@ -418,7 +444,7 @@ index a2a54109..3936e0a1 100644
  }
  
  void dmc_start_input_transfer(CTLR *controller)
-@@ -2901,7 +3165,15 @@ buffer->actual_bytes_transferred = buffer->count;
+@@ -2901,7 +3189,15 @@ buffer->actual_bytes_transferred = buffer->count;
  controller->buffers_transmitted_to_net++;
  if (buffer->type == TransmitData) {
      buffer->actual_bytes_transferred = buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
@@ -435,7 +461,7 @@ index a2a54109..3936e0a1 100644
      }
  else {
      ASSURE (insqueue (&buffer->hdr, &controller->free_queue->hdr));
-@@ -2916,6 +3188,12 @@ DEVICE *dptr = controller->device;
+@@ -2916,6 +3212,12 @@ DEVICE *dptr = controller->device;
  
  sim_debug(DBG_TRC, dptr, "dmc_svc(%s%d)\n", controller->device->name, controller->index);
  
@@ -448,7 +474,7 @@ index a2a54109..3936e0a1 100644
  /* DMP/DMV multipoint: ddcmp_dispatch() calls this routine directly at the
     end of a recursive scan.  If that happens while a tributary session is
     loaded, come back later instead of nesting another session load. */
-@@ -3232,14 +3510,16 @@ t_bool dmc_buffer_fill_receive_buffers(CTLR *controller)
+@@ -3232,14 +3534,16 @@ t_bool dmc_buffer_fill_receive_buffers(CTLR *controller)
  {
  int ans = FALSE;
  
@@ -468,7 +494,7 @@ index a2a54109..3936e0a1 100644
          if (!controller->link.rcv_pkt)
              break;
          ans = TRUE;
-@@ -3249,6 +3529,10 @@ if (controller->state == Running) {
+@@ -3249,6 +3553,10 @@ if (controller->state == Running) {
          buffer = dmc_buffer_queue_head(controller->rcv_queue);
          }
      }
@@ -479,7 +505,7 @@ index a2a54109..3936e0a1 100644
  return ans;
  }
  
-@@ -3363,6 +3647,16 @@ controller->dmp_gss[034] = 013560;
+@@ -3363,6 +3671,16 @@ controller->dmp_gss[034] = 013560;
  controller->dmp_gss[035] = 0310;
  controller->dmp_gss[036] = 017500;
  controller->dmp_gss[037] = 0;
@@ -496,7 +522,7 @@ index a2a54109..3936e0a1 100644
  }
  
  /* Default tributary parameters (Table 4-2), set when a tributary is
-@@ -3961,6 +4255,18 @@ uint8 station = (uint8)(sel2 >> DMP_SEL2_V_STATION);
+@@ -3961,6 +4279,18 @@ uint8 station = (uint8)(sel2 >> DMP_SEL2_V_STATION);
  uint32 addr = dmc_get_addr(controller);
  uint16 count = dmc_get_count(controller);
  
@@ -515,7 +541,7 @@ index a2a54109..3936e0a1 100644
  switch (controller->transfer_type) {
      case DMP_C_TYPE_MODE:
          {
-@@ -3971,8 +4277,11 @@ switch (controller->transfer_type) {
+@@ -3971,8 +4301,11 @@ switch (controller->transfer_type) {
          uint16 mode = *controller->csrs->sel6 & DMP_TYPE_INPUT_MASK;
  
          /* Bit 2 = multipoint, bit 1 = tributary, bit 0 = full duplex.  The
@@ -529,7 +555,7 @@ index a2a54109..3936e0a1 100644
              dmp_procedural_error(controller, station, DMP_ERR_BAD_MODE);
          else {
              controller->dmp_station_type = mode;
-@@ -4239,7 +4548,7 @@ for (i = 0; i < nlines; i++) {
+@@ -4239,7 +4572,7 @@ for (i = 0; i < nlines; i++) {
          DMP_TRIB *trib;
          size_t pool_before;
  
@@ -538,7 +564,7 @@ index a2a54109..3936e0a1 100644
          if (!pkt)
              break;
          ans = TRUE;
-@@ -4324,7 +4633,10 @@ if (ddcmp_tmxr_put_packet_crc_ln (lp, poll, DDCMP_HEADER_SIZE, 0) == SCPE_OK) {
+@@ -4324,7 +4657,10 @@ if (ddcmp_tmxr_put_packet_crc_ln (lp, poll, DDCMP_HEADER_SIZE, 0) == SCPE_OK) {
  }
  
  /* Send what the loaded session has queued, with its tributary address in
@@ -550,7 +576,7 @@ index a2a54109..3936e0a1 100644
  static void dmp_mp_send_session(CTLR *controller)
  {
  DMP_TRIB *trib = &controller->dmp_trib[controller->dmp_loaded];
-@@ -4346,8 +4658,8 @@ while ((buffer = dmc_buffer_queue_head(controller->xmt_queue)) != NULL) {
+@@ -4346,8 +4682,8 @@ while ((buffer = dmc_buffer_queue_head(controller->xmt_queue)) != NULL) {
          return;
      if ((controller->link.state != Maintenance) && (msg[DDCMP_RESP_OFFSET] != controller->link.R))
          msg[DDCMP_RESP_OFFSET] = controller->link.R;    /* latest acknowledgement */
@@ -560,7 +586,7 @@ index a2a54109..3936e0a1 100644
          if (dmp_control_station(controller)) {
              if (trib->ses.holds_select)         /* do not select it again */
                  msg[2] &= ~(DDCMP_FLAG_SELECT << 6);
-@@ -5378,6 +5690,727 @@ if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller))
+@@ -5378,6 +5714,767 @@ if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller))
      }
  }
  
@@ -586,14 +612,15 @@ index a2a54109..3936e0a1 100644
 +   The manual describes the takeover only in outline: the DMV11 "NPRs a
 +   tight-loop routine into main memory", "transfers control to the routine
 +   through the powerfail/restart vector", sends Request Program, loads the
-+   program it gets and starts it.  Here the routine is MOV #404,SP / WAIT /
++   program it gets and starts it.  Here the routine is MOV #1000,SP / WAIT /
 +   BR .-2 at 40 (reserved vector locations), entered through vector 24 at
 +   priority 7 with memory management off, as after a power-up.  In the
 +   WAIT the CPU fetches nothing, so the program may be loaded over the
 +   routine.  The start goes through vector 24 again; the trap pushes two
-+   words at 400-402 (below SP = 404: a kernel stack below 400 would be a
-+   stack limit violation), and the program's own words at 24-26 and
-+   400-402 are put back right after the trap.  The DMV11 keeps its host
++   words at 774-776 (below SP = 1000), and the program's own words at 24-26
++   and 774-776 are put back right after the trap.  The program starts with
++   SP 774, so it has the usual stack below 1000 (SP 404 at first left a
++   program that sets up no stack of its own, such as remwrt, without one).  The DMV11 keeps its host
 +   interface master-cleared during the boot and afterwards.
 +
 +   MOP messages (MOP V3 AA-X436A-TK; DMV11 device type 34 from the MOP
@@ -613,8 +640,10 @@ index a2a54109..3936e0a1 100644
 +#define DMV_MOP_DEVTYPE     34      /* MOP device type of the DMV11 */
 +#define DMV_BOOT_RETRY      5000    /* msec without an answer before a request is repeated */
 +#define DMV_PARK            0000040 /* the CPU's waiting routine */
-+#define DMV_PARK_SP         0000404 /* its SP: the lowest without a stack limit trap */
-+#define DMV_PUSH            0000400 /* the start trap pushes PC, PSW at 400, 402 */
++#define DMV_PARK_SP         0001000 /* its SP, also the started program's stack
++                                       (below 1000, as usual for standalone
++                                       programs; 404 left remwrt no stack) */
++#define DMV_PUSH            0000774 /* the start trap pushes PC, PSW at 774, 776 */
 +
 +static const char *dmv_mode_names[8] = {
 +    "HDXDMC", "FDXDMC", "HDXPOINT", "FDXPOINT",
@@ -771,6 +800,37 @@ index a2a54109..3936e0a1 100644
 +return SCPE_OK;
 +}
 +
++/* SET DMVn PROGRAM={SECONDARY|TERTIARY|SYSTEM}: MOP program type of the
++   boot's Request Program (PDP-11 only) */
++t_stat dmv_set_program (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++int ln = dmv_unit_line(uptr);
++uint8 i;
++
++if (ln < 0)
++    return SCPE_IERR;
++if (!DMV_BOOT_SUPPORTED)
++    return dmv_boot_switch_refused ();
++if ((cptr == NULL) || (*cptr == '\0'))
++    return SCPE_MISVAL;
++for (i = 0; i < 3; i++)
++    if (MATCH_CMD (cptr, dmv_program_names[i]) == 0) {
++        dmv_program[ln] = i;
++        return SCPE_OK;
++        }
++return sim_messagef (SCPE_ARG, "PROGRAM must be SECONDARY, TERTIARY or SYSTEM\n");
++}
++
++t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++int ln = dmv_unit_line(uptr);
++
++if (ln < 0)
++    return SCPE_IERR;
++fprintf (st, "PROGRAM=%s\n", dmv_program_names[dmv_program[ln] % 3]);
++return SCPE_OK;
++}
++
 +/* POWERONBOOT/NOPOWERONBOOT (SW4), REMOTELOAD/NOREMOTELOAD (SW5): val is
 +   the switch bit, plus 0x10000 for the NO form */
 +t_stat dmv_set_bootswitch (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
@@ -834,6 +894,9 @@ index a2a54109..3936e0a1 100644
 +for (sw = 0; sw < 8; sw++)
 +    fprintf (st, " %s", (dmv_e113[ln] & (1 << sw)) ? "OFF" : "ON");
 +fprintf (st, "\n  value %d (%03o octal)\n", dmv_e113[ln], dmv_e113[ln]);
++if (DMV_BOOT_SUPPORTED)
++    fprintf (st, "program requested at boot (simulator setting, not a switch): %s\n",
++             dmv_program_names[dmv_program[ln] % 3]);
 +controller = (CTLR *)uptr->ctlr;
 +fprintf (st, "boot: %s\n", DMV_BOOT_SUPPORTED ? ((controller && (controller->dmv_boot.state <= DMVB_START)) ?
 +                                                boot_states[controller->dmv_boot.state] : "none")
@@ -887,8 +950,11 @@ index a2a54109..3936e0a1 100644
 +
 +static void dmv_boot_request_program (CTLR *controller)
 +{
-+/* code, device type, format version 1, program type 0 (secondary loader) */
-+static const uint8 request[4] = {DMV_MOP_REQ_PROGRAM, DMV_MOP_DEVTYPE, 1, 0};
++/* code, device type, format version 1, program type (SET DMVn PROGRAM:
++   0 secondary loader, 1 tertiary loader, 2 system image) */
++uint8 request[4] = {DMV_MOP_REQ_PROGRAM, DMV_MOP_DEVTYPE, 1, 0};
++
++request[3] = dmv_program[dmv_line(controller)];
 +
 +controller->dmv_boot.state = DMVB_REQUEST;
 +dmv_boot_send (controller, request, sizeof(request));
@@ -913,7 +979,7 @@ index a2a54109..3936e0a1 100644
 +{
 +#if DMV_BOOT_SUPPORTED
 +static const uint16 park[4] = {
-+    0012706, DMV_PARK_SP,           /* MOV #404,SP */
++    0012706, DMV_PARK_SP,           /* MOV #1000,SP */
 +    0000001,                        /* WAIT */
 +    0000776 };                      /* BR .-2 */
 +uint16 vector[2];
@@ -1135,7 +1201,7 @@ index a2a54109..3936e0a1 100644
 +#endif
 +}
 +
-+/* After the start trap: the program's own words at 24-26 and 400-402 */
++/* After the start trap: the program's own words at 24-26 and 774-776 */
 +void dmv_boot_finish (CTLR *controller)
 +{
 +#if DMV_BOOT_SUPPORTED
@@ -1288,7 +1354,7 @@ index a2a54109..3936e0a1 100644
  t_stat dmc_rd(int32 *data, int32 PA, int32 access)
  {
  CTLR *controller = dmc_get_controller_from_address(PA);
-@@ -5654,6 +6687,9 @@ if (!(dptr->flags & DEV_DIS)) {
+@@ -5654,6 +6751,9 @@ if (!(dptr->flags & DEV_DIS)) {
              dmc_clrinint(controller);
              dmc_clroutint(controller);
              controller->dmc_wr_delay = 0;
@@ -1298,7 +1364,7 @@ index a2a54109..3936e0a1 100644
              for (j=0; j<dptr->numunits-1; j++) {
                  sim_cancel (&dptr->units[j]); /* stop poll */
                  if (dptr->units[j].flags & UNIT_ATT)
-@@ -5714,6 +6750,8 @@ if ((((CTLR *)uptr->ctlr)->dev_type == DMP) && !peer[0] && strncasecmp (cptr, "S
+@@ -5714,6 +6814,8 @@ if ((((CTLR *)uptr->ctlr)->dev_type == DMP) && !peer[0] && strncasecmp (cptr, "S
      strcpy (uptr->filename, port);
      uptr->flags |= UNIT_ATT;
      sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
@@ -1307,7 +1373,7 @@ index a2a54109..3936e0a1 100644
      return SCPE_OK;
      }
  if (0 == strncasecmp (cptr, "SYNC", 4)) {
-@@ -5736,6 +6774,8 @@ uptr->filename = (char *)malloc (strlen(port)+1);
+@@ -5736,6 +6838,8 @@ uptr->filename = (char *)malloc (strlen(port)+1);
  strcpy (uptr->filename, port);
  uptr->flags |= UNIT_ATT;
  sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */

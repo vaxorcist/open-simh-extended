@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v2, 2026-11-21 (v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v3, 2026-11-21 (v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -24,7 +24,7 @@ Decisions (Ulli, 2026-11-20):
   program (no load image from DEC was available).
 
 Source: `PDP11/pdp11_dmc.c`, topic branch `dmv-boot` (on `ts-online`),
-patch `patches/opensimh_18_dmv11_boot_v2.patch`, tests
+patch `patches/opensimh_18_dmv11_boot_v3.patch`, tests
 `tests/dmv11_boot/`.
 
 ## 1. What the manual says
@@ -113,6 +113,7 @@ SET DMVn TRIBUTARY=n          ; 0-255
 SET DMVn BOOTUNIT={0|1}       ; PDP-11 only
 SET DMVn {NO}POWERONBOOT      ; PDP-11 only
 SET DMVn {NO}REMOTELOAD       ; PDP-11 only
+SET DMVn PROGRAM={SECONDARY|TERTIARY|SYSTEM}  ; PDP-11 only, simulator setting
 SHOW DMVn SWITCHES            ; both switch packs as on the board, and the boot state
 BOOT DMVn                     ; PDP-11 only: power-on boot
 ```
@@ -128,6 +129,14 @@ BOOT DMVn                     ; PDP-11 only: power-on boot
   the real board.
 - SW3, SW9 and SW10 have no effect in the simulation and cannot be set.
   `SHOW SWITCHES` shows them as ON.
+- `PROGRAM` is not a switch of the board: it selects the MOP program type
+  of the Request Program (0 secondary loader, 1 tertiary loader, 2 system
+  image). The manuals do not give the message. Decision (Ulli,
+  2026-11-21): configurable, default `SECONDARY`, the most likely
+  behaviour of a primary loader that takes a single Memory Load with
+  Transfer Address. `SYSTEM` makes a load host send the load file itself,
+  in as many Memory Loads as needed (VMS: `LOAD FILE`). Register `PROGRAM`,
+  shown by `SHOW DMVn SWITCHES`.
 - `BOOT DMVn` checks, in this order: the power-on boot switch, the mode
   from the switches, not a control station, the unit attached, and a
   multipoint tributary's switch address.
@@ -148,7 +157,7 @@ BOOT DMVn                     ; PDP-11 only: power-on boot
 
 ### Boot (PDP-11 only, `DMV_BOOT_SUPPORTED`)
 
-- **Taking the CPU over.** The DMV writes `MOV #404,SP / WAIT / BR .-2` at
+- **Taking the CPU over.** The DMV writes `MOV #1000,SP / WAIT / BR .-2` at
   40 (reserved vector locations) and vector 24/26 = 40/340.
   - Remote load detect and invoke: it clears MMR0 and MMR3 (a power-up
     leaves memory management off, so the vector is read physically) and
@@ -157,13 +166,16 @@ BOOT DMVn                     ; PDP-11 only: power-on boot
     (`cpu_set_boot`).
 
   In the WAIT the CPU fetches nothing, so the loaded program may cover
-  the routine. SP is 404 because a kernel stack below 400 is a stack limit
-  violation: the first try with SP 40 stopped the simulator with "Trap
-  stack push abort".
+  the routine. SP is 1000 (patch 18 v3), so the started program has the
+  usual stack below 1000. SP 40 (first try) stopped the simulator with
+  "Trap stack push abort" (a kernel stack below 400 is a stack limit
+  violation); SP 404 (v1, v2) worked for the routine itself, but remwrt,
+  which sets up no stack, then began with SP 400 and stopped the same way
+  at its first CALL.
 - **Starting the program.** The DMV saves the loaded words at 24-26 and
-  400-402. It writes vector 24 = transfer address with PSW 340, clears
+  774-776. It writes vector 24 = transfer address with PSW 340, clears
   MMR0/MMR3 and requests the power-fail trap. The trap pushes PC and PSW at
-  400-402. One instruction later (`dmv_boot_finish()` from `dmc_svc`) the
+  774-776, so the program starts with SP 774. One instruction later (`dmv_boot_finish()` from `dmc_svc`) the
   saved words are put back.
 - **The protocol engine** (`dmv_boot_receive()`, `dmv_boot_mop()`):
   - It runs instead of the normal receive path while a boot is active, and
@@ -272,6 +284,9 @@ Test: `tests/dmv11_vmsload/` (MicroVAX II with Ulli's VMS047.R81, PDP-11/73).
 
 ### Setup
 
+Tests: `tests/dmv11_vmsload/run.sh` runs two cases, `pdp.ini` (default,
+secondary loader) and `pdp_system.ini` (`PROGRAM=SYSTEM`, load file).
+
 PDP-11 (no PEER, it only listens; known issue 93):
 
 ```
@@ -326,10 +341,19 @@ DMC/DMR/DMP/DMV types).
   (tertiary loader or system image). A program that is not a loader leaves
   NCP waiting until its timeout.
 - **remwrt** (32548 bytes, Lee Gleason's LOCALWRITE client for DEQNA +
-  RQDX3) cannot be a secondary loader. Loading it over the DMV11 needs a
-  DMV11 secondary loader: a small PIC program that drives the DMV11 in
-  maintenance mode, sends Request Program for the system image, answers
-  each Memory Load with Request Memory Load n+1 and jumps to the transfer
-  address. Not written yet. remwrt itself was assembled with macro11 v0.3
-  (0 errors) and converted to `remwrt.tsk` (66 blocks, transfer 0); see
-  known issues 95 and 96.
+  RQDX3) cannot be a secondary loader. With the default `PROGRAM=SECONDARY`
+  it would need a DMV11 secondary loader (a small PIC program that drives
+  the DMV11 in maintenance mode and fetches the load file); none was
+  written. Instead, Ulli decided to make the program type configurable.
+- **remwrt with `SET DMV0 PROGRAM=SYSTEM`** (2026-11-21): the DMV11 sends
+  Request Program `08 22 01 02`; VMS sends `LOAD FILE`
+  SYS$SYSTEM:REMWRT.TSK in 128 Memory Loads (loads 0-127, 256 bytes each,
+  the last 64), then a Parameter Load with Transfer Address
+  (load 128, node name PDP and other parameters, transfer 0). remwrt
+  starts and prints its banner "REMWRT V01A03 ... Control-G Consultants",
+  then "Choose disk unit to write to:" and waits for console input (its
+  DEQNA/RQDX3 work needs the LOCALWRITE server, not part of this test).
+  The banner lines run together on the console because of its VT/CR line
+  end (known issues 95). remwrt was assembled with macro11 v0.3 (0 errors)
+  and converted to `remwrt.tsk` (66 blocks, transfer 0); see known issues
+  95 and 96.
