@@ -154,7 +154,9 @@
 #elif defined (VM_VAX)                                  /* VAX version */
 #include "vax_defs.h"
 #define RQ_QTIME        100
-#define RQ_XTIME        200
+#define RQ_XTIME        1000                            /* VMS V4.7 boot misses a
+                                                           read that completes
+                                                           within ~200 instructions */
 #define OLDPC           fault_PC
 extern int32 fault_PC;
 
