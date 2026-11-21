@@ -166,14 +166,16 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
   T1-T6): PASS; DMV11 master clear signature on microvax1/2/3900: PASS
   (2026-11-20, again 2026-11-21 with v2).
 - Two MicroVAX II simulators booting VMS at the same time sometimes hang
-  after the date (known issues 97, also without a DMV11): boot them one
-  after the other.
+  after the date (known issues 97, also without a DMV11): use `SET CPU
+  IDLE=VMS`.
 - VMS V4.7 (MicroVAX II) loads a PDP-11/73 over a DMV11 with `NCP LOAD NODE`
   (`tests/dmv11_vmsload/run.sh`): PASS (2026-11-21). VMS sends the secondary
   loader as one Memory Load with Transfer Address at address 6, so it must be
   position independent. With `SET DMV0 PROGRAM=SYSTEM` VMS sends the
-  `LOAD FILE`: Ulli's remwrt (32548 bytes, 128 Memory Loads) loads and runs. The VMS DECnet regressions with the DMV/DMP after patch 18
-  are still to be run.
+  `LOAD FILE`: Ulli's remwrt (32548 bytes, 128 Memory Loads) loads and runs.
+- VMS V4.7 DECnet regressions after patch 18 v3 (`tests/dmv_regress/pair.sh`,
+  two nodes, copies there and back, circuit off/on, `SET CPU IDLE=VMS`):
+  DMV11 and DMP11, point-to-point and multipoint: PASS (2026-11-21).
 
 ## Other docs on this branch
 
