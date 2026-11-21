@@ -3108,6 +3108,11 @@ if (dmc_is_attached(controller->unit))
     dmc_set_run(controller);
 if (dmv_invoke && !dmv_boot_invoke(controller, dmv_soft_address))
     dmc_clr_modem_dtr(controller);          /* no boot: an ordinary master clear */
+/* DMV11 with remote load detect: DTR comes back at once, the DMV11 keeps
+   scanning the line for an Enter MOP Mode message (EK-DMV11-TM-001
+   Appendix D, modem control) */
+if (dmv_remote_load_watch(controller))
+    dmc_set_modem_dtr(controller);
 }
 
 void dmc_start_input_transfer(CTLR *controller)
@@ -3160,7 +3165,15 @@ buffer->actual_bytes_transferred = buffer->count;
 controller->buffers_transmitted_to_net++;
 if (buffer->type == TransmitData) {
     buffer->actual_bytes_transferred = buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
-    ASSURE (insqueue (&buffer->hdr, controller->ack_wait_queue->hdr.prev));
+    /* A maintenance (MOP) message is never acknowledged: it is complete
+       once sent.  On the ack-wait queue it would never be returned to
+       the host (VMS NCP TRIGGER/LOAD NODE then hangs). */
+    if (buffer->transfer_buffer[0] == DDCMP_DLE) {
+        ASSURE (insqueue (&buffer->hdr, controller->completion_queue->hdr.prev));
+        }
+    else {
+        ASSURE (insqueue (&buffer->hdr, controller->ack_wait_queue->hdr.prev));
+        }
     }
 else {
     ASSURE (insqueue (&buffer->hdr, &controller->free_queue->hdr));
@@ -6152,10 +6165,18 @@ const uint8 *mop = pkt + DDCMP_HEADER_SIZE;
 size_t len, vlen, i;
 t_bool match;
 
-if ((pkt[0] != DDCMP_DLE) || (size < DDCMP_HEADER_SIZE + 1 + DDCMP_CRC_SIZE) ||
-    ddcmp_crc16 (0, pkt, DDCMP_HEADER_SIZE) || ddcmp_crc16 (0, mop, size - DDCMP_HEADER_SIZE))
+if (pkt[0] != DDCMP_DLE)
     return FALSE;
+if ((size < DDCMP_HEADER_SIZE + 1 + DDCMP_CRC_SIZE) ||
+    ddcmp_crc16 (0, pkt, DDCMP_HEADER_SIZE) || ddcmp_crc16 (0, mop, size - DDCMP_HEADER_SIZE)) {
+    sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: damaged maintenance message (%d bytes) ignored\n",
+              controller->device->name, controller->index, size);
+    return FALSE;
+    }
 len = size - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
+sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: MOP message %d, %d bytes, address %d, data %02X %02X %02X %02X %02X\n",
+          controller->device->name, controller->index, mop[0], (int)len, pkt[5],
+          (len > 1) ? mop[1] : 0, (len > 2) ? mop[2] : 0, (len > 3) ? mop[3] : 0, (len > 4) ? mop[4] : 0, (len > 5) ? mop[5] : 0);
 if ((mop[0] != DMV_MOP_ENTER) || (len < 5))
     return FALSE;
 if (dmv_switch_mode(controller) & 4) {      /* tributary: its own address only */
@@ -6267,6 +6288,20 @@ t_bool transfer = FALSE;
 
 if (len < 1)
     return;
+if (sim_deb && (controller->device->dctrl & DBG_INF)) {
+    char hex[3 * 16 + 8] = "";
+    size_t k, o = 0;
+
+    for (k = 0; (k < len) && (k < 12); k++)        /* the first 12 bytes */
+        o += sprintf (hex + o, " %02X", mop[k]);
+    if (len > 12) {                                /* ... and the last 4 */
+        o += sprintf (hex + o, " ..");
+        for (k = (len > 16) ? len - 4 : 12; k < len; k++)
+            o += sprintf (hex + o, " %02X", mop[k]);
+        }
+    sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message received, %d bytes:%s\n",
+              controller->device->name, controller->index, (int)len, hex);
+    }
 switch (mop[0]) {
     case DMV_MOP_LOAD:                      /* code, load number, address, data */
         if (len < 6)
@@ -6715,6 +6750,8 @@ if ((((CTLR *)uptr->ctlr)->dev_type == DMP) && !peer[0] && strncasecmp (cptr, "S
     strcpy (uptr->filename, port);
     uptr->flags |= UNIT_ATT;
     sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
+    if (dmv_remote_load_watch(controller))  /* DMV11 remote load detect: DTR on */
+        dmc_set_modem_dtr(controller);
     return SCPE_OK;
     }
 if (0 == strncasecmp (cptr, "SYNC", 4)) {
@@ -6737,6 +6774,8 @@ uptr->filename = (char *)malloc (strlen(port)+1);
 strcpy (uptr->filename, port);
 uptr->flags |= UNIT_ATT;
 sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
+if (uptr->ctlr && dmv_remote_load_watch((CTLR *)uptr->ctlr))    /* DMV11 remote load detect: DTR on */
+    dmc_set_modem_dtr((CTLR *)uptr->ctlr);
 return ans;
 }
 
