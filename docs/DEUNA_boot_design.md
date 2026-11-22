@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DEUNA_boot_design.md  v3, 2026-11-22 (v3: VMS V4.7 as the load host (B9): loaders PASS, the system load needs a real RSX-11S image; v2: implemented in patch 23 (branch deuna-boot), tests B2-B8, DEC's TERUNA runs, known issues 111-114; v1: facts from the DEUNA TM, the DELUA UG and DEC's DECnet-11M V4.2 UNA loaders; design of the BOOT port command for SIMH's XU device; known issue 109) -->
+<!-- open-simh-extended/docs/DEUNA_boot_design.md  v4, 2026-11-22 (v4: B9 with a real RSX-11S image (DECserver 500 V2.2): VMS loads it completely; v3: VMS V4.7 as the load host (B9): loaders PASS, the system load needs a real RSX-11S image; v2: implemented in patch 23 (branch deuna-boot), tests B2-B8, DEC's TERUNA runs, known issues 111-114; v1: facts from the DEUNA TM, the DELUA UG and DEC's DECnet-11M V4.2 UNA loaders; design of the BOOT port command for SIMH's XU device; known issue 109) -->
 # DEUNA/DELUA BOOT port command for the SIMH PDP-11 (known issue 109)
 
 Ulli's decision (2026-11-22): implement the BOOT port command, option 1:
@@ -182,4 +182,10 @@ Found on the way with DEC's TERUNA, fixed in the same patch: STOP/START
   was acknowledged.
 - Needed for a complete VMS test: a real RSX-11S system image (RSX-11S
   SYSGEN, VMR, VNP).
+- With a real RSX-11S image (Ulli's DS5TSV.SYS, DECserver 500 Terminal
+  Server V2.2, 352 blocks; `LOADFILE=... PDPMEM=248k vmshost.sh`): VMS
+  reports all three loads successful ("... Operating system"), TERUNA
+  starts the image, and it runs until a trap with no stack yet (PC 113010,
+  SP 4); it needs DECserver 500 hardware. The complete net boot path VMS
+  load host -> SIMH DEUNA boot engine -> TERUNA -> system image works.
 

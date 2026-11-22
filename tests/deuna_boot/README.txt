@@ -1,4 +1,4 @@
-open-simh-extended/tests/deuna_boot/README.txt  v2 (2026-11-22; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
+open-simh-extended/tests/deuna_boot/README.txt  v3 (2026-11-22; v3: B9 with a real RSX-11S image (LOADFILE=, PDPMEM=): loaded completely; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
 
 DEUNA/DELUA BOOT port command (SIMH XU device, patch 23, known issue 109)
 =========================================================================
@@ -73,3 +73,12 @@ NETTEST.SYS); the PDP-11 boots with XE0.  State 2026-11-22:
   and prepared with VNP); with a test file it FAILs at the system load.
   The test with mophost.py (B7) covers the same SIMH paths with DEC's
   loaders and a test system.
+  With a real RSX-11S system image it works: Ulli's DS5TSV.SYS (DECserver
+  500 Terminal Server V2.2, 352 blocks, not in the repository):
+      LOADFILE=DS5TSV.SYS PDPMEM=248k ./vmshost.sh BINDIR DISK
+  OPCOM: "Load, Successful ... SECUNA.SYS, Secondary loader", "... TERUNA.SYS,
+  Tertiary loader", "... NETTEST.SYS, Operating system"; TERUNA starts the
+  image, which runs until "Trap stack push abort" at PC 113010 (SP 4): a
+  DECserver 500 image needs its own hardware (J-11, line cards, its
+  Ethernet interface), not an 11/34 with a DEUNA.  So the whole chain VMS
+  -> DEUNA boot engine -> TERUNA -> system image works (2026-11-22).

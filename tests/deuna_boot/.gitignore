@@ -1,4 +1,4 @@
-# open-simh-extended/tests/deuna_boot/.gitignore  v1
+# open-simh-extended/tests/deuna_boot/.gitignore  v2 (v2: run_b9/, NETTEST.SYS, *.tap: run directories of vmshost.sh)
 # DEC firmware and software (ROM images, DECnet-11M's UNA loaders) are not
 # part of the repository; run outputs are not either.
 *.bin
@@ -7,3 +7,6 @@
 *.out
 *.mop
 *.dbg
+run_b9/
+NETTEST.SYS
+*.tap
