@@ -1,6 +1,6 @@
-From 791c01aa4dc12b9e0e36ad8e2817249591f04d72 Mon Sep 17 00:00:00 2001
+From f03c80d5ae7dffe5d0fe0f9f659bdef52b5d1e76 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Sun, 22 Nov 2026 11:52:30 +0100
+Date: Sun, 22 Nov 2026 14:00:22 +0100
 Subject: [PATCH] DMP11/DMR11/DMC11: switch packs and boot on one board model
  with the DMV11
 
@@ -23,6 +23,9 @@ Subject: [PATCH] DMP11/DMR11/DMC11: switch packs and boot on one board model
   device type 40, DMC11 Request Program 8,12,1).
 - Remote load detect also sees an Enter MOP Mode that arrives while the
   host takes the line's messages.
+- A master clear keeps DTR, as the DMC11 manual says, so a RESET no
+  longer closes the TCP line; the host's start (not DTR) starts DDCMP,
+  and a maintenance mode request enters maintenance mode at once.
 - A reset keeps a scheduled connection poll (a program that executes
   RESET often, such as the M9312 DECnet ROM, starved it).
 - Known issue 90: the shared DMP/DMV units are named after the device in
@@ -34,9 +37,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
 ---
  PDP11/pdp11_cpu.c |   11 +-
- PDP11/pdp11_dmc.c | 1006 +++++++++++++++++++++++++++++++++++----------
+ PDP11/pdp11_dmc.c | 1037 +++++++++++++++++++++++++++++++++++----------
  PDP11/pdp11_rom.c |   21 +-
- 3 files changed, 824 insertions(+), 214 deletions(-)
+ 3 files changed, 844 insertions(+), 225 deletions(-)
 
 diff --git a/PDP11/pdp11_cpu.c b/PDP11/pdp11_cpu.c
 index 5241fa6c..6ff0d1f7 100644
@@ -61,7 +64,7 @@ index 5241fa6c..6ff0d1f7 100644
  }
  
 diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
-index 17d129cb..52d32043 100644
+index 17d129cb..c91c2e7d 100644
 --- a/PDP11/pdp11_dmc.c
 +++ b/PDP11/pdp11_dmc.c
 @@ -118,15 +118,18 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
@@ -582,7 +585,62 @@ index 17d129cb..52d32043 100644
         software-assigned tributary address is the first one established,
         which the master clear forgets, so it is taken here. */
      dmv_invoke = (*controller->csrs->sel0 & DMV_SEL0_M_PMOP) != 0;
-@@ -5810,28 +5990,193 @@ t_bool dmv_is_dmv (CTLR *controller)
+@@ -3106,8 +3286,11 @@ if (dmv_is_dmv(controller)) {
+         dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMV_SEL0_M_PMOP, DBG_RGC);
+     }
+ dmc_clear_master_clear(controller);
+-if (!dmv_invoke && !controller->dmv_keep_line)  /* DMV11 boot: the line stays up */
+-    dmc_clr_modem_dtr(controller);
++/* A master clear keeps DTR (known issue 103): the DMC11 microprocessor
++   keeps Data Terminal Ready on, drops it only after Data Set Ready goes off
++   or a procedure error, and asserts it again when the device is master
++   cleared (EK-DMCMP-MM-001 3.4.14).  Dropping it here closed the TCP line
++   at every master clear, also at the bus INIT of a RESET instruction. */
+ controller->link.state = Halt;
+ controller->state = Initialised;
+ while ((control = controller->control_out)) {
+@@ -3161,12 +3344,13 @@ dmc_buffer_queue_init_all(controller);
+ controller->transfer_state = Idle;
+ if (dmc_is_attached(controller->unit))
+     dmc_set_run(controller);
+-if (dmv_invoke && !dmv_boot_invoke(controller, dmv_soft_address))
+-    dmc_clr_modem_dtr(controller);          /* no boot: an ordinary master clear */
+-/* DMV11 with remote load detect: DTR comes back at once, the DMV11 keeps
+-   scanning the line for an Enter MOP Mode message (EK-DMV11-TM-001
+-   Appendix D, modem control) */
+-if (dmv_remote_load_watch(controller))
++if (dmv_invoke)                             /* no boot: an ordinary master clear */
++    dmv_boot_invoke(controller, dmv_soft_address);
++/* DTR is asserted again at master clear (known issue 103); with remote
++   load detect the board then scans the line for an Enter MOP Mode message
++   (EK-DMV11-TM-001 Appendix D).  A multipoint hub's shared line is left to
++   its sessions. */
++if (!controller->dmp_hub)
+     dmc_set_modem_dtr(controller);
+ }
+ 
+@@ -5339,12 +5523,17 @@ return (controller->state == Halted);
+ }
+ t_bool ddcmp_UserStartup          (CTLR *controller)
+ {
+-/* DMP/DMV: the protocol is started only by control request key 003 (START),
+-   which sets the controller Running.  DTR alone is not enough: the host can
++/* The protocol is started only by the host: DMP/DMV control request key
++   003 (START), DMC/DMR CONTROL IN or the first transmit buffer, which set
++   the controller Running (DTR alone is not a start since a master clear
++   keeps DTR, known issue 103).  DMP/DMV:  DTR alone is not enough: the host can
+    raise DTR with a modem write while the tributary is still halted, and a
+    halted link that also counted as "starting" would be halted and restarted
+    by the same scan over and over. */
+-if (!dmc_is_dmc(controller) && (controller->state != Running))
++if (controller->state != Running)           /* every board: the host started the line */
++    return FALSE;
++/* A maintenance mode request is not a DDCMP start-up (rule 2, not rule 1) */
++if (controller->link.ScanningEvents & DDCMP_EVENT_MAINTMODE)
+     return FALSE;
+ if (dmp_hub_mp(controller))                 /* hub: no modem on the drop multiplexer */
+     return TRUE;
+@@ -5810,28 +5999,193 @@ t_bool dmv_is_dmv (CTLR *controller)
  return (!dmc_is_dmc(controller) && (controller->device == &dmv_dev));
  }
  
@@ -713,7 +771,8 @@ index 17d129cb..52d32043 100644
 +
 +/* Switch pack n of a line: 0 the features pack, 1 the address/password pack */
 +static uint16 *dmx_pack (CTLR *controller, int n)
-+{
+ {
+-return controller->index - DMC_NUMDEVICE;
 +int ln = controller->index - DMC_NUMDEVICE;             /* DMP/DMV line */
 +
 +if (controller->dev_type == DMC)
@@ -723,16 +782,15 @@ index 17d129cb..52d32043 100644
 +if (controller->device == &dmp_dev)
 +    return n ? &dmp_e134[ln] : &dmp_e121[ln];
 +return n ? &dmv_e113[ln] : &dmv_e101[ln];
-+}
-+
-+/* The MOP program type a boot asks for (SET PROGRAM) */
-+static uint8 *dmx_program (CTLR *controller)
- {
--return controller->index - DMC_NUMDEVICE;
-+return dmc_is_dmc(controller) ? &dmr_program[controller->index] : &dmv_program[controller->index - DMC_NUMDEVICE];
  }
  
 -/* E101 SW1 OFF: the mode comes from SW6-8 */
++/* The MOP program type a boot asks for (SET PROGRAM) */
++static uint8 *dmx_program (CTLR *controller)
++{
++return dmc_is_dmc(controller) ? &dmr_program[controller->index] : &dmv_program[controller->index - DMC_NUMDEVICE];
++}
++
 +/* The mode enable switch is OFF: the mode comes from the mode switches */
  t_bool dmv_mode_from_switches (CTLR *controller)
  {
@@ -785,7 +843,7 @@ index 17d129cb..52d32043 100644
  }
  
  /* The first established tributary (lowest status slot), 0 if none */
-@@ -5845,32 +6190,66 @@ for (i = 0; i < DMP_MAX_TRIBS; i++)
+@@ -5845,32 +6199,66 @@ for (i = 0; i < DMP_MAX_TRIBS; i++)
  return 0;
  }
  
@@ -803,21 +861,21 @@ index 17d129cb..52d32043 100644
 +/* SET or SHOW of a switch on a line without a board description (none
 +   since every DMC/DMR/DMP/DMV board has one; kept as a guard) */
 +static t_stat dmx_no_switches (CTLR *controller)
-+{
+ {
+-int ln = (int)(uptr - dmv_dev.units);
 +return sim_messagef (SCPE_NOFNC, "%s%d has no switch packs\n", controller->device->name, controller->index);
 +}
 +
 +/* The boot ROM address of a DMC11 or DMR11: 173000 plus the offset (DMR11
 +   bytes, DMC11 words) */
 +static uint32 dmr_boot_address (CTLR *controller)
- {
--int ln = (int)(uptr - dmv_dev.units);
++{
 +const DMX_BOARD *b = dmx_board (controller);
-+
-+return DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET) * (b ? b->offset_scale : 1);
-+}
  
 -return ((ln >= 0) && (ln < DMP_NUMDEVICE) && (ln < (int)dmv_dev.numunits - 2)) ? ln : -1;
++return DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET) * (b ? b->offset_scale : 1);
++}
++
 +/* The boot switches exist on every board, but only a PDP-11 can be booted */
 +static t_stat dmv_boot_switch_refused (const DMX_BOARD *b)
 +{
@@ -863,7 +921,7 @@ index 17d129cb..52d32043 100644
          return SCPE_OK;
          }
  return sim_messagef (SCPE_ARG, "Unknown mode: %s (SOFTWARE, HDXDMC, FDXDMC, HDXPOINT, FDXPOINT,\n"
-@@ -5879,12 +6258,12 @@ return sim_messagef (SCPE_ARG, "Unknown mode: %s (SOFTWARE, HDXDMC, FDXDMC, HDXP
+@@ -5879,12 +6267,12 @@ return sim_messagef (SCPE_ARG, "Unknown mode: %s (SOFTWARE, HDXDMC, FDXDMC, HDXP
  
  t_stat dmv_show_mode (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
  {
@@ -881,7 +939,7 @@ index 17d129cb..52d32043 100644
  else
      fprintf (st, "MODE=SOFTWARE\n");
  return SCPE_OK;
-@@ -5892,85 +6271,84 @@ return SCPE_OK;
+@@ -5892,85 +6280,84 @@ return SCPE_OK;
  
  t_stat dmv_set_tributary (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
  {
@@ -1002,7 +1060,7 @@ index 17d129cb..52d32043 100644
          return SCPE_OK;
          }
  return sim_messagef (SCPE_ARG, "PROGRAM must be SECONDARY, TERTIARY or SYSTEM\n");
-@@ -5978,82 +6356,171 @@ return sim_messagef (SCPE_ARG, "PROGRAM must be SECONDARY, TERTIARY or SYSTEM\n"
+@@ -5978,82 +6365,171 @@ return sim_messagef (SCPE_ARG, "PROGRAM must be SECONDARY, TERTIARY or SYSTEM\n"
  
  t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
  {
@@ -1075,9 +1133,11 @@ index 17d129cb..52d32043 100644
 +    fprintf (st, "%sPOWERONBOOT\n", dmx_poweron (controller) ? "" : "NO");
 +else
 +    fprintf (st, "%sREMOTELOAD\n", dmx_remoteload (controller) ? "" : "NO");
-+return SCPE_OK;
-+}
-+
+ return SCPE_OK;
+ }
+ 
+-/* SHOW DMVn SWITCHES: both switch packs as they would be set on the board,
+-   with their meaning, and the state of a boot */
 +/* SET DMCn BOOTOFFSET=n (val 0: E121 SW1-8) and PASSWORD=n (val 1: E134
 +   SW1-8), DMR11 only, octal 0-377 as in the guide */
 +t_stat dmr_set_switchbyte (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
@@ -1108,11 +1168,9 @@ index 17d129cb..52d32043 100644
 +
 +DMX_UNIT_BOARD (uptr, controller, b);
 +fprintf (st, "%s=%03o\n", val ? "PASSWORD" : "BOOTOFFSET", *dmx_pack (controller, val) & 0xFF);
- return SCPE_OK;
- }
- 
--/* SHOW DMVn SWITCHES: both switch packs as they would be set on the board,
--   with their meaning, and the state of a boot */
++return SCPE_OK;
++}
++
 +/* SHOW SWITCHES: one switch pack as it would be set on the board (OFF = 1),
 +   with the meaning of each switch */
 +static void dmx_show_pack (FILE *st, const DMX_BOARD *b, int n, uint16 value)
@@ -1223,7 +1281,7 @@ index 17d129cb..52d32043 100644
                                                  boot_states[controller->dmv_boot.state] : "none")
                                              : "not available (PDP-11 simulator only)");
  return SCPE_OK;
-@@ -6062,10 +6529,21 @@ return SCPE_OK;
+@@ -6062,10 +6538,21 @@ return SCPE_OK;
  /* Why a remote station's boot cannot work, NULL if it can */
  static const char *dmv_boot_refused (CTLR *controller)
  {
@@ -1249,7 +1307,7 @@ index 17d129cb..52d32043 100644
  if ((dmv_switch_mode(controller) & 6) == 4)
      return "A multipoint control station is not booted (MODE=HDXCONTROL or FDXCONTROL)";
  return NULL;
-@@ -6105,14 +6583,21 @@ sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message %d sent%s\n", co
+@@ -6105,14 +6592,21 @@ sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message %d sent%s\n", co
  
  static void dmv_boot_request_program (CTLR *controller)
  {
@@ -1276,7 +1334,7 @@ index 17d129cb..52d32043 100644
  }
  
  static void dmv_boot_request_load (CTLR *controller, uint8 loadnum, uint8 error)
-@@ -6178,24 +6663,28 @@ else
+@@ -6178,24 +6672,28 @@ else
      controller->dmv_boot.state = DMVB_POLLWAIT;
  }
  
@@ -1309,7 +1367,7 @@ index 17d129cb..52d32043 100644
      if (address == 0)
          return sim_messagef (SCPE_ARG, "A tributary boots with its address in the tributary switches: SET %s%d TRIBUTARY=n\n", dptr->name, unitno);
      }
-@@ -6215,7 +6704,7 @@ uint8 address = 1;
+@@ -6215,7 +6713,7 @@ uint8 address = 1;
  if (!why && (dmv_switch_mode(controller) & 4)) {
      address = dmv_switch_address(controller);
      if (address == 0) {
@@ -1318,7 +1376,7 @@ index 17d129cb..52d32043 100644
              why = "software-assigned tributary address with the power-on boot switch on";
          else if ((address = soft_address) == 0)
              why = "no tributary address (switches 0, none established)";
-@@ -6230,16 +6719,19 @@ dmv_boot_begin (controller, DMVB_HOW_INVOKE, address, TRUE);
+@@ -6230,16 +6728,19 @@ dmv_boot_begin (controller, DMVB_HOW_INVOKE, address, TRUE);
  return TRUE;
  }
  
@@ -1342,7 +1400,7 @@ index 17d129cb..52d32043 100644
  void dmv_get_packet (CTLR *controller, TMLN *lp, const uint8 **pkt, uint16 *size)
  {
  if (controller->dmv_held_valid && (lp == controller->line)) {
-@@ -6249,6 +6741,63 @@ if (controller->dmv_held_valid && (lp == controller->line)) {
+@@ -6249,6 +6750,63 @@ if (controller->dmv_held_valid && (lp == controller->line)) {
      return;
      }
  ddcmp_tmxr_get_packet_ln (lp, pkt, size, *controller->corruption_factor);
@@ -1406,7 +1464,7 @@ index 17d129cb..52d32043 100644
  }
  
  /* An Enter MOP Mode (Boot) message for this station with the right
-@@ -6282,19 +6831,34 @@ if (dmv_switch_mode(controller) & 4) {      /* tributary: its own address only *
+@@ -6282,19 +6840,34 @@ if (dmv_switch_mode(controller) & 4) {      /* tributary: its own address only *
          return FALSE;
          }
      }
@@ -1449,7 +1507,7 @@ index 17d129cb..52d32043 100644
  return TRUE;
  }
  
-@@ -6700,6 +7264,10 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
+@@ -6700,6 +7273,10 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
          controller->unit->ctlr = (void *)controller;
          dmc_microdiag[i] = TRUE;
          dmc_corruption[i] = 0;
@@ -1460,7 +1518,7 @@ index 17d129cb..52d32043 100644
          }
      tmxr_set_modem_control_passthru (&dmc_desc);   /* We always want Modem Control */
      dmc_units[dmc_dev.numunits-2] = dmc_poll_unit_template;
-@@ -6718,6 +7286,8 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
+@@ -6718,6 +7295,8 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
          dmp_dev.units[i] = dmc_unit_template;
          controller->unit->ctlr = (void *)controller;
          dmp_corruption[i] = 0;
@@ -1469,7 +1527,7 @@ index 17d129cb..52d32043 100644
          }
      tmxr_set_modem_control_passthru (&dmp_desc);   /* We always want Modem Control */
      dmp_units[dmp_dev.numunits-2] = dmc_poll_unit_template;
-@@ -6729,6 +7299,20 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
+@@ -6729,6 +7308,20 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
      dmp_desc.uptr = dmp_units+dmp_desc.lines;      /* Identify polling unit */
      }
  
@@ -1490,7 +1548,7 @@ index 17d129cb..52d32043 100644
  /* The DMP (Unibus) and DMV (Qbus) share their units and so one DIB.  Size
     it for the variant being reset: 8 bytes per DMP line, 16 per DMV line
     (the DMV adds BSEL10-BSEL17 for the Q22 address and count fields). */
-@@ -6783,17 +7367,20 @@ if (!(dptr->flags & DEV_DIS)) {
+@@ -6783,17 +7376,20 @@ if (!(dptr->flags & DEV_DIS)) {
              dmc_clroutint(controller);
              controller->dmc_wr_delay = 0;
              dmv_boot_cancel(controller);        /* DMV11: a reset ends a boot */
@@ -1515,7 +1573,7 @@ index 17d129cb..52d32043 100644
          sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
      }
  
-@@ -6922,9 +7509,12 @@ return "DMC11 Synchronous network controller";
+@@ -6922,9 +7518,12 @@ return "DMC11 Synchronous network controller";
  #endif
  }
  

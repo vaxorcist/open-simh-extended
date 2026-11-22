@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v7, 2026-11-22 (v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v8, 2026-11-22 (v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -578,13 +578,21 @@ Found on the way and fixed (patch 21 v3):
   ROM's RESET at each retry (about every 0.5 s) starved it, and the line,
   dropped by the master clear, was never connected again (known issue 102).
 
-Open: a master clear drops DTR, so every RESET closes the TCP line; the
-DMC11 manual says the board keeps DTR (known issue 103, decision for Ulli).
-The ROM boot works anyway: the load host connects again.
+A master clear dropped DTR, so every RESET closed the TCP line; the DMC11
+manual says the board keeps DTR (known issue 103). Ulli decided to keep DTR
+at master clear for every DMC/DMR/DMP/DMV line (patch 21 v4): the master
+clear asserts DTR on an attached line; the explicit drops (HALT, the DMP
+station halt, the DMC's "drop DTR" microinstruction) stay. DTR had also
+served as the DMC11's sign that the host started the line; that is now the
+host's start itself, and a maintenance mode request goes to maintenance mode
+at once instead of starting DDCMP first (known issue 105, which kept the
+ROM's Request Program queued once the line stayed up). With both, the ROM
+boots without a single line drop.
 
 Tests: `tests/dmv11_boot/` R6 (DMR11) and R7 (DMC11) through the real ROM:
 Request Program `08 0C 01 00`, the program at 6 prints "XM ROM BOOT OK" and
 halts at 34. The image is not in the repository (DEC firmware); the README
 of the tests says how to build it. All 17 boot tests PASS; the VMS V4.7
-DECnet pairs (DMV11, DMP11, point-to-point and multipoint) PASS with the
-poll change.
+DECnet pairs PASS with the poll change (DMV11, DMP11, point-to-point and
+multipoint) and again with DTR kept, now also over a DMC11 and a DMR11
+(`pair.sh` v7, `DEV=DMC|DMR`): six of six.

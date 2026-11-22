@@ -1,4 +1,4 @@
-open-simh-extended/tests/dmv_regress/README.txt  v3 (2026-11-22; v3: results after patch 21 v3; v2: results after patch 21)
+open-simh-extended/tests/dmv_regress/README.txt  v4 (2026-11-22; v4: pair.sh v7 with DEV=DMC|DMR, results after patch 21 v4; v3: results after patch 21 v3; v2: results after patch 21)
 
 VMS V4.7 DECnet regression for the DMV11 (microvax2) and the DMP11 (vax780),
 two nodes, point-to-point and multipoint (control station + tributary 3).
@@ -29,3 +29,13 @@ Results 2026-11-21 (patch 18 v3 build):
   vax780    DMP11 multipoint       PASS
 Results 2026-11-22 (patch 21 build, branch dmp-dmr-boot): the same four PASS.
 Results 2026-11-22 (patch 21 v3, connection poll kept across resets): the same four PASS.
+
+Since pair.sh v7 the point-to-point test also runs over a DMC11 or DMR11 on
+the VAX-11/780 (VMS V4.7 XMDRIVER, line and circuit DMC-0):
+
+    DEV=DMC ./pair.sh vax780 BINDIR
+    DEV=DMR ./pair.sh vax780 BINDIR
+
+Results 2026-11-22 (patch 21 v4, a master clear keeps DTR): DMC11 PASS,
+DMR11 PASS, DMV11 and DMP11 point-to-point and multipoint PASS (3 of 3
+compares each).

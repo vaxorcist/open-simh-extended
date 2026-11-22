@@ -1,8 +1,10 @@
 #!/bin/bash
-# open-simh-extended/tests/dmv_regress/pair.sh  v6 (v6: MP=1 runs the same over a multipoint line: node A control station (listening, no PEER, circuit DMP-0.3), node B tributary 3; v5: errors are counted only after the login (the startup's own DEVOFFLINE is not part of the test); v4: SET CPU IDLE=VMS on both nodes (without it the two simulators load both host cores and a boot can hang, known issue 97); v3: node A waits 240 s more for B; node B boots only after node A has logged in: two MicroVAX II booting at the same time sometimes hang after the date, also without a DMV11 (known issue 97); v2: DEBUG variable for the DMV/DMP debug flags)
+# /home/claude/vmsreg/pair.sh  v7 (v7: DEV=DMC or DEV=DMR runs the point-to-point test over a DMC11/DMR11 (vax780, VMS line DMC-0); v6: MP=1 runs the same over a multipoint line: node A control station (listening, no PEER, circuit DMP-0.3), node B tributary 3; v5: errors are counted only after the login (the startup's own DEVOFFLINE is not part of the test); v4: SET CPU IDLE=VMS on both nodes (without it the two simulators load both host cores and a boot can hang, known issue 97); v3: node A waits 240 s more for B; node B boots only after node A has logged in: two MicroVAX II booting at the same time sometimes hang after the date, also without a DMV11 (known issue 97); v2: DEBUG variable for the DMV/DMP debug flags)
 # Two-node VMS V4.7 DECnet regression over a DMV11 (microvax2) or DMP11
 # (vax780) point-to-point line, after DMV11 patch 18 v2.
 #   usage: pair.sh microvax2|vax780 [BINDIR]
+#   DEV=DMC|DMR pair.sh vax780 [BINDIR]: the same over a DMC11/DMR11
+#   (point-to-point only; VMS V4.7 line and circuit DMC-0)
 # Node A = fresh copy of diskA.vhd (1.4 VAX4), node B = diskB.vhd (1.3 VAX3).
 # Each node defines line/circuit DMP-0, starts DECnet, copies HELPLIB.HLB
 # to the other node and back and runs DIFFERENCES; node A also switches its
@@ -10,7 +12,8 @@
 # vmsrun.py at the same time.  PASS = 3 x "No differences" and no errors.
 SIM=$1; BIN=${2:-/home/claude/dmvb/BIN}
 cd "$(dirname "$0")" || exit 1
-R=run_$SIM${MP:+_mp}; rm -rf $R; mkdir -p $R
+R=run_$SIM${MP:+_mp}${DEV:+_$DEV}; rm -rf $R; mkdir -p $R
+LINE=DMP-0; [ -n "$DEV" ] && LINE=DMC-0         # VMS line/circuit name
 cp --sparse=always diskA.vhd $R/a.vhd
 cp --sparse=always diskB.vhd $R/b.vhd
 for n in a b; do
@@ -21,7 +24,15 @@ for n in a b; do
     echo "set cpu idle=vms"
     echo "set rq0 ra81"
     echo "attach rq0 $R/$n.vhd"
-    if [ $SIM = microvax2 ]; then
+    if [ -n "$DEV" ]; then                    # DMC11 or DMR11 (TYPE)
+        echo "set dmc enable"
+        echo "set dmc0 type=$DEV"
+        echo "set dmc0 peer=127.0.0.1:$PEER"
+        echo "attach dmc0 $MY"
+        echo "set debug $R/$n.dbg"
+        echo "set dmc debug=${DEBUG:-INFO;WARN}"
+        echo "boot rq0"
+    elif [ $SIM = microvax2 ]; then
         echo "set dmv enable"
         [ -z "$MP" -o $n = b ] && echo "set dmv0 peer=127.0.0.1:$PEER"
         echo "attach dmv0 $MY"
@@ -48,8 +59,9 @@ if [ -n "$MP" ]; then
     LB="MC NCP DEFINE LINE DMP-0 STATE ON PROTOCOL DDCMP TRIBUTARY"
     CB="MC NCP DEFINE CIRCUIT DMP-0 STATE ON TRIBUTARY 3"
 else
-    LA="MC NCP DEFINE LINE DMP-0 STATE ON PROTOCOL DDCMP POINT"
-    CA="MC NCP DEFINE CIRCUIT DMP-0 STATE ON"; CIRA=DMP-0
+    LA="MC NCP DEFINE LINE $LINE STATE ON PROTOCOL DDCMP POINT"
+    [ -n "$DEV" ] && LA="MC NCP DEFINE LINE $LINE STATE ON"
+    CA="MC NCP DEFINE CIRCUIT $LINE STATE ON"; CIRA=$LINE
     LB="$LA"; CB="$CA"
 fi
 purge='MC NCP PURGE KNOWN CIRCUITS ALL
@@ -85,7 +97,7 @@ COPY SYS\$HELP:HELPLIB.HLB VAX4"SYSTEM MANAGER"::SYS\$SCRATCH:FROM3.HLB
 COPY VAX4"SYSTEM MANAGER"::SYS\$SCRATCH:FROM3.HLB SYS\$SCRATCH:BACK3.HLB
 DIFFERENCES SYS\$HELP:HELPLIB.HLB SYS\$SCRATCH:BACK3.HLB
 !WAIT 420
-MC NCP SHOW CIRCUIT DMP-0 COUNTERS
+MC NCP SHOW CIRCUIT $LINE COUNTERS
 EOT
 python3 -I vmsrun.py $BIN/$SIM $R/a.ini $R/a.log $R/a.cmd 900 > $R/a.out 2>&1 &
 for i in $(seq 1 60); do                      # wait for node A's login
@@ -96,6 +108,6 @@ python3 -I vmsrun.py $BIN/$SIM $R/b.ini $R/b.log $R/b.cmd 900 > $R/b.out 2>&1 &
 wait
 nd=$(cat $R/a.log $R/b.log | tr -d '\r' | grep -ac "Number of difference sections found: 0\|No differences encountered")
 err=$(for f in $R/a.log $R/b.log; do tr -d '\r' < $f | sed -n '/Welcome to VAX\/VMS/,$p'; done | grep -a "^%[A-Z]*-[EFW]-\|^-[A-Z]*-[EFW]-" | sort | uniq -c)
-echo "$SIM${MP:+ multipoint}: compares without differences: $nd of 3"
+echo "$SIM${MP:+ multipoint}${DEV:+ $DEV}: compares without differences: $nd of 3"
 [ -n "$err" ] && echo "errors/warnings:" && echo "$err"
-if [ "$nd" = 3 ] && [ -z "$err" ]; then echo "$SIM${MP:+ multipoint} RESULT: PASS"; else echo "$SIM${MP:+ multipoint} RESULT: FAIL"; fi
+if [ "$nd" = 3 ] && [ -z "$err" ]; then echo "$SIM${MP:+ multipoint}${DEV:+ $DEV} RESULT: PASS"; else echo "$SIM${MP:+ multipoint}${DEV:+ $DEV} RESULT: FAIL"; fi
