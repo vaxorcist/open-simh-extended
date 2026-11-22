@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v8, 2026-11-22 (v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v9, 2026-11-22 (v9: section 9, starting the M9312 'XM' ROM by hand: GO 173004, not BOOT CPU; v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -569,6 +569,32 @@ images on the internet, and which format SIMH needs.
   173024/173026 of each ROM are 173000/340.
 - **DMR11 and DMC11 offsets for it:** DMR11 `BOOTOFFSET=4` (bytes, 173004),
   DMC11 `BOOTOFFSET=2` (words, 173004); unit 1: 30 / 14.
+- **Starting it by hand** (Ulli's question, tested 2026-11-22): `BOOT CPU`
+  starts the ROM at its first word, 173000, which is the ROM's header (the
+  device code "MX"), not code: the CPU runs into the middle of the ROM
+  without a CSR and loops. Start it at its entry instead, after a reset
+  (`GO` does not reset the devices):
+
+  ```
+  set cpu 11/70
+  set dmc enable
+  set dmc0 type=dmr
+  set dmc0 peer=127.0.0.1:21201
+  attach dmc0 21202
+  set rom0 address=17773000
+  attach rom0 m9312_xm.bin
+  reset
+  go 173004
+  ```
+
+  173004 is unit 0 and 173030 unit 1, both without diagnostics; the
+  entries with diagnostics (173006, 173032) jump to the console ROM
+  23-248F1 at 165000. PASSWORD and BOOTOFFSET are not needed for this
+  (they serve the remote load detect). The ROM finds the board by the
+  floating CSR rules and sets SP 17776 (at least 8 KB of memory), and a
+  load host must answer its Request Program (8,12,1,0) with a secondary
+  loader, which runs at 6. On a real machine the console ROM or the
+  M9312's boot switches choose the entry.
 
 Found on the way and fixed (patch 21 v3):
 
