@@ -1,7 +1,7 @@
 #!/bin/bash
-# open-simh-extended/tests/dmv11_boot/run_tests.sh  v7 (v7: DMC11 tests R4, R5, R3 checks the DMC11's switch packs (known issue 99); v6: DMP11 tests P1-P4, DMR11 tests R1-R3; common_check.ini gets the unit; v5: checks 774-776 instead of 400-402 (start trap at SP 1000); v4: T5 BOOT refusals, T6 switch mode and address with the host interface; v3: also 400-402; v2: mopctl.py connects to the ATTACH port)
+# open-simh-extended/tests/dmv11_boot/run_tests.sh  v8 (v8: R6, R7 boot through DEC's M9312 'XM' DECnet ROM (DMR11, DMC11; image m9312_xm.bin, see README.txt; SKIP without it); v7: DMC11 tests R4, R5, R3 checks the DMC11's switch packs (known issue 99); v6: DMP11 tests P1-P4, DMR11 tests R1-R3; common_check.ini gets the unit; v5: checks 774-776 instead of 400-402 (start trap at SP 1000); v4: T5 BOOT refusals, T6 switch mode and address with the host interface; v3: also 400-402; v2: mopctl.py connects to the ATTACH port)
 # Runs the boot tests of the DMV11 (T1-T6), DMP11 (P1-P4), DMR11 (R1-R3) and
-# DMC11 (R4, R5).
+# DMC11 (R4, R5), and through DEC's M9312 DECnet boot ROM (R6 DMR11, R7 DMC11).
 # For a load test the MOP control station (mopctl.py) is started in the
 # background, then the PDP-11 simulator with the test's ini file.  A load
 # test passes when mopctl.py reports PASS, the console shows the program's
@@ -10,9 +10,9 @@
 # T5, P4 and R3 check refusals (messages), T6 the DMV11 mode and tributary
 # address switches with the host interface (debug log), R2 the DMR11's
 # restart into a boot ROM, R5 the DMC11's (offset in words).
-# usage: run_tests.sh BIN/pdp11 [T1 ... T6 P1 ... P4 R1 ... R5]
+# usage: run_tests.sh BIN/pdp11 [T1 ... T6 P1 ... P4 R1 ... R7]
 BIN=$1; shift
-TESTS=${*:-T1 T2 T3 T4 T5 T6 P1 P2 P3 P4 R1 R2 R3 R4 R5}
+TESTS=${*:-T1 T2 T3 T4 T5 T6 P1 P2 P3 P4 R1 R2 R3 R4 R5 R6 R7}
 cd "$(dirname "$0")"
 fail=0
 
@@ -72,6 +72,10 @@ for t in $TESTS; do
         R2) port=21122; opts="--trigger 83 --dmrpw --noload";;
         R4) port=21123; opts="--trigger 83 --dmrpw --wrongfirst --devtype 12 --shortreq"; text="DMC BOOT OK";;
         R5) port=21124; opts="--trigger 83 --dmrpw --noload";;
+        R6|R7)                              # DEC's M9312 'XM' ROM (not in the repository)
+            if [ ! -f m9312_xm.bin ]; then echo "$t SKIP (no m9312_xm.bin, see README.txt)"; continue; fi
+            port=$([ $t = R6 ] && echo 21125 || echo 21126)
+            opts="--trigger 83 --dmrpw --rom --devtype 12"; text="XM ROM BOOT OK";;
     esac
     if [ $t = R2 -o $t = R5 ]; then         # the boot ROM: MOV #123456,R0 and HALT at offset 020
         python3 -I -c 'import struct,sys; sys.stdout.buffer.write(bytes(16) + struct.pack("<3H", 0o012700, 0o123456, 0) + bytes(10))' > r2rom.bin
@@ -84,7 +88,9 @@ for t in $TESTS; do
     wait $mpid
     ok=1
     grep -q "^PASS" $t.mop || ok=0
-    if [ $t = R2 -o $t = R5 ]; then
+    if [ $t = R6 -o $t = R7 ]; then           # the ROM started the program at 6, HALT at 34
+        grep_all $t.out "boot ROM at 173004: present" "$text" "HALT instruction, PC: 000036" || ok=0
+    elif [ $t = R2 -o $t = R5 ]; then
         grep_all $t.out "HALT instruction, PC: 173026" "24:	173020" "26:	000000" "R0:	123456" \
                  "boot ROM at 173020: present" || ok=0
     else

@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v6, 2026-11-22 (v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v7, 2026-11-22 (v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -523,3 +523,68 @@ Commands (TYPE=DMC): `SET DMCn PASSWORD=n`, `SET DMCn BOOTOFFSET=n` (octal),
 Tests (`tests/dmv11_boot/`): R3 (defaults, word offset), R4 (the DMC11 loads
 itself: Request Program `08 0C 01`, wrong password first), R5 (boot ROM at
 173000, offset 010 words: restart at 173020). All 15 boot tests PASS.
+
+## 9. DEC's M9312 DECnet boot ROM (2026-11-22, patch 21 v3)
+
+Ulli asked whether SIMH has PDP-11 boot ROMs for `BOOT CPU`, to look for
+images on the internet, and which format SIMH needs.
+
+- **SIMH has none.** `BOOT CPU` (and `BOOT` alone) starts the image attached
+  to ROM0 (`cpu_boot()` calls the ROM device's boot routine); `BOOT ROMn`
+  starts ROMn at its first address. The only images built into the PDP-11
+  simulator are the DELQA's boot ROM (XQ) and VT11 demo programs.
+- **Format:** a flat binary file of 16-bit words, low byte first (as in
+  PDP-11 memory, on the usual little-endian hosts: known issue 104), the
+  first word at the unit's ADDRESS, the file size is the ROM size
+  (`SET ROMn ADDRESS=17773000`, `ATTACH ROMn file`). HELP ROM says so now.
+- **Images found:** Don North (AK6DN) publishes the M9312 boot ROMs as
+  MACRO-11 source, listing and PROM programmer files (Intel HEX of the
+  4-bit PROM cells), verified against real chips and DEC's listing document
+  K-SP-M9312 (https://ak6dn.github.io/PDP-11/M9312/; the repository
+  github.com/ak6dn/ak6dn.github.io can be cloned from the workspace, the
+  web page cannot). Among them the DECnet ROM set for the DMC11/DMR11, 'XM',
+  23-862A9, 23-863A9, 23-864A9. Raw PROM dumps (.BIN, 512 bytes per chip)
+  are also at pdp-11.classiccmp.org/M9312/. For the M9301, BM873 and the
+  KDJ11 boards no ready images were looked at.
+- **Conversion:** `tools/m9312_lst2bin.py` builds a ROM device image from
+  the listings (the assembled words with their addresses), places each ROM
+  at its socket (173000, 173200, 173400, 173600; the listings are all
+  assembled at 173000, the code is position independent) and with `--hex`
+  checks every word against the PROM programmer file. The M9312 boot PROM
+  holds word i in cells 4i..4i+3: cell bits = word bits 8,1,2,3 / 4,5,6,7 /
+  0,9,10,11 / 12,13,14,15, with 10, 11 and 12 stored inverted; all 64 words
+  of the three XM ROMs match.
+- **The XM ROM** (from its listing): entries 173004 (unit 0) and 173030
+  (unit 1) without diagnostics (173006/173032 with them; they need the
+  console ROM 23-248F1 at 165000); it checks that ROMs 2 and 3 sit in
+  sockets 2 and 3, sets SP 17776, finds the DMC at its floating CSR by
+  probing (table DJ11, DH11, DQ11, DU11, DUP11, LK11, DMC11), executes
+  RESET, gives the DMC a base table at 17370, CNTL IN maintenance mode +
+  half duplex, a receive buffer at 0 of 4092 bytes and sends Request Program
+  10,14,1,0 octal (8,12,1,0: DMC11, secondary loader) from 17774, retrying 8
+  times, then RESET and again. When a received message begins with the code
+  0 and load number 0 (Memory Load with Transfer Address), it executes
+  RESET and jumps to 6, with the unit number in R0. That is why VMS sends a
+  secondary loader to address 6 (section 6). The pseudo vector words at
+  173024/173026 of each ROM are 173000/340.
+- **DMR11 and DMC11 offsets for it:** DMR11 `BOOTOFFSET=4` (bytes, 173004),
+  DMC11 `BOOTOFFSET=2` (words, 173004); unit 1: 30 / 14.
+
+Found on the way and fixed (patch 21 v3):
+
+- `dmp_description()` chose DMP11/DMV11 by the bus, so HELP BOOT on a Qbus
+  CPU called the DMP device a DMV11 (known issue 101, reported by Ulli).
+- `dmc_reset()` restarted the 2-second connection poll at every reset; the
+  ROM's RESET at each retry (about every 0.5 s) starved it, and the line,
+  dropped by the master clear, was never connected again (known issue 102).
+
+Open: a master clear drops DTR, so every RESET closes the TCP line; the
+DMC11 manual says the board keeps DTR (known issue 103, decision for Ulli).
+The ROM boot works anyway: the load host connects again.
+
+Tests: `tests/dmv11_boot/` R6 (DMR11) and R7 (DMC11) through the real ROM:
+Request Program `08 0C 01 00`, the program at 6 prints "XM ROM BOOT OK" and
+halts at 34. The image is not in the repository (DEC firmware); the README
+of the tests says how to build it. All 17 boot tests PASS; the VMS V4.7
+DECnet pairs (DMV11, DMP11, point-to-point and multipoint) PASS with the
+poll change.

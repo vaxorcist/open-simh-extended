@@ -1,4 +1,4 @@
-# open-simh-extended/tests/dmv11_boot/mopctl.py  v8 (v8: --shortreq, the DMC11's Request Program 8,12,1; v7: DMP11 and DMR11: --devtype, --dmrpw, --text, --noload; v6: wrong password: 3 s without a MOP answer, DDCMP messages ignored; v5: BPL offset of the test program fixed; v4: the simulator may close the line after the start; v3: load 0 covers 0-777, so the restored words at 400-402 are checked too; v2: connects to the DMV11's ATTACH port; the
+# open-simh-extended/tests/dmv11_boot/mopctl.py  v9 (v9: --rom, the load host of a boot ROM (M9312 'XM'): one Memory Load with Transfer Address of a position-independent program, reconnect after the ROM's RESET; v8: --shortreq, the DMC11's Request Program 8,12,1; v7: DMP11 and DMR11: --devtype, --dmrpw, --text, --noload; v6: wrong password: 3 s without a MOP answer, DDCMP messages ignored; v5: BPL offset of the test program fixed; v4: the simulator may close the line after the start; v3: load 0 covers 0-777, so the restored words at 400-402 are checked too; v2: connects to the DMV11's ATTACH port; the
 # simulator's outgoing connection to a listening script is reported failed here)
 # A minimal DDCMP/MOP control station for testing the DMV11 primary MOP
 # boot of the SIMH PDP-11 (pdp11_dmc.c).  It connects to the DMV11's ATTACH
@@ -24,7 +24,7 @@
 # usage: python3 -I mopctl.py PORT [--addr A] [--mp] [--trigger PW]
 #                                  [--wrongfirst] [--ignorefirst] [--dupload]
 #                                  [--devtype T] [--dmrpw] [--text S] [--noload]
-#                                  [--shortreq]
+#                                  [--shortreq] [--rom]
 #   --addr A       DDCMP address of the remote station (multipoint), default 1
 #   --mp           multipoint: first poll a different address (must be ignored)
 #   --trigger PW   remote load detect with password PW
@@ -36,6 +36,11 @@
 #   --text S       the text the test program prints (default "DMV BOOT OK")
 #   --noload       with --trigger: expect no MOP answer (3 s), load nothing
 #   --shortreq     DMC11: the Request Program has no program type (8,12,1)
+#   --rom          with --trigger: a boot ROM answers (M9312 'XM' DECnet ROM:
+#                  Request Program 8,12,1,0); it receives one Memory Load with
+#                  Transfer Address into memory at 0 and jumps to 6, so the
+#                  program sent is position independent (ROMPROG); the line
+#                  may drop at the ROM's RESET: connect again
 # Exit code 0 when the whole exchange went as expected.
 import socket, struct, sys, time, argparse
 
@@ -113,6 +118,16 @@ PROGRAM = words([0o012706, 0o001000, 0o012701, 0o001100, 0o112100, 0o001406,
                  0o000000])
 PAGE0 = words([0o100000 + i for i in range(256)])       # 0-777: a pattern
 
+# The program for a boot ROM (--rom): the ROM stores the whole Memory Load
+# with Transfer Address message at 0 (code, load number, 4 address bytes)
+# and jumps to 6, so the program starts at 6 and must be position
+# independent: it prints the text behind it and halts at 34 (PC 36).
+#     6 MOV PC,R1 / ADD #26,R1 / 1$: MOVB (R1)+,R0 / BEQ 3$ /
+#    2$: TSTB @#177564 / BPL 2$ / MOVB R0,@#177566 / BR 1$ / 3$: HALT / text at 36
+ROMPROG = words([0o010701, 0o062701, 0o000026, 0o112100, 0o001406,
+                 0o105737, 0o177564, 0o100375, 0o110037, 0o177566, 0o000770,
+                 0o000000])
+
 def mop_load(code, loadnum, addr, data=b'', xfer=None):
     m = bytes([code, loadnum]) + struct.pack('<I', addr) + data
     if xfer is not None:
@@ -149,22 +164,21 @@ def main():
     ap.add_argument('--text', default='DMV BOOT OK')
     ap.add_argument('--noload', action='store_true')
     ap.add_argument('--shortreq', action='store_true')
+    ap.add_argument('--rom', action='store_true')
     a = ap.parse_args()
     text = a.text.encode() + b"\r\n\0"
     def enter_mop(pw):
         # DMV11/DMP11: password in the first byte, then zeros; DMR11: four times
         return bytes([6] + ([pw] * 4 if a.dmrpw else [pw, 0, 0, 0]))
 
-    s = None
-    for i in range(120):                                # the simulator may start later
-        try:
-            s = socket.create_connection(('127.0.0.1', a.port), timeout=2)
-            break
-        except OSError:
-            time.sleep(0.5)
-    if s is None:
+    def connect():
+        for i in range(120):                            # the simulator may start later
+            try:
+                return Line(socket.create_connection(('127.0.0.1', a.port), timeout=2))
+            except OSError:
+                time.sleep(0.5)
         raise SystemExit("FAIL: cannot connect to port %d" % a.port)
-    line = Line(s)
+    line = connect()
     print("connected")
 
     if a.trigger is not None:
@@ -177,6 +191,28 @@ def main():
                     raise SystemExit("FAIL: answer to a wrong password: %s" % m[2].hex())
             print("wrong password ignored")
         line.send(maint(enter_mop(a.trigger), a.addr))
+        if a.rom:
+            # the boot ROM resets the bus, starts the board in maintenance
+            # mode and asks for the program (it asks again when unanswered)
+            req = None
+            end = time.time() + 30.0
+            while req is None and time.time() < end:
+                try:
+                    req = expect_mop(line, a.addr, "Request Program", max(1.0, end - time.time()))
+                except SystemExit as e:
+                    if "connection closed" not in str(e):
+                        raise
+                    print("  line dropped (RESET), connecting again")
+                    line = connect()
+            if req is None:
+                raise SystemExit("FAIL: no Request Program from the boot ROM")
+            print("Request Program: %s" % req.hex())
+            if req != bytes([8, a.devtype, 1, 0]):
+                raise SystemExit("FAIL: unexpected Request Program %s" % req.hex())
+            line.send(maint(mop_load(0, 0, 0, ROMPROG + text, 6), a.addr))
+            print("PASS: program sent to the boot ROM")
+            time.sleep(2.0)
+            return
         if a.noload:
             end = time.time() + 3.0
             while time.time() < end:

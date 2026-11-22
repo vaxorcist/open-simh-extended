@@ -1,6 +1,6 @@
-From 018f667426e07b002b45aaab3fcea52597949350 Mon Sep 17 00:00:00 2001
+From 791c01aa4dc12b9e0e36ad8e2817249591f04d72 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Sun, 22 Nov 2026 10:26:29 +0100
+Date: Sun, 22 Nov 2026 11:52:30 +0100
 Subject: [PATCH] DMP11/DMR11/DMC11: switch packs and boot on one board model
  with the DMV11
 
@@ -18,23 +18,50 @@ Subject: [PATCH] DMP11/DMR11/DMC11: switch packs and boot on one board model
   packs no. 2 (register 15, password) and no. 3 (register 16, boot ROM
   word offset), 377 as shipped.  Remote load detect (four equal password
   bytes) writes 173000+offset into 24, 0 into 26 and restarts the CPU
-  through the power-fail trap when a boot ROM answers there; otherwise
-  the board does the MOP load itself (DMR11 device type 40, DMC11
-  Request Program 8,12,1).
+  through the power-fail trap when a boot ROM answers there (DEC's M9312
+  DECnet ROM works); otherwise the board does the MOP load itself (DMR11
+  device type 40, DMC11 Request Program 8,12,1).
 - Remote load detect also sees an Enter MOP Mode that arrives while the
   host takes the line's messages.
+- A reset keeps a scheduled connection poll (a program that executes
+  RESET often, such as the M9312 DECnet ROM, starved it).
 - Known issue 90: the shared DMP/DMV units are named after the device in
-  use (SHOW DMV0 said DMP0).
-- Help texts for the DMP11, DMR11 and DMC11 switches and boot.
+  use (SHOW DMV0 said DMP0); the DMP/DMV description names the device.
+- Help texts for the DMP11, DMR11 and DMC11 switches and boot; HELP BOOT
+  and HELP ROM (image format, BOOT CPU).
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
 ---
- PDP11/pdp11_dmc.c | 990 ++++++++++++++++++++++++++++++++++++----------
- 1 file changed, 787 insertions(+), 203 deletions(-)
+ PDP11/pdp11_cpu.c |   11 +-
+ PDP11/pdp11_dmc.c | 1006 +++++++++++++++++++++++++++++++++++----------
+ PDP11/pdp11_rom.c |   21 +-
+ 3 files changed, 824 insertions(+), 214 deletions(-)
 
+diff --git a/PDP11/pdp11_cpu.c b/PDP11/pdp11_cpu.c
+index 5241fa6c..6ff0d1f7 100644
+--- a/PDP11/pdp11_cpu.c
++++ b/PDP11/pdp11_cpu.c
+@@ -3743,10 +3743,13 @@ fprintf (st, "size and settings; \"bus\" if it does not work on the current bus
+ fprintf (st, "memory size; \"dis\" if it fits but is disabled (SET <dev> ENABLED).\n");
+ fprintf (st, "Devices marked RH are Massbus drives on an RH11 (Unibus) or RH70 (11/70)\n");
+ fprintf (st, "controller; SIMH also offers them on the Qbus, which DEC's own Qbus\n");
+-fprintf (st, "systems did not have.  ROM selects the boot ROM that BOOT CPU runs\n");
+-fprintf (st, "(HELP ROM).  BOOT DMVn is the DMV11's primary MOP boot\n");
+-fprintf (st, "from a DECnet load host and needs its switches (HELP DMV).  For the\n");
+-fprintf (st, "details of a device's bootstrap see HELP <dev>.\n\n");
++fprintf (st, "systems did not have.  BOOT CPU starts the image attached to ROM0\n");
++fprintf (st, "(HELP ROM); SIMH has no boot ROM images of its own.  BOOT DMVn and\n");
++fprintf (st, "BOOT DMPn are the DMV11's and DMP11's primary MOP boot from a DECnet\n");
++fprintf (st, "load host and need their switches (HELP DMV, HELP DMP).  The DMC11 and\n");
++fprintf (st, "DMR11 have no BOOT command: a load host starts them by remote load\n");
++fprintf (st, "detect, into a boot ROM such as the M9312 DECnet ROM or by their own\n");
++fprintf (st, "load (HELP DMC).  For the details of a device's bootstrap see HELP <dev>.\n\n");
+ return SCPE_OK;
+ }
+ 
 diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
-index 17d129cb..1e379c3b 100644
+index 17d129cb..52d32043 100644
 --- a/PDP11/pdp11_dmc.c
 +++ b/PDP11/pdp11_dmc.c
 @@ -118,15 +118,18 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
@@ -686,8 +713,7 @@ index 17d129cb..1e379c3b 100644
 +
 +/* Switch pack n of a line: 0 the features pack, 1 the address/password pack */
 +static uint16 *dmx_pack (CTLR *controller, int n)
- {
--return controller->index - DMC_NUMDEVICE;
++{
 +int ln = controller->index - DMC_NUMDEVICE;             /* DMP/DMV line */
 +
 +if (controller->dev_type == DMC)
@@ -697,15 +723,16 @@ index 17d129cb..1e379c3b 100644
 +if (controller->device == &dmp_dev)
 +    return n ? &dmp_e134[ln] : &dmp_e121[ln];
 +return n ? &dmv_e113[ln] : &dmv_e101[ln];
++}
++
++/* The MOP program type a boot asks for (SET PROGRAM) */
++static uint8 *dmx_program (CTLR *controller)
+ {
+-return controller->index - DMC_NUMDEVICE;
++return dmc_is_dmc(controller) ? &dmr_program[controller->index] : &dmv_program[controller->index - DMC_NUMDEVICE];
  }
  
 -/* E101 SW1 OFF: the mode comes from SW6-8 */
-+/* The MOP program type a boot asks for (SET PROGRAM) */
-+static uint8 *dmx_program (CTLR *controller)
-+{
-+return dmc_is_dmc(controller) ? &dmr_program[controller->index] : &dmv_program[controller->index - DMC_NUMDEVICE];
-+}
-+
 +/* The mode enable switch is OFF: the mode comes from the mode switches */
  t_bool dmv_mode_from_switches (CTLR *controller)
  {
@@ -776,21 +803,21 @@ index 17d129cb..1e379c3b 100644
 +/* SET or SHOW of a switch on a line without a board description (none
 +   since every DMC/DMR/DMP/DMV board has one; kept as a guard) */
 +static t_stat dmx_no_switches (CTLR *controller)
- {
--int ln = (int)(uptr - dmv_dev.units);
++{
 +return sim_messagef (SCPE_NOFNC, "%s%d has no switch packs\n", controller->device->name, controller->index);
 +}
 +
 +/* The boot ROM address of a DMC11 or DMR11: 173000 plus the offset (DMR11
 +   bytes, DMC11 words) */
 +static uint32 dmr_boot_address (CTLR *controller)
-+{
+ {
+-int ln = (int)(uptr - dmv_dev.units);
 +const DMX_BOARD *b = dmx_board (controller);
- 
--return ((ln >= 0) && (ln < DMP_NUMDEVICE) && (ln < (int)dmv_dev.numunits - 2)) ? ln : -1;
++
 +return DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET) * (b ? b->offset_scale : 1);
 +}
-+
+ 
+-return ((ln >= 0) && (ln < DMP_NUMDEVICE) && (ln < (int)dmv_dev.numunits - 2)) ? ln : -1;
 +/* The boot switches exist on every board, but only a PDP-11 can be booted */
 +static t_stat dmv_boot_switch_refused (const DMX_BOARD *b)
 +{
@@ -1463,15 +1490,84 @@ index 17d129cb..1e379c3b 100644
  /* The DMP (Unibus) and DMV (Qbus) share their units and so one DIB.  Size
     it for the variant being reset: 8 bytes per DMP line, 16 per DMV line
     (the DMV adds BSEL10-BSEL17 for the Q22 address and count fields). */
-@@ -6783,7 +7367,7 @@ if (!(dptr->flags & DEV_DIS)) {
+@@ -6783,17 +7367,20 @@ if (!(dptr->flags & DEV_DIS)) {
              dmc_clroutint(controller);
              controller->dmc_wr_delay = 0;
              dmv_boot_cancel(controller);        /* DMV11: a reset ends a boot */
 -            if (dmv_is_dmv(controller))         /* and an invoke primary MOP request */
 +            if (!dmc_is_dmc(controller))        /* and an invoke primary MOP request (DMV11, DMP11) */
                  dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMV_SEL0_M_PMOP, DBG_RGC);
-             for (j=0; j<dptr->numunits-1; j++) {
-                 sim_cancel (&dptr->units[j]); /* stop poll */
+-            for (j=0; j<dptr->numunits-1; j++) {
+-                sim_cancel (&dptr->units[j]); /* stop poll */
++            for (j=0; j<dptr->numunits-2; j++) {
++                sim_cancel (&dptr->units[j]); /* stop the line units */
+                 if (dptr->units[j].flags & UNIT_ATT)
+                     ++attached;
+                 }
+             dmc_process_master_clear(controller);
+             }
+         }
+-    if (attached)
++    /* The connection poll keeps its time: restarting it at every reset
++       starved it while a program (the M9312 DECnet boot ROM) executes
++       RESET more often than every DMC_CONNECT_POLL seconds (known issue 102) */
++    if (attached && !sim_is_active (dptr->units+(dptr->numunits-2)))
+         sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
+     }
+ 
+@@ -6922,9 +7509,12 @@ return "DMC11 Synchronous network controller";
+ #endif
+ }
+ 
++/* The DMP and DMV devices share their units, but each names its own board
++   (known issue 101: by the bus, HELP BOOT on a Qbus CPU called the DMP
++   device a DMV11) */
+ const char *dmp_description (DEVICE *dptr)
+ {
+-return (UNIBUS) ? "DMP11 Synchronous network controller"
+-                : "DMV11 Synchronous network controller";
++return (dptr == &dmv_dev) ? "DMV11 Synchronous network controller"
++                          : "DMP11 Synchronous network controller";
+ }
+ 
+diff --git a/PDP11/pdp11_rom.c b/PDP11/pdp11_rom.c
+index d1f72bfc..8b81e4a6 100644
+--- a/PDP11/pdp11_rom.c
++++ b/PDP11/pdp11_rom.c
+@@ -203,14 +203,31 @@ fprintf (st, "ROM, Read-Only Memory\n\n");
+ fprintf (st, "The ROM device can be used to add ROM modules to the I/O page.\n");
+ fprintf (st, "First the ROM unit ADDRESS has to be set, and then the ATTACH command\n");
+ fprintf (st, "can be used to fill the ROM with contents.  The BOOT command is supported\n");
+-fprintf (st, "for starting from the ROM.\n");
++fprintf (st, "for starting from the ROM.\n\n");
++fprintf (st, "BOOT ROMn starts the CPU at the first address of ROMn; BOOT CPU (and\n");
++fprintf (st, "BOOT alone) starts ROM0.  SIMH comes with no boot ROM images: the\n");
++fprintf (st, "images of DEC's boot ROMs (M9312, M9301, BM873) must be supplied.\n\n");
++fprintf (st, "Image format: a flat binary file of 16-bit PDP-11 words, low byte\n");
++fprintf (st, "first, as the words are in PDP-11 memory; the first word appears at the\n");
++fprintf (st, "unit's ADDRESS and the file size is the size of the ROM.  Images that\n");
++fprintf (st, "hold the raw contents of the 4-bit PROM chips (for example Intel HEX\n");
++fprintf (st, "files for a PROM programmer) must be converted first.\n\n");
++fprintf (st, "Example: the M9312 DECnet boot ROMs for the DMC11/DMR11 ('XM', DEC\n");
++fprintf (st, "parts 23-862A9, 23-863A9, 23-864A9 in sockets 1-3, 173000-173577) as one\n");
++fprintf (st, "image; a remote load detect of the DMR11 enters it at 173004 (unit 0):\n\n");
++fprintf (st, "    sim> SET ROM0 ADDRESS=17773000\n");
++fprintf (st, "    sim> ATTACH ROM0 m9312_xm.bin\n");
++fprintf (st, "    sim> SET DMC0 TYPE=DMR\n");
++fprintf (st, "    sim> SET DMC0 BOOTOFFSET=4\n");
++fprintf (st, "    sim> SET DMC0 PASSWORD=123\n");
+ return SCPE_OK;
+ }
+ 
+ t_stat rom_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+ {
+ fprintf (st, "The ATTACH command is used to specify the contents of a ROM unit.\n");
+-fprintf (st, "Any file can be used.  The file contents must be a flat binary image.\n");
++fprintf (st, "Any file can be used.  The file contents must be a flat binary image\n");
++fprintf (st, "of 16-bit words, low byte first; the file size is the ROM size.\n");
+ fprintf (st, "The unit ADDRESS must be set first.\n");
+ return SCPE_OK;
+ }
 -- 
 2.43.0
 

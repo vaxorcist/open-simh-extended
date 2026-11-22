@@ -1,9 +1,9 @@
-open-simh-extended/tests/dmv11_boot/README.txt  v4 (2026-11-22; v4: DMC11 tests R4, R5, R3 for the DMC11's switch packs; v3: DMP11 tests P1-P4 and DMR11 tests R1-R3 (patch 21); v2: the start trap words are at 774-776)
+open-simh-extended/tests/dmv11_boot/README.txt  v5 (2026-11-22; v5: R6, R7 boot through DEC's M9312 'XM' DECnet ROM; v4: DMC11 tests R4, R5, R3 for the DMC11's switch packs; v3: DMP11 tests P1-P4 and DMR11 tests R1-R3 (patch 21); v2: the start trap words are at 774-776)
 
 DMV11, DMP11, DMR11 and DMC11 switch packs and boot (patches 18 and 21, PDP-11
 simulator).
 
-run_tests.sh BIN/pdp11 [T1 ... R5]   runs all tests (about 2 minutes); prints
+run_tests.sh BIN/pdp11 [T1 ... R7]   runs all tests (about 2 minutes); prints
                                      "PASS" or "FAIL" per test.
 
 mopctl.py   a minimal DDCMP/MOP control station in Python: connects to the
@@ -16,7 +16,11 @@ mopctl.py   a minimal DDCMP/MOP control station in Python: connects to the
             for a DMP11 or DMR11, --dmrpw: the DMR11's Enter MOP Mode (the
             password in all four bytes), --noload: only check that no MOP
             message answers (a DMR11 that starts a boot ROM); --shortreq:
-            the DMC11's Request Program 8,12,1 (no program type).
+            the DMC11's Request Program 8,12,1 (no program type); --rom:
+            the load host of DEC's M9312 'XM' ROM (one Memory Load with
+            Transfer Address of a position-independent program, stored
+            by the ROM at 0 and started at 6; reconnects after the ROM's
+            RESET).
 mkini.py    writes t3.ini, t4.ini and t6.ini (their PDP-11 programs are
             assembled there, with computed branch offsets).
 common_check.ini  memory after the halt: the program's own words at 24-40
@@ -59,11 +63,35 @@ R4  DMC11 remote load detect without a boot ROM: the DMC11 loads the program
     itself (Request Program 8,12,1, device type 12); wrong password first.
 R5  DMC11 remote load detect with a boot ROM (r2rom.bin at 173000,
     BOOTOFFSET 10 words): 24 = 173020, 26 = 0, restart at 173020.
+R6  DMR11 remote load detect into DEC's M9312 'XM' DECnet boot ROM
+    (BOOTOFFSET 4 = entry 173004, unit 0 without diagnostics): the ROM
+    resets the bus, finds the DMR11 at its floating CSR (160070), sends
+    Request Program 8,12,1,0 in maintenance mode, takes one Memory Load
+    with Transfer Address and starts it at 6: "XM ROM BOOT OK", HALT at 34.
+R7  the same with a DMC11 (BOOTOFFSET 2 words = 173004).
 
-The test "operating systems" (P2, P3, R1, R2, R4, R5) set SP 1000: the takeover
+R6 and R7 need the ROM image m9312_xm.bin in this directory (DEC firmware,
+not in the repository; run_tests.sh says SKIP without it).  Build it from
+Don North's (AK6DN) M9312 listings:
+
+    git clone --depth 1 --filter=blob:none --sparse https://github.com/ak6dn/ak6dn.github.io ak6dn
+    cd ak6dn
+    git sparse-checkout set PDP-11/M9312
+    cd PDP-11/M9312
+    python3 -I <notes>/tools/m9312_lst2bin.py <this directory>/m9312_xm.bin \
+        23-862A9/23-862A9.lst@173000 23-863A9/23-863A9.lst@173200 \
+        23-864A9/23-864A9.lst@173400 \
+        --hex 23-862A9/23-862A9.lst=23-862A9/23-862A9-0625.hex \
+        --hex 23-863A9/23-863A9.lst=23-863A9/23-863A9-063F.hex \
+        --hex 23-864A9/23-864A9.lst=23-864A9/23-864A9-0551.hex
+
+(384 bytes, 173000-173577; the --hex checks compare every word with the
+PROM programmer files.)
+
+The test "operating systems" (P2, P3, R1, R2, R4-R7) set SP 1000: the takeover
 pushes PC and PSW, and an 11/70 with SP 0 stops with a red stack trap.
 
-Ports 21101-21106, 21111-21114 and 21121-21124 are used; after a run, wait about a minute before the
+Ports 21101-21106, 21111-21114 and 21121-21126 are used; after a run, wait about a minute before the
 next (a port still in TIME_WAIT makes ATTACH fail: "bind error 98").
 The scripts connect to the simulator's ATTACH port: in Claude's workspace
 the simulator's own outgoing connection (PEER) to a listening Python
@@ -71,5 +99,6 @@ socket was reported as failed (known issues 91).
 Results 2026-11-20: T1-T6 PASS (topic branch dmv-boot and integration).
 Results 2026-11-22: T1-T6, P1-P4, R1-R3 PASS (topic branch dmp-dmr-boot).
 Results 2026-11-22 (patch 21 v2, DMC11): T1-T6, P1-P4, R1-R5 PASS.
+Results 2026-11-22 (patch 21 v3, M9312 ROM): T1-T6, P1-P4, R1-R7 PASS.
 Also: tests/dmv11/mc.ini (DMV11 master clear signature) on microvax1,
 microvax2 and microvax3900: PASS.
