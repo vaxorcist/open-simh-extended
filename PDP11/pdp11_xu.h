@@ -30,6 +30,7 @@
 
   25-Jan-13  RJ   SELFTEST needs to report the READY state otherwise VMS 3.7 gets fatal controller error
   23-Jan-08  MP   Added debugging support to display packet headers and packet data
+  22-Nov-26  Claude  BOOT port command: boot engine state, software ID, DBG_BOOT
   08-Dec-05  DTH  Added load_server, increased UDBSIZE for system ID parameters
   07-Jul-05  RMS  Removed extraneous externs
   05-Jan-04  DTH  Added network statistics
@@ -156,6 +157,14 @@ struct xu_device {
   uint16          udb[UDBSIZE];                         /* copy of Unibus Data Block */
   uint16          rxhdr[4];                             /* content of RX ring entry, during wait */
   uint16          txhdr[4];                             /* content of TX ring entry, during xmit */
+                                                        /* BOOT port command (primary load) */
+  int             boot_phase;                           /* XU_BOOT_IDLE/SEC/TER */
+  int             boot_secs;                            /* seconds since the last request */
+  int             boot_tries;                           /* requests for the secondary loader */
+  ETH_MAC         boot_host;                            /* load host that sent the secondary */
+  uint8           boot_swid;                            /* software ID of the boot */
+  uint8           boot_load;                            /* next memory load number */
+  uint8           swid;                                 /* software ID (Write System ID) */
   t_bool          initialized;                          /* flag for one time initializations */
 };
 
@@ -316,6 +325,7 @@ BITFIELD xu_rdes_w3[] = {
 #define DBG_WRN  0x0004                                 /* display warnings */
 #define DBG_PCK  0x0080                                 /* display packet headers */
 #define DBG_DAT  0x0100                                 /* display packet data */
+#define DBG_BOOT 0x0200                                 /* BOOT port command (MOP load) */
 #define DBG_ETH  0x8000                                 /* debug ethernet device */
 
 #endif                                                  /* _PDP11_XU_H */
