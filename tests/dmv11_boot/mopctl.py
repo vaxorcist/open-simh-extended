@@ -1,4 +1,4 @@
-# open-simh-extended/tests/dmv11_boot/mopctl.py  v9 (v9: --rom, the load host of a boot ROM (M9312 'XM'): one Memory Load with Transfer Address of a position-independent program, reconnect after the ROM's RESET; v8: --shortreq, the DMC11's Request Program 8,12,1; v7: DMP11 and DMR11: --devtype, --dmrpw, --text, --noload; v6: wrong password: 3 s without a MOP answer, DDCMP messages ignored; v5: BPL offset of the test program fixed; v4: the simulator may close the line after the start; v3: load 0 covers 0-777, so the restored words at 400-402 are checked too; v2: connects to the DMV11's ATTACH port; the
+# open-simh-extended/tests/dmv11_boot/mopctl.py  v10 (v10: --rom also without --trigger: a boot ROM started by the console or the switch register asks by itself; v9: --rom, the load host of a boot ROM (M9312 'XM'): one Memory Load with Transfer Address of a position-independent program, reconnect after the ROM's RESET; v8: --shortreq, the DMC11's Request Program 8,12,1; v7: DMP11 and DMR11: --devtype, --dmrpw, --text, --noload; v6: wrong password: 3 s without a MOP answer, DDCMP messages ignored; v5: BPL offset of the test program fixed; v4: the simulator may close the line after the start; v3: load 0 covers 0-777, so the restored words at 400-402 are checked too; v2: connects to the DMV11's ATTACH port; the
 # simulator's outgoing connection to a listening script is reported failed here)
 # A minimal DDCMP/MOP control station for testing the DMV11 primary MOP
 # boot of the SIMH PDP-11 (pdp11_dmc.c).  It connects to the DMV11's ATTACH
@@ -171,6 +171,32 @@ def main():
         # DMV11/DMP11: password in the first byte, then zeros; DMR11: four times
         return bytes([6] + ([pw] * 4 if a.dmrpw else [pw, 0, 0, 0]))
 
+    def rom_load(line):
+        # --rom: the load host of a boot ROM (DEC M9312 'XM'), started by the
+        # remote load detect (--trigger) or by the console / switch register
+        # (no --trigger): wait for its Request Program, send one Memory Load
+        # with Transfer Address
+        # the boot ROM resets the bus, starts the board in maintenance
+        # mode and asks for the program (it asks again when unanswered)
+        req = None
+        end = time.time() + 30.0
+        while req is None and time.time() < end:
+            try:
+                req = expect_mop(line, a.addr, "Request Program", max(1.0, end - time.time()))
+            except SystemExit as e:
+                if "connection closed" not in str(e):
+                    raise
+                print("  line dropped (RESET), connecting again")
+                line = connect()
+        if req is None:
+            raise SystemExit("FAIL: no Request Program from the boot ROM")
+        print("Request Program: %s" % req.hex())
+        if req != bytes([8, a.devtype, 1, 0]):
+            raise SystemExit("FAIL: unexpected Request Program %s" % req.hex())
+        line.send(maint(mop_load(0, 0, 0, ROMPROG + text, 6), a.addr))
+        print("PASS: program sent to the boot ROM")
+        time.sleep(2.0)
+
     def connect():
         for i in range(120):                            # the simulator may start later
             try:
@@ -180,6 +206,9 @@ def main():
         raise SystemExit("FAIL: cannot connect to port %d" % a.port)
     line = connect()
     print("connected")
+    if a.rom and a.trigger is None:                     # the ROM asks by itself
+        rom_load(line)
+        return
 
     if a.trigger is not None:
         if a.wrongfirst:
@@ -192,26 +221,7 @@ def main():
             print("wrong password ignored")
         line.send(maint(enter_mop(a.trigger), a.addr))
         if a.rom:
-            # the boot ROM resets the bus, starts the board in maintenance
-            # mode and asks for the program (it asks again when unanswered)
-            req = None
-            end = time.time() + 30.0
-            while req is None and time.time() < end:
-                try:
-                    req = expect_mop(line, a.addr, "Request Program", max(1.0, end - time.time()))
-                except SystemExit as e:
-                    if "connection closed" not in str(e):
-                        raise
-                    print("  line dropped (RESET), connecting again")
-                    line = connect()
-            if req is None:
-                raise SystemExit("FAIL: no Request Program from the boot ROM")
-            print("Request Program: %s" % req.hex())
-            if req != bytes([8, a.devtype, 1, 0]):
-                raise SystemExit("FAIL: unexpected Request Program %s" % req.hex())
-            line.send(maint(mop_load(0, 0, 0, ROMPROG + text, 6), a.addr))
-            print("PASS: program sent to the boot ROM")
-            time.sleep(2.0)
+            rom_load(line)
             return
         if a.noload:
             end = time.time() + 3.0

@@ -1,4 +1,4 @@
-open-simh-extended/tests/dmv11_boot/README.txt  v5 (2026-11-22; v5: R6, R7 boot through DEC's M9312 'XM' DECnet ROM; v4: DMC11 tests R4, R5, R3 for the DMC11's switch packs; v3: DMP11 tests P1-P4 and DMR11 tests R1-R3 (patch 21); v2: the start trap words are at 774-776)
+open-simh-extended/tests/dmv11_boot/README.txt  v6 (2026-11-22; v6: mopctl.py --rom also without --trigger (tests/m9312_roms); v5: R6, R7 boot through DEC's M9312 'XM' DECnet ROM; v4: DMC11 tests R4, R5, R3 for the DMC11's switch packs; v3: DMP11 tests P1-P4 and DMR11 tests R1-R3 (patch 21); v2: the start trap words are at 774-776)
 
 DMV11, DMP11, DMR11 and DMC11 switch packs and boot (patches 18 and 21, PDP-11
 simulator).
@@ -20,7 +20,9 @@ mopctl.py   a minimal DDCMP/MOP control station in Python: connects to the
             the load host of DEC's M9312 'XM' ROM (one Memory Load with
             Transfer Address of a position-independent program, stored
             by the ROM at 0 and started at 6; reconnects after the ROM's
-            RESET).
+            RESET); with --trigger after the remote load detect, without
+            it for a ROM started by a console or the switch register,
+            which asks by itself (tests/m9312_roms, mopctl.py v10).
 mkini.py    writes t3.ini, t4.ini and t6.ini (their PDP-11 programs are
             assembled there, with computed branch offsets).
 common_check.ini  memory after the halt: the program's own words at 24-40
