@@ -3743,10 +3743,13 @@ fprintf (st, "size and settings; \"bus\" if it does not work on the current bus 
 fprintf (st, "memory size; \"dis\" if it fits but is disabled (SET <dev> ENABLED).\n");
 fprintf (st, "Devices marked RH are Massbus drives on an RH11 (Unibus) or RH70 (11/70)\n");
 fprintf (st, "controller; SIMH also offers them on the Qbus, which DEC's own Qbus\n");
-fprintf (st, "systems did not have.  ROM selects the boot ROM that BOOT CPU runs\n");
-fprintf (st, "(HELP ROM).  BOOT DMVn is the DMV11's primary MOP boot\n");
-fprintf (st, "from a DECnet load host and needs its switches (HELP DMV).  For the\n");
-fprintf (st, "details of a device's bootstrap see HELP <dev>.\n\n");
+fprintf (st, "systems did not have.  BOOT CPU starts the image attached to ROM0\n");
+fprintf (st, "(HELP ROM); SIMH has no boot ROM images of its own.  BOOT DMVn and\n");
+fprintf (st, "BOOT DMPn are the DMV11's and DMP11's primary MOP boot from a DECnet\n");
+fprintf (st, "load host and need their switches (HELP DMV, HELP DMP).  The DMC11 and\n");
+fprintf (st, "DMR11 have no BOOT command: a load host starts them by remote load\n");
+fprintf (st, "detect, into a boot ROM such as the M9312 DECnet ROM or by their own\n");
+fprintf (st, "load (HELP DMC).  For the details of a device's bootstrap see HELP <dev>.\n\n");
 return SCPE_OK;
 }
 
