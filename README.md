@@ -1,4 +1,4 @@
-<!-- open-simh-extended/README.md  v5 (v5: SET DMVn PROGRAM; v4: VMS V4.7 loads a PDP-11 over the DMV11; v3: DMV11 switch packs and MOP boot of the PDP-11; all topic branches listed; v2: VAX 8200/8300 VAXBI devices: second CPU, DMB32, KDB50, DEBNA, KLESI-B, VAXBI-only mode; branches; v1: integration branch: fork introduction above the Open SIMH README) -->
+<!-- open-simh-extended/README.md  v6 (v6: DMP11 and DMR11 switch packs and boot, HELP BOOT, RQ XTIME, topic branches rq-xtime, help-boot, dmp-dmr-boot; v5: SET DMVn PROGRAM; v4: VMS V4.7 loads a PDP-11 over the DMV11; v3: DMV11 switch packs and MOP boot of the PDP-11; all topic branches listed; v2: VAX 8200/8300 VAXBI devices: second CPU, DMB32, KDB50, DEBNA, KLESI-B, VAXBI-only mode; branches; v1: integration branch: fork introduction above the Open SIMH README) -->
 # open-simh-extended
 
 **A fork of [Open SIMH](https://github.com/open-simh/simh) with new devices and
@@ -16,14 +16,21 @@ The work is by Ulli (vaxorcist), developed with Claude (Anthropic).
 - **DMV11 and DMP11** synchronous communications controllers (Qbus MicroVAXen,
   Unibus VAXen, PDP-11), with DDCMP multipoint: control station and up to
   12 (DMV11) or 32 (DMP11) tributaries. Tested with VMS V3.5–V4.7 DECnet.
-  The DMV11 has its switch packs (`SET DMVn MODE`, `TRIBUTARY`, ...) and, in
-  the PDP-11 simulator, the primary MOP boot (`BOOT DMVn`, remote load detect,
-  invoke primary MOP); VMS V4.7 `NCP LOAD NODE` loads a PDP-11 over a DMV11,
-  a secondary loader or (`SET DMVn PROGRAM=SYSTEM`) the load file itself.
+  The DMV11 and DMP11 have their switch packs (`SET DMVn MODE`, `TRIBUTARY`,
+  ..., `SHOW DMVn SWITCHES`) and, in the PDP-11 simulator, the primary MOP
+  boot (`BOOT DMVn`/`BOOT DMPn`, remote load detect, invoke primary MOP);
+  VMS V4.7 `NCP LOAD NODE` loads a PDP-11 over a DMV11, a secondary loader
+  or (`SET DMVn PROGRAM=SYSTEM`) the load file itself.
 - **DMF32** multi-function interface for the Unibus VAXen: 8 asynchronous
   lines, a synchronous line (DDCMP, HDLC/SDLC), a line printer port and a
   DR11-C compatible parallel interface.
 - **DMC11/DMR11** fixes that make the ULTRIX-32 V1.1 `if_dmc` driver work.
+  The DMR11 has its switch packs (`SET DMCn PASSWORD`, `BOOTOFFSET`) and
+  remote load detect in the PDP-11 simulator: a restart into a boot ROM at
+  173000+offset (ROM device), or its own MOP load when no ROM is there.
+- **PDP-11** `HELP BOOT`: every bootable device per bus.
+- **RQ** on the VAX: default transfer time 1000 instructions (VMS V4.7 froze
+  after the date when a large read completed too fast).
 - **VAX 8200**: DWBUA Unibus adapter fixes; VMS V4.7 now boots.
 - **VAX 8300**: the second KA820 runs (`SET KA1 ENABLE`; VMS `START/CPU`).
 - **VAX 8200/8300 VAXBI devices**: DMB32 communications interface (`DMB`),
@@ -43,7 +50,7 @@ The work is by Ulli (vaxorcist), developed with Claude (Anthropic).
 | Branch | Content |
 |---|---|
 | `integration` | everything below, together (default branch) |
-| `dmv11-dmp11`, `dmf32`, `dmc-ultrix`, `vax8200-uba`, `rb730`, `sound`, `vax8300-mp`, `dmb32`, `kdb50`, `debna`, `klesib`, `dmb32-sync`, `realism`, `vaxbi-config`, `ka820-clock`, `dmb32-trib`, `ts-online`, `dmv-boot` | one topic each |
+| `dmv11-dmp11`, `dmf32`, `dmc-ultrix`, `vax8200-uba`, `rb730`, `sound`, `vax8300-mp`, `dmb32`, `kdb50`, `debna`, `klesib`, `dmb32-sync`, `realism`, `vaxbi-config`, `ka820-clock`, `dmb32-trib`, `ts-online`, `dmv-boot`, `rq-xtime`, `help-boot`, `dmp-dmr-boot` | one topic each |
 | `notes` | documentation, tools, test scripts and the same work as patch files |
 | `master` | Open SIMH, unchanged |
 
