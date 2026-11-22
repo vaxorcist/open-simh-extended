@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v3, 2026-11-21 (v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v4, 2026-11-22 (v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -357,3 +357,123 @@ DMC/DMR/DMP/DMV types).
   end (known issues 95). remwrt was assembled with macro11 v0.3 (0 errors)
   and converted to `remwrt.tsk` (66 blocks, transfer 0); see known issues
   95 and 96.
+
+## 7. DMP11 and DMR11 (2026-11-22, patch 21)
+
+Ulli asked for the same switches and boot for the DMP11, DMR11 and DMC11,
+following DRY, and for the fix of known issue 90. Sources (facts only, our
+words): DMP11 User Guide EK-DMPQM-UG-001, DMR11 User's Guide EK-DMR11-UG-002
+and Technical Manual EK-DMR11-TM-002, M8207 Technical Manual
+EK-M8207-TM-002, DMC11 IPL microprocessor maintenance manual EK-DMCMP-MM-001.
+
+Decisions (Ulli, 2026-11-22):
+
+- **DMC11:** wait for a line unit manual (the uploaded ones do not say what
+  the line unit's switch packs 2 and 3 mean). Known issue 99.
+- **DMR11:** faithful plus built-in: the remote load detect restarts the CPU
+  into a boot ROM at 173000 + offset as the board does; when no ROM answers
+  there, the DMR11 runs the shared MOP load itself.
+- **DMP11 defaults:** boot features off, like the DMV11 (the DMP11's
+  power-on boot switch enables the boot when ON, so the default is SW10 OFF).
+
+### What the manuals say
+
+- **DMP11** (M8207-YA + M8203 line unit): pack E121 SW1-4 unit number
+  (0-15), SW5-7 mode (same code as the DMV11's SW6-8), SW8 mode enable (OFF:
+  from the switches), SW9 remote load detect (OFF: enabled), SW10 power-on
+  boot (ON: enabled). Pack E134 SW1-8 tributary address/password, SW9 not
+  used, SW10 line speed. Boot (section 4.7): the same three functions as
+  the DMV11; invoke primary MOP is BSEL1 bit 5 with master clear; the
+  invoke function uses the power-on boot's switch settings; PDP-11 only.
+- **DMR11** (M8207-RA + M8203): pack E121 SW1-8 bootstrap offset (boot
+  address 173000 + offset; 000 when remote load detect is not used), SW9
+  DMC11 line compatible, SW10 line speed. Pack E134 SW1-8 password (377:
+  remote load detect off), SW9 auto answer, SW10 microdiagnostics (they run
+  at master clear when SEL0 bit 13 differs from the switch: OFF and bit
+  clear, or ON and bit set). Remote load detect: an Enter MOP Mode (code 6,
+  four password bytes, all equal to E134) with a good CRC makes the DMR11
+  DMA 173000 + offset into 24 and 0 into 26 and pull AC LO; the CPU's
+  power-up recovery enters the boot ROM (M9312 DECnet ROM, M9301-YJ), and
+  the ROM does the MOP load through the DMR11. The DMR11 itself sends no
+  MOP message.
+- **DMC11** (M8200 + M8201/M8202): the line unit's packs 2 and 3 hold the
+  password and a ROM offset; the DMC11 either starts a ROM, loads itself
+  (Request Program 8,12,1) or passes the message on. Which switch selects
+  what is missing.
+
+### One board model (DRY)
+
+All boards share one implementation in `pdp11_dmc.c`:
+
+- `DMX_BOARD` describes a board: pack names and places, switch counts, the
+  mode enable switch and the first mode switch, the unit number switches,
+  the power-on boot switch and its sense, the remote load detect switch (or
+  none: the DMR11's password decides), the MOP device type (DMV11 34,
+  DMP11 18, DMR11 40), and per pack a `DMX_SWDESC` table for SHOW SWITCHES.
+- `dmx_board()` gives a line's board (NULL for a DMC11), `dmx_pack()` its two
+  pack words (bit n-1 = switch n OFF), `dmx_program()` its PROGRAM setting.
+- Every switch query goes through these: `dmv_mode_from_switches`,
+  `dmv_switch_mode`, `dmv_switch_address`, `dmx_poweron`, `dmx_remoteload`.
+  So the switch-assigned mode and tributary address of the host interface
+  (mode definition, ESTABLISH) now also work on the DMP11.
+- SET/SHOW: one routine per command for all boards (`DMX_UNIT_BOARD` finds
+  the line and board, a DMC11 is refused). The DMP and DMV MTAB entries
+  come from one macro, `DMX_SWITCH_MTAB`, which only names the switches.
+- SHOW SWITCHES prints any board from its `DMX_SWDESC` tables.
+- The boot engine (`dmv_boot_*`) serves all three; only the Request
+  Program's device type and program type come from the board and line.
+- The help texts of the DMV11 serve the DMP11 too; the board's switch names
+  are scp_help strings %4s-%9s.
+
+### SIMH commands
+
+DMP (Unibus PDP-11): `MODE`, `TRIBUTARY`, `BOOTUNIT=0-15`, `{NO}POWERONBOOT`,
+`{NO}REMOTELOAD`, `PROGRAM`, `SHOW DMPn SWITCHES`, `BOOT DMPn`; registers
+`E121`, `E134`, `PROGRAM`.
+
+DMC with `TYPE=DMR`: `PASSWORD=n` (octal, default 377), `BOOTOFFSET=n`
+(octal, default 000), `PROGRAM`, `SHOW DMCn SWITCHES` (also tells whether
+a boot ROM answers at the boot address); registers `E121`, `E134`,
+`PROGRAM`. E134 SW10 is shown from `SET MICRODIAG` (ENABLE = switch OFF).
+
+In the VAX and PDP-10 simulators the boot switches are refused, SHOW
+SWITCHES works.
+
+### Implementation details
+
+- **DMR11 remote load detect** (`dmr_remote_load`): if an I/O page reader
+  exists at 173000 + offset (a ROM attached with the ROM device), the DMR11
+  is master-cleared with the line kept up, 24/26 get the boot address and
+  0, memory management is switched off and the power-fail trap requested.
+  Otherwise `dmv_boot_begin()` as for a DMV11 remote load detect (point-to-
+  point, address 1, device type 40).
+- **Password:** DMR11: bytes 1-4 of the Enter MOP Mode all equal E134
+  SW1-8; DMV11/DMP11 unchanged (byte 1 equal to the address switches, the
+  rest of the 4 or 8 verification bytes 0).
+- **Enter MOP Mode while the host takes the messages:** `dmv_get_packet()`
+  now checks every message it reads for the line (remote load detect
+  armed): the microcode scans every message. Before, only the read-ahead
+  while the host gave no receive buffer looked for it.
+- **Invoke primary MOP** is checked for the DMP11 as for the DMV11 (SEL0
+  bit 13 with master clear).
+- **Known issue 90:** `dmc_reset()` names the shared DMP/DMV units after the
+  device in use and sets their `dptr`.
+
+### Tests (`tests/dmv11_boot/`, 2026-11-22)
+
+- P1 DMP11 power-on boot point-to-point (BOOT DMP0, device type 18, first
+  request unanswered): PASS.
+- P2 DMP11 remote load detect, multipoint tributary 5, wrong password
+  first, CPU running: PASS.
+- P3 DMP11 invoke primary MOP, point-to-point: PASS.
+- P4 BOOT DMP0 refusals, unit number range: PASS.
+- R1 DMR11 remote load detect without a ROM (the DMR11 loads itself,
+  device type 40), wrong password first: PASS.
+- R2 DMR11 remote load detect with a ROM at 173000 (offset 020): CPU
+  restarted at 173020 with 24 = 173020, 26 = 0, no MOP message: PASS.
+- R3 DMC11 refusal, DMR11 value checks: PASS.
+- T1-T6 (DMV11) unchanged: PASS.
+- A test "operating system" needs a stack: the takeover pushes PC and PSW
+  through the power-fail trap; with SP 0 an 11/70 stops with a red stack
+  trap (the 11/73 of the DMV11 tests did not mind).
+

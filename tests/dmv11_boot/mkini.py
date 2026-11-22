@@ -1,4 +1,4 @@
-# open-simh-extended/tests/dmv11_boot/mkini.py  v4 (v4: SEL0 after a command can keep bits, e.g. the diagnostic mode bit; v3: a command waits for RDI and meanwhile takes responses (clears RDO); v2: t6.ini, the switch-assigned mode and address
+# open-simh-extended/tests/dmv11_boot/mkini.py  v5 (v5: common_check.ini gets the unit; v4: SEL0 after a command can keep bits, e.g. the diagnostic mode bit; v3: a command waits for RDI and meanwhile takes responses (clears RDO); v2: t6.ini, the switch-assigned mode and address
 # with the host interface)
 # Writes t3.ini and t4.ini, the DMV11 boot tests with a running "operating
 # system": a small PDP-11 program that master-clears DMV0 (CSR 160360, the
@@ -57,7 +57,7 @@ t3 = program(0o2000, [(0o000421, 1), (0o000421, 3)], lambda a: [0o000777])
 # invoke primary MOP: MOV #60000,@#CSR, BR .
 t4 = program(0o2000, [(0o004421, 1)], lambda a: [0o012737, 0o060000, CSR, 0o000777])
 
-T3_HEAD = """; open-simh-extended/tests/dmv11_boot/t3.ini  v2 (written by mkini.py v4)
+T3_HEAD = """; open-simh-extended/tests/dmv11_boot/t3.ini  v3 (written by mkini.py v5)
 ; T3 remote load detect, point-to-point (FDXPOINT), password 123.  The
 ; "operating system" is a program at virtual 2000 with memory management
 ; on (kernel page 0 mapped to physical 100000, so a vector fetched through
@@ -85,9 +85,9 @@ T3_TAIL = """dep MMR0 1
 dep PSW 0
 dep SP 1000
 go 2000
-do common_check.ini
+do common_check.ini dmv0
 """
-T4_HEAD = """; open-simh-extended/tests/dmv11_boot/t4.ini  v2 (written by mkini.py v4)
+T4_HEAD = """; open-simh-extended/tests/dmv11_boot/t4.ini  v3 (written by mkini.py v5)
 ; T4 invoke primary MOP, multipoint tributary (FDXTRIBUTARY) with a
 ; software-assigned address: tributary switches 0; the program master-
 ; clears DMV0, establishes tributary 9 and sets BSEL1 bits 5 and 6.
@@ -103,13 +103,13 @@ set dmv debug=INFO;WARN
 T4_TAIL = """dep PSW 0
 dep SP 1000
 go 2000
-do common_check.ini
+do common_check.ini dmv0
 """
 # T6: mode switches FDXTRIBUTARY, tributary switches 5.  Establish 9 (is
 # made 5), mode definition 3 (error 104), mode definition 3 with the
 # diagnostic mode bit (accepted), then HALT.
 t6 = program(0o2000, [(0o004421, 1), (0o000022, 3), (0o000022, 3, 0o004200, 0o004000)], lambda a: [0o000000])
-T6_HEAD = """; open-simh-extended/tests/dmv11_boot/t6.ini  v1 (written by mkini.py v4)
+T6_HEAD = """; open-simh-extended/tests/dmv11_boot/t6.ini  v2 (written by mkini.py v5)
 ; T6 switch-assigned mode and tributary address with the host interface:
 ; MODE=FDXTRIBUTARY, TRIBUTARY=5.  The program master-clears DMV0,
 ; establishes tributary 9 (overridden: established as 5), gives a mode
