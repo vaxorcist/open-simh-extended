@@ -118,15 +118,18 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
 #include "sim_tmxr.h"
 #include "pdp11_ddcmp.h"
 
-/* DMV11 primary MOP boot (EK-DMVQM-UG-003 section 4.7).  The DMV11 takes
-   the host CPU over through the power-fail/restart vector and down-line
-   loads a program into its memory.  That only works on a PDP-11 (LSI-11
-   bus CPU); on a MicroVAX the power-fail/restart goes to the console ROM,
-   so the boot switches are refused in the VAX simulators. */
+/* DMV11 and DMP11 primary MOP boot (EK-DMVQM-UG-003 and EK-DMPQM-UG-001
+   section 4.7) and DMR11 remote load detect (EK-DMR11-UG-002 3.5.4.2).  The
+   board takes the host CPU over through the power-fail/restart vector and
+   down-line loads a program into its memory (the DMR11 starts a boot ROM
+   that does it).  That only works on a PDP-11; on a VAX the power-fail/
+   restart goes to the console, so the boot switches are refused in the VAX
+   (and PDP-10) simulators. */
 #if !defined (VM_VAX) && !defined (VM_PDP10)
 #define DMV_BOOT_SUPPORTED  1
 extern int32 trap_req;                                  /* CPU trap requests */
 extern int32 MMR0, MMR3;                                /* memory management */
+extern t_stat (*iodispR[IOPAGESIZE >> 1])(int32 *dat, int32 ad, int32 md);  /* I/O page readers (DMR11 boot ROM) */
 #else
 #define DMV_BOOT_SUPPORTED  0
 #endif
@@ -1347,6 +1350,8 @@ t_stat dmv_show_bootswitch (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmv_show_switches (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmv_set_program (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat dmr_set_switchbyte (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat dmr_show_switchbyte (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmv_boot (int32 unitno, DEVICE *dptr);
 t_bool dmv_boot_active (CTLR *controller);
 t_bool dmv_boot_receive (CTLR *controller);
@@ -1356,6 +1361,8 @@ void dmv_boot_cancel (CTLR *controller);
 t_bool dmv_remote_load_watch (CTLR *controller);
 t_bool dmv_peek (CTLR *controller);
 void dmv_get_packet (CTLR *controller, TMLN *lp, const uint8 **pkt, uint16 *size);
+static t_bool dmv_enter_mop (CTLR *controller, const uint8 *pkt, uint16 size);
+static t_bool dmr_boot_rom (CTLR *controller);
 uint8 dmv_first_tributary (CTLR *controller);
 
 /* debugging bitmaps */
@@ -1432,8 +1439,8 @@ int32 dmp_corruption[DMC_NUMDEVICE];
    disabled, tributary address/password 0.  E101 is on the M8053 (E107 on
    the M8064 integral modem module), E113 (E119). */
 uint16 dmv_e101[DMP_NUMDEVICE];             /* switch selectable features */
-uint8 dmv_e113[DMP_NUMDEVICE];              /* DDCMP address register:
-                                               tributary address/password */
+uint16 dmv_e113[DMP_NUMDEVICE];             /* DDCMP address register:
+                                               tributary address/password (8 switches) */
 /* Not a switch: the MOP program type of the boot's Request Program (0
    secondary loader, 1 tertiary loader, 2 system image).  The manuals do not
    give the message; a primary loader that takes a single Memory Load with
@@ -1453,6 +1460,47 @@ static const char *dmv_program_names[] = {"SECONDARY", "TERTIARY", "SYSTEM"};
 #define DMV_E101_M_MODE      (7 << DMV_E101_V_MODE)
 #define DMV_E101_HIGHSPEED   0x100  /* SW9 OFF: 19.2 kb/s or more (no effect here) */
 #define DMV_E101_V35         0x200  /* SW10 OFF: RS-232-C/RS-423-A, ON: V.35 (no effect here) */
+
+/* DMP11 switch packs E121 and E134 on the M8203 line unit (EK-DMPQM-UG-001
+   Table 2-13, Table 2-14, Figure 2-4), one pair per line of the shared
+   DMP/DMV lines (a line is a DMP11 on a Unibus, a DMV11 on a Qbus), kept
+   as on the board: bit n-1 set = switch n OFF.  The guide gives no shipped
+   setting; the defaults are those of the DMV11: mode set by software (SW8
+   ON), no remote load detect (SW9 ON) and no power-on boot - on the DMP11
+   that is SW10 OFF, since this switch enables the boot when ON - unit 0,
+   tributary address/password 0. */
+uint16 dmp_e121[DMP_NUMDEVICE];             /* features (IBUS registers 16 and 11) */
+uint16 dmp_e134[DMP_NUMDEVICE];             /* tributary address/password (IBUS 15), speed */
+#define DMP_E121_M_UNIT      0x00F  /* SW1-4: unit number 0-15 (IBUS register 16 bits 0-3) */
+#define DMP_E121_V_MODE      4      /* SW5-7: mode, coded as DMV11 E101 SW6-8 */
+#define DMP_E121_MODE_ENABLE 0x080  /* SW8 OFF: mode from SW5-7, not software */
+#define DMP_E121_REMOTELOAD  0x100  /* SW9 OFF: remote load detect enabled */
+#define DMP_E121_POWERON     0x200  /* SW10 ON: power-on boot enabled, OFF: disabled */
+#define DMP_E121_DEFAULT     DMP_E121_POWERON   /* SW10 OFF, all others ON */
+#define DMP_E134_HIGHSPEED   0x200  /* SW10 OFF: 250 kb/s or more (no effect here); SW9 not used */
+#define DMP_MOP_DEVTYPE      18     /* MOP device type of the DMP11 */
+
+/* DMR11 switch packs E121 and E134 on the M8203 line unit (EK-DMR11-UG-002
+   Table 2-10, Table 2-11), one pair per line of the DMC device whose TYPE is
+   DMR, kept as on the board: bit n-1 set = switch n OFF.  Defaults as the
+   guide asks when remote load detect is not used: offset 000 (E121 SW1-8
+   ON) and password 377 (E134 SW1-8 OFF).  E134 SW10 (microdiagnostics) is
+   SET MICRODIAG and not kept here: run at master clear = SEL0 bit 13 XOR
+   switch OFF (TM Table 2-4), and MICRODIAG=ENABLE is switch OFF. */
+uint16 dmr_e121[DMC_NUMDEVICE];             /* bootstrap offset (IBUS 16), line mode, speed */
+uint16 dmr_e134[DMC_NUMDEVICE];             /* password (IBUS 15), auto answer */
+uint8 dmr_program[DMC_NUMDEVICE];           /* as dmv_program, for the DMR11's own load */
+#define DMR_E121_M_OFFSET    0x0FF  /* SW1-8: bootstrap offset, the boot address is 173000 + it */
+#define DMR_E134_M_PASSWORD  0x0FF  /* SW1-8: password; 377 (all OFF): no remote load detect */
+#define DMR_E134_MICRODIAG   0x200  /* SW10 OFF: SET MICRODIAG=ENABLE (only for SHOW SWITCHES) */
+#define DMR_E134_DEFAULT     DMR_E134_M_PASSWORD
+#define DMR_BOOT_ROM         0173000 /* the boot ROM page the bootstrap offset points into */
+#define DMR_MOP_DEVTYPE      40     /* MOP device type of the DMR11 */
+
+/* SET {NO}POWERONBOOT / {NO}REMOTELOAD of the DMP and DMV devices (MTAB match) */
+#define DMX_SW_POWERON       1
+#define DMX_SW_REMOTELOAD    2
+#define DMX_SW_NO            0x10000
 
 /* DMV11 boot states (CTLR dmv_boot.state) and how a boot was started */
 #define DMVB_IDLE           0       /* no boot */
@@ -1516,6 +1564,9 @@ REG dmc_reg[] = {
     { BRDATAD (BASEADDR,      dmc_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE,         "program set base address") },
     { BRDATAD (BASESIZE,      dmc_basesize, DEV_RDX, 16, DMC_NUMDEVICE,         "program set base size") },
     { BRDATAD (MODEM,            dmc_modem, DEV_RDX,  8, DMC_NUMDEVICE,         "modem control bits") },
+    { BRDATAD (E121,              dmr_e121, DEV_RDX, 10, DMC_NUMDEVICE,         "DMR11 switch pack E121 (bit n-1 = switch n OFF)") },
+    { BRDATAD (E134,              dmr_e134, DEV_RDX, 10, DMC_NUMDEVICE,         "DMR11 switch pack E134: password, auto answer") },
+    { BRDATAD (PROGRAM,        dmr_program, DEV_RDX,  8, DMC_NUMDEVICE,         "MOP program type of the DMR11's own load (0-2)") },
     { NULL }  };
 
 REG dmp_reg[] = {
@@ -1534,6 +1585,9 @@ REG dmp_reg[] = {
     { BRDATAD (BASEADDR,      dmp_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE,         "program set base address") },
     { BRDATAD (BASESIZE,      dmp_basesize, DEV_RDX, 16, DMC_NUMDEVICE,         "program set base size") },
     { BRDATAD (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE,         "modem control bits") },
+    { BRDATAD (E121,              dmp_e121, DEV_RDX, 10, DMP_NUMDEVICE,         "switch pack E121 (bit n-1 = switch n OFF)") },
+    { BRDATAD (E134,              dmp_e134, DEV_RDX, 10, DMP_NUMDEVICE,         "switch pack E134: tributary address/password, speed") },
+    { BRDATAD (PROGRAM,        dmv_program, DEV_RDX,  8, DMP_NUMDEVICE,         "MOP program type of the boot request (0-2)") },
     { NULL }  };
 
 /* DMV: the DMP registers plus the two switch packs */
@@ -1557,6 +1611,32 @@ REG dmv_reg[] = {
     { BRDATAD (E113,              dmv_e113, DEV_RDX,  8, DMP_NUMDEVICE,         "switch pack E113: tributary address/password") },
     { BRDATAD (PROGRAM,        dmv_program, DEV_RDX,  8, DMP_NUMDEVICE,         "MOP program type of the boot request (0-2)") },
     { NULL }  };
+
+/* The switch and boot commands of the DMP and DMV devices.  Both boards
+   work alike (DMX_BOARD); the arguments only name the switches in the
+   descriptions: modesw the mode switches, unitsw and unitrange the unit
+   number switches, ponsw the power-on boot and rldsw the remote load detect
+   switch, pk1 and pk2 the two packs. */
+#define DMX_SWITCH_MTAB(modesw, unitsw, unitrange, ponsw, rldsw, pk1, pk2)                                    \
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "MODE",                                                        \
+      "MODE={SOFTWARE|HDXDMC|FDXDMC|HDXPOINT|FDXPOINT|HDXCONTROL|FDXCONTROL|HDXTRIBUTARY|FDXTRIBUTARY}",      \
+        &dmv_set_mode, &dmv_show_mode, NULL, "Mode switches " modesw },                                       \
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "TRIBUTARY", "TRIBUTARY=n (0-255)",                            \
+        &dmv_set_tributary, &dmv_show_tributary, NULL, "Tributary address/password switches " pk2 },         \
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "BOOTUNIT", "BOOTUNIT=" unitrange,                             \
+        &dmv_set_bootunit, &dmv_show_bootunit, NULL, "Unit number for booting, " unitsw },                   \
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, DMX_SW_POWERON, "POWERONBOOT", "POWERONBOOT",                               \
+        &dmv_set_bootswitch, &dmv_show_bootswitch, NULL, "Power-on boot, " ponsw },                           \
+    { MTAB_XTD|MTAB_VUN, DMX_SW_POWERON|DMX_SW_NO, NULL, "NOPOWERONBOOT",                                     \
+        &dmv_set_bootswitch, NULL, NULL, "No power-on boot, " ponsw },                                        \
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, DMX_SW_REMOTELOAD, "REMOTELOAD", "REMOTELOAD",                              \
+        &dmv_set_bootswitch, &dmv_show_bootswitch, NULL, "Remote load detect, " rldsw },                      \
+    { MTAB_XTD|MTAB_VUN, DMX_SW_REMOTELOAD|DMX_SW_NO, NULL, "NOREMOTELOAD",                                   \
+        &dmv_set_bootswitch, NULL, NULL, "No remote load detect, " rldsw },                                   \
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "PROGRAM", "PROGRAM={SECONDARY|TERTIARY|SYSTEM}",              \
+        &dmv_set_program, &dmv_show_program, NULL, "MOP program type the boot requests (not a switch)" },     \
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SWITCHES", NULL,                                                        \
+        NULL, &dmv_show_switches, NULL, "Display the switch packs " pk1 " and " pk2 " and the boot state" }
 
 extern DEVICE dmc_dev;
 
@@ -1588,6 +1668,16 @@ MTAB dmc_mod[] = {
         &set_vec,  &show_vec,  NULL, "Interrupt vector" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "SYNC", NULL,
       NULL, &tmxr_show_sync, NULL, "Display attachable DDCMP synchronous links" },
+    /* DMR11 (TYPE=DMR) switch packs E121 and E134 and its remote load detect
+       boot; the DMC11's line unit switches are not simulated yet */
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "BOOTOFFSET", "BOOTOFFSET=n (octal 0-377)",
+        &dmr_set_switchbyte, &dmr_show_switchbyte, NULL, "DMR11 bootstrap offset, E121 SW1-8: boot ROM at 173000+n" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 1, "PASSWORD", "PASSWORD=n (octal 0-377; 377: no remote load detect)",
+        &dmr_set_switchbyte, &dmr_show_switchbyte, NULL, "DMR11 remote load detect password, E134 SW1-8" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "PROGRAM", "PROGRAM={SECONDARY|TERTIARY|SYSTEM}",
+        &dmv_set_program, &dmv_show_program, NULL, "MOP program type the DMR11's own load requests (not a switch)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SWITCHES", NULL,
+        NULL, &dmv_show_switches, NULL, "Display the DMR11 switch packs E121 and E134 and the boot state" },
     { 0 } };
 
 extern DEVICE dmp_dev;
@@ -1613,6 +1703,8 @@ MTAB dmp_mod[] = {
         &set_addr, &show_addr, NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,          1, "VECTOR", "VECTOR",
         &set_vec,  &show_vec,  NULL, "Interrupt vector" },
+    /* switch packs E121 and E134 on the M8203 line unit (guide Figure 2-4) */
+    DMX_SWITCH_MTAB ("E121 SW8, SW5-7", "E121 SW1-4", "n (0-15)", "E121 SW10", "E121 SW9", "E121", "E134"),
     { 0 } };
 
 extern DEVICE dmv_dev;
@@ -1642,24 +1734,7 @@ MTAB dmv_mod[] = {
         &set_vec,  &show_vec,  NULL, "Interrupt vector" },
     /* switch packs E101 and E113 (manual Figure 2-6); the names ADDRESS
        and VECTOR are the bus address and vector (switch packs E53-E56) */
-    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "MODE", "MODE={SOFTWARE|HDXDMC|FDXDMC|HDXPOINT|FDXPOINT|HDXCONTROL|FDXCONTROL|HDXTRIBUTARY|FDXTRIBUTARY}",
-        &dmv_set_mode, &dmv_show_mode, NULL, "Mode switches E101 SW1, SW6-8" },
-    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "TRIBUTARY", "TRIBUTARY=n (0-255)",
-        &dmv_set_tributary, &dmv_show_tributary, NULL, "Tributary address/password switches E113" },
-    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "BOOTUNIT", "BOOTUNIT={0|1}",
-        &dmv_set_bootunit, &dmv_show_bootunit, NULL, "Unit number for booting, E101 SW2" },
-    { MTAB_XTD|MTAB_VUN|MTAB_NMO, DMV_E101_POWERON, "POWERONBOOT", "POWERONBOOT",
-        &dmv_set_bootswitch, &dmv_show_bootswitch, NULL, "Power-on boot, E101 SW4" },
-    { MTAB_XTD|MTAB_VUN, DMV_E101_POWERON|0x10000, NULL, "NOPOWERONBOOT",
-        &dmv_set_bootswitch, NULL, NULL, "No power-on boot, E101 SW4" },
-    { MTAB_XTD|MTAB_VUN|MTAB_NMO, DMV_E101_REMOTELOAD, "REMOTELOAD", "REMOTELOAD",
-        &dmv_set_bootswitch, &dmv_show_bootswitch, NULL, "Remote load detect, E101 SW5" },
-    { MTAB_XTD|MTAB_VUN, DMV_E101_REMOTELOAD|0x10000, NULL, "NOREMOTELOAD",
-        &dmv_set_bootswitch, NULL, NULL, "No remote load detect, E101 SW5" },
-    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "PROGRAM", "PROGRAM={SECONDARY|TERTIARY|SYSTEM}",
-        &dmv_set_program, &dmv_show_program, NULL, "MOP program type the boot requests (not a switch)" },
-    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SWITCHES", NULL,
-        NULL, &dmv_show_switches, NULL, "Display the switch packs E101 and E113 and the boot state" },
+    DMX_SWITCH_MTAB ("E101 SW1, SW6-8", "E101 SW2", "{0|1}", "E101 SW4", "E101 SW5", "E101", "E113"),
     { 0 } };
 
 #define IOLN_DMC        010
@@ -1699,7 +1774,13 @@ DEVICE dmc_dev =
  */
 DEVICE dmp_dev =
     { "DMP", dmp_units, dmp_reg, dmp_mod, 3, DMC_RDX, 8, 1, DMC_RDX, 8,
-    NULL, NULL, &dmc_reset, NULL, &dmc_attach, &dmc_detach,
+    NULL, NULL, &dmc_reset,
+#if DMV_BOOT_SUPPORTED
+    &dmv_boot,                              /* power-on boot (PDP-11 only) */
+#else
+    NULL,
+#endif
+    &dmc_attach, &dmc_detach,
     &dmp_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_DEBUG | DEV_DONTAUTO, 0, dmc_debug,
     NULL, NULL, &dmc_help, &dmc_help_attach, NULL, &dmp_description };
 
@@ -2259,22 +2340,25 @@ const char helpType[] =
     " listening port.  The DMP11 and DMV11 are separate devices (DMP, DMV).\n"
 #endif
     "";
-/* DMV device only: the switch packs (SET commands) */
+/* DMV and DMP devices: the switch packs (SET commands).  The board's names
+   are scp_help strings: %4s and %5s the two packs, %6s the mode switches
+   (column heading), %7s the mode switches, %8s the boot switches, %9s the
+   switches without an effect (see dmc_help). */
 const char helpDmvSet[] =
     "3 Switches\n"
-    " The switch packs E101 and E113 of each DMV11 line (EK-DMVQM-UG-003,\n"
-    " Figure 2-6) are set with the commands below.  As in the manual, every\n"
-    " switch is ON by default: mode set by software, unit 0 for booting, no\n"
-    " power-on boot, no remote load detect, tributary address/password 0.\n"
+    " The switch packs %4s and %5s of each %1s line are set with the\n"
+    " commands below.  By default the mode is set by software, there is no\n"
+    " power-on boot and no remote load detect, and the unit number and the\n"
+    " tributary address/password are 0.\n"
     "\n"
     "+sim> SET %U MODE=mode\n"
     "\n"
-    " The mode switches (E101 SW1 and SW6-8) decide who sets the line's\n"
+    " The mode switches (%7s) decide who sets the line's\n"
     " station type: the operating system (MODE=SOFTWARE, the default) or the\n"
-    " switches (any other mode).  The modes, with E101 SW1/SW6/SW7/SW8 and\n"
+    " switches (any other mode).  The modes, with the mode switches and\n"
     " the mode code the software would give in its mode definition command:\n"
     "\n"
-    "++Mode          SW1 6 7 8  Code  Station\n"
+    "++Mode          %6s  Code  Station\n"
     "++SOFTWARE      ON  - - -   -    set by the operating system (default)\n"
     "++HDXDMC        OFF 0 0 0   0    point-to-point, half duplex, DMC11 compatible\n"
     "++FDXDMC        OFF 1 0 0   1    point-to-point, full duplex, DMC11 compatible\n"
@@ -2285,8 +2369,8 @@ const char helpDmvSet[] =
     "++HDXTRIBUTARY  OFF 0 1 1   6    multipoint tributary, half duplex\n"
     "++FDXTRIBUTARY  OFF 1 1 1   7    multipoint tributary, full duplex\n"
     "\n"
-    " (1 = switch OFF, 0 = ON; Table 2-6, Table 4-5 and EK-DMV11-TM-001\n"
-    " Table 3-4.)  What the modes mean:\n"
+    " (1 = switch OFF, 0 = ON; the first column is the mode enable switch.)\n"
+    " What the modes mean:\n"
     "\n"
     "++Point-to-point: one line between two stations (DMV11, DMP11, DMC11,\n"
     "++DMR11, DMF32 or DMB32 sync line), DDCMP address 1.  The DMC11\n"
@@ -2315,7 +2399,7 @@ const char helpDmvSet[] =
     "\n"
     "+sim> SET %U TRIBUTARY=n\n"
     "\n"
-    " The tributary address/password switches (E113, n = 0-255).  A\n"
+    " The tributary address/password switches (%5s SW1-8, n = 0-255).  A\n"
     " multipoint tributary with a non-zero switch address answers only to\n"
     " that address: any other non-zero tributary address in a command is\n"
     " replaced by it.  The value is also the password of the remote load\n"
@@ -2323,21 +2407,50 @@ const char helpDmvSet[] =
     "\n"
     " The boot switches (PDP-11 simulator only, see Booting):\n"
     "\n"
-    "+sim> SET %U BOOTUNIT={0|1}\n"
+    "+sim> SET %U BOOTUNIT=n\n"
     "+sim> SET %U {NO}POWERONBOOT\n"
     "+sim> SET %U {NO}REMOTELOAD\n"
     "+sim> SET %U PROGRAM={SECONDARY|TERTIARY|SYSTEM}\n"
     "\n"
-    " BOOTUNIT is E101 SW2, POWERONBOOT SW4 and REMOTELOAD SW5.  PROGRAM is\n"
-    " not a switch of the board but a simulator setting (see Booting).  SW3 (auto\n"
-    " answer), SW9 (line speed) and SW10 (interface select) have no effect in\n"
-    " the simulation and cannot be set.  The bus address and vector are set\n"
-    " with SET %D ADDRESS and SET %D VECTOR.\n"
+    " The boot switches are\n"
+    " %8s.\n"
+    " PROGRAM is not a switch of the board but a simulator setting (see\n"
+    " Booting).  These switches have no effect in the simulation and cannot\n"
+    " be set:\n"
+    " %9s.\n"
+    " The bus address and vector are set with SET %D ADDRESS and SET %D\n"
+    " VECTOR.\n"
     "\n"
     "+sim> SHOW %U SWITCHES\n"
     "\n"
     " displays both switch packs as they would be set on the board.\n"
     ;
+/* DMC device: the DMR11 switch packs */
+const char helpDmrSet[] =
+#if !defined (VM_PDP10)
+    "3 DMR11 switches\n"
+    " A line of TYPE DMR has the DMR11's switch packs E121 and E134 on its\n"
+    " M8203 line unit.  The switches of the remote load detect boot are set\n"
+    " with these commands (PDP-11 simulator only, see Booting):\n"
+    "\n"
+    "+sim> SET %U PASSWORD=n\n"
+    "+sim> SET %U BOOTOFFSET=n\n"
+    "+sim> SET %U PROGRAM={SECONDARY|TERTIARY|SYSTEM}\n"
+    "\n"
+    " PASSWORD is E134 SW1-8, octal 0-377: 377 (the default, all switches\n"
+    " OFF) turns remote load detect off.  BOOTOFFSET is E121 SW1-8, octal\n"
+    " 0-377 (default 000): the boot ROM address is 173000 plus the offset.\n"
+    " PROGRAM is a simulator setting for the DMR11's own load (see Booting).\n"
+    " E121 SW9 (DMC11 line compatible), E121 SW10 (line speed) and E134 SW9\n"
+    " (auto answer) have no effect in the simulation.  E134 SW10 is the\n"
+    " microdiagnostics switch: SET %U MICRODIAG=ENABLE is the switch OFF.\n"
+    "\n"
+    "+sim> SHOW %U SWITCHES\n"
+    "\n"
+    " displays both switch packs as they would be set on the board.  The\n"
+    " DMC11's line unit switches are not simulated.\n"
+#endif
+    "";
 const char helpMid[] =
     "3 Corruption\n"
     " Corruption Troll - the DDCMP emulation includes a process that will\n"
@@ -2407,24 +2520,24 @@ const char helpMpExample[] =
     "+sim> SET %U PEER=controlhost:1111\n"
     "+sim> ATTACH %U 2222\n"
     ;
-/* DMV device only: booting */
+/* DMV and DMP devices: booting */
 const char helpDmvBoot[] =
     "1 Booting\n"
-    " In the PDP-11 simulator a DMV11 can boot its host with the primary MOP\n"
-    " (EK-DMVQM-UG-003 section 4.7).  It must be a point-to-point station or\n"
+    " In the PDP-11 simulator a %1s can boot its host with the primary MOP\n"
+    " (section 4.7 of its user guide).  It must be a point-to-point station or\n"
     " a multipoint tributary with its mode set by the mode switches (SET %U\n"
     " MODE=...).  The control station loads the program with MOP; with\n"
     " DECnet this is a circuit with SERVICE ENABLED and a node with a load\n"
-    " file (MOP device type 34).\n"
+    " file (MOP device type 34 for the DMV11, 18 for the DMP11).\n"
     "\n"
-    " SET %U PROGRAM selects the program the DMV11 asks for: SECONDARY (the\n"
+    " SET %U PROGRAM selects the program the %1s asks for: SECONDARY (the\n"
     " default: a secondary loader, DECnet SECONDARY LOADER), TERTIARY (TERTIARY\n"
     " LOADER) or SYSTEM (the system image, DECnet LOAD FILE).  The manuals do\n"
     " not say which one the real board asks for; SECONDARY is the most likely,\n"
     " SYSTEM loads a program directly, without a secondary loader.  VMS V4.7\n"
     " sends a secondary loader as one message at address 6.\n"
     "\n"
-    " The DMV11 takes the CPU over through the power-fail/restart vector at\n"
+    " The %1s takes the CPU over through the power-fail/restart vector at\n"
     " 24: it puts a waiting routine (MOV #1000,SP; WAIT) at 40 and enters it at\n"
     " priority 7 with memory management off.  It stores each Memory Load it\n"
     " gets and asks for the next one, and starts the program at the transfer\n"
@@ -2443,27 +2556,62 @@ const char helpDmvBoot[] =
     "+sim> ATTACH %U port\n"
     "+sim> BOOT %U\n"
     "\n"
-    " The DMV11 answers the first message (poll) of the control station with\n"
+    " The %1s answers the first message (poll) of the control station with\n"
     " Request Program.  A multipoint tributary also needs its address in the\n"
     " tributary switches (SET %U TRIBUTARY=n).\n"
     "2 Remote load detect\n"
-    " With SET %U REMOTELOAD the DMV11 watches its line, also while the\n"
+    " With SET %U REMOTELOAD the %1s watches its line, also while the\n"
     " operating system runs or after it has stopped.  An Enter MOP Mode (MOP\n"
     " Boot) message for its address, with the tributary switches as the\n"
     " password (DECnet: TRIGGER NODE ... SERVICE PASSWORD), makes it take\n"
     " the CPU over and ask for the program at once.  While the host gives\n"
-    " the DMV11 no receive buffer, a message the host does not take is\n"
+    " the %1s no receive buffer, a message the host does not take is\n"
     " dropped; the other station sends it again.\n"
     "2 Invoke primary MOP\n"
     " A program sets the invoke primary MOP and master clear bits (BSEL1 bits\n"
-    " 5 and 6, SEL0 060000).  The DMV11 then boots the host as with the\n"
+    " 5 and 6, SEL0 060000).  The %1s then boots the host as with the\n"
     " power-on boot.  A multipoint tributary with tributary switches 0 uses\n"
     " the first tributary the program had established (not with the power-on\n"
     " boot switch on).\n"
     "2 Unit number\n"
-    " The manual does not say how the loaded program learns the unit number\n"
-    " for booting (E101 SW2); the switch is only kept and displayed.\n"
+    " The guides do not say how the loaded program learns the unit number\n"
+    " for booting (SET %U BOOTUNIT); the switches are only kept and displayed.\n"
     ;
+/* DMC device: the DMR11's remote load detect boot */
+const char helpDmrBoot[] =
+#if !defined (VM_PDP10)
+    "1 Booting\n"
+    " In the PDP-11 simulator a DMR11 (TYPE DMR) can boot its host by remote\n"
+    " load detect.  With a password other than 377 (SET %U PASSWORD=n) the\n"
+    " DMR11 watches its line, also while the operating system runs or after\n"
+    " it has stopped.  An Enter MOP Mode (MOP Boot) message whose four\n"
+    " password bytes all equal the password switches makes it write 173000\n"
+    " plus the bootstrap offset (SET %U BOOTOFFSET=n) into the power-fail\n"
+    " vector at 24 and 0 into 26, and restart the CPU through that vector as\n"
+    " after a power failure.\n"
+    "\n"
+    " On a real system a boot ROM answers at that address (an M9312 with the\n"
+    " DECnet boot ROM, or an M9301-YJ: its offsets are 356 for unit 0 and 374\n"
+    " for unit 1 without CPU diagnostics), and its primary MOP program loads\n"
+    " the system through the DMR11.  A ROM image can be attached with the ROM\n"
+    " device:\n"
+    "\n"
+    "+sim> SET ROM0 ADDRESS=17773000\n"
+    "+sim> ATTACH ROM0 rom-image-file\n"
+    "\n"
+    " SIMH has no DECnet boot ROM built in: when nothing answers at the boot\n"
+    " address, the DMR11 does the ROM's part itself.  It takes the CPU over\n"
+    " as a DMV11 does (HELP DMV BOOTING): a waiting routine at 40, a Request\n"
+    " Program with MOP device type 40 and the program type of SET %U\n"
+    " PROGRAM, each Memory Load stored, the program started at its transfer\n"
+    " address.  SHOW %U SWITCHES tells which of the two a remote load detect\n"
+    " would do.\n"
+    "\n"
+    " An Enter MOP Mode with a wrong password does not boot.  The DMR11 has\n"
+    " no power-on boot and no invoke primary MOP function.  The DMC11's\n"
+    " remote load detect is not simulated.\n"
+#endif
+    "";
 const char helpMonitor[] =
     "1 Monitoring\n"
     " The %D device and %U line configuration and state can be displayed with\n"
@@ -2571,6 +2719,7 @@ char devname[16];
 char devcount[16];
 char connectpoll[16];
 t_bool dmc = (dptr == &dmc_dev);
+t_bool dmp = (dptr == &dmp_dev);
 char *help;
 t_stat r;
 
@@ -2579,26 +2728,35 @@ sprintf (devcount, "%d", dmc ? DMC_NUMDEVICE : DMP_NUMDEVICE);
 sprintf (connectpoll, "%d", DMC_CONNECT_POLL);
 /* The help is put together from the parts that apply to this device: the
    DMC device has SET TYPE, the DMP and DMV devices multipoint. */
-help = (char *)malloc (strlen (helpString) + strlen (helpType) + strlen (helpDmvSet) + strlen (helpMid) +
-                       strlen (helpMpExample) + strlen (helpDmvBoot) + strlen (helpMonitor) + strlen (helpMp) +
-                       strlen (helpTail) + 1);
+help = (char *)malloc (strlen (helpString) + strlen (helpType) + strlen (helpDmvSet) + strlen (helpDmrSet) +
+                       strlen (helpMid) + strlen (helpMpExample) + strlen (helpDmvBoot) + strlen (helpDmrBoot) +
+                       strlen (helpMonitor) + strlen (helpMp) + strlen (helpTail) + 1);
 if (help == NULL)
     return SCPE_MEM;
 strcpy (help, helpString);
-if (dmc)
-    strcat (help, helpType);
-if (dptr == &dmv_dev)                       /* the DMV11 switch packs and boot */
+if (dmc)                                    /* the DMR11 switch packs */
+    strcat (help, helpType), strcat (help, helpDmrSet);
+else                                        /* the DMV11 or DMP11 switch packs */
     strcat (help, helpDmvSet);
 strcat (help, helpMid);
 if (!dmc)
     strcat (help, helpMpExample);
-if (dptr == &dmv_dev)
-    strcat (help, helpDmvBoot);
+strcat (help, dmc ? helpDmrBoot : helpDmvBoot);
 strcat (help, helpMonitor);
 if (!dmc)
     strcat (help, helpMp);
 strcat (help, helpTail);
-r = scp_help (st, dptr, uptr, flag, help, cptr, devname, devcount, connectpoll);
+/* %4s-%9s: the names of the board's switches (helpDmvSet) */
+r = scp_help (st, dptr, uptr, flag, help, cptr, devname, devcount, connectpoll,
+              dmp ? "E121" : "E101",
+              dmp ? "E134" : "E113",
+              dmp ? "SW8 5 6 7" : "SW1 6 7 8",
+              dmp ? "E121 SW8 and SW5-7" : "E101 SW1 and SW6-8",
+              dmp ? "BOOTUNIT (0-15): E121 SW1-4; POWERONBOOT: SW10 (the boot is enabled\n"
+                    "with the switch ON); REMOTELOAD: SW9"
+                  : "BOOTUNIT (0 or 1): E101 SW2; POWERONBOOT: SW4; REMOTELOAD: SW5",
+              dmp ? "E134 SW10 (line speed)"
+                  : "E101 SW3 (auto answer), SW9 (line speed) and SW10 (interface select)");
 free (help);
 return r;
 }
@@ -3096,8 +3254,9 @@ t_bool dmv_invoke = FALSE;                  /* DMV11: invoke primary MOP boot */
 uint8 dmv_soft_address = 0;                 /* its first established tributary */
 
 sim_debug(DBG_INF, controller->device, "%s%d: Master clear\n", controller->device->name, controller->index);
-if (dmv_is_dmv(controller)) {
-    /* BSEL1 bit 5 with master clear: invoke primary MOP (manual 4.7.3).  A
+if (!dmc_is_dmc(controller)) {
+    /* DMV11/DMP11: BSEL1 bit 5 with master clear: invoke primary MOP (both
+       guides, 4.7.3; Section 3.3.1.1 of the DMP11 guide).  A
        software-assigned tributary address is the first one established,
        which the master clear forgets, so it is taken here. */
     dmv_invoke = (*controller->csrs->sel0 & DMV_SEL0_M_PMOP) != 0;
@@ -5810,28 +5969,175 @@ t_bool dmv_is_dmv (CTLR *controller)
 return (!dmc_is_dmc(controller) && (controller->device == &dmv_dev));
 }
 
-/* DMV line number of a DMV controller (index into dmv_e101/dmv_e113) */
-static int dmv_line (CTLR *controller)
+/* ---------------------------------------------------------------------------
+   The boards with switch packs and a boot: DMV11 and DMP11 (each line of
+   the shared DMP/DMV lines is one of them, by bus) and DMR11 (a DMC line of
+   TYPE DMR).  A DMX_BOARD describes where a board has its switches and
+   which way they work; every SET/SHOW switch command, SHOW SWITCHES and
+   the boot use only this description, so the boards share one
+   implementation.  The DMC11's line unit switches are not simulated yet
+   (their meaning is defined by the DMC11 microcode; manual needed).
+   --------------------------------------------------------------------------- */
+
+#define SWK_FLAG     0      /* one switch: the texts for OFF and ON */
+#define SWK_INFO     1      /* one switch without an effect in the simulation */
+#define SWK_UNUSED   2      /* not used on this board */
+#define SWK_MODE     3      /* three mode switches: the mode code of Table 3-4 */
+#define SWK_VALUE    4      /* a number (decimal) */
+#define SWK_OFFSET   5      /* DMR11 bootstrap offset (octal) */
+#define SWK_PASSWORD 6      /* DMR11 password (octal, 377: remote load detect off) */
+
+typedef struct {
+    int         first;      /* first switch (1-10) */
+    int         n;          /* number of switches */
+    int         kind;       /* SWK_xxx */
+    const char  *name;
+    const char  *off, *on;  /* SWK_FLAG: meaning of OFF and ON; SWK_MODE: on names
+                               the mode enable switch that leaves the mode unused */
+    uint16      dep;        /* SWK_MODE: the mode enable switch */
+    } DMX_SWDESC;
+
+typedef struct {
+    const char  *board;         /* "DMV11" */
+    const char  *pack[2];       /* the packs: features, address/password */
+    const char  *where[2];      /* where they are */
+    int         nsw[2];         /* switches per pack */
+    const DMX_SWDESC *desc[2];  /* SHOW SWITCHES */
+    uint16      mode_enable;    /* mode enable switch (OFF: mode from the switches), 0: none */
+    int         v_mode;         /* bit of the first mode switch */
+    uint16      m_unit;         /* unit number switches, and their first bit */
+    int         v_unit;
+    uint16      poweron;        /* power-on boot switch, 0: none */
+    t_bool      poweron_on;     /* the power-on boot is enabled with the switch ON (DMP11) */
+    uint16      remoteload;     /* remote load detect switch (OFF: enabled), 0: the
+                                   password decides (DMR11: not 377) */
+    uint8       mop_devtype;    /* MOP device type (MOP registry) */
+    const char  *poweron_sw;    /* for messages */
+    } DMX_BOARD;
+
+static const DMX_SWDESC dmv_e101_desc[] = {
+    { 1, 1, SWK_FLAG,  "mode enable",        "OFF: mode from SW6-8", "ON:  mode set by software" },
+    { 2, 1, SWK_FLAG,  "unit for booting",   "OFF: unit 1",          "ON:  unit 0" },
+    { 3, 1, SWK_INFO,  "auto answer" },
+    { 4, 1, SWK_FLAG,  "power-on boot",      "OFF: enabled",         "ON:  disabled" },
+    { 5, 1, SWK_FLAG,  "remote load detect", "OFF: enabled",         "ON:  disabled" },
+    { 6, 3, SWK_MODE,  "mode",               NULL,                   "SW1 ON", DMV_E101_MODE_ENABLE },
+    { 9, 1, SWK_INFO,  "high speed" },
+    {10, 1, SWK_INFO,  "interface select" },
+    { 0 } };
+static const DMX_SWDESC dmv_e113_desc[] = {
+    { 1, 8, SWK_VALUE, "address/password" },
+    { 0 } };
+static const DMX_SWDESC dmp_e121_desc[] = {
+    { 1, 4, SWK_VALUE, "unit number" },
+    { 5, 3, SWK_MODE,  "mode",               NULL,                   "SW8 ON", DMP_E121_MODE_ENABLE },
+    { 8, 1, SWK_FLAG,  "mode enable",        "OFF: mode from SW5-7", "ON:  mode set by software" },
+    { 9, 1, SWK_FLAG,  "remote load detect", "OFF: enabled",         "ON:  disabled" },
+    {10, 1, SWK_FLAG,  "power-on boot",      "OFF: disabled",        "ON:  enabled" },
+    { 0 } };
+static const DMX_SWDESC dmp_e134_desc[] = {
+    { 1, 8, SWK_VALUE, "address/password" },
+    { 9, 1, SWK_UNUSED, "(not used)" },
+    {10, 1, SWK_INFO,  "high speed" },
+    { 0 } };
+static const DMX_SWDESC dmr_e121_desc[] = {
+    { 1, 8, SWK_OFFSET, "bootstrap offset" },
+    { 9, 1, SWK_FLAG,  "line mode",          "OFF: DMC11 line compatible (no effect in the simulation)",
+                                             "ON:  DDCMP V4.0 (no effect in the simulation)" },
+    {10, 1, SWK_INFO,  "high speed" },
+    { 0 } };
+static const DMX_SWDESC dmr_e134_desc[] = {
+    { 1, 8, SWK_PASSWORD, "password" },
+    { 9, 1, SWK_INFO,  "auto answer" },
+    {10, 1, SWK_FLAG,  "microdiagnostics",   "OFF: run at master clear, not with SEL0 bit 13 (SET MICRODIAG=ENABLE)",
+                                             "ON:  run only with SEL0 bit 13 (SET MICRODIAG=DISABLE)" },
+    { 0 } };
+
+static const DMX_BOARD dmx_dmv = {
+    "DMV11", {"E101", "E113"}, {"M8053; E107 on the M8064", "M8053; E119 on the M8064"}, {10, 8},
+    {dmv_e101_desc, dmv_e113_desc}, DMV_E101_MODE_ENABLE, DMV_E101_V_MODE, DMV_E101_UNIT1, 1,
+    DMV_E101_POWERON, FALSE, DMV_E101_REMOTELOAD, DMV_MOP_DEVTYPE, "E101 SW4" };
+static const DMX_BOARD dmx_dmp = {
+    "DMP11", {"E121", "E134"}, {"M8203 line unit", "M8203 line unit"}, {10, 10},
+    {dmp_e121_desc, dmp_e134_desc}, DMP_E121_MODE_ENABLE, DMP_E121_V_MODE, DMP_E121_M_UNIT, 0,
+    DMP_E121_POWERON, TRUE, DMP_E121_REMOTELOAD, DMP_MOP_DEVTYPE, "E121 SW10" };
+static const DMX_BOARD dmx_dmr = {
+    "DMR11", {"E121", "E134"}, {"M8203 line unit", "M8203 line unit"}, {10, 10},
+    {dmr_e121_desc, dmr_e134_desc}, 0, 0, 0, 0,
+    0, FALSE, 0, DMR_MOP_DEVTYPE, NULL };
+
+/* The board of a line, NULL for a DMC11 */
+static const DMX_BOARD *dmx_board (CTLR *controller)
 {
-return controller->index - DMC_NUMDEVICE;
+if (controller->dev_type == DMR)
+    return &dmx_dmr;
+if (controller->dev_type == DMC)
+    return NULL;
+return (controller->device == &dmp_dev) ? &dmx_dmp : &dmx_dmv;
 }
 
-/* E101 SW1 OFF: the mode comes from SW6-8 */
+/* Switch pack n of a line: 0 the features pack, 1 the address/password pack */
+static uint16 *dmx_pack (CTLR *controller, int n)
+{
+int ln = controller->index - DMC_NUMDEVICE;             /* DMP/DMV line */
+
+if (dmc_is_dmc(controller))
+    return n ? &dmr_e134[controller->index] : &dmr_e121[controller->index];
+if (controller->device == &dmp_dev)
+    return n ? &dmp_e134[ln] : &dmp_e121[ln];
+return n ? &dmv_e113[ln] : &dmv_e101[ln];
+}
+
+/* The MOP program type a boot asks for (SET PROGRAM) */
+static uint8 *dmx_program (CTLR *controller)
+{
+return dmc_is_dmc(controller) ? &dmr_program[controller->index] : &dmv_program[controller->index - DMC_NUMDEVICE];
+}
+
+/* The mode enable switch is OFF: the mode comes from the mode switches */
 t_bool dmv_mode_from_switches (CTLR *controller)
 {
-return dmv_is_dmv(controller) && (dmv_e101[dmv_line(controller)] & DMV_E101_MODE_ENABLE);
+const DMX_BOARD *b = dmx_board (controller);
+
+return b && b->mode_enable && (*dmx_pack (controller, 0) & b->mode_enable);
 }
 
-/* The mode code (Table 3-4) of switches SW6-8 */
+/* The mode code (Table 3-4) of the mode switches, 0 without them */
 uint16 dmv_switch_mode (CTLR *controller)
 {
-return (dmv_e101[dmv_line(controller)] & DMV_E101_M_MODE) >> DMV_E101_V_MODE;
+const DMX_BOARD *b = dmx_board (controller);
+
+return (b && b->mode_enable) ? ((*dmx_pack (controller, 0) >> b->v_mode) & 7) : 0;
 }
 
-/* The tributary address/password switches (E113), 0 for other devices */
+/* The tributary address/password switches (DMV11, DMP11), 0 for other boards */
 uint8 dmv_switch_address (CTLR *controller)
 {
-return dmv_is_dmv(controller) ? dmv_e113[dmv_line(controller)] : 0;
+return dmc_is_dmc(controller) ? 0 : (uint8)(*dmx_pack (controller, 1) & 0xFF);
+}
+
+/* The power-on boot is enabled */
+static t_bool dmx_poweron (CTLR *controller)
+{
+const DMX_BOARD *b = dmx_board (controller);
+t_bool off;
+
+if (!b || !b->poweron)
+    return FALSE;
+off = (*dmx_pack (controller, 0) & b->poweron) != 0;
+return b->poweron_on ? !off : off;
+}
+
+/* Remote load detect is enabled by the switches */
+static t_bool dmx_remoteload (CTLR *controller)
+{
+const DMX_BOARD *b = dmx_board (controller);
+
+if (!b)
+    return FALSE;
+if (!b->remoteload)                         /* DMR11: a password other than 377 */
+    return (*dmx_pack (controller, 1) & DMR_E134_M_PASSWORD) != DMR_E134_M_PASSWORD;
+return (*dmx_pack (controller, 0) & b->remoteload) != 0;
 }
 
 /* The first established tributary (lowest status slot), 0 if none */
@@ -5845,32 +6151,57 @@ for (i = 0; i < DMP_MAX_TRIBS; i++)
 return 0;
 }
 
-/* DMV line of a unit given to a SET or SHOW command, -1 if none */
-static int dmv_unit_line (UNIT *uptr)
+/* The line of a unit given to a SET or SHOW command, NULL for the polling
+   and timer units */
+static CTLR *dmx_unit_ctlr (UNIT *uptr)
 {
-int ln = (int)(uptr - dmv_dev.units);
+CTLR *controller = (CTLR *)uptr->ctlr;
 
-return ((ln >= 0) && (ln < DMP_NUMDEVICE) && (ln < (int)dmv_dev.numunits - 2)) ? ln : -1;
+return (controller && (controller->unit == uptr)) ? controller : NULL;
 }
+
+/* SET or SHOW of a switch on a DMC11 */
+static t_stat dmx_no_switches (CTLR *controller)
+{
+return sim_messagef (SCPE_NOFNC, "The DMC11 line unit switches are not simulated (SET %s%d TYPE=DMR for a DMR11)\n",
+                     controller->device->name, controller->index);
+}
+
+/* The boot switches exist on every board, but only a PDP-11 can be booted */
+static t_stat dmv_boot_switch_refused (const DMX_BOARD *b)
+{
+return sim_messagef (SCPE_NOFNC, "The %s boot functions are only available in the PDP-11 simulator\n", b->board);
+}
+
+/* The start of each SET/SHOW switch routine: the line and its board */
+#define DMX_UNIT_BOARD(uptr, controller, b)             \
+    if ((controller = dmx_unit_ctlr (uptr)) == NULL)    \
+        return SCPE_IERR;                               \
+    if ((b = dmx_board (controller)) == NULL)           \
+        return dmx_no_switches (controller)
 
 t_stat dmv_set_mode (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
+uint16 *pack;
 char gbuf[CBUFSIZE];
 int i;
 
-if (ln < 0)
-    return SCPE_IERR;
+DMX_UNIT_BOARD (uptr, controller, b);
+if (!b->mode_enable)
+    return sim_messagef (SCPE_NOFNC, "The %s has no mode switches\n", b->board);
 if ((cptr == NULL) || (*cptr == '\0'))
     return SCPE_MISVAL;
+pack = dmx_pack (controller, 0);
 get_glyph (cptr, gbuf, 0);
-if (strcmp (gbuf, "SOFTWARE") == 0) {               /* SW1 ON */
-    dmv_e101[ln] &= ~DMV_E101_MODE_ENABLE;
+if (strcmp (gbuf, "SOFTWARE") == 0) {               /* mode enable ON */
+    *pack &= ~b->mode_enable;
     return SCPE_OK;
     }
 for (i = 0; i < 8; i++)
-    if (strcmp (gbuf, dmv_mode_names[i]) == 0) {    /* SW1 OFF, SW6-8 */
-        dmv_e101[ln] = (dmv_e101[ln] & ~DMV_E101_M_MODE) | (uint16)(i << DMV_E101_V_MODE) | DMV_E101_MODE_ENABLE;
+    if (strcmp (gbuf, dmv_mode_names[i]) == 0) {    /* mode enable OFF, the mode switches */
+        *pack = (*pack & ~(7 << b->v_mode)) | (uint16)(i << b->v_mode) | b->mode_enable;
         return SCPE_OK;
         }
 return sim_messagef (SCPE_ARG, "Unknown mode: %s (SOFTWARE, HDXDMC, FDXDMC, HDXPOINT, FDXPOINT,\n"
@@ -5879,12 +6210,12 @@ return sim_messagef (SCPE_ARG, "Unknown mode: %s (SOFTWARE, HDXDMC, FDXDMC, HDXP
 
 t_stat dmv_show_mode (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
 
-if (ln < 0)
-    return SCPE_IERR;
-if (dmv_e101[ln] & DMV_E101_MODE_ENABLE)
-    fprintf (st, "MODE=%s\n", dmv_mode_names[(dmv_e101[ln] & DMV_E101_M_MODE) >> DMV_E101_V_MODE]);
+DMX_UNIT_BOARD (uptr, controller, b);
+if (dmv_mode_from_switches (controller))
+    fprintf (st, "MODE=%s\n", dmv_mode_names[dmv_switch_mode (controller)]);
 else
     fprintf (st, "MODE=SOFTWARE\n");
 return SCPE_OK;
@@ -5892,85 +6223,84 @@ return SCPE_OK;
 
 t_stat dmv_set_tributary (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
+uint16 *pack;
 t_stat r;
 uint32 address;
 
-if (ln < 0)
-    return SCPE_IERR;
+DMX_UNIT_BOARD (uptr, controller, b);
 if ((cptr == NULL) || (*cptr == '\0'))
     return SCPE_MISVAL;
 address = (uint32)get_uint (cptr, 10, 255, &r);
 if (r != SCPE_OK)
     return sim_messagef (SCPE_ARG, "Tributary address must be 0-255\n");
-dmv_e113[ln] = (uint8)address;
+pack = dmx_pack (controller, 1);
+*pack = (*pack & ~0xFF) | (uint16)address;
 return SCPE_OK;
 }
 
 t_stat dmv_show_tributary (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
 
-if (ln < 0)
-    return SCPE_IERR;
-fprintf (st, "TRIBUTARY=%d\n", dmv_e113[ln]);
+DMX_UNIT_BOARD (uptr, controller, b);
+fprintf (st, "TRIBUTARY=%d\n", dmv_switch_address (controller));
 return SCPE_OK;
 }
 
-/* The boot switches exist on every DMV11, but only a PDP-11 can be booted */
-static t_stat dmv_boot_switch_refused (void)
-{
-return sim_messagef (SCPE_NOFNC, "The DMV11 boot functions are only available in the PDP-11 simulator\n");
-}
-
+/* SET BOOTUNIT: DMV11 E101 SW2 (0 or 1), DMP11 E121 SW1-4 (0-15) */
 t_stat dmv_set_bootunit (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
+uint16 *pack;
 t_stat r;
-uint32 unit;
+uint32 unit, max;
 
-if (ln < 0)
-    return SCPE_IERR;
+DMX_UNIT_BOARD (uptr, controller, b);
+if (!b->m_unit)
+    return sim_messagef (SCPE_NOFNC, "The %s has no unit number switches\n", b->board);
 if (!DMV_BOOT_SUPPORTED)
-    return dmv_boot_switch_refused ();
+    return dmv_boot_switch_refused (b);
 if ((cptr == NULL) || (*cptr == '\0'))
     return SCPE_MISVAL;
-unit = (uint32)get_uint (cptr, 10, 1, &r);
+max = b->m_unit >> b->v_unit;
+unit = (uint32)get_uint (cptr, 10, max, &r);
 if (r != SCPE_OK)
-    return sim_messagef (SCPE_ARG, "Unit number for booting must be 0 or 1\n");
-if (unit)
-    dmv_e101[ln] |= DMV_E101_UNIT1;                 /* SW2 OFF */
-else
-    dmv_e101[ln] &= ~DMV_E101_UNIT1;                /* SW2 ON */
+    return sim_messagef (SCPE_ARG, "Unit number for booting must be 0-%d\n", max);
+pack = dmx_pack (controller, 0);
+*pack = (*pack & ~b->m_unit) | (uint16)(unit << b->v_unit);
 return SCPE_OK;
 }
 
 t_stat dmv_show_bootunit (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
 
-if (ln < 0)
-    return SCPE_IERR;
-fprintf (st, "BOOTUNIT=%d\n", (dmv_e101[ln] & DMV_E101_UNIT1) ? 1 : 0);
+DMX_UNIT_BOARD (uptr, controller, b);
+fprintf (st, "BOOTUNIT=%d\n", (*dmx_pack (controller, 0) & b->m_unit) >> b->v_unit);
 return SCPE_OK;
 }
 
-/* SET DMVn PROGRAM={SECONDARY|TERTIARY|SYSTEM}: MOP program type of the
-   boot's Request Program (PDP-11 only) */
+/* SET PROGRAM={SECONDARY|TERTIARY|SYSTEM}: MOP program type of the boot's
+   Request Program (PDP-11 only) */
 t_stat dmv_set_program (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
 uint8 i;
 
-if (ln < 0)
-    return SCPE_IERR;
+DMX_UNIT_BOARD (uptr, controller, b);
 if (!DMV_BOOT_SUPPORTED)
-    return dmv_boot_switch_refused ();
+    return dmv_boot_switch_refused (b);
 if ((cptr == NULL) || (*cptr == '\0'))
     return SCPE_MISVAL;
 for (i = 0; i < 3; i++)
     if (MATCH_CMD (cptr, dmv_program_names[i]) == 0) {
-        dmv_program[ln] = i;
+        *dmx_program (controller) = i;
         return SCPE_OK;
         }
 return sim_messagef (SCPE_ARG, "PROGRAM must be SECONDARY, TERTIARY or SYSTEM\n");
@@ -5978,82 +6308,169 @@ return sim_messagef (SCPE_ARG, "PROGRAM must be SECONDARY, TERTIARY or SYSTEM\n"
 
 t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
 
-if (ln < 0)
-    return SCPE_IERR;
-fprintf (st, "PROGRAM=%s\n", dmv_program_names[dmv_program[ln] % 3]);
+DMX_UNIT_BOARD (uptr, controller, b);
+fprintf (st, "PROGRAM=%s\n", dmv_program_names[*dmx_program (controller) % 3]);
 return SCPE_OK;
 }
 
-/* POWERONBOOT/NOPOWERONBOOT (SW4), REMOTELOAD/NOREMOTELOAD (SW5): val is
-   the switch bit, plus 0x10000 for the NO form */
+/* {NO}POWERONBOOT and {NO}REMOTELOAD (DMV11, DMP11): val is DMX_SW_POWERON
+   or DMX_SW_REMOTELOAD, plus DMX_SW_NO for the NO form.  The switch is set
+   the way that enables or disables the function on this board. */
 t_stat dmv_set_bootswitch (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
+uint16 *pack, sw;
+t_bool enable = !(val & DMX_SW_NO), off;
 
-if (ln < 0)
-    return SCPE_IERR;
+DMX_UNIT_BOARD (uptr, controller, b);
 if (cptr && *cptr)
     return SCPE_ARG;
 if (!DMV_BOOT_SUPPORTED)
-    return dmv_boot_switch_refused ();
-if (val & 0x10000)
-    dmv_e101[ln] &= ~(val & 0xFFFF);                /* switch ON: disabled */
+    return dmv_boot_switch_refused (b);
+if ((val & ~DMX_SW_NO) == DMX_SW_POWERON) {
+    sw = b->poweron;
+    off = b->poweron_on ? !enable : enable;
+    }
+else {
+    sw = b->remoteload;
+    off = enable;                           /* OFF: remote load detect enabled */
+    }
+if (!sw)
+    return sim_messagef (SCPE_NOFNC, "The %s has no such switch\n", b->board);
+pack = dmx_pack (controller, 0);
+if (off)
+    *pack |= sw;
 else
-    dmv_e101[ln] |= (val & 0xFFFF);                 /* switch OFF: enabled */
+    *pack &= ~sw;
 return SCPE_OK;
 }
 
 t_stat dmv_show_bootswitch (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
-int ln = dmv_unit_line(uptr);
+CTLR *controller;
+const DMX_BOARD *b;
 
-if (ln < 0)
-    return SCPE_IERR;
-fprintf (st, "%s%s\n", (dmv_e101[ln] & val) ? "" : "NO",
-                     (val == DMV_E101_POWERON) ? "POWERONBOOT" : "REMOTELOAD");
+DMX_UNIT_BOARD (uptr, controller, b);
+if (val == DMX_SW_POWERON)
+    fprintf (st, "%sPOWERONBOOT\n", dmx_poweron (controller) ? "" : "NO");
+else
+    fprintf (st, "%sREMOTELOAD\n", dmx_remoteload (controller) ? "" : "NO");
 return SCPE_OK;
 }
 
-/* SHOW DMVn SWITCHES: both switch packs as they would be set on the board,
-   with their meaning, and the state of a boot */
+/* SET DMCn BOOTOFFSET=n (val 0: E121 SW1-8) and PASSWORD=n (val 1: E134
+   SW1-8), DMR11 only, octal 0-377 as in the guide */
+t_stat dmr_set_switchbyte (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+CTLR *controller;
+const DMX_BOARD *b;
+uint16 *pack;
+t_stat r;
+uint32 value;
+
+DMX_UNIT_BOARD (uptr, controller, b);
+if (!DMV_BOOT_SUPPORTED)
+    return dmv_boot_switch_refused (b);
+if ((cptr == NULL) || (*cptr == '\0'))
+    return SCPE_MISVAL;
+value = (uint32)get_uint (cptr, 8, 0377, &r);
+if (r != SCPE_OK)
+    return sim_messagef (SCPE_ARG, "The value must be octal 0-377\n");
+pack = dmx_pack (controller, val);
+*pack = (*pack & ~0xFF) | (uint16)value;
+return SCPE_OK;
+}
+
+t_stat dmr_show_switchbyte (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+CTLR *controller;
+const DMX_BOARD *b;
+
+DMX_UNIT_BOARD (uptr, controller, b);
+fprintf (st, "%s=%03o\n", val ? "PASSWORD" : "BOOTOFFSET", *dmx_pack (controller, val) & 0xFF);
+return SCPE_OK;
+}
+
+/* SHOW SWITCHES: one switch pack as it would be set on the board (OFF = 1),
+   with the meaning of each switch */
+static void dmx_show_pack (FILE *st, const DMX_BOARD *b, int n, uint16 value)
+{
+const DMX_SWDESC *d;
+char sw[16];
+int i;
+
+fprintf (st, "switch pack %s (%s), SW1-SW%d:", b->pack[n], b->where[n], b->nsw[n]);
+for (i = 0; i < b->nsw[n]; i++)
+    fprintf (st, " %s", (value & (1 << i)) ? "OFF" : "ON");
+fprintf (st, "\n");
+for (d = b->desc[n]; d->first; d++) {
+    uint16 field = (value >> (d->first - 1)) & ((1 << d->n) - 1);
+
+    if (d->n == 1)
+        sprintf (sw, "SW%d", d->first);
+    else
+        sprintf (sw, "SW%d-%d", d->first, d->first + d->n - 1);
+    fprintf (st, "  %-6s %-20s ", sw, d->name);
+    switch (d->kind) {
+        case SWK_FLAG:
+            fprintf (st, "%s", field ? d->off : d->on);
+            break;
+        case SWK_INFO:
+            fprintf (st, "%s (no effect in the simulation)", field ? "OFF" : "ON");
+            break;
+        case SWK_UNUSED:
+            fprintf (st, "%s", field ? "OFF" : "ON");
+            break;
+        case SWK_MODE:
+            for (i = 0; i < 3; i++)
+                fprintf (st, "%s%s", i ? " " : "", (field & (1 << i)) ? "OFF" : "ON");
+            fprintf (st, ": %s%s%s%s", dmv_mode_names[field], (value & d->dep) ? "" : " (not used: ",
+                     (value & d->dep) ? "" : d->on, (value & d->dep) ? "" : ")");
+            break;
+        case SWK_VALUE:
+            fprintf (st, "%d (%03o octal)", field, field);
+            break;
+        case SWK_OFFSET:
+            fprintf (st, "%03o octal: boot address %06o", field, DMR_BOOT_ROM + field);
+            break;
+        case SWK_PASSWORD:
+            fprintf (st, "%03o octal%s", field, (field == 0377) ? " (remote load detect disabled)" : "");
+            break;
+        }
+    fprintf (st, "\n");
+    }
+}
+
+/* SHOW SWITCHES: both switch packs, the PROGRAM setting and the boot state */
 t_stat dmv_show_switches (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 static const char *boot_states[] = {"none", "waiting for the first poll from the control station",
                                     "Request Program sent", "loading", "starting the loaded program"};
-int ln = dmv_unit_line(uptr);
-uint16 e101;
 CTLR *controller;
-int sw;
+const DMX_BOARD *b;
+uint16 value;
+int n;
 
-if (ln < 0)
-    return SCPE_IERR;
-e101 = dmv_e101[ln];
-fprintf (st, "switch pack E101 (M8053; E107 on the M8064), SW1-SW10:");
-for (sw = 0; sw < 10; sw++)
-    fprintf (st, " %s", (e101 & (1 << sw)) ? "OFF" : "ON");
-fprintf (st, "\n  SW1    mode enable          %s\n", (e101 & DMV_E101_MODE_ENABLE) ?
-             "OFF: mode from SW6-8" : "ON:  mode set by software");
-fprintf (st, "  SW2    unit for booting     %s\n", (e101 & DMV_E101_UNIT1) ? "OFF: unit 1" : "ON:  unit 0");
-fprintf (st, "  SW3    auto answer          %s (no effect in the simulation)\n", (e101 & DMV_E101_AUTOANSWER) ? "OFF" : "ON");
-fprintf (st, "  SW4    power-on boot        %s\n", (e101 & DMV_E101_POWERON) ? "OFF: enabled" : "ON:  disabled");
-fprintf (st, "  SW5    remote load detect   %s\n", (e101 & DMV_E101_REMOTELOAD) ? "OFF: enabled" : "ON:  disabled");
-fprintf (st, "  SW6-8  mode                 %s %s %s: %s%s\n",
-             (e101 & (1 << 5)) ? "OFF" : "ON", (e101 & (1 << 6)) ? "OFF" : "ON", (e101 & (1 << 7)) ? "OFF" : "ON",
-             dmv_mode_names[(e101 & DMV_E101_M_MODE) >> DMV_E101_V_MODE],
-             (e101 & DMV_E101_MODE_ENABLE) ? "" : " (not used: SW1 ON)");
-fprintf (st, "  SW9    high speed           %s (no effect in the simulation)\n", (e101 & DMV_E101_HIGHSPEED) ? "OFF" : "ON");
-fprintf (st, "  SW10   interface select     %s (no effect in the simulation)\n", (e101 & DMV_E101_V35) ? "OFF" : "ON");
-fprintf (st, "switch pack E113 (M8053; E119 on the M8064), tributary address/password, SW1-SW8:");
-for (sw = 0; sw < 8; sw++)
-    fprintf (st, " %s", (dmv_e113[ln] & (1 << sw)) ? "OFF" : "ON");
-fprintf (st, "\n  value %d (%03o octal)\n", dmv_e113[ln], dmv_e113[ln]);
-if (DMV_BOOT_SUPPORTED)
+DMX_UNIT_BOARD (uptr, controller, b);
+for (n = 0; n < 2; n++) {
+    value = *dmx_pack (controller, n);
+    if ((b == &dmx_dmr) && (n == 1))        /* SW10 is SET MICRODIAG */
+        value = (value & ~DMR_E134_MICRODIAG) | (dmc_microdiag[controller->index] ? DMR_E134_MICRODIAG : 0);
+    dmx_show_pack (st, b, n, value);
+    }
+if (DMV_BOOT_SUPPORTED) {
     fprintf (st, "program requested at boot (simulator setting, not a switch): %s\n",
-             dmv_program_names[dmv_program[ln] % 3]);
-controller = (CTLR *)uptr->ctlr;
-fprintf (st, "boot: %s\n", DMV_BOOT_SUPPORTED ? ((controller && (controller->dmv_boot.state <= DMVB_START)) ?
+             dmv_program_names[*dmx_program (controller) % 3]);
+    if (b == &dmx_dmr)
+        fprintf (st, "boot ROM at %06o: %s\n", DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET),
+                 dmr_boot_rom (controller) ? "present (remote load detect starts it)" :
+                                             "none (the DMR11 does the MOP load itself)");
+    }
+fprintf (st, "boot: %s\n", DMV_BOOT_SUPPORTED ? ((controller->dmv_boot.state <= DMVB_START) ?
                                                 boot_states[controller->dmv_boot.state] : "none")
                                             : "not available (PDP-11 simulator only)");
 return SCPE_OK;
@@ -6062,10 +6479,21 @@ return SCPE_OK;
 /* Why a remote station's boot cannot work, NULL if it can */
 static const char *dmv_boot_refused (CTLR *controller)
 {
-if (!DMV_BOOT_SUPPORTED)
-    return "The DMV11 boot functions are only available in the PDP-11 simulator";
-if (!dmv_mode_from_switches(controller))
-    return "Booting needs the station mode set by the mode switches (SET DMVn MODE=...)";
+static char why[128];
+const DMX_BOARD *b = dmx_board (controller);
+
+if (!b)
+    return "The DMC11 boot functions are not simulated";
+if (!DMV_BOOT_SUPPORTED) {
+    sprintf (why, "The %s boot functions are only available in the PDP-11 simulator", b->board);
+    return why;
+    }
+if (!b->mode_enable)                        /* DMR11: point-to-point only */
+    return NULL;
+if (!dmv_mode_from_switches(controller)) {
+    sprintf (why, "Booting needs the station mode set by the mode switches (SET %sn MODE=...)", controller->device->name);
+    return why;
+    }
 if ((dmv_switch_mode(controller) & 6) == 4)
     return "A multipoint control station is not booted (MODE=HDXCONTROL or FDXCONTROL)";
 return NULL;
@@ -6105,11 +6533,13 @@ sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message %d sent%s\n", co
 
 static void dmv_boot_request_program (CTLR *controller)
 {
-/* code, device type, format version 1, program type (SET DMVn PROGRAM:
-   0 secondary loader, 1 tertiary loader, 2 system image) */
-uint8 request[4] = {DMV_MOP_REQ_PROGRAM, DMV_MOP_DEVTYPE, 1, 0};
+/* code, device type (DMV11 34, DMP11 18, DMR11 40), format version 1,
+   program type (SET PROGRAM: 0 secondary loader, 1 tertiary loader, 2
+   system image) */
+uint8 request[4] = {DMV_MOP_REQ_PROGRAM, 0, 1, 0};
 
-request[3] = dmv_program[dmv_line(controller)];
+request[1] = dmx_board(controller)->mop_devtype;
+request[3] = *dmx_program (controller);
 
 controller->dmv_boot.state = DMVB_REQUEST;
 dmv_boot_send (controller, request, sizeof(request));
@@ -6178,24 +6608,28 @@ else
     controller->dmv_boot.state = DMVB_POLLWAIT;
 }
 
-/* BOOT DMVn: the power-on boot (E101 SW4) */
+/* BOOT DMVn / BOOT DMPn: the power-on boot (DMV11 E101 SW4, DMP11 E121 SW10) */
 t_stat dmv_boot (int32 unitno, DEVICE *dptr)
 {
 CTLR *controller;
+const DMX_BOARD *b;
 const char *why;
 uint8 address = 1;                          /* point-to-point */
 
 if ((unitno < 0) || (unitno >= (int32)dptr->numunits - 2) || (unitno >= DMP_NUMDEVICE))
     return SCPE_ARG;
 controller = (CTLR *)dptr->units[unitno].ctlr;
-if (!(dmv_e101[unitno] & DMV_E101_POWERON))
-    return sim_messagef (SCPE_ARG, "The power-on boot switch (E101 SW4) is off: SET %s%d POWERONBOOT\n", dptr->name, unitno);
+b = dmx_board (controller);
+if (!b || !b->poweron)
+    return SCPE_NOFNC;
+if (!dmx_poweron (controller))
+    return sim_messagef (SCPE_ARG, "The power-on boot switch (%s) is off: SET %s%d POWERONBOOT\n", b->poweron_sw, dptr->name, unitno);
 if ((why = dmv_boot_refused (controller)))
     return sim_messagef (SCPE_ARG, "%s\n", why);
 if (!(dptr->units[unitno].flags & UNIT_ATT))
     return sim_messagef (SCPE_UNATT, "%s%d is not attached to its line\n", dptr->name, unitno);
 if (dmv_switch_mode(controller) & 4) {      /* multipoint tributary */
-    address = dmv_e113[unitno];
+    address = dmv_switch_address (controller);
     if (address == 0)
         return sim_messagef (SCPE_ARG, "A tributary boots with its address in the tributary switches: SET %s%d TRIBUTARY=n\n", dptr->name, unitno);
     }
@@ -6215,7 +6649,7 @@ uint8 address = 1;
 if (!why && (dmv_switch_mode(controller) & 4)) {
     address = dmv_switch_address(controller);
     if (address == 0) {
-        if (dmv_e101[dmv_line(controller)] & DMV_E101_POWERON)
+        if (dmx_poweron (controller))
             why = "software-assigned tributary address with the power-on boot switch on";
         else if ((address = soft_address) == 0)
             why = "no tributary address (switches 0, none established)";
@@ -6230,16 +6664,19 @@ dmv_boot_begin (controller, DMVB_HOW_INVOKE, address, TRUE);
 return TRUE;
 }
 
-/* Remote load detect is armed */
+/* Remote load detect is armed (DMV11, DMP11: its switch; DMR11: a
+   password other than 377) */
 t_bool dmv_remote_load_watch (CTLR *controller)
 {
-return DMV_BOOT_SUPPORTED && dmv_is_dmv(controller) &&
-       (dmv_e101[dmv_line(controller)] & DMV_E101_REMOTELOAD) &&
+return DMV_BOOT_SUPPORTED && dmx_remoteload(controller) &&
        !dmv_boot_active(controller) && (dmv_boot_refused(controller) == NULL) &&
        dmc_is_attached(controller->unit);
 }
 
-/* A packet from a line: one read ahead for remote load detect first */
+/* A packet from a line: one read ahead for remote load detect first.  The
+   microcode scans every message for Enter MOP Mode, also while the host
+   takes them (DMR11 guide 3.5.4.2): such a message starts the boot and is
+   not passed on. */
 void dmv_get_packet (CTLR *controller, TMLN *lp, const uint8 **pkt, uint16 *size)
 {
 if (controller->dmv_held_valid && (lp == controller->line)) {
@@ -6249,6 +6686,57 @@ if (controller->dmv_held_valid && (lp == controller->line)) {
     return;
     }
 ddcmp_tmxr_get_packet_ln (lp, pkt, size, *controller->corruption_factor);
+if (*pkt && (lp == controller->line) && dmv_remote_load_watch (controller) &&
+    dmv_enter_mop (controller, *pkt, *size)) {
+    *pkt = NULL;
+    *size = 0;
+    }
+}
+
+/* The DMR11's boot ROM (173000 + E121 offset) answers on the I/O page */
+static t_bool dmr_boot_rom (CTLR *controller)
+{
+#if DMV_BOOT_SUPPORTED
+uint32 boot = DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET);
+
+return iodispR[(boot & IOPAGEMASK) >> 1] != NULL;
+#else
+return FALSE;
+#endif
+}
+
+/* DMR11 remote load detect (EK-DMR11-UG-002 3.5.4.2): the DMR11 writes
+   173000 + the bootstrap offset (E121 SW1-8) into the power-fail vector at
+   24 and 0 into 26, and pulls AC LO; the CPU's power-up recovery runs the
+   primary MOP program of the boot ROM there (M9312 with the DECnet boot
+   ROM, M9301-YJ: ATTACH it with the ROM device), which loads the system
+   through the DMR11 in maintenance mode.  SIMH has no such ROM built in:
+   when nothing answers at that address the DMR11 does the ROM's part
+   itself with the DMV11 boot engine (Request Program, device type 40). */
+static void dmr_remote_load (CTLR *controller)
+{
+#if DMV_BOOT_SUPPORTED
+uint16 vector[2];
+
+if (dmr_boot_rom (controller)) {
+    vector[0] = (uint16)(DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET));
+    vector[1] = 0;
+    sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: power-up recovery into the boot ROM at %06o\n",
+              controller->device->name, controller->index, vector[0]);
+    controller->dmv_keep_line = TRUE;       /* the ROM loads over this line */
+    dmc_process_master_clear (controller);  /* the DMR11 stops what it did */
+    controller->dmv_keep_line = FALSE;
+    dmc_set_modem_dtr (controller);
+    Map_WriteW (VEC_PWRFL, sizeof(vector), vector);
+    MMR0 = 0;                               /* power-up: memory management off */
+    MMR3 = 0;
+    trap_req |= TRAP_PWRFL;
+    return;
+    }
+sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: no boot ROM at %06o, the DMR11 loads the system itself\n",
+          controller->device->name, controller->index, DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET));
+#endif
+dmv_boot_begin (controller, DMVB_HOW_REMOTE, 1, TRUE);
 }
 
 /* An Enter MOP Mode (Boot) message for this station with the right
@@ -6282,19 +6770,33 @@ if (dmv_switch_mode(controller) & 4) {      /* tributary: its own address only *
         return FALSE;
         }
     }
-/* The verification (4 bytes, MOP 2.1, or 8, MOP 3) must equal the
-   tributary address/password switches. */
-vlen = (len >= 9) ? 8 : 4;
-match = (mop[1] == dmv_switch_address(controller));
-for (i = 2; i <= vlen; i++)
-    if (mop[i] != 0)
-        match = FALSE;
+if (dmc_is_dmc(controller)) {
+    /* DMR11: four password bytes, all equal to the password switches (E134) */
+    uint8 pw = (uint8)(*dmx_pack (controller, 1) & DMR_E134_M_PASSWORD);
+
+    match = TRUE;
+    for (i = 1; i <= 4; i++)
+        if (mop[i] != pw)
+            match = FALSE;
+    }
+else {
+    /* DMV11, DMP11: the verification (4 bytes, MOP 2.1, or 8, MOP 3) must
+       equal the tributary address/password switches. */
+    vlen = (len >= 9) ? 8 : 4;
+    match = (mop[1] == dmv_switch_address(controller));
+    for (i = 2; i <= vlen; i++)
+        if (mop[i] != 0)
+            match = FALSE;
+    }
 if (!match) {
     sim_debug(DBG_INF, controller->device, "%s%d: Enter MOP Mode with a wrong password ignored\n",
               controller->device->name, controller->index);
     return FALSE;
     }
-dmv_boot_begin (controller, DMVB_HOW_REMOTE, address, TRUE);
+if (dmc_is_dmc(controller))
+    dmr_remote_load (controller);
+else
+    dmv_boot_begin (controller, DMVB_HOW_REMOTE, address, TRUE);
 return TRUE;
 }
 
@@ -6700,6 +7202,8 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
         controller->unit->ctlr = (void *)controller;
         dmc_microdiag[i] = TRUE;
         dmc_corruption[i] = 0;
+        dmr_e121[i] = 0;                        /* DMR11: offset 000 */
+        dmr_e134[i] = DMR_E134_DEFAULT;         /* password 377: no remote load detect */
         }
     tmxr_set_modem_control_passthru (&dmc_desc);   /* We always want Modem Control */
     dmc_units[dmc_dev.numunits-2] = dmc_poll_unit_template;
@@ -6718,6 +7222,8 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
         dmp_dev.units[i] = dmc_unit_template;
         controller->unit->ctlr = (void *)controller;
         dmp_corruption[i] = 0;
+        dmp_e121[i] = DMP_E121_DEFAULT;         /* DMP11: no power-on boot (SW10 OFF) */
+        dmp_e134[i] = 0;
         }
     tmxr_set_modem_control_passthru (&dmp_desc);   /* We always want Modem Control */
     dmp_units[dmp_dev.numunits-2] = dmc_poll_unit_template;
@@ -6727,6 +7233,20 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
     dmp_desc.notelnet = TRUE;                      /* We always want raw tcp socket */
     dmp_desc.dptr = &dmp_dev;                      /* Connect appropriate device */
     dmp_desc.uptr = dmp_units+dmp_desc.lines;      /* Identify polling unit */
+    }
+
+/* Known issue 90: the DMP (Unibus) and DMV (Qbus) share their units, and
+   SCP named a unit after the first device that has it (SHOW DMV0 printed
+   DMP0).  The units take the device in use, and its name. */
+    {
+    DEVICE *dmx = (UNIBUS) ? &dmp_dev : &dmv_dev;
+    char uname[CBUFSIZE];
+
+    for (i = 0; i < DMP_NUMDEVICE + 2; i++) {
+        dmp_units[i].dptr = dmx;
+        sprintf (uname, "%s%d", sim_dname (dmx), (int)i);
+        sim_set_uname (&dmp_units[i], uname);
+        }
     }
 
 /* The DMP (Unibus) and DMV (Qbus) share their units and so one DIB.  Size
@@ -6783,7 +7303,7 @@ if (!(dptr->flags & DEV_DIS)) {
             dmc_clroutint(controller);
             controller->dmc_wr_delay = 0;
             dmv_boot_cancel(controller);        /* DMV11: a reset ends a boot */
-            if (dmv_is_dmv(controller))         /* and an invoke primary MOP request */
+            if (!dmc_is_dmc(controller))        /* and an invoke primary MOP request (DMV11, DMP11) */
                 dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMV_SEL0_M_PMOP, DBG_RGC);
             for (j=0; j<dptr->numunits-1; j++) {
                 sim_cancel (&dptr->units[j]); /* stop poll */
