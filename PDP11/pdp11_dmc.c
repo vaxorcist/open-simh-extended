@@ -3286,8 +3286,11 @@ if (!dmc_is_dmc(controller)) {
         dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMV_SEL0_M_PMOP, DBG_RGC);
     }
 dmc_clear_master_clear(controller);
-if (!dmv_invoke && !controller->dmv_keep_line)  /* DMV11 boot: the line stays up */
-    dmc_clr_modem_dtr(controller);
+/* A master clear keeps DTR (known issue 103): the DMC11 microprocessor
+   keeps Data Terminal Ready on, drops it only after Data Set Ready goes off
+   or a procedure error, and asserts it again when the device is master
+   cleared (EK-DMCMP-MM-001 3.4.14).  Dropping it here closed the TCP line
+   at every master clear, also at the bus INIT of a RESET instruction. */
 controller->link.state = Halt;
 controller->state = Initialised;
 while ((control = controller->control_out)) {
@@ -3341,12 +3344,13 @@ dmc_buffer_queue_init_all(controller);
 controller->transfer_state = Idle;
 if (dmc_is_attached(controller->unit))
     dmc_set_run(controller);
-if (dmv_invoke && !dmv_boot_invoke(controller, dmv_soft_address))
-    dmc_clr_modem_dtr(controller);          /* no boot: an ordinary master clear */
-/* DMV11 with remote load detect: DTR comes back at once, the DMV11 keeps
-   scanning the line for an Enter MOP Mode message (EK-DMV11-TM-001
-   Appendix D, modem control) */
-if (dmv_remote_load_watch(controller))
+if (dmv_invoke)                             /* no boot: an ordinary master clear */
+    dmv_boot_invoke(controller, dmv_soft_address);
+/* DTR is asserted again at master clear (known issue 103); with remote
+   load detect the board then scans the line for an Enter MOP Mode message
+   (EK-DMV11-TM-001 Appendix D).  A multipoint hub's shared line is left to
+   its sessions. */
+if (!controller->dmp_hub)
     dmc_set_modem_dtr(controller);
 }
 
@@ -5519,12 +5523,17 @@ return (controller->state == Halted);
 }
 t_bool ddcmp_UserStartup          (CTLR *controller)
 {
-/* DMP/DMV: the protocol is started only by control request key 003 (START),
-   which sets the controller Running.  DTR alone is not enough: the host can
+/* The protocol is started only by the host: DMP/DMV control request key
+   003 (START), DMC/DMR CONTROL IN or the first transmit buffer, which set
+   the controller Running (DTR alone is not a start since a master clear
+   keeps DTR, known issue 103).  DMP/DMV:  DTR alone is not enough: the host can
    raise DTR with a modem write while the tributary is still halted, and a
    halted link that also counted as "starting" would be halted and restarted
    by the same scan over and over. */
-if (!dmc_is_dmc(controller) && (controller->state != Running))
+if (controller->state != Running)           /* every board: the host started the line */
+    return FALSE;
+/* A maintenance mode request is not a DDCMP start-up (rule 2, not rule 1) */
+if (controller->link.ScanningEvents & DDCMP_EVENT_MAINTMODE)
     return FALSE;
 if (dmp_hub_mp(controller))                 /* hub: no modem on the drop multiplexer */
     return TRUE;
