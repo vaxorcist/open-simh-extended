@@ -1,0 +1,188 @@
+From f261469a7dbee871efdca255507be284e3f984b4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 22 Nov 2026 08:28:01 +0100
+Subject: [PATCH] PDP-11: HELP BOOT; DMV11: HELP DMV explains every SET DMVn
+ MODE
+
+- HELP BOOT in the PDP-11 simulator (SCP passes the topic to the CPU
+  help routine, which printed the whole CPU help): the BOOT syntax, what
+  a device bootstrap does, the Unibus and Qbus CPU types (from cpu_tab),
+  and a table built at run time of every device with a bootstrap: Unibus,
+  Qbus, Qbus with at most 256 KB, Massbus (RH), and whether it can be
+  booted now ("yes", "bus", "dis").  The BOOT command's own help lines
+  give the two forms.
+- HELP DMV, Switches: a table of all MODE= values with E101 SW1/SW6-8,
+  the mode code (EK-DMV11-TM-001 Table 3-4) and the station type; what
+  point-to-point, DMC11 compatible, control station, tributary and
+  half/full duplex mean; how the simulation treats them (the TCP line is
+  always full duplex); the VMS line protocols; when the switches are read
+  and what happens with a different mode definition.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_cpu.c | 65 ++++++++++++++++++++++++++++++++++++++++++++++-
+ PDP11/pdp11_dmc.c | 51 +++++++++++++++++++++++++++++--------
+ 2 files changed, 105 insertions(+), 11 deletions(-)
+
+diff --git a/PDP11/pdp11_cpu.c b/PDP11/pdp11_cpu.c
+index 85f08c35..5241fa6c 100644
+--- a/PDP11/pdp11_cpu.c
++++ b/PDP11/pdp11_cpu.c
+@@ -345,6 +345,7 @@ t_stat cpu_set_hist (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+ t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ t_stat cpu_show_virt (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ t_stat cpu_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
++t_stat cpu_boot_help (FILE *st);
+ const char *cpu_description (DEVICE *dptr);
+ int32 GeteaB (int32 spec);
+ int32 GeteaW (int32 spec);
+@@ -3405,7 +3406,8 @@ return run_cmd (flag, "CPU");
+ 
+ CTAB pdp11_cmd[] = {
+     { "BOOT", &pdp11_boot, RU_BOOT,
+-      "bo{ot} {unit}            boot simulator\n", NULL, &run_cmd_message },
++      "bo{ot}                   boot from the boot ROM (the same as BOOT CPU)\n"
++      "bo{ot} <dev>{n}          boot from unit n of device <dev> (default unit 0)\n", NULL, &run_cmd_message },
+     { NULL }
+     };
+ 
+@@ -3689,10 +3691,71 @@ const char *cpu_description (DEVICE *dptr)
+ return "PDP-11 CPU";
+ }
+ 
++/* HELP BOOT: SCP calls the CPU device's help routine with the topic
++   "BOOT" (and prints the BOOT command's help string afterwards) */
++
++t_stat cpu_boot_help (FILE *st)
++{
++int i;
++DEVICE *dptr;
++
++fprintf (st, "Booting the PDP-11 simulator\n\n");
++fprintf (st, "    BOOT <dev>{n}     boots from unit n (default 0) of device <dev>, e.g.\n");
++fprintf (st, "                      BOOT RQ0, BOOT RL1, BOOT TQ0, BOOT XQ\n");
++fprintf (st, "    BOOT, BOOT CPU    runs the boot ROM selected with the ROM device (if any)\n\n");
++fprintf (st, "BOOT resets the simulator, puts the device's bootstrap (a copy of DEC's\n");
++fprintf (st, "boot ROM code for it) into memory with the unit number and the controller\n");
++fprintf (st, "address filled in, and starts it at priority 7.  The device must be\n");
++fprintf (st, "enabled (SET <dev> ENABLED) and the unit attached to an image; the\n");
++fprintf (st, "bootstrap then reads the boot block of the medium.\n\n");
++fprintf (st, "Which devices can be booted depends on the bus of the CPU type (SET CPU):\n");
++fprintf (st, "    Unibus:");
++for (i = 0; i < MOD_MAX; i++)
++    if (cpu_tab[i].std & BUS_U)
++        fprintf (st, " %s", cpu_tab[i].name);
++fprintf (st, "\n    Qbus:  ");
++for (i = 0; i < MOD_MAX; i++)
++    if (!(cpu_tab[i].std & BUS_U))
++        fprintf (st, " %s", cpu_tab[i].name);
++fprintf (st, "\nA device marked for the Qbus <=256K only works on a Qbus CPU with at\n");
++fprintf (st, "most 256 KB of memory (SET CPU 256K).\n\n");
++fprintf (st, "    Device  Unibus Qbus Qbus   Massbus  Now   Description\n");
++fprintf (st, "                       <=256K\n");
++fprintf (st, "    ==================================================================\n");
++for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
++    t_bool ub, qb, q18, fits;
++
++    if ((dptr->boot == NULL) || (dptr == &cpu_dev))
++        continue;
++    ub  = (dptr->flags & (DEV_UBUS | DEV_Q18)) != 0;
++    qb  = (dptr->flags & DEV_QBUS) != 0;
++    q18 = (dptr->flags & (DEV_QBUS | DEV_Q18)) != 0;
++    fits = (UNIBUS && ub) || (!UNIBUS && (qb || (q18 && (MEMSIZE <= UNIMEMSIZE))));
++    fprintf (st, "    %-7s %-6s %-4s %-6s %-8s %-5s %s\n", dptr->name,
++             ub ? "yes" : "-", qb ? "yes" : "-", q18 ? "yes" : "-",
++             (dptr->flags & DEV_MBUS) ? "RH" : "-",
++             !fits ? "bus" : ((dptr->flags & DEV_DIS) ? "dis" : "yes"),
++             dptr->description ? dptr->description (dptr) : "");
++    }
++fprintf (st, "\n");
++fprintf (st, "Now: \"yes\" if the device can be booted with the current CPU type, memory\n");
++fprintf (st, "size and settings; \"bus\" if it does not work on the current bus or\n");
++fprintf (st, "memory size; \"dis\" if it fits but is disabled (SET <dev> ENABLED).\n");
++fprintf (st, "Devices marked RH are Massbus drives on an RH11 (Unibus) or RH70 (11/70)\n");
++fprintf (st, "controller; SIMH also offers them on the Qbus, which DEC's own Qbus\n");
++fprintf (st, "systems did not have.  ROM selects the boot ROM that BOOT CPU runs\n");
++fprintf (st, "(HELP ROM).  BOOT DMVn is the DMV11's primary MOP boot\n");
++fprintf (st, "from a DECnet load host and needs its switches (HELP DMV).  For the\n");
++fprintf (st, "details of a device's bootstrap see HELP <dev>.\n\n");
++return SCPE_OK;
++}
++
+ t_stat cpu_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
+ {
+ int i;
+ 
++if ((cptr != NULL) && (strcmp (cptr, "BOOT") == 0))     /* HELP BOOT */
++    return cpu_boot_help (st);
+ fprintf (st, "The %s (%s) device help\n\n", dptr->description (dptr), dptr->name);
+ fprintf (st, "The CPU options include CPU type, CPU instruction set options for the\n");
+ fprintf (st, "specified type, and the size of main memory.\n\n");
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index fc13eafa..17d129cb 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -2269,18 +2269,49 @@ const char helpDmvSet[] =
+     "\n"
+     "+sim> SET %U MODE=mode\n"
+     "\n"
+-    " The mode switches (E101 SW1 and SW6-8).  MODE=SOFTWARE (SW1 ON) lets\n"
+-    " the operating system set the mode with a mode definition command.  Any\n"
+-    " other mode sets SW1 OFF and SW6-8 as in the manual's Table 4-5:\n"
++    " The mode switches (E101 SW1 and SW6-8) decide who sets the line's\n"
++    " station type: the operating system (MODE=SOFTWARE, the default) or the\n"
++    " switches (any other mode).  The modes, with E101 SW1/SW6/SW7/SW8 and\n"
++    " the mode code the software would give in its mode definition command:\n"
+     "\n"
+-    "++HDXDMC, FDXDMC      point-to-point, DMC11 line compatible\n"
+-    "++HDXPOINT, FDXPOINT  point-to-point\n"
+-    "++HDXCONTROL, FDXCONTROL      multipoint control station\n"
+-    "++HDXTRIBUTARY, FDXTRIBUTARY  multipoint tributary\n"
++    "++Mode          SW1 6 7 8  Code  Station\n"
++    "++SOFTWARE      ON  - - -   -    set by the operating system (default)\n"
++    "++HDXDMC        OFF 0 0 0   0    point-to-point, half duplex, DMC11 compatible\n"
++    "++FDXDMC        OFF 1 0 0   1    point-to-point, full duplex, DMC11 compatible\n"
++    "++HDXPOINT      OFF 0 1 0   2    point-to-point, half duplex\n"
++    "++FDXPOINT      OFF 1 1 0   3    point-to-point, full duplex\n"
++    "++HDXCONTROL    OFF 0 0 1   4    multipoint control station, half duplex\n"
++    "++FDXCONTROL    OFF 1 0 1   5    multipoint control station, full duplex\n"
++    "++HDXTRIBUTARY  OFF 0 1 1   6    multipoint tributary, half duplex\n"
++    "++FDXTRIBUTARY  OFF 1 1 1   7    multipoint tributary, full duplex\n"
+     "\n"
+-    " The switches are read at every master clear.  A mode definition command\n"
+-    " for another mode then gets error 104, unless it is given with the\n"
+-    " diagnostic mode bit (BSEL1 bit 3) set.\n"
++    " (1 = switch OFF, 0 = ON; Table 2-6, Table 4-5 and EK-DMV11-TM-001\n"
++    " Table 3-4.)  What the modes mean:\n"
++    "\n"
++    "++Point-to-point: one line between two stations (DMV11, DMP11, DMC11,\n"
++    "++DMR11, DMF32 or DMB32 sync line), DDCMP address 1.  The DMC11\n"
++    "++compatible modes are for a partner that is a DMC11 or DMR11.\n"
++    "++Control station: the multipoint master; it polls its tributaries,\n"
++    "++each with its own tributary address (ESTABLISH by the software).\n"
++    "++Tributary: a station on a multipoint line; it answers to its\n"
++    "++tributary address (SET %U TRIBUTARY=n, or set by the software).\n"
++    "++Half/full duplex: whether both ends may send at the same time.\n"
++    "\n"
++    " In the simulation the line is a TCP connection, which is always full\n"
++    " duplex: half and full duplex behave the same, and the DMC11 compatible\n"
++    " modes work like the other point-to-point modes; the mode code is still\n"
++    " checked against the software's mode definition.  In VMS the DECnet line\n"
++    " protocol selects the mode: DDCMP POINT (code 3 seen with VMS V4.7),\n"
++    " DDCMP CONTROL (5), DDCMP TRIBUTARY (tributary).  A switch mode must\n"
++    " match it.\n"
++    "\n"
++    " The switches are read at every master clear (RESET, BOOT, and each master\n"
++    " clear by the software), so a SET %U MODE while the system runs takes\n"
++    " effect at the next one.  With a switch mode, a mode definition command\n"
++    " for another mode gets error 104 (procedural error), unless it is given\n"
++    " with the diagnostic mode bit (BSEL1 bit 3) set.  Booting (PDP-11) needs\n"
++    " a switch mode other than a control station.  SHOW %U SWITCHES shows the\n"
++    " setting.\n"
+     "\n"
+     "+sim> SET %U TRIBUTARY=n\n"
+     "\n"
+-- 
+2.43.0
+
