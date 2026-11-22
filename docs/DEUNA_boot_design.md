@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DEUNA_boot_design.md  v2, 2026-11-22 (v2: implemented in patch 23 (branch deuna-boot), tests B2-B8, DEC's TERUNA runs, known issues 111-114; v1: facts from the DEUNA TM, the DELUA UG and DEC's DECnet-11M V4.2 UNA loaders; design of the BOOT port command for SIMH's XU device; known issue 109) -->
+<!-- open-simh-extended/docs/DEUNA_boot_design.md  v3, 2026-11-22 (v3: VMS V4.7 as the load host (B9): loaders PASS, the system load needs a real RSX-11S image; v2: implemented in patch 23 (branch deuna-boot), tests B2-B8, DEC's TERUNA runs, known issues 111-114; v1: facts from the DEUNA TM, the DELUA UG and DEC's DECnet-11M V4.2 UNA loaders; design of the BOOT port command for SIMH's XU device; known issue 109) -->
 # DEUNA/DELUA BOOT port command for the SIMH PDP-11 (known issue 109)
 
 Ulli's decision (2026-11-22): implement the BOOT port command, option 1:
@@ -161,3 +161,25 @@ Found on the way with DEC's TERUNA, fixed in the same patch: STOP/START
   same with the build before patch 23: PASS with the same events (one
   "circuit down, circuit fault" while DECnet starts the line, one at the
   test's circuit off).
+
+## 6. VMS V4.7 as the load host (B9, `tests/deuna_boot/vmshost.sh`)
+
+- VAX-11/780 with a DEUNA, NCP: circuit UNA-0 with SERVICE ENABLED; node
+  PDPNET with SERVICE CIRCUIT UNA-0, HARDWARE ADDRESS 08-00-2B-12-34-56,
+  SERVICE DEVICE UNA, CPU PDP11, SECONDARY LOADER SECUNA.SYS, TERTIARY
+  LOADER TERUNA.SYS, LOAD FILE.
+- VMS answers the board's Request Program from the load assistant
+  multicast and loads SECUNA and TERUNA ("Load, Successful" in OPCOM). It
+  takes the loaders as RSX task images (label: base address; the image
+  from block 2) and starts them at their base address.
+- TERUNA asks VMS for the system; VMS loads the LOAD FILE, but as an
+  RSX-11S system image: it reads the downline load parameters that
+  DECnet-RSX's VNP stores in the system image (VMS message documentation:
+  "the RSX-11 file image of the system", remedy "use VNP"). A test file
+  without that structure was loaded as zeros from 0 to 173777 (with a task
+  label) or refused with %RMS-E-EOF (without one). The SIMH side worked in
+  every run: every Memory Load reached TERUNA through the DEUNA port and
+  was acknowledged.
+- Needed for a complete VMS test: a real RSX-11S system image (RSX-11S
+  SYSGEN, VMR, VNP).
+
