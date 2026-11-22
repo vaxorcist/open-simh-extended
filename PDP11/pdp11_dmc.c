@@ -7369,15 +7369,18 @@ if (!(dptr->flags & DEV_DIS)) {
             dmv_boot_cancel(controller);        /* DMV11: a reset ends a boot */
             if (!dmc_is_dmc(controller))        /* and an invoke primary MOP request (DMV11, DMP11) */
                 dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMV_SEL0_M_PMOP, DBG_RGC);
-            for (j=0; j<dptr->numunits-1; j++) {
-                sim_cancel (&dptr->units[j]); /* stop poll */
+            for (j=0; j<dptr->numunits-2; j++) {
+                sim_cancel (&dptr->units[j]); /* stop the line units */
                 if (dptr->units[j].flags & UNIT_ATT)
                     ++attached;
                 }
             dmc_process_master_clear(controller);
             }
         }
-    if (attached)
+    /* The connection poll keeps its time: restarting it at every reset
+       starved it while a program (the M9312 DECnet boot ROM) executes
+       RESET more often than every DMC_CONNECT_POLL seconds (known issue 102) */
+    if (attached && !sim_is_active (dptr->units+(dptr->numunits-2)))
         sim_activate_after (dptr->units+(dptr->numunits-2), DMC_CONNECT_POLL*1000000);/* start poll */
     }
 
@@ -7506,9 +7509,12 @@ return "DMC11 Synchronous network controller";
 #endif
 }
 
+/* The DMP and DMV devices share their units, but each names its own board
+   (known issue 101: by the bus, HELP BOOT on a Qbus CPU called the DMP
+   device a DMV11) */
 const char *dmp_description (DEVICE *dptr)
 {
-return (UNIBUS) ? "DMP11 Synchronous network controller"
-                : "DMV11 Synchronous network controller";
+return (dptr == &dmv_dev) ? "DMV11 Synchronous network controller"
+                          : "DMP11 Synchronous network controller";
 }
 

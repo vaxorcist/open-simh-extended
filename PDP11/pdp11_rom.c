@@ -203,14 +203,31 @@ fprintf (st, "ROM, Read-Only Memory\n\n");
 fprintf (st, "The ROM device can be used to add ROM modules to the I/O page.\n");
 fprintf (st, "First the ROM unit ADDRESS has to be set, and then the ATTACH command\n");
 fprintf (st, "can be used to fill the ROM with contents.  The BOOT command is supported\n");
-fprintf (st, "for starting from the ROM.\n");
+fprintf (st, "for starting from the ROM.\n\n");
+fprintf (st, "BOOT ROMn starts the CPU at the first address of ROMn; BOOT CPU (and\n");
+fprintf (st, "BOOT alone) starts ROM0.  SIMH comes with no boot ROM images: the\n");
+fprintf (st, "images of DEC's boot ROMs (M9312, M9301, BM873) must be supplied.\n\n");
+fprintf (st, "Image format: a flat binary file of 16-bit PDP-11 words, low byte\n");
+fprintf (st, "first, as the words are in PDP-11 memory; the first word appears at the\n");
+fprintf (st, "unit's ADDRESS and the file size is the size of the ROM.  Images that\n");
+fprintf (st, "hold the raw contents of the 4-bit PROM chips (for example Intel HEX\n");
+fprintf (st, "files for a PROM programmer) must be converted first.\n\n");
+fprintf (st, "Example: the M9312 DECnet boot ROMs for the DMC11/DMR11 ('XM', DEC\n");
+fprintf (st, "parts 23-862A9, 23-863A9, 23-864A9 in sockets 1-3, 173000-173577) as one\n");
+fprintf (st, "image; a remote load detect of the DMR11 enters it at 173004 (unit 0):\n\n");
+fprintf (st, "    sim> SET ROM0 ADDRESS=17773000\n");
+fprintf (st, "    sim> ATTACH ROM0 m9312_xm.bin\n");
+fprintf (st, "    sim> SET DMC0 TYPE=DMR\n");
+fprintf (st, "    sim> SET DMC0 BOOTOFFSET=4\n");
+fprintf (st, "    sim> SET DMC0 PASSWORD=123\n");
 return SCPE_OK;
 }
 
 t_stat rom_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 fprintf (st, "The ATTACH command is used to specify the contents of a ROM unit.\n");
-fprintf (st, "Any file can be used.  The file contents must be a flat binary image.\n");
+fprintf (st, "Any file can be used.  The file contents must be a flat binary image\n");
+fprintf (st, "of 16-bit words, low byte first; the file size is the ROM size.\n");
 fprintf (st, "The unit ADDRESS must be set first.\n");
 return SCPE_OK;
 }
