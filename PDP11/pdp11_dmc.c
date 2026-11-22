@@ -1497,6 +1497,20 @@ uint8 dmr_program[DMC_NUMDEVICE];           /* as dmv_program, for the DMR11's o
 #define DMR_BOOT_ROM         0173000 /* the boot ROM page the bootstrap offset points into */
 #define DMR_MOP_DEVTYPE      40     /* MOP device type of the DMR11 */
 
+/* DMC11 line unit (M8201/M8202) switch packs no. 2 and no. 3, one pair per
+   line of the DMC device whose TYPE is DMC, kept as on the board (bit n-1
+   set = switch n OFF).  Pack 2 is line unit register 15 (E87 on the M8201,
+   E90 on the M8202), pack 3 register 16 (E88 / E91) (EK-DMCLU-OP-001); the
+   microcode reads 15 as the remote load detect password and 16 as the boot
+   ROM offset (the DMC11 diagnostics call them the line number switch and
+   the BM873 address; EK-DMCMP-MM-001 3.4.11: an 8-bit WORD offset), the
+   same registers as the DMR11's E134 and E121.  Shipped all OFF (377):
+   password 377, no remote load detect. */
+uint16 dmc_sp2[DMC_NUMDEVICE];              /* register 15: password */
+uint16 dmc_sp3[DMC_NUMDEVICE];              /* register 16: boot ROM word offset */
+#define DMC_SP_DEFAULT       0377
+#define DMC_MOP_DEVTYPE      12     /* MOP device type of the DMC11 */
+
 /* SET {NO}POWERONBOOT / {NO}REMOTELOAD of the DMP and DMV devices (MTAB match) */
 #define DMX_SW_POWERON       1
 #define DMX_SW_REMOTELOAD    2
@@ -1566,7 +1580,9 @@ REG dmc_reg[] = {
     { BRDATAD (MODEM,            dmc_modem, DEV_RDX,  8, DMC_NUMDEVICE,         "modem control bits") },
     { BRDATAD (E121,              dmr_e121, DEV_RDX, 10, DMC_NUMDEVICE,         "DMR11 switch pack E121 (bit n-1 = switch n OFF)") },
     { BRDATAD (E134,              dmr_e134, DEV_RDX, 10, DMC_NUMDEVICE,         "DMR11 switch pack E134: password, auto answer") },
-    { BRDATAD (PROGRAM,        dmr_program, DEV_RDX,  8, DMC_NUMDEVICE,         "MOP program type of the DMR11's own load (0-2)") },
+    { BRDATAD (PROGRAM,        dmr_program, DEV_RDX,  8, DMC_NUMDEVICE,         "MOP program type of the DMC11/DMR11's own load (0-2)") },
+    { BRDATAD (SP2,                dmc_sp2, DEV_RDX,  8, DMC_NUMDEVICE,         "DMC11 switch pack 2 (register 15): password") },
+    { BRDATAD (SP3,                dmc_sp3, DEV_RDX,  8, DMC_NUMDEVICE,         "DMC11 switch pack 3 (register 16): boot ROM word offset") },
     { NULL }  };
 
 REG dmp_reg[] = {
@@ -1668,16 +1684,16 @@ MTAB dmc_mod[] = {
         &set_vec,  &show_vec,  NULL, "Interrupt vector" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "SYNC", NULL,
       NULL, &tmxr_show_sync, NULL, "Display attachable DDCMP synchronous links" },
-    /* DMR11 (TYPE=DMR) switch packs E121 and E134 and its remote load detect
-       boot; the DMC11's line unit switches are not simulated yet */
+    /* DMC11 (line unit switch packs 2 and 3) and DMR11 (E121 and E134):
+       the switches of the remote load detect boot */
     { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "BOOTOFFSET", "BOOTOFFSET=n (octal 0-377)",
-        &dmr_set_switchbyte, &dmr_show_switchbyte, NULL, "DMR11 bootstrap offset, E121 SW1-8: boot ROM at 173000+n" },
+        &dmr_set_switchbyte, &dmr_show_switchbyte, NULL, "Boot ROM offset (DMC11 pack 3: words, DMR11 E121: bytes from 173000)" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 1, "PASSWORD", "PASSWORD=n (octal 0-377; 377: no remote load detect)",
-        &dmr_set_switchbyte, &dmr_show_switchbyte, NULL, "DMR11 remote load detect password, E134 SW1-8" },
+        &dmr_set_switchbyte, &dmr_show_switchbyte, NULL, "Remote load detect password (DMC11 pack 2, DMR11 E134)" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "PROGRAM", "PROGRAM={SECONDARY|TERTIARY|SYSTEM}",
-        &dmv_set_program, &dmv_show_program, NULL, "MOP program type the DMR11's own load requests (not a switch)" },
+        &dmv_set_program, &dmv_show_program, NULL, "MOP program type the board's own load requests (not a switch)" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "SWITCHES", NULL,
-        NULL, &dmv_show_switches, NULL, "Display the DMR11 switch packs E121 and E134 and the boot state" },
+        NULL, &dmv_show_switches, NULL, "Display the switch packs and the boot state" },
     { 0 } };
 
 extern DEVICE dmp_dev;
@@ -2428,27 +2444,31 @@ const char helpDmvSet[] =
 /* DMC device: the DMR11 switch packs */
 const char helpDmrSet[] =
 #if !defined (VM_PDP10)
-    "3 DMR11 switches\n"
-    " A line of TYPE DMR has the DMR11's switch packs E121 and E134 on its\n"
-    " M8203 line unit.  The switches of the remote load detect boot are set\n"
-    " with these commands (PDP-11 simulator only, see Booting):\n"
+    "3 Boot switches\n"
+    " A DMC11 (TYPE DMC) has the switch packs no. 2 (register 15) and no. 3\n"
+    " (register 16) on its line unit, a DMR11 (TYPE DMR) the packs E134 and\n"
+    " E121 on its M8203 line unit.  On both boards they hold the password and\n"
+    " the boot ROM offset of the remote load detect boot, set with these\n"
+    " commands (PDP-11 simulator only, see Booting):\n"
     "\n"
     "+sim> SET %U PASSWORD=n\n"
     "+sim> SET %U BOOTOFFSET=n\n"
     "+sim> SET %U PROGRAM={SECONDARY|TERTIARY|SYSTEM}\n"
     "\n"
-    " PASSWORD is E134 SW1-8, octal 0-377: 377 (the default, all switches\n"
-    " OFF) turns remote load detect off.  BOOTOFFSET is E121 SW1-8, octal\n"
-    " 0-377 (default 000): the boot ROM address is 173000 plus the offset.\n"
-    " PROGRAM is a simulator setting for the DMR11's own load (see Booting).\n"
-    " E121 SW9 (DMC11 line compatible), E121 SW10 (line speed) and E134 SW9\n"
-    " (auto answer) have no effect in the simulation.  E134 SW10 is the\n"
-    " microdiagnostics switch: SET %U MICRODIAG=ENABLE is the switch OFF.\n"
+    " Both values are octal 0-377.  PASSWORD (DMC11 pack 2, DMR11 E134 SW1-8)\n"
+    " 377, all switches OFF, turns remote load detect off; it is the default.\n"
+    " BOOTOFFSET (DMC11 pack 3, DMR11 E121 SW1-8) points into the boot ROM\n"
+    " page: the DMR11's boot address is 173000 plus the offset in bytes\n"
+    " (default 000), the DMC11's 173000 plus the offset in words (default\n"
+    " 377, as shipped).  PROGRAM is a simulator setting for the board's own\n"
+    " load (see Booting).  The DMR11's E121 SW9 (DMC11 line compatible),\n"
+    " E121 SW10 (line speed) and E134 SW9 (auto answer) have no effect in the\n"
+    " simulation; E134 SW10 is the microdiagnostics switch: SET %U\n"
+    " MICRODIAG=ENABLE is the switch OFF.\n"
     "\n"
     "+sim> SHOW %U SWITCHES\n"
     "\n"
-    " displays both switch packs as they would be set on the board.  The\n"
-    " DMC11's line unit switches are not simulated.\n"
+    " displays both switch packs as they would be set on the board.\n"
 #endif
     "";
 const char helpMid[] =
@@ -2581,35 +2601,36 @@ const char helpDmvBoot[] =
 const char helpDmrBoot[] =
 #if !defined (VM_PDP10)
     "1 Booting\n"
-    " In the PDP-11 simulator a DMR11 (TYPE DMR) can boot its host by remote\n"
+    " In the PDP-11 simulator a DMC11 or DMR11 can boot its host by remote\n"
     " load detect.  With a password other than 377 (SET %U PASSWORD=n) the\n"
-    " DMR11 watches its line, also while the operating system runs or after\n"
+    " board watches its line, also while the operating system runs or after\n"
     " it has stopped.  An Enter MOP Mode (MOP Boot) message whose four\n"
-    " password bytes all equal the password switches makes it write 173000\n"
-    " plus the bootstrap offset (SET %U BOOTOFFSET=n) into the power-fail\n"
-    " vector at 24 and 0 into 26, and restart the CPU through that vector as\n"
-    " after a power failure.\n"
+    " password bytes all equal the password switches makes it write the boot\n"
+    " address (173000 plus the offset of SET %U BOOTOFFSET=n: bytes on the\n"
+    " DMR11, words on the DMC11) into the power-fail vector at 24 and 0 into\n"
+    " 26, and restart the CPU through that vector as after a power failure.\n"
     "\n"
     " On a real system a boot ROM answers at that address (an M9312 with the\n"
-    " DECnet boot ROM, or an M9301-YJ: its offsets are 356 for unit 0 and 374\n"
-    " for unit 1 without CPU diagnostics), and its primary MOP program loads\n"
-    " the system through the DMR11.  A ROM image can be attached with the ROM\n"
-    " device:\n"
+    " DECnet boot ROM, an M9301-YJ or a BM873: for the DMR11 and an M9301-YJ\n"
+    " the offsets are 356 for unit 0 and 374 for unit 1 without CPU\n"
+    " diagnostics), and its primary MOP program loads the system through the\n"
+    " board.  A ROM image can be attached with the ROM device:\n"
     "\n"
     "+sim> SET ROM0 ADDRESS=17773000\n"
     "+sim> ATTACH ROM0 rom-image-file\n"
     "\n"
     " SIMH has no DECnet boot ROM built in: when nothing answers at the boot\n"
-    " address, the DMR11 does the ROM's part itself.  It takes the CPU over\n"
-    " as a DMV11 does (HELP DMV BOOTING): a waiting routine at 40, a Request\n"
-    " Program with MOP device type 40 and the program type of SET %U\n"
-    " PROGRAM, each Memory Load stored, the program started at its transfer\n"
-    " address.  SHOW %U SWITCHES tells which of the two a remote load detect\n"
-    " would do.\n"
+    " address, the board does the load itself, as a later DMC11 microcode\n"
+    " can (the manuals do not say which switch setting selects the ROM or the\n"
+    " board's own load).  It takes the CPU over as a DMV11 does (HELP DMV\n"
+    " BOOTING): a waiting routine at 40, a Request Program with MOP device\n"
+    " type 12 (DMC11: 8,12,1 for a secondary loader) or 40 (DMR11) and the\n"
+    " program type of SET %U PROGRAM, each Memory Load stored, the program\n"
+    " started at its transfer address.  SHOW %U SWITCHES tells which of the\n"
+    " two a remote load detect would do.\n"
     "\n"
-    " An Enter MOP Mode with a wrong password does not boot.  The DMR11 has\n"
-    " no power-on boot and no invoke primary MOP function.  The DMC11's\n"
-    " remote load detect is not simulated.\n"
+    " An Enter MOP Mode with a wrong password does not boot.  The DMC11 and\n"
+    " DMR11 have no power-on boot and no invoke primary MOP function.\n"
 #endif
     "";
 const char helpMonitor[] =
@@ -5972,11 +5993,10 @@ return (!dmc_is_dmc(controller) && (controller->device == &dmv_dev));
 /* ---------------------------------------------------------------------------
    The boards with switch packs and a boot: DMV11 and DMP11 (each line of
    the shared DMP/DMV lines is one of them, by bus) and DMR11 (a DMC line of
-   TYPE DMR).  A DMX_BOARD describes where a board has its switches and
-   which way they work; every SET/SHOW switch command, SHOW SWITCHES and
-   the boot use only this description, so the boards share one
-   implementation.  The DMC11's line unit switches are not simulated yet
-   (their meaning is defined by the DMC11 microcode; manual needed).
+   TYPE DMR) and DMC11 (a DMC line of TYPE DMC).  A DMX_BOARD describes
+   where a board has its switches and which way they work; every SET/SHOW
+   switch command, SHOW SWITCHES and the boot use only this description, so
+   the boards share one implementation.
    --------------------------------------------------------------------------- */
 
 #define SWK_FLAG     0      /* one switch: the texts for OFF and ON */
@@ -5984,7 +6004,7 @@ return (!dmc_is_dmc(controller) && (controller->device == &dmv_dev));
 #define SWK_UNUSED   2      /* not used on this board */
 #define SWK_MODE     3      /* three mode switches: the mode code of Table 3-4 */
 #define SWK_VALUE    4      /* a number (decimal) */
-#define SWK_OFFSET   5      /* DMR11 bootstrap offset (octal) */
+#define SWK_OFFSET   5      /* boot ROM offset (octal; bytes or words: DMX_BOARD offset_scale) */
 #define SWK_PASSWORD 6      /* DMR11 password (octal, 377: remote load detect off) */
 
 typedef struct {
@@ -6013,6 +6033,10 @@ typedef struct {
                                    password decides (DMR11: not 377) */
     uint8       mop_devtype;    /* MOP device type (MOP registry) */
     const char  *poweron_sw;    /* for messages */
+    int         offset_scale;   /* boot ROM offset (pack 0 SW1-8): 1 bytes (DMR11),
+                                   2 words (DMC11); 0: no boot ROM (DMV11, DMP11) */
+    t_bool      short_request;  /* Request Program without the program type when a
+                                   secondary loader is asked for (DMC11: 8,12,1) */
     } DMX_BOARD;
 
 static const DMX_SWDESC dmv_e101_desc[] = {
@@ -6064,15 +6088,28 @@ static const DMX_BOARD dmx_dmp = {
 static const DMX_BOARD dmx_dmr = {
     "DMR11", {"E121", "E134"}, {"M8203 line unit", "M8203 line unit"}, {10, 10},
     {dmr_e121_desc, dmr_e134_desc}, 0, 0, 0, 0,
-    0, FALSE, 0, DMR_MOP_DEVTYPE, NULL };
+    0, FALSE, 0, DMR_MOP_DEVTYPE, NULL, 1, FALSE };
+/* DMC11: pack 0 is switch pack no. 3 (register 16), pack 1 switch pack no. 2
+   (register 15), as the DMR11's E121 and E134 */
+static const DMX_SWDESC dmc_sp3_desc[] = {
+    { 1, 8, SWK_OFFSET, "boot ROM offset" },
+    { 0 } };
+static const DMX_SWDESC dmc_sp2_desc[] = {
+    { 1, 8, SWK_PASSWORD, "password" },
+    { 0 } };
+static const DMX_BOARD dmx_dmc = {
+    "DMC11", {"no. 3", "no. 2"}, {"register 16, E88 on the M8201, E91 on the M8202",
+                                  "register 15, E87 on the M8201, E90 on the M8202"}, {8, 8},
+    {dmc_sp3_desc, dmc_sp2_desc}, 0, 0, 0, 0,
+    0, FALSE, 0, DMC_MOP_DEVTYPE, NULL, 2, TRUE };
 
-/* The board of a line, NULL for a DMC11 */
+/* The board of a line */
 static const DMX_BOARD *dmx_board (CTLR *controller)
 {
 if (controller->dev_type == DMR)
     return &dmx_dmr;
 if (controller->dev_type == DMC)
-    return NULL;
+    return &dmx_dmc;
 return (controller->device == &dmp_dev) ? &dmx_dmp : &dmx_dmv;
 }
 
@@ -6081,6 +6118,8 @@ static uint16 *dmx_pack (CTLR *controller, int n)
 {
 int ln = controller->index - DMC_NUMDEVICE;             /* DMP/DMV line */
 
+if (controller->dev_type == DMC)
+    return n ? &dmc_sp2[controller->index] : &dmc_sp3[controller->index];
 if (dmc_is_dmc(controller))
     return n ? &dmr_e134[controller->index] : &dmr_e121[controller->index];
 if (controller->device == &dmp_dev)
@@ -6160,11 +6199,20 @@ CTLR *controller = (CTLR *)uptr->ctlr;
 return (controller && (controller->unit == uptr)) ? controller : NULL;
 }
 
-/* SET or SHOW of a switch on a DMC11 */
+/* SET or SHOW of a switch on a line without a board description (none
+   since every DMC/DMR/DMP/DMV board has one; kept as a guard) */
 static t_stat dmx_no_switches (CTLR *controller)
 {
-return sim_messagef (SCPE_NOFNC, "The DMC11 line unit switches are not simulated (SET %s%d TYPE=DMR for a DMR11)\n",
-                     controller->device->name, controller->index);
+return sim_messagef (SCPE_NOFNC, "%s%d has no switch packs\n", controller->device->name, controller->index);
+}
+
+/* The boot ROM address of a DMC11 or DMR11: 173000 plus the offset (DMR11
+   bytes, DMC11 words) */
+static uint32 dmr_boot_address (CTLR *controller)
+{
+const DMX_BOARD *b = dmx_board (controller);
+
+return DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET) * (b ? b->offset_scale : 1);
 }
 
 /* The boot switches exist on every board, but only a PDP-11 can be booted */
@@ -6435,7 +6483,8 @@ for (d = b->desc[n]; d->first; d++) {
             fprintf (st, "%d (%03o octal)", field, field);
             break;
         case SWK_OFFSET:
-            fprintf (st, "%03o octal: boot address %06o", field, DMR_BOOT_ROM + field);
+            fprintf (st, "%03o octal%s: boot address %06o", field, (b->offset_scale == 2) ? " words" : "",
+                     DMR_BOOT_ROM + field * b->offset_scale);
             break;
         case SWK_PASSWORD:
             fprintf (st, "%03o octal%s", field, (field == 0377) ? " (remote load detect disabled)" : "");
@@ -6465,10 +6514,11 @@ for (n = 0; n < 2; n++) {
 if (DMV_BOOT_SUPPORTED) {
     fprintf (st, "program requested at boot (simulator setting, not a switch): %s\n",
              dmv_program_names[*dmx_program (controller) % 3]);
-    if (b == &dmx_dmr)
-        fprintf (st, "boot ROM at %06o: %s\n", DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET),
-                 dmr_boot_rom (controller) ? "present (remote load detect starts it)" :
-                                             "none (the DMR11 does the MOP load itself)");
+    if (b->offset_scale)
+        fprintf (st, "boot ROM at %06o: %s%s%s\n", dmr_boot_address (controller),
+                 dmr_boot_rom (controller) ? "present (remote load detect starts it)" : "none (the ",
+                 dmr_boot_rom (controller) ? "" : b->board,
+                 dmr_boot_rom (controller) ? "" : " does the MOP load itself)");
     }
 fprintf (st, "boot: %s\n", DMV_BOOT_SUPPORTED ? ((controller->dmv_boot.state <= DMVB_START) ?
                                                 boot_states[controller->dmv_boot.state] : "none")
@@ -6483,7 +6533,7 @@ static char why[128];
 const DMX_BOARD *b = dmx_board (controller);
 
 if (!b)
-    return "The DMC11 boot functions are not simulated";
+    return "This line has no boot functions";
 if (!DMV_BOOT_SUPPORTED) {
     sprintf (why, "The %s boot functions are only available in the PDP-11 simulator", b->board);
     return why;
@@ -6542,7 +6592,12 @@ request[1] = dmx_board(controller)->mop_devtype;
 request[3] = *dmx_program (controller);
 
 controller->dmv_boot.state = DMVB_REQUEST;
-dmv_boot_send (controller, request, sizeof(request));
+/* The DMC11 asks for a secondary loader with 8,12,1 (EK-DMCMP-MM-001
+   3.4.11), without the program type */
+if (dmx_board(controller)->short_request && (request[3] == 0))
+    dmv_boot_send (controller, request, 3);
+else
+    dmv_boot_send (controller, request, sizeof(request));
 }
 
 static void dmv_boot_request_load (CTLR *controller, uint8 loadnum, uint8 error)
@@ -6693,11 +6748,11 @@ if (*pkt && (lp == controller->line) && dmv_remote_load_watch (controller) &&
     }
 }
 
-/* The DMR11's boot ROM (173000 + E121 offset) answers on the I/O page */
+/* The boot ROM of a DMC11 or DMR11 (173000 + offset) answers on the I/O page */
 static t_bool dmr_boot_rom (CTLR *controller)
 {
 #if DMV_BOOT_SUPPORTED
-uint32 boot = DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET);
+uint32 boot = dmr_boot_address (controller);
 
 return iodispR[(boot & IOPAGEMASK) >> 1] != NULL;
 #else
@@ -6712,19 +6767,25 @@ return FALSE;
    ROM, M9301-YJ: ATTACH it with the ROM device), which loads the system
    through the DMR11 in maintenance mode.  SIMH has no such ROM built in:
    when nothing answers at that address the DMR11 does the ROM's part
-   itself with the DMV11 boot engine (Request Program, device type 40). */
+   itself with the DMV11 boot engine (Request Program, device type 40).
+   The DMC11 (EK-DMCMP-MM-001 3.4.11) does the same with a word offset
+   (switch pack no. 3) into its boot ROM (BM873, M9301), or loads the system
+   itself (Request Program 8,12,1, device type 12); the manuals do not say
+   which switch setting selects which, so here too a ROM at the boot address
+   is started, otherwise the DMC11 loads itself.  The DMC11's own load also
+   INITs the Unibus; that is not done here (known issue 100). */
 static void dmr_remote_load (CTLR *controller)
 {
 #if DMV_BOOT_SUPPORTED
 uint16 vector[2];
 
 if (dmr_boot_rom (controller)) {
-    vector[0] = (uint16)(DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET));
+    vector[0] = (uint16)dmr_boot_address (controller);
     vector[1] = 0;
     sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: power-up recovery into the boot ROM at %06o\n",
               controller->device->name, controller->index, vector[0]);
     controller->dmv_keep_line = TRUE;       /* the ROM loads over this line */
-    dmc_process_master_clear (controller);  /* the DMR11 stops what it did */
+    dmc_process_master_clear (controller);  /* the board stops what it did */
     controller->dmv_keep_line = FALSE;
     dmc_set_modem_dtr (controller);
     Map_WriteW (VEC_PWRFL, sizeof(vector), vector);
@@ -6733,8 +6794,8 @@ if (dmr_boot_rom (controller)) {
     trap_req |= TRAP_PWRFL;
     return;
     }
-sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: no boot ROM at %06o, the DMR11 loads the system itself\n",
-          controller->device->name, controller->index, DMR_BOOT_ROM + (*dmx_pack (controller, 0) & DMR_E121_M_OFFSET));
+sim_debug(DBG_INF, controller->device, "%s%d: Remote load detect: no boot ROM at %06o, the %s loads the system itself\n",
+          controller->device->name, controller->index, dmr_boot_address (controller), dmx_board(controller)->board);
 #endif
 dmv_boot_begin (controller, DMVB_HOW_REMOTE, 1, TRUE);
 }
@@ -6771,7 +6832,8 @@ if (dmv_switch_mode(controller) & 4) {      /* tributary: its own address only *
         }
     }
 if (dmc_is_dmc(controller)) {
-    /* DMR11: four password bytes, all equal to the password switches (E134) */
+    /* DMC11, DMR11: four password bytes, all equal to the password switches
+       (DMC11 switch pack no. 2, DMR11 E134) */
     uint8 pw = (uint8)(*dmx_pack (controller, 1) & DMR_E134_M_PASSWORD);
 
     match = TRUE;
@@ -7204,6 +7266,8 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
         dmc_corruption[i] = 0;
         dmr_e121[i] = 0;                        /* DMR11: offset 000 */
         dmr_e134[i] = DMR_E134_DEFAULT;         /* password 377: no remote load detect */
+        dmc_sp2[i] = DMC_SP_DEFAULT;            /* DMC11: shipped all OFF */
+        dmc_sp3[i] = DMC_SP_DEFAULT;
         }
     tmxr_set_modem_control_passthru (&dmc_desc);   /* We always want Modem Control */
     dmc_units[dmc_dev.numunits-2] = dmc_poll_unit_template;
