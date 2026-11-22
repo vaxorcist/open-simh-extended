@@ -1,4 +1,4 @@
-open-simh-extended/tests/deuna_boot/README.txt  v1 (2026-11-22)
+open-simh-extended/tests/deuna_boot/README.txt  v2 (2026-11-22; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
 
 DEUNA/DELUA BOOT port command (SIMH XU device, patch 23, known issue 109)
 =========================================================================
@@ -49,3 +49,27 @@ What TERUNA showed in SIMH's DEUNA (all fixed in patch 23):
                    next reset (a GO right after ATTACH missed own frames)
 
 Results 2026-11-22 (deuna-boot, patch 23): B2-B8 PASS.
+
+B9: VMS V4.7 as the load host (vmshost.sh BINDIR DISK; DISK = a VMS V4.7
+system disk with SYSTEM/MANAGER, e.g. ../dmv_regress/diskA.vhd; needs
+vax780 and pdp11 in BINDIR, the ROM images and SECUNA/TERUNA here).  A
+VAX-11/780 with a DEUNA copies the loaders and a test load file from a tape
+(mktap.py), defines UNA-0 with SERVICE ENABLED and node PDPNET (1.20,
+hardware address 08-00-2B-12-34-56, service device UNA, CPU PDP11,
+SECONDARY LOADER SECUNA.SYS, TERTIARY LOADER TERUNA.SYS, LOAD FILE
+NETTEST.SYS); the PDP-11 boots with XE0.  State 2026-11-22:
+  - VMS answers the board's request: "Load, Successful ... SECUNA.SYS,
+    Secondary loader" and "... TERUNA.SYS, Tertiary loader" (OPCOM);
+    SIMH's boot engine loads TERUNA and starts it;
+  - TERUNA asks VMS for the operating system through SIMH's DEUNA port,
+    VMS answers ("Load, Requested ... NETTEST.SYS, Operating system") and
+    TERUNA receives and acknowledges every Memory Load;
+  - but VMS treats the LOAD FILE as an RSX-11S system image: it reads the
+    downline load parameters stored in the executive (set by DECnet-RSX's
+    VNP) and sent zeros from 0 to 173777 for the test file (mknettest.py),
+    until TERUNA refused a load at 174000 ("Line communication error").
+    A file without a task label gave "File open error ... %RMS-E-EOF".
+  So B9 needs a real RSX-11S system image (built with RSX-11S SYSGEN/VMR
+  and prepared with VNP); with a test file it FAILs at the system load.
+  The test with mophost.py (B7) covers the same SIMH paths with DEC's
+  loaders and a test system.
