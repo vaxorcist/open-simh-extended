@@ -1,4 +1,4 @@
-open-simh-extended/tests/m9312_roms/README.txt  v1 (2026-11-22)
+open-simh-extended/tests/m9312_roms/README.txt  v2 (2026-11-22; v2: patch 22 fixed the known issues 106-108 and 110: C4/C5/C7 run through, new tests D1 and L1)
 
 DEC's M9312 console/diagnostic and boot ROMs in the SIMH PDP-11
 ================================================================
@@ -97,15 +97,13 @@ C2  the same on an 11/04
 C3  23-248F1 console command XM0: the XM ROM boots over a DMR11 (load host
     ../dmv11_boot/mopctl.py --rom, port 21141)
 C4  23-616F1 on an 11/70: SR = 000006, start 165744: XM entry 173006, the
-    diagnostics, boot.  The cache test halts at 165554 (known issue 106,
-    SIMH's hit/miss register reads 0); the test continues, as an operator
-    would (the ROM then turns the cache off and goes on)
+    diagnostics, boot.  Before patch 22 the cache test halted at 165554
+    (known issue 106, SIMH's hit/miss register read 0); now no halt
 C5  the same on an 11/60
 C6  23-446F1 on an 11/44 through the XM entry 173006: diagnostics, boot
-C7  23-774F1 on an 11/24 through the XM entry 173006: the console
-    loopback test is skipped by a breakpoint (known issue 107: no
-    maintenance loopback in SIMH's console DL11); the memory size shows
-    as 0100000, its last digit lost (known issue 108)
+C7  23-774F1 on an 11/24 through the XM entry 173006: all tests incl.
+    the console loopback test (known issue 107, fixed in patch 22), the
+    memory size 01000000 with all 8 digits (known issue 108, fixed)
 P1  PR/TT, PC11: the console's PR0, pr.tap prints PR BOOT OK
 P2  PR/TT, PC11: entry 173006 (with the 248F1's diagnostics)
 P3  PR/TT, console DL11: TT0, then the tape bytes typed by SEND
@@ -115,5 +113,13 @@ Z1  ZZ with the 248F1: three passes ("End Pass 000003")
 X1  XE on a DEUNA (UDP transport, no peer needed): prints ETHERNET
     PHYSICAL ADDRESS = 08-00-2B-12-34-56; the BOOT port command is not
     implemented in SIMH (known issue 109), so the CPU stays at 2
+D1  (no image) SET TTI DEBUG=DAT and a NUL byte typed in: no abort
+    (known issue 110, fixed in patch 22)
+L1  (no image) console DL11 maintenance loopback: 'A' looped back, not
+    on the terminal; 'Z' sent right before RESET still appears (known
+    issues 107, 108, fixed in patch 22)
 
-Results 2026-11-22 (integration 0fb87ac2): C1-C7, P1-P3, Z1, X1 PASS.
+Results 2026-11-22 (integration 0fb87ac2): C1-C7, P1-P3, Z1, X1 PASS
+(test v1, with the known issues as expected results).
+Results 2026-11-22 (patch 22, m9312-roms 152182d5): C1-C7, P1-P3, Z1, X1,
+D1, L1 PASS; D1 and L1 fail on the build before patch 22.

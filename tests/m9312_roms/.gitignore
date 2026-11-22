@@ -1,4 +1,4 @@
-# open-simh-extended/tests/m9312_roms/.gitignore  v1
+# open-simh-extended/tests/m9312_roms/.gitignore  v2 (v2: *.dbg)
 # DEC's ROM images are not part of the repository (built locally with
 # tools/m9312_lst2bin.py, see README.txt); run outputs and generated tapes
 # are not either.
@@ -8,3 +8,4 @@
 *.tap
 *.tap.send
 tt_send.ini
+*.dbg

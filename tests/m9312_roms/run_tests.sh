@@ -1,5 +1,5 @@
 #!/bin/bash
-# open-simh-extended/tests/m9312_roms/run_tests.sh  v1
+# open-simh-extended/tests/m9312_roms/run_tests.sh  v2 (v2: patch 22 fixed the known issues 106-108 and 110: C4/C5 run without the cache test halt, C7 without the breakpoint and with all 8 digits; new D1 (TTI debug of a NUL) and L1 (console loopback and RESET), which need no ROM image)
 # Runs DEC's M9312 console/diagnostic and boot ROMs in the SIMH PDP-11
 # (ROM device: ROM0 = console/diagnostic ROM at 17765000, ROM1 = boot ROMs
 # at 17773000).  The ROM images are DEC's and not part of the repository;
@@ -10,15 +10,18 @@
 #   C1  23-248F1 console on an 11/34: diagnostics, prompt, L/D/E/S
 #   C2  the same on an 11/04
 #   C3  23-248F1 console command XM0: boot over a DMR11 (mopctl.py --rom)
-#   C4  23-616F1 on an 11/70: switch register boot with diagnostics (case 106)
+#   C4  23-616F1 on an 11/70: switch register boot with diagnostics (no halt: case 106 fixed)
 #   C5  the same on an 11/60
 #   C6  23-446F1 on an 11/44: diagnostics called by the XM ROM, boot
-#   C7  23-774F1 on an 11/24: diagnostics called by the XM ROM, boot (cases 107, 108)
+#   C7  23-774F1 on an 11/24: diagnostics called by the XM ROM, boot (cases 107, 108 fixed)
 #   P1  'PR/TT' 23-760A9, PC11 reader, from the console (PR0)
 #   P2  the same from the ROM's entry with diagnostics (173006)
 #   P3  'PR/TT', console DL11 as the reader (TT0, the stream typed by SEND)
 #   Z1  'ZZ' 23-ZZZA9 continuous diagnostics with the 23-248F1, 3 passes
 #   X1  'XE' 23-E32A9/E33A9 on a DEUNA: address printout, BOOT refused (case 109)
+#   D1  SET TTI DEBUG=DAT with a NUL byte typed in: no abort (case 110; no image)
+#   L1  console DL11 maintenance loopback and a character sent before RESET
+#       (cases 107, 108; no image)
 #
 # The boot tests start the MOP load host ../dmv11_boot/mopctl.py --rom
 # (without --trigger: the ROM asks by itself) in the background.  Each test
@@ -26,9 +29,9 @@
 # X1); after a run, wait about 60 s before running the same test again
 # (TIME_WAIT of the simulator's listening port).
 #
-# usage: run_tests.sh BIN/pdp11 [C1 ... C7 P1 P2 P3 Z1 X1]
+# usage: run_tests.sh BIN/pdp11 [C1 ... C7 P1 P2 P3 Z1 X1 D1 L1]
 BIN=$(readlink -f "$1"); shift
-TESTS=${*:-C1 C2 C3 C4 C5 C6 C7 P1 P2 P3 Z1 X1}
+TESTS=${*:-C1 C2 C3 C4 C5 C6 C7 P1 P2 P3 Z1 X1 D1 L1}
 cd "$(dirname "$0")"
 MOPCTL=../dmv11_boot/mopctl.py
 fail=0
@@ -56,6 +59,7 @@ images () {
     P1|P2|P3) echo m9312_248F1.bin m9312_pr_tt.bin;;
     Z1)       echo m9312_248F1.bin m9312_zz.bin;;
     X1)       echo m9312_248F1.bin m9312_xe.bin;;
+    D1|L1)    ;;                  # no ROM image
     esac
 }
 
@@ -69,7 +73,7 @@ for t in $TESTS; do
     missing=""
     for f in $(images $t); do [ -f $f ] || missing="$missing $f"; done
     if [ -n "$missing" ]; then echo "$t SKIP (missing$missing, see README.txt)"; continue; fi
-    ini=$(echo $t | tr CPZX cpzx).ini
+    ini=$(echo $t | tr CPZXDL cpzxdl).ini
     rm -f $t.out $t.mop
     mpid=""
     case $t in
@@ -89,17 +93,23 @@ for t in $TESTS; do
     C1|C2) grep_all $t.out "@E 001000 012345" "@E 001002 054321" "HALT instruction, PC: 002002" \
                            "1000:	012345" "1002:	054321" || ok=0;;
     C3)    grep_all $t.out "@XM0" "XM ROM BOOT OK" "HALT instruction, PC: 000036" || ok=0;;
-    C4|C5) grep_all $t.out "HALT instruction, PC: 165554" "XM ROM BOOT OK" \
-                           "HALT instruction, PC: 000036" "704:	173020" || ok=0;;
+    C4|C5) grep_all $t.out "XM ROM BOOT OK" "HALT instruction, PC: 000036" "704:	173020" || ok=0
+           grep -q "HALT instruction, PC: 165" $t.out && { echo "  a diagnostic halted"; ok=0; };;
     C6)    grep_all $t.out "XM ROM BOOT OK" "HALT instruction, PC: 000036" "704:	173020" || ok=0
            grep -q "HALT instruction, PC: 165" $t.out && { echo "  a diagnostic halted"; ok=0; };;
-    C7)    grep_all $t.out "Breakpoint, PC: 165626" "0100000" "XM ROM BOOT OK" \
-                           "HALT instruction, PC: 000036" || ok=0;;
+    C7)    grep_all $t.out "01000000XM ROM BOOT OK" "HALT instruction, PC: 000036" || ok=0
+           grep -q "HALT instruction, PC: 165" $t.out && { echo "  a diagnostic halted"; ok=0; };;
     P1|P2) grep_all $t.out "PR BOOT OK" "HALT instruction, PC: 157636" "157776:	177550" || ok=0;;
     P3)    grep_all $t.out "@TT0" "TT BOOT OK" "HALT instruction, PC: 157636" "157776:	177560" || ok=0;;
     Z1)    grep_all $t.out "@ZZ0" "End Pass 000001" "End Pass 000003" || ok=0;;
     X1)    grep_all $t.out "@XE0" "ETHERNET PHYSICAL ADDRESS = 08-00-2B-12-34-56" \
                            "BOOT command not implemented" "PC: 000002" || ok=0;;
+    D1)    grep_all $t.out "HALT instruction, PC: 001026" "2000:	040751" "2002:	041000" || ok=0
+           grep -q "Received data: 0x00 '.'" d1.dbg || { echo "  no NUL line in d1.dbg"; ok=0; };;
+    L1)    grep_all $t.out "HALT instruction, PC: 001046" "3000:	000101" || ok=0
+           # between the start and the HALT only the 'Z' (no looped 'A')
+           [ "$(sed -n '/^L1-START/,/^HALT/p' $t.out | grep -v -e '^L1-START' -e '^HALT' | tr -d '\n')" = "Z" ] \
+               || { echo "  terminal output is not exactly Z"; ok=0; };;
     esac
     if [ -n "$mpid" ]; then grep -q "^PASS" $t.mop || { echo "  mopctl: $(tail -1 $t.mop)"; ok=0; }; fi
     result $t $ok
