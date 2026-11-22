@@ -26,6 +26,9 @@
    tti,tto      DL11 terminal input/output
    clk          KW11L (and other) line frequency clock
 
+   22-Nov-26    Claude  Console DL11 maintenance loopback (XCSR<2>); a reset
+                        lets the character being sent go out; the TTI debug
+                        line prints non-printable characters as '.'
    30-Dec-15    RMS     Added NOBEVENT support
    18-Apr-12    RMS     Modified to use clock coscheduling
    20-May-08    RMS     Standardized clock delay at 1mips
@@ -69,8 +72,9 @@
 
 #define TTICSR_IMP      (CSR_DONE + CSR_IE)             /* terminal input */
 #define TTICSR_RW       (CSR_IE)
-#define TTOCSR_IMP      (CSR_DONE + CSR_IE)             /* terminal output */
-#define TTOCSR_RW       (CSR_IE)
+#define TTOCSR_MAINT    0000004                         /* DL11 maintenance */
+#define TTOCSR_IMP      (CSR_DONE + CSR_IE + TTOCSR_MAINT)  /* terminal output */
+#define TTOCSR_RW       (CSR_IE + TTOCSR_MAINT)
 #define CLKCSR_IMP      (CSR_DONE + CSR_IE)             /* real-time clock */
 #define CLKCSR_RW       (CSR_IE)
 #define CLK_DELAY       16667
@@ -369,7 +373,10 @@ else {
 if ((c = sim_poll_kbd ()) < SCPE_KFLAG) /* no char or error? */
     return c;
 #endif
-sim_debug (DBG_DATA, &tti_dev, "tti_svc() - Received data: 0x%02X '%c'\n", c & ~SCPE_KFLAG, c & ~SCPE_KFLAG);
+if (tto_csr & TTOCSR_MAINT)                 /* maintenance loopback: */
+    return SCPE_OK;                         /* the terminal is disconnected */
+sim_debug (DBG_DATA, &tti_dev, "tti_svc() - Received data: 0x%02X '%c'\n", c & ~SCPE_KFLAG,
+           (((c & 0177) >= 040) && ((c & 0177) < 0177))? (c & 0177): '.');  /* no NUL: sim_debug aborts */
 if (c & SCPE_BREAK)                         /* break? */
     uptr->buf = 0;
 else
@@ -445,8 +452,14 @@ t_stat tto_svc (UNIT *uptr)
 int32 c;
 t_stat r;
 
-c = sim_tt_outcvt (uptr->buf, TT_GET_MODE (uptr->flags));
-if (c >= 0) {
+if (tto_csr & TTOCSR_MAINT) {                           /* maintenance loopback: */
+    tti_unit.buf = uptr->buf & 0377;                    /* the character goes */
+    tti_buftime = sim_os_msec ();                       /* to the receiver */
+    tti_csr = tti_csr | CSR_DONE;
+    if (tti_csr & CSR_IE)
+        SET_INT (TTI);
+    }
+else if ((c = sim_tt_outcvt (uptr->buf, TT_GET_MODE (uptr->flags))) >= 0) {
     if ((r = sim_putchar_s (c)) != SCPE_OK) {           /* output; error? */
         sim_activate (uptr, uptr->wait);                /* try again */
         return ((r == SCPE_STALL)? SCPE_OK: r);         /* !stall? report */
@@ -463,6 +476,17 @@ return SCPE_OK;
 
 t_stat tto_reset (DEVICE *dptr)
 {
+int32 c;
+
+if (sim_is_active (&tto_unit)) {                        /* character being sent? */
+    sim_cancel (&tto_unit);                             /* a DL11 finishes it, */
+    if (!(tto_csr & TTOCSR_MAINT)) {                    /* INIT clears only the */
+        c = sim_tt_outcvt (tto_unit.buf, TT_GET_MODE (tto_unit.flags)); /* registers */
+        if (c >= 0)
+            sim_putchar (c);
+        tto_unit.pos = tto_unit.pos + 1;
+        }
+    }
 tto_unit.buf = 0;
 tto_csr = CSR_DONE;
 CLR_INT (TTO);
