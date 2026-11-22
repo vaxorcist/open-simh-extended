@@ -62,6 +62,9 @@
 
   Modification history:
 
+  22-Nov-26  Claude  BOOT port command: primary load of a secondary loader, then
+                   the UNA secondary loader's work (tertiary into host memory,
+                   host start), as DEC's DEUNA/DELUA and SECUNA do
   25-Jan-13  RJ   SELFTEST needs to report the READY state otherwise VMS 3.7 gets fatal controller error
   12-Jan-11  DTH  Added SHOW XU FILTERS modifier
   11-Jan-11  DTH  Corrected SELFTEST command, enabling use by VMS 3.7, VMS 4.7, and Ultrix 1.1
@@ -127,6 +130,10 @@ void xub_write_callback(int status);
 void xu_setint (CTLR* xu);
 void xu_clrint (CTLR* xu);
 void xu_process_receive(CTLR* xu);
+t_bool xu_boot_receive (CTLR* xu, ETH_PACK* pack);
+void xu_boot_timer (CTLR* xu);
+void xu_boot_begin (CTLR* xu);
+void xu_setclrint (CTLR* xu, int32 bits);
 void xu_dump_rxring(CTLR* xu);
 void xu_dump_txring(CTLR* xu);
 t_stat xu_show_filters (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
@@ -227,6 +234,7 @@ DEBTAB xu_debug[] = {
   {"PACKET", DBG_PCK, "packet headers"},
   {"DATA",   DBG_DAT, "packet data"},
   {"ETH",    DBG_ETH, "ethernet device"},
+  {"BOOT",   DBG_BOOT, "BOOT port command (MOP load)"},
   {0}
 };
 
@@ -381,6 +389,8 @@ t_stat xu_setmac (UNIT* uptr, int32 val, CONST char* cptr, void* desc)
   if (!cptr) return SCPE_IERR;
   if (uptr->flags & UNIT_ATT) return SCPE_ALATT;
   status = eth_mac_scan_ex(xu->var->mac, cptr, uptr);
+  if (status == SCPE_OK)                                /* also the physical address */
+    eth_copy_mac (xu->var->setup.macs[0], xu->var->mac);/*   used until the next reset */
   return status;
 }
 
@@ -625,6 +635,10 @@ void xu_read_callback(CTLR* xu, int status)
 
   xu->var->read_buffer.used = 0;  /* none processed yet */
 
+  /* while a BOOT runs, the boot engine takes every frame */
+  if (xu_boot_receive (xu, &xu->var->read_buffer))
+    return;
+
   /* process any packets locally that can be */
   status = xu_process_local (xu, &xu->var->read_buffer);
 
@@ -707,6 +721,244 @@ t_stat xu_system_id (CTLR* xu, const ETH_MAC dest, uint16 receipt_id)
   return status;
 }
 
+/* BOOT port command (known issue 109; docs/DEUNA_boot_design.md)
+
+   A real DEUNA/DELUA answers the BOOT port command by entering the
+   primary load state and asking a load host for a secondary loader (MOP
+   Request Program, program type 0), which it stores and runs on its own
+   processor.  For a DEUNA that is DEC's UNA secondary loader: it asks for
+   the tertiary loader (program type 1), copies every Memory Load into host
+   memory, answers each with Request Memory Load (the next load number)
+   and finally starts the host, which waits in a BR . at location 2 with
+   the CSR address at 4 (DEC's M9312 'XE' ROM sets that up): it writes
+   JMP @#transfer at 6/10 and then MOV #(4),R1 at 2.  SIMH cannot run the
+   board's code, so the boot engine does the secondary loader's work
+   itself once a secondary loader has arrived.  The protocol is the one
+   of DEC's UNA secondary loader (DECnet-11M V4.2 SECUNA.SYS) and of the
+   DELUA User's Guide chapter 5. */
+
+#define XU_BOOT_IDLE    0                               /* no boot */
+#define XU_BOOT_SEC     1                               /* waiting for the secondary loader */
+#define XU_BOOT_TER     2                               /* loading the tertiary loader */
+#define XU_BOOT_TRIES   8                               /* requests to the load server */
+
+static const ETH_MAC xu_load_assist = {0xAB, 0x00, 0x00, 0x01, 0x00, 0x00};
+
+static t_stat xu_boot_send (CTLR* xu, const ETH_MAC dest, const uint8 *mop, int len)
+{
+  ETH_PACK pack;
+  char dst[20];
+
+  memset (&pack, 0, sizeof(pack));
+  eth_copy_mac (&pack.msg[0], dest);
+  eth_copy_mac (&pack.msg[6], xu->var->setup.macs[0]);
+  pack.msg[12] = 0x60;                                  /* MOP dump/load */
+  pack.msg[13] = 0x01;
+  pack.msg[14] = len & 0xFF;                            /* MOP message length */
+  pack.msg[15] = (len >> 8) & 0xFF;
+  memcpy (&pack.msg[16], mop, len);
+  pack.len = 16 + len;
+  if (pack.len < ETH_MIN_PACKET)
+    pack.len = ETH_MIN_PACKET;
+  eth_mac_fmt (dest, dst);
+  sim_debug (DBG_BOOT, xu->dev, "boot: send MOP code %02X (%d bytes) to %s\n", mop[0], len, dst);
+  if (DBG_PCK & xu->dev->dctrl)
+    eth_packet_trace_ex (xu->var->etherface, pack.msg, pack.len, "xu-boot", DBG_DAT & xu->dev->dctrl, DBG_PCK);
+  return eth_write (xu->var->etherface, &pack, NULL);
+}
+
+static t_bool xu_mac_zero (const ETH_MAC mac)
+{
+  int i;
+
+  for (i = 0; i < 6; i++)
+    if (mac[i])
+      return FALSE;
+  return TRUE;
+}
+
+/* Request Program: phase 1 for the secondary loader (the board's own
+   request, DELUA UG table 5-2), phase 2 for the tertiary loader (the
+   UNA secondary loader's request: device UNA, program type 1) */
+
+static void xu_boot_request_program (CTLR* xu)
+{
+  uint8 mop[32];
+  int n = 0;
+  uint8 devtype = (xu->var->type == XU_T_DEUNA) ? 1 : 11;
+
+  if (xu->var->boot_phase == XU_BOOT_SEC) {
+    t_bool any = (xu->var->boot_tries > XU_BOOT_TRIES);  /* any system software */
+    mop[n++] = 0x08;                                    /* code: Request Program */
+    mop[n++] = devtype;                                 /* device type */
+    mop[n++] = 0x01;                                    /* format version */
+    mop[n++] = 0x00;                                    /* program type: secondary loader */
+    mop[n++] = any ? 0 : xu->var->swid;                 /* software ID */
+    mop[n++] = 0x00;                                    /* processor: system */
+    mop[n++] = 0x01; mop[n++] = 0x00; mop[n++] = 0x03;  /* MOP version 3.0.0 */
+    mop[n++] = 0x03; mop[n++] = 0x00; mop[n++] = 0x00;
+    mop[n++] = 0x02; mop[n++] = 0x00; mop[n++] = 0x02;  /* functions: loop, primary loader */
+    mop[n++] = 0x05; mop[n++] = 0x00;
+    mop[n++] = 0x07; mop[n++] = 0x00; mop[n++] = 0x06;  /* hardware address */
+    eth_copy_mac (&mop[n], xu->var->mac);
+    n += 6;
+    mop[n++] = 0x64; mop[n++] = 0x00; mop[n++] = 0x01;  /* device */
+    mop[n++] = devtype;
+    xu->var->boot_swid = mop[4];
+    xu_boot_send (xu, (!any && !xu_mac_zero (xu->var->load_server)) ? xu->var->load_server : xu_load_assist, mop, n);
+    }
+  else {
+    mop[n++] = 0x08;                                    /* code: Request Program */
+    mop[n++] = 0x01;                                    /* device type: UNA */
+    mop[n++] = 0x01;                                    /* format version */
+    mop[n++] = 0x01;                                    /* program type: tertiary loader */
+    mop[n++] = xu->var->boot_swid;                      /* software ID of the boot */
+    mop[n++] = 0x00;                                    /* processor: system */
+    xu_boot_send (xu, xu->var->boot_host, mop, n);
+    }
+}
+
+static void xu_boot_request_load (CTLR* xu, int error)
+{
+  uint8 mop[3];
+
+  mop[0] = 0x0A;                                        /* code: Request Memory Load */
+  mop[1] = xu->var->boot_load;                          /* the next load number */
+  mop[2] = error;                                       /* error: 1 = the last load was bad */
+  xu_boot_send (xu, xu->var->boot_host, mop, 3);
+}
+
+static void xu_boot_end (CTLR* xu, t_bool failed)
+{
+  xu->var->boot_phase = XU_BOOT_IDLE;
+  xu->var->pcsr1 = (xu->var->pcsr1 & ~PCSR1_STATE) | STATE_READY;
+  if (failed) {                                         /* host told by a state change */
+    xu->var->pcsr0 |= PCSR0_USCI;
+    xu_setclrint (xu, 0);
+    }
+}
+
+/* start the host: it waits in BR . at 2 with the CSR address at 4 */
+
+static void xu_boot_start (CTLR* xu, uint32 xfer)
+{
+  uint16 w;
+
+  sim_debug (DBG_BOOT, xu->dev, "boot: tertiary loader loaded, host started at %06o\n", xfer & 0177777);
+  w = 0000137;                                          /* 6: JMP @#transfer */
+  Map_WriteW (6, 2, &w);
+  w = xfer & 0177777;
+  Map_WriteW (010, 2, &w);
+  w = 0012701;                                          /* 2: MOV #(4),R1 */
+  Map_WriteW (2, 2, &w);
+  xu_boot_end (xu, FALSE);
+}
+
+void xu_boot_begin (CTLR* xu)
+{
+  sim_debug (DBG_BOOT, xu->dev, "boot: BOOT port command, primary load state\n");
+  xu->var->boot_phase = XU_BOOT_SEC;
+  xu->var->boot_tries = 1;
+  xu->var->boot_secs = 0;
+  xu->var->boot_load = 0;
+  xu->var->pcsr1 = (xu->var->pcsr1 & ~PCSR1_STATE) | STATE_PLOAD;
+  if (!sim_is_active (&xu->unit[0]))                    /* keep receiving */
+    sim_clock_coschedule (&xu->unit[0], tmxr_poll);
+  if (!sim_is_active (&xu->unit[1]))
+    sim_activate_after (&xu->unit[1], 1000000);
+  xu_boot_request_program (xu);
+}
+
+/* the 1 s timer: repeat the request for the secondary loader (5 s,
+   after 8 tries 30 s); give up a tertiary load after 10 s of silence */
+
+void xu_boot_timer (CTLR* xu)
+{
+  if (xu->var->boot_phase == XU_BOOT_IDLE)
+    return;
+  ++xu->var->boot_secs;
+  if (xu->var->boot_phase == XU_BOOT_SEC) {
+    if (xu->var->boot_secs >= ((xu->var->boot_tries < XU_BOOT_TRIES) ? 5 : 30)) {
+      xu->var->boot_secs = 0;
+      ++xu->var->boot_tries;
+      xu_boot_request_program (xu);
+      }
+    }
+  else
+    if (xu->var->boot_secs >= 10) {
+      sim_debug (DBG_BOOT, xu->dev, "boot: no load for 10 s, boot given up\n");
+      xu_boot_end (xu, TRUE);
+      }
+}
+
+/* a received frame while a boot runs: TRUE = taken by the boot engine */
+
+t_bool xu_boot_receive (CTLR* xu, ETH_PACK* pack)
+{
+  const uint8 *msg = pack->msg;
+  const uint8 *mop = &msg[16];
+  int len, code, dlen;
+  uint32 addr, xfer;
+  char src[20];
+
+  if (xu->var->boot_phase == XU_BOOT_IDLE)
+    return FALSE;
+  if ((pack->len < 17) || (msg[12] != 0x60) || (msg[13] != 0x01))
+    return TRUE;                                        /* not dump/load: dropped */
+  if (memcmp (msg, xu->var->setup.macs[0], sizeof(ETH_MAC)))
+    return TRUE;                                        /* not for this board */
+  len = msg[14] | (msg[15] << 8);
+  if ((len < 1) || (len > (int)pack->len - 16))
+    return TRUE;
+  code = mop[0];
+  eth_mac_fmt (&msg[6], src);
+  sim_debug (DBG_BOOT, xu->dev, "boot: received MOP code %02X (%d bytes) from %s\n", code, len, src);
+  if (xu->var->boot_phase == XU_BOOT_SEC) {             /* secondary loader */
+    if ((code != 0x00) || (len < 10))
+      return TRUE;
+    if (!xu_mac_zero (xu->var->load_server) && (xu->var->boot_tries <= XU_BOOT_TRIES) &&
+        memcmp (&msg[6], xu->var->load_server, sizeof(ETH_MAC)))
+      return TRUE;                                      /* asked a specific load server */
+    sim_debug (DBG_BOOT, xu->dev, "boot: secondary loader received (%d bytes), "
+               "SIMH does its work: request for the tertiary loader\n", len - 10);
+    eth_copy_mac (xu->var->boot_host, &msg[6]);
+    eth_copy_mac (xu->var->load_server, &msg[6]);       /* as the UNA secondary loader: */
+    xu->var->boot_phase = XU_BOOT_TER;                  /*   the tertiary reads it (fn 24) */
+    xu->var->boot_secs = 0;
+    xu->var->boot_load = 0;
+    xu_boot_request_program (xu);
+    return TRUE;
+    }
+  /* tertiary loader: Memory Load (02) and Memory Load with Transfer Address (00) */
+  if (memcmp (&msg[6], xu->var->boot_host, sizeof(ETH_MAC)) || ((code != 0x00) && (code != 0x02)))
+    return TRUE;
+  if (len < ((code == 0x00) ? 10 : 6))
+    return TRUE;
+  if (mop[1] == 0)                                      /* load 0 starts over */
+    xu->var->boot_load = 0;
+  xu->var->boot_secs = 0;
+  if (mop[1] != xu->var->boot_load) {                   /* not the expected load: ask again */
+    xu_boot_request_load (xu, 0);
+    return TRUE;
+    }
+  addr = mop[2] | (mop[3] << 8) | (mop[4] << 16) | ((uint32)mop[5] << 24);
+  dlen = len - 6 - ((code == 0x00) ? 4 : 0);
+  if ((addr & 1) || (dlen & 1) ||
+      ((dlen > 0) && Map_WriteB (addr, dlen, &mop[6]))) {
+    sim_debug (DBG_BOOT, xu->dev, "boot: load %d at %o (%d bytes) refused\n", mop[1], addr, dlen);
+    xu_boot_request_load (xu, 1);
+    return TRUE;
+    }
+  sim_debug (DBG_BOOT, xu->dev, "boot: load %d: %d bytes at %06o\n", mop[1], dlen, addr);
+  xu->var->boot_load = (xu->var->boot_load + 1) & 0xFF;
+  xu_boot_request_load (xu, 0);                         /* acknowledges, asks for the next */
+  if (code == 0x00) {
+    xfer = mop[6 + dlen] | (mop[7 + dlen] << 8) | (mop[8 + dlen] << 16) | ((uint32)mop[9 + dlen] << 24);
+    xu_boot_start (xu, xfer);
+    }
+  return TRUE;
+}
+
 t_stat xu_svc(UNIT* uptr)
 {
   int queue_size;
@@ -731,6 +983,7 @@ t_stat xu_svc(UNIT* uptr)
 
   /* resubmit service timer if controller not halted */
   switch (xu->var->pcsr1 & PCSR1_STATE) {
+    case STATE_PLOAD:                                   /* BOOT: the engine receives */
     case STATE_READY:
     case STATE_RUNNING:
       sim_clock_coschedule (&xu->unit[0], tmxr_poll);
@@ -751,6 +1004,9 @@ t_stat xu_tmrsvc(UNIT* uptr)
       xu_system_id(xu, mop_multicast, 0);           /*   then send ID packet */
     xu->var->idtmr = XU_ID_TIMER_VAL;               /* reset timer */
   }
+
+  /* BOOT: repeat requests, give up */
+  xu_boot_timer (xu);
 
   /* update stats */
   upd_stat16 (&xu->var->stats.secs, 1);
@@ -793,7 +1049,9 @@ t_stat xu_sw_reset (CTLR* xu)
 
   sim_debug(DBG_TRC, xu->dev, "xu_sw_reset()\n");
 
-  /* Clear the registers. */
+  /* Clear the registers; a reset ends a BOOT. */
+  xu->var->boot_phase = 0;
+  xu->var->swid = 0;
   xu->var->pcsr0 = PCSR0_DNI | PCSR0_INTR;
   xu->var->pcsr1 = STATE_READY;
   switch (xu->var->type) {
@@ -1069,7 +1327,12 @@ int32 xu_command(CTLR* xu)
 
       /* transfer udb to host */
       udbb = xu->var->pcb[1] + ((xu->var->pcb[2] & 3) << 16);
-      wstatus = Map_WriteW(udbb, 68, xu->var->udb);
+      {                                   /* PCB+6 <15:01>: UDB length, up to 55 words; */
+      int32 ctrlen = xu->var->pcb[3] & 0177776; /* a shorter UDB gets a truncated list */
+      if (ctrlen > 2 * 55)                /*   (DELUA UG 4.5.8) */
+        ctrlen = 2 * 55;
+      wstatus = (ctrlen > 0) ? Map_WriteW(udbb, ctrlen, xu->var->udb) : 0;
+      }
       if (wstatus) {
         xu->var->pcsr0 |= PCSR0_PCEI;
       }
@@ -1161,11 +1424,13 @@ int32 xu_command(CTLR* xu)
 
       /* decode and store system ID fields , if we ever need to.
          for right now, just return "success" */
+      if (pltlen > 4)                                   /* software ID: UDBB+10 <07:00> */
+        xu->var->swid = xu->var->udb[4] & 0377;         /*   (requested by BOOT) */
 
       break;
 
     case FC_RLSA: /* read load server address */
-      if (eth_mac_cmp(xu->var->load_server, eth_mac_any)) {
+      if (!eth_mac_cmp(xu->var->load_server, eth_mac_any)) { /* 0 = equal */
         /* not set, use default multicast load address */
         wstatus = Map_WriteB(xu->var->pcbb + 2, 6, (const uint8*) mcast_load_server);
       } else {
@@ -1590,7 +1855,9 @@ void xu_port_command (CTLR* xu)
         xu->var->rxnext = 0;
         xu->var->txnext = 0;
 
-      } else
+      } else if (state == STATE_RUNNING)              /* already running: */
+        xu->var->pcsr0 |= PCSR0_DNI;                    /*   only DNI (UG table 4-1) */
+      else
         xu->var->pcsr0 |= PCSR0_PCEI;
       break;
 
@@ -1608,16 +1875,18 @@ void xu_port_command (CTLR* xu)
       if (state == STATE_RUNNING) {
         xu->var->pcsr1 &= ~PCSR1_STATE;
         xu->var->pcsr1 |= STATE_READY;
-        xu->var->pcsr0 |= PCSR0_DNI;
-      } else
-        xu->var->pcsr0 |= PCSR0_PCEI;
-      break;
+        }
+      xu->var->pcsr0 |= PCSR0_DNI;                      /* not running: a NO-OP with DNI */
+      break;                                            /*   (DELUA UG table 4-1) */
 
     case CMD_BOOT:      /* BOOT */
-      /* not implemented */
-      sim_printf ("%s: BOOT command not implemented!\n", xu->dev->name);
-
-      xu->var->pcsr0 |= PCSR0_PCEI;
+      if (xu->var->etherface == NULL) {                 /* not attached: no network */
+        sim_printf ("%s: BOOT needs an attached network (ATTACH %s ...)\n", xu->dev->name, xu->dev->name);
+        xu->var->pcsr0 |= PCSR0_PCEI;
+        break;
+        }
+      xu->var->pcsr0 |= PCSR0_DNI;                      /* primary load state, DNI */
+      xu_boot_begin (xu);
       break;
 
     case CMD_NOOP:      /* NO-OP */
