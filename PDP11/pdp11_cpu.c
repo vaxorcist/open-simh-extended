@@ -345,6 +345,7 @@ t_stat cpu_set_hist (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat cpu_show_virt (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat cpu_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+t_stat cpu_boot_help (FILE *st);
 const char *cpu_description (DEVICE *dptr);
 int32 GeteaB (int32 spec);
 int32 GeteaW (int32 spec);
@@ -3405,7 +3406,8 @@ return run_cmd (flag, "CPU");
 
 CTAB pdp11_cmd[] = {
     { "BOOT", &pdp11_boot, RU_BOOT,
-      "bo{ot} {unit}            boot simulator\n", NULL, &run_cmd_message },
+      "bo{ot}                   boot from the boot ROM (the same as BOOT CPU)\n"
+      "bo{ot} <dev>{n}          boot from unit n of device <dev> (default unit 0)\n", NULL, &run_cmd_message },
     { NULL }
     };
 
@@ -3689,10 +3691,71 @@ const char *cpu_description (DEVICE *dptr)
 return "PDP-11 CPU";
 }
 
+/* HELP BOOT: SCP calls the CPU device's help routine with the topic
+   "BOOT" (and prints the BOOT command's help string afterwards) */
+
+t_stat cpu_boot_help (FILE *st)
+{
+int i;
+DEVICE *dptr;
+
+fprintf (st, "Booting the PDP-11 simulator\n\n");
+fprintf (st, "    BOOT <dev>{n}     boots from unit n (default 0) of device <dev>, e.g.\n");
+fprintf (st, "                      BOOT RQ0, BOOT RL1, BOOT TQ0, BOOT XQ\n");
+fprintf (st, "    BOOT, BOOT CPU    runs the boot ROM selected with the ROM device (if any)\n\n");
+fprintf (st, "BOOT resets the simulator, puts the device's bootstrap (a copy of DEC's\n");
+fprintf (st, "boot ROM code for it) into memory with the unit number and the controller\n");
+fprintf (st, "address filled in, and starts it at priority 7.  The device must be\n");
+fprintf (st, "enabled (SET <dev> ENABLED) and the unit attached to an image; the\n");
+fprintf (st, "bootstrap then reads the boot block of the medium.\n\n");
+fprintf (st, "Which devices can be booted depends on the bus of the CPU type (SET CPU):\n");
+fprintf (st, "    Unibus:");
+for (i = 0; i < MOD_MAX; i++)
+    if (cpu_tab[i].std & BUS_U)
+        fprintf (st, " %s", cpu_tab[i].name);
+fprintf (st, "\n    Qbus:  ");
+for (i = 0; i < MOD_MAX; i++)
+    if (!(cpu_tab[i].std & BUS_U))
+        fprintf (st, " %s", cpu_tab[i].name);
+fprintf (st, "\nA device marked for the Qbus <=256K only works on a Qbus CPU with at\n");
+fprintf (st, "most 256 KB of memory (SET CPU 256K).\n\n");
+fprintf (st, "    Device  Unibus Qbus Qbus   Massbus  Now   Description\n");
+fprintf (st, "                       <=256K\n");
+fprintf (st, "    ==================================================================\n");
+for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+    t_bool ub, qb, q18, fits;
+
+    if ((dptr->boot == NULL) || (dptr == &cpu_dev))
+        continue;
+    ub  = (dptr->flags & (DEV_UBUS | DEV_Q18)) != 0;
+    qb  = (dptr->flags & DEV_QBUS) != 0;
+    q18 = (dptr->flags & (DEV_QBUS | DEV_Q18)) != 0;
+    fits = (UNIBUS && ub) || (!UNIBUS && (qb || (q18 && (MEMSIZE <= UNIMEMSIZE))));
+    fprintf (st, "    %-7s %-6s %-4s %-6s %-8s %-5s %s\n", dptr->name,
+             ub ? "yes" : "-", qb ? "yes" : "-", q18 ? "yes" : "-",
+             (dptr->flags & DEV_MBUS) ? "RH" : "-",
+             !fits ? "bus" : ((dptr->flags & DEV_DIS) ? "dis" : "yes"),
+             dptr->description ? dptr->description (dptr) : "");
+    }
+fprintf (st, "\n");
+fprintf (st, "Now: \"yes\" if the device can be booted with the current CPU type, memory\n");
+fprintf (st, "size and settings; \"bus\" if it does not work on the current bus or\n");
+fprintf (st, "memory size; \"dis\" if it fits but is disabled (SET <dev> ENABLED).\n");
+fprintf (st, "Devices marked RH are Massbus drives on an RH11 (Unibus) or RH70 (11/70)\n");
+fprintf (st, "controller; SIMH also offers them on the Qbus, which DEC's own Qbus\n");
+fprintf (st, "systems did not have.  ROM selects the boot ROM that BOOT CPU runs\n");
+fprintf (st, "(HELP ROM).  BOOT DMVn is the DMV11's primary MOP boot\n");
+fprintf (st, "from a DECnet load host and needs its switches (HELP DMV).  For the\n");
+fprintf (st, "details of a device's bootstrap see HELP <dev>.\n\n");
+return SCPE_OK;
+}
+
 t_stat cpu_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 int i;
 
+if ((cptr != NULL) && (strcmp (cptr, "BOOT") == 0))     /* HELP BOOT */
+    return cpu_boot_help (st);
 fprintf (st, "The %s (%s) device help\n\n", dptr->description (dptr), dptr->name);
 fprintf (st, "The CPU options include CPU type, CPU instruction set options for the\n");
 fprintf (st, "specified type, and the size of main memory.\n\n");
