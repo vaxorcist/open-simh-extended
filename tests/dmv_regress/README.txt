@@ -1,4 +1,4 @@
-open-simh-extended/tests/dmv_regress/README.txt  v1 (2026-11-21)
+open-simh-extended/tests/dmv_regress/README.txt  v2 (2026-11-22; v2: results after patch 21)
 
 VMS V4.7 DECnet regression for the DMV11 (microvax2) and the DMP11 (vax780),
 two nodes, point-to-point and multipoint (control station + tributary 3).
@@ -27,3 +27,4 @@ Results 2026-11-21 (patch 18 v3 build):
   vax780    DMP11 point-to-point   PASS
   microvax2 DMV11 multipoint       PASS
   vax780    DMP11 multipoint       PASS
+Results 2026-11-22 (patch 21 build, branch dmp-dmr-boot): the same four PASS.

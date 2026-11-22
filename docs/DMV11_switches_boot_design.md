@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v4, 2026-11-22 (v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v5, 2026-11-22 (v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -473,6 +473,9 @@ SWITCHES works.
   restarted at 173020 with 24 = 173020, 26 = 0, no MOP message: PASS.
 - R3 DMC11 refusal, DMR11 value checks: PASS.
 - T1-T6 (DMV11) unchanged: PASS.
+- VMS V4.7 DECnet pairs (`tests/dmv_regress/pair.sh`, the receive path
+  changed): microvax2 DMV11 point-to-point and multipoint, vax780 DMP11
+  point-to-point and multipoint: PASS (3 of 3 compares each).
 - A test "operating system" needs a stack: the takeover pushes PC and PSW
   through the power-fail trap; with SP 0 an 11/70 stops with a red stack
   trap (the 11/73 of the DMV11 tests did not mind).
