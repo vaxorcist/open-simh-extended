@@ -1,4 +1,4 @@
-# open-simh-extended/tests/dmv11_boot/mopctl.py  v7 (v7: DMP11 and DMR11: --devtype, --dmrpw, --text, --noload; v6: wrong password: 3 s without a MOP answer, DDCMP messages ignored; v5: BPL offset of the test program fixed; v4: the simulator may close the line after the start; v3: load 0 covers 0-777, so the restored words at 400-402 are checked too; v2: connects to the DMV11's ATTACH port; the
+# open-simh-extended/tests/dmv11_boot/mopctl.py  v8 (v8: --shortreq, the DMC11's Request Program 8,12,1; v7: DMP11 and DMR11: --devtype, --dmrpw, --text, --noload; v6: wrong password: 3 s without a MOP answer, DDCMP messages ignored; v5: BPL offset of the test program fixed; v4: the simulator may close the line after the start; v3: load 0 covers 0-777, so the restored words at 400-402 are checked too; v2: connects to the DMV11's ATTACH port; the
 # simulator's outgoing connection to a listening script is reported failed here)
 # A minimal DDCMP/MOP control station for testing the DMV11 primary MOP
 # boot of the SIMH PDP-11 (pdp11_dmc.c).  It connects to the DMV11's ATTACH
@@ -24,6 +24,7 @@
 # usage: python3 -I mopctl.py PORT [--addr A] [--mp] [--trigger PW]
 #                                  [--wrongfirst] [--ignorefirst] [--dupload]
 #                                  [--devtype T] [--dmrpw] [--text S] [--noload]
+#                                  [--shortreq]
 #   --addr A       DDCMP address of the remote station (multipoint), default 1
 #   --mp           multipoint: first poll a different address (must be ignored)
 #   --trigger PW   remote load detect with password PW
@@ -34,6 +35,7 @@
 #   --dmrpw        DMR11: Enter MOP Mode with the password in all four bytes
 #   --text S       the text the test program prints (default "DMV BOOT OK")
 #   --noload       with --trigger: expect no MOP answer (3 s), load nothing
+#   --shortreq     DMC11: the Request Program has no program type (8,12,1)
 # Exit code 0 when the whole exchange went as expected.
 import socket, struct, sys, time, argparse
 
@@ -146,6 +148,7 @@ def main():
     ap.add_argument('--dmrpw', action='store_true')
     ap.add_argument('--text', default='DMV BOOT OK')
     ap.add_argument('--noload', action='store_true')
+    ap.add_argument('--shortreq', action='store_true')
     a = ap.parse_args()
     text = a.text.encode() + b"\r\n\0"
     def enter_mop(pw):
@@ -205,14 +208,15 @@ def main():
         if req is None:
             raise SystemExit("FAIL: no Request Program after 20 polls")
     print("Request Program: %s" % req.hex())
-    if req != bytes([8, a.devtype, 1, 0]):
+    expected = bytes([8, a.devtype, 1]) if a.shortreq else bytes([8, a.devtype, 1, 0])
+    if req != expected:
         raise SystemExit("FAIL: unexpected Request Program")
     if a.ignorefirst:
         t0 = time.time()
         req = expect_mop(line, a.addr, "repeated Request Program", 12.0)
         dt = time.time() - t0
         print("Request Program repeated after %.1f s: %s" % (dt, req.hex()))
-        if req != bytes([8, a.devtype, 1, 0]) or dt < 3.5:
+        if req != expected or dt < 3.5:
             raise SystemExit("FAIL: bad retransmission")
 
     line.send(maint(mop_load(2, 0, 0, PAGE0), a.addr))

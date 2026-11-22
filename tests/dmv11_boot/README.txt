@@ -1,9 +1,9 @@
-open-simh-extended/tests/dmv11_boot/README.txt  v3 (2026-11-22; v3: DMP11 tests P1-P4 and DMR11 tests R1-R3 (patch 21); v2: the start trap words are at 774-776)
+open-simh-extended/tests/dmv11_boot/README.txt  v4 (2026-11-22; v4: DMC11 tests R4, R5, R3 for the DMC11's switch packs; v3: DMP11 tests P1-P4 and DMR11 tests R1-R3 (patch 21); v2: the start trap words are at 774-776)
 
-DMV11, DMP11 and DMR11 switch packs and boot (patches 18 and 21, PDP-11
+DMV11, DMP11, DMR11 and DMC11 switch packs and boot (patches 18 and 21, PDP-11
 simulator).
 
-run_tests.sh BIN/pdp11 [T1 ... R3]   runs all tests (about 2 minutes); prints
+run_tests.sh BIN/pdp11 [T1 ... R5]   runs all tests (about 2 minutes); prints
                                      "PASS" or "FAIL" per test.
 
 mopctl.py   a minimal DDCMP/MOP control station in Python: connects to the
@@ -15,7 +15,8 @@ mopctl.py   a minimal DDCMP/MOP control station in Python: connects to the
             (--text: another text) and halts at 1030.  --devtype 18 or 40
             for a DMP11 or DMR11, --dmrpw: the DMR11's Enter MOP Mode (the
             password in all four bytes), --noload: only check that no MOP
-            message answers (a DMR11 that starts a boot ROM).
+            message answers (a DMR11 that starts a boot ROM); --shortreq:
+            the DMC11's Request Program 8,12,1 (no program type).
 mkini.py    writes t3.ini, t4.ini and t6.ini (their PDP-11 programs are
             assembled there, with computed branch offsets).
 common_check.ini  memory after the halt: the program's own words at 24-40
@@ -52,17 +53,23 @@ R1  DMR11 remote load detect without a boot ROM (DMC0 TYPE=DMR, PASSWORD
 R2  DMR11 remote load detect with a boot ROM (r2rom.bin at 173000,
     BOOTOFFSET 20): 24 = 173020, 26 = 0, the CPU restarts at 173020
     (MOV #123456,R0; HALT), no MOP message.
-R3  DMC11 refusal (TYPE=DMC), DMR11 value checks.
+R3  DMC11 switch packs (TYPE=DMC): defaults 377/377, word offset 010 =
+    173020; DMR11 value checks.
+R4  DMC11 remote load detect without a boot ROM: the DMC11 loads the program
+    itself (Request Program 8,12,1, device type 12); wrong password first.
+R5  DMC11 remote load detect with a boot ROM (r2rom.bin at 173000,
+    BOOTOFFSET 10 words): 24 = 173020, 26 = 0, restart at 173020.
 
-The test "operating systems" (P2, P3, R1, R2) set SP 1000: the takeover
+The test "operating systems" (P2, P3, R1, R2, R4, R5) set SP 1000: the takeover
 pushes PC and PSW, and an 11/70 with SP 0 stops with a red stack trap.
 
-Ports 21101-21106, 21111-21114 and 21121-21122 are used; after a run, wait about a minute before the
+Ports 21101-21106, 21111-21114 and 21121-21124 are used; after a run, wait about a minute before the
 next (a port still in TIME_WAIT makes ATTACH fail: "bind error 98").
 The scripts connect to the simulator's ATTACH port: in Claude's workspace
 the simulator's own outgoing connection (PEER) to a listening Python
 socket was reported as failed (known issues 91).
 Results 2026-11-20: T1-T6 PASS (topic branch dmv-boot and integration).
 Results 2026-11-22: T1-T6, P1-P4, R1-R3 PASS (topic branch dmp-dmr-boot).
+Results 2026-11-22 (patch 21 v2, DMC11): T1-T6, P1-P4, R1-R5 PASS.
 Also: tests/dmv11/mc.ini (DMV11 master clear signature) on microvax1,
 microvax2 and microvax3900: PASS.

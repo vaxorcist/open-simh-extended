@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v5, 2026-11-22 (v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v6, 2026-11-22 (v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -480,3 +480,46 @@ SWITCHES works.
   through the power-fail trap; with SP 0 an 11/70 stops with a red stack
   trap (the 11/73 of the DMV11 tests did not mind).
 
+## 8. DMC11 (2026-11-22, patch 21 v2, known issue 99)
+
+Ulli uploaded the DMC11 line unit manuals EK-DMCLU-OP-001 (user's manual)
+and EK-DMCLU-MM-001 (maintenance manual). Both are scans without text; read
+with OCR. Facts only, our words.
+
+- **The line unit manuals:** switch pack no. 2 is line unit register 15 (E87
+  on the M8201, E90 on the M8202), no. 3 is register 16 (E88 / E91); both are
+  shipped all OFF (377); they belong to the down-line loading, and their
+  meaning is up to the microcode. No bit table.
+- **The DMC11 diagnostics** (MAINDEC-11-DZDMG-C-D, bitsavers) read them with
+  the microinstructions 320, the "line number switch", and 340, the "BM873
+  address": IBUS registers 15 and 16.
+- **The microprocessor manual** (EK-DMCMP-MM-001 3.4.11, both versions): the
+  Enter MOP Mode message is code 6 and four equal bytes, the value of a
+  switch pack (the password); the other pack is an 8-bit word offset into
+  the boot ROM space; depending on the switches the DMC11 starts a boot ROM
+  (BM873, M9301), loads the system itself (later microcode: INIT, tight
+  loop, Request Program 8,12,1, Memory Load with Transfer Address) or passes
+  the message on.
+
+Result: pack no. 2 (R15) is the password, pack no. 3 (R16) the word offset,
+as on the DMR11 (E134 = R15, E121 = R16). Which setting selects ROM, own
+load or pass-on is not documented; the simulation uses the DMR11 rule
+(Ulli's decision for the DMR11): password 377 passes the message on (the
+shipped setting), a ROM at the boot address is started, otherwise the DMC11
+loads itself.
+
+Implementation: a fourth `DMX_BOARD` (`dmx_dmc`): packs "no. 3" (pack 0,
+the offset) and "no. 2" (pack 1, the password), 8 switches each, storage
+`dmc_sp3`/`dmc_sp2` (registers `SP3`, `SP2`, default 377), MOP device type
+12, `offset_scale` 2 (words; the DMR11 has 1, bytes), `short_request`: a
+secondary loader is requested with the three bytes 8,12,1. The DMC11 and the
+DMR11 share every routine (`dmr_boot_address`, `dmr_boot_rom`,
+`dmr_remote_load`, the password check). The DMC11's INIT of the Unibus is
+not done (known issue 100).
+
+Commands (TYPE=DMC): `SET DMCn PASSWORD=n`, `SET DMCn BOOTOFFSET=n` (octal),
+`SET DMCn PROGRAM=...`, `SHOW DMCn SWITCHES`.
+
+Tests (`tests/dmv11_boot/`): R3 (defaults, word offset), R4 (the DMC11 loads
+itself: Request Program `08 0C 01`, wrong password first), R5 (boot ROM at
+173000, offset 010 words: restart at 173020). All 15 boot tests PASS.
