@@ -25,6 +25,8 @@
 
    system       PDP-11 model-specific registers
 
+   22-Nov-26    Claude  11/44, 11/60, 11/70 hit/miss register reports cache hits
+                        unless both cache halves are forced to miss
    19-Nov-22    RMS     Fixed byte access errors in PIRQ, STKLIM, CDR (Walter Mueller)
    15-Sep-20    RMS     Fixed problem in KDJ11E programmable clock (Paul Koning)
    04-Mar-16    RMS     Fixed maximum memory sizes to exclude IO page
@@ -390,6 +392,22 @@ else R[reg] = (R[reg] & ~0377) | data;
 return SCPE_OK;
 }
 
+/* Hit/miss register of the 11/44, 11/60 and 11/70 caches
+
+   The real register records the last six memory references, a 1 for a
+   cache hit (bit 0 the most recent).  SIMH has no cache model; reporting
+   misses for ever (the old fixed 0) fails DEC's diagnostics, e.g. the
+   M9312 ROM 23-616F1 halts in its cache test.  So every reference counts
+   as a hit while the cache can hit at all, i.e. unless CCR bits 2 and 3
+   force misses in both halves (groups) of the cache.  The value is kept
+   in HITMISS so that EXAMINE shows what the program saw last. */
+
+static int32 cpu_hitmiss (void)
+{
+HITMISS = ((CCR & 014) == 014)? 0: 077;
+return HITMISS;
+}
+
 /* CPU control registers - 11/24 */
 
 t_stat CPU24_rd (int32 *data, int32 pa, int32 access)
@@ -435,7 +453,7 @@ switch ((pa >> 1) & 017) {                              /* decode pa<4:1> */
         return SCPE_OK;
 
     case 005:                                           /* Hit/miss */
-        *data = HITMISS;
+        *data = cpu_hitmiss ();
         return SCPE_OK;
 
     case 006:                                           /* CDR */
@@ -556,7 +574,7 @@ switch ((pa >> 1) & 017) {                              /* decode pa<4:1> */
         return SCPE_OK;
 
     case 005:                                           /* Hit/miss */
-        *data = HITMISS;
+        *data = cpu_hitmiss ();
         return SCPE_OK;
 
     case 013:                                           /* CPUERR */
@@ -639,7 +657,7 @@ switch ((pa >> 1) & 017) {                              /* decode pa<4:1> */
         return SCPE_OK;
 
     case 005:                                           /* Hit/miss */
-        *data = HITMISS;
+        *data = cpu_hitmiss ();
         return SCPE_OK;
 
     case 010:                                           /* low size */
