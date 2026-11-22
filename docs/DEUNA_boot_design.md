@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DEUNA_boot_design.md  v1, 2026-11-22 (v1: facts from the DEUNA TM, the DELUA UG and DEC's DECnet-11M V4.2 UNA loaders; design of the BOOT port command for SIMH's XU device; known issue 109) -->
+<!-- open-simh-extended/docs/DEUNA_boot_design.md  v2, 2026-11-22 (v2: implemented in patch 23 (branch deuna-boot), tests B2-B8, DEC's TERUNA runs, known issues 111-114; v1: facts from the DEUNA TM, the DELUA UG and DEC's DECnet-11M V4.2 UNA loaders; design of the BOOT port command for SIMH's XU device; known issue 109) -->
 # DEUNA/DELUA BOOT port command for the SIMH PDP-11 (known issue 109)
 
 Ulli's decision (2026-11-22): implement the BOOT port command, option 1:
@@ -99,7 +99,7 @@ continues as above. Not part of this step.
   state (TERUNA initializes it again).
 - **Debug:** a BOOT debug flag logs every MOP frame of the engine.
 
-## 3. Tests (planned)
+## 3. Tests (planned in v1)
 
 - A Python MOP load host over SIMH's UDP Ethernet transport (`ATTACH XU
   udp:...`): answers the Request Program type 0 with a dummy secondary
@@ -110,3 +110,54 @@ continues as above. Not part of this step.
   served by the Python host; TERUNA then asks for the system image.
 - Through the M9312 'XE' ROM (`tests/m9312_roms` X1 changes from
   "BOOT refused" to "boot OK"), and by the BOOT command from a program.
+
+## 4. Implementation (patch 23, branch `deuna-boot`, 2026-11-22)
+
+`PDP11/pdp11_xu.c`, `pdp11_xu.h` (the XU device; also built into the VAX
+simulators, which do not use BOOT):
+
+- `xu_boot_begin()` (BOOT port command, attached port only; otherwise a
+  message and PCEI): primary load state, DNI, first Request Program.
+- `xu_boot_receive()` (called from the read callback): while a boot runs
+  it takes every frame; dump/load frames for the board's own address go to
+  the engine. Phase 1 accepts a Memory Load with Transfer Address (from
+  the load server, if one was set and fewer than 8 requests went out);
+  phase 2 accepts Memory Loads (02) and Memory Load with Transfer Address
+  (00) from that load host only, checks the load number (load 0 starts
+  over, any other unexpected number is answered with the request for the
+  expected one), refuses odd addresses and lengths (request repeated with
+  the error byte 1), writes the data with `Map_WriteB` and answers Request
+  Memory Load with the next number; the final load starts the host.
+- `xu_boot_timer()` (the 1 s timer `xu_tmrsvc`): phase 1 repeats after 5 s
+  (8 tries), then every 30 s to the multicast with software ID 0; phase 2
+  gives up after 10 s without a load (ready state, USCI).
+- The load host that sent the secondary becomes the load server address
+  (SECUNA keeps it in the board firmware's load server address; TERUNA
+  reads it with function 24).
+- Write System ID (function 23) keeps the software ID (UDB word 4, bits
+  7:0) for the request; a reset clears it and ends a boot.
+- `SET XU DEBUG=BOOT`.
+
+Found on the way with DEC's TERUNA, fixed in the same patch: STOP/START
+(known issue 111), counter list length (112), Read Load Server Address
+(113), SET XU MAC (114).
+
+## 5. Results (2026-11-22)
+
+- `tests/deuna_boot/` B2-B8 PASS (BOOT from a program and through DEC's
+  'XE' ROMs, retry after 5 s, a repeated load, the DELUA's device type,
+  refusal without a network).
+- B7, DEC's own loaders: SECUNA.SYS (1408 bytes) as the secondary, TERUNA.SYS
+  (2048 bytes) as the tertiary in 128 Memory Loads. TERUNA relocates itself
+  to the top of memory (with the 11/34's MMU), gives STOP, sets the PCBB,
+  reads the load server and physical address, resets the port, writes the
+  ring format, mode and physical address, STARTs, reads the counters and
+  asks the load host for the system (Request Program 08 01 01 02 FF 00 with
+  a buffer size parameter of 1026). It accepts Memory Loads and a
+  Parameter Load with Transfer Address (code 14 hex) and starts the system
+  after checking location 2 for PS 340 (the system image's vectors).
+- VMS V4.7 DECnet over a DEUNA on two VAX-11/780s (`tests/dmv_regress/
+  pair.sh` v8, `DEV=UNA`): PASS (3 of 3 compares, circuit off/on); the
+  same with the build before patch 23: PASS with the same events (one
+  "circuit down, circuit fault" while DECnet starts the line, one at the
+  test's circuit off).

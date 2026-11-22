@@ -1,0 +1,9 @@
+# open-simh-extended/tests/deuna_boot/.gitignore  v1
+# DEC firmware and software (ROM images, DECnet-11M's UNA loaders) are not
+# part of the repository; run outputs are not either.
+*.bin
+*.SYS
+*.sys
+*.out
+*.mop
+*.dbg

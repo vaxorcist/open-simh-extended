@@ -1,5 +1,5 @@
 #!/bin/bash
-# open-simh-extended/tests/m9312_roms/run_tests.sh  v2 (v2: patch 22 fixed the known issues 106-108 and 110: C4/C5 run without the cache test halt, C7 without the breakpoint and with all 8 digits; new D1 (TTI debug of a NUL) and L1 (console loopback and RESET), which need no ROM image)
+# open-simh-extended/tests/m9312_roms/run_tests.sh  v3 (v3: X1 expects the boot to start (patch 23, BOOT implemented) instead of the refusal; v2: patch 22 fixed the known issues 106-108 and 110: C4/C5 run without the cache test halt, C7 without the breakpoint and with all 8 digits; new D1 (TTI debug of a NUL) and L1 (console loopback and RESET), which need no ROM image)
 # Runs DEC's M9312 console/diagnostic and boot ROMs in the SIMH PDP-11
 # (ROM device: ROM0 = console/diagnostic ROM at 17765000, ROM1 = boot ROMs
 # at 17773000).  The ROM images are DEC's and not part of the repository;
@@ -18,7 +18,8 @@
 #   P2  the same from the ROM's entry with diagnostics (173006)
 #   P3  'PR/TT', console DL11 as the reader (TT0, the stream typed by SEND)
 #   Z1  'ZZ' 23-ZZZA9 continuous diagnostics with the 23-248F1, 3 passes
-#   X1  'XE' 23-E32A9/E33A9 on a DEUNA: address printout, BOOT refused (case 109)
+#   X1  'XE' 23-E32A9/E33A9 on a DEUNA: address printout, the board asks for its
+#       secondary loader (no load host here; the full boot: ../deuna_boot B6)
 #   D1  SET TTI DEBUG=DAT with a NUL byte typed in: no abort (case 110; no image)
 #   L1  console DL11 maintenance loopback and a character sent before RESET
 #       (cases 107, 108; no image)
@@ -103,7 +104,8 @@ for t in $TESTS; do
     P3)    grep_all $t.out "@TT0" "TT BOOT OK" "HALT instruction, PC: 157636" "157776:	177560" || ok=0;;
     Z1)    grep_all $t.out "@ZZ0" "End Pass 000001" "End Pass 000003" || ok=0;;
     X1)    grep_all $t.out "@XE0" "ETHERNET PHYSICAL ADDRESS = 08-00-2B-12-34-56" \
-                           "BOOT command not implemented" "PC: 000002" || ok=0;;
+                           "PC: 000002" || ok=0
+           grep -q "boot: send MOP code 08" x1.dbg || { echo "  no boot request"; ok=0; };;
     D1)    grep_all $t.out "HALT instruction, PC: 001026" "2000:	040751" "2002:	041000" || ok=0
            grep -q "Received data: 0x00 '.'" d1.dbg || { echo "  no NUL line in d1.dbg"; ok=0; };;
     L1)    grep_all $t.out "HALT instruction, PC: 001046" "3000:	000101" || ok=0
