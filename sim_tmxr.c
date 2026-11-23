@@ -26,6 +26,11 @@
    Based on the original DZ11 simulator by Thord Nilson, as updated by
    Arthur Krewat.
 
+   23-Nov-26    Claude  Per line listener: an incoming connection that the
+                        peer has already closed is discarded and the next one
+                        is tried at once (connection attempts the peer gave up
+                        waited in the listen queue and kept its live
+                        connection from being taken for many polls)
    12-Oct-12    MP      Revised serial port support to not require changes to
                         any code in TMXR library using code.  Added support
                         for per line listener ports and outgoing tcp connections.
@@ -1328,6 +1333,12 @@ for (i = 0; i < mp->lines; i++) {                       /* check each line in se
                         tmxr_debug_connect_line (lp, msg);
                         free (sockname);
                         free (peername);
+                        if (sim_peek_closed_sock (newsock)) {       /* given up by the peer while it waited? */
+                            tmxr_debug_connect_line (lp, "tmxr_poll_conn() - Incoming connection already closed by the peer, discarded");
+                            sim_close_sock (newsock);
+                            free (address);
+                            continue;                               /* try the next one now */
+                            }
                         ++lp->sessions;                             /* count the new session */
 
                         if (lp->acl) {                              /* Restrict connection with ACL rules? */

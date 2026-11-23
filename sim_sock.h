@@ -128,6 +128,7 @@ SOCKET sim_connect_sock_ex (const char *sourcehostport, const char *hostport, co
 SOCKET sim_accept_conn_ex (SOCKET master, char **connectaddr, int opt_flags);
 #define sim_accept_conn(master, connectaddr) sim_accept_conn_ex(master, connectaddr, 0)
 int sim_check_conn (SOCKET sock, int rd);
+int sim_peek_closed_sock (SOCKET sock);
 int sim_read_sock (SOCKET sock, char *buf, int nbytes);
 int sim_write_sock (SOCKET sock, const char *msg, int nbytes);
 void sim_close_sock (SOCKET sock);
