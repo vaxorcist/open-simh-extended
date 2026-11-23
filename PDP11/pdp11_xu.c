@@ -62,6 +62,8 @@
 
   Modification history:
 
+  23-Nov-26  Claude  BOOT XU/XUB (PDP-11): a built-in bootstrap as DEC's 'XE'
+                   ROM; HELP XU Booting topic
   22-Nov-26  Claude  BOOT port command: primary load of a secondary loader, then
                    the UNA secondary loader's work (tertiary into host memory,
                    host start), as DEC's DEUNA/DELUA and SECUNA do
@@ -133,6 +135,12 @@ void xu_process_receive(CTLR* xu);
 t_bool xu_boot_receive (CTLR* xu, ETH_PACK* pack);
 void xu_boot_timer (CTLR* xu);
 void xu_boot_begin (CTLR* xu);
+#if defined (VM_PDP11)
+t_stat xu_boot (int32 unitno, DEVICE *dptr);
+#define XU_BOOT_RTN     &xu_boot
+#else
+#define XU_BOOT_RTN     NULL                            /* the VAX boots otherwise */
+#endif
 void xu_setclrint (CTLR* xu, int32 bits);
 void xu_dump_rxring(CTLR* xu);
 void xu_dump_txring(CTLR* xu);
@@ -243,7 +251,7 @@ DEVICE xu_dev = {
     "XU", xua_unit, xua_reg, xu_mod,
     2, XU_RDX, 8, 1, XU_RDX, 8,
     &xu_ex, &xu_dep, &xu_reset,
-    NULL, &xu_attach, &xu_detach,
+    XU_BOOT_RTN, &xu_attach, &xu_detach,
     &xua_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_DEBUG | DEV_ETHER,
     0, xu_debug, NULL, NULL, &xu_help, NULL, NULL,
     &xu_description
@@ -309,7 +317,7 @@ DEVICE xub_dev = {
   "XUB", xub_unit, xub_reg, xu_mod,
   2, XU_RDX, 8, 1, XU_RDX, 8,
   &xu_ex, &xu_dep, &xu_reset,
-  NULL, &xu_attach, &xu_detach,
+  XU_BOOT_RTN, &xu_attach, &xu_detach,
   &xub_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_DEBUG | DEV_ETHER,
   0, xu_debug, NULL, NULL, NULL, NULL, NULL,
   &xu_description
@@ -2172,6 +2180,45 @@ void xu_dump_txring (CTLR* xu)
   }
 }
 
+#if defined (VM_PDP11)
+/* BOOT XU / BOOT XUB: a bootstrap at 002000 doing what DEC's M9312 'XE'
+   boot ROM (23-E32A9/E33A9) does after its address printout: BR . at 2,
+   the port's CSR address at 4, the BOOT port command (5) to PCSR0, and
+   the CPU waits at 2.  The controller's boot engine then loads the
+   tertiary loader by MOP and starts it with R1 = CSR (see xu_boot_end).
+   The tertiary loader may overwrite the bootstrap: it is not run again. */
+
+#define XU_BOOT_START   002000                          /* bootstrap start */
+
+static const uint16 xu_boot_rom[] = {
+    0012737, 0000777, 0000002,                          /* MOV #777,@#2   BR . */
+    0012737, 0000000, 0000004,                          /* MOV #csr,@#4   CSR */
+    0012737, 0000005, 0000000,                          /* MOV #5,@#csr   BOOT */
+    0000137, 0000002                                    /* JMP @#2 */
+    };
+
+t_stat xu_boot (int32 unitno, DEVICE *dptr)
+{
+CTLR* xu = xu_dev2ctlr (dptr);
+DIB* dib = (DIB *) dptr->ctxt;
+int32 csr = dib->ba & 0177777;
+size_t i;
+
+if ((xu == NULL) || (unitno != 0))                      /* unit 0 is the port */
+    return SCPE_NOFNC;
+if (xu->var->etherface == NULL)                         /* BOOT needs a network */
+    return sim_messagef (SCPE_UNATT, "%s: BOOT needs an attached network (ATTACH %s ...)\n",
+                         dptr->name, dptr->name);
+for (i = 0; i < sizeof (xu_boot_rom) / sizeof (xu_boot_rom[0]); i++)
+    WrMemW (XU_BOOT_START + (2 * i), xu_boot_rom[i]);
+WrMemW (XU_BOOT_START + 010, csr);                      /* the CSR for 4 */
+WrMemW (XU_BOOT_START + 020, csr);                      /* ... for the command */
+sim_debug (DBG_BOOT, dptr, "boot: bootstrap at %06o, CSR %06o\n", XU_BOOT_START, csr);
+cpu_set_boot (XU_BOOT_START);
+return SCPE_OK;
+}
+#endif
+
 t_stat xu_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
 {
 const char helpString[] =
@@ -2313,6 +2360,59 @@ const char helpString[] =
     " simulated which is configured with IP Address 10.0.2.15 and connections\n"
     " to host port 2121 to reach port 21 on the simulated system.\n"
     "\n"
+#ifdef VM_PDP11
+    "1 Booting\n"
+    " A PDP-11 can boot over the network through the %D, as with DEC's MOP\n"
+    " down-line load.  The port must be attached to a network that reaches the\n"
+    " load host.  There are two ways to start it:\n"
+    "\n"
+    "+sim> BOOT %D\n"
+    "\n"
+    " uses a built-in bootstrap at 002000.  As an alternative, DEC's M9312 boot\n"
+    " ROM 'XE' (23-E32A9/E33A9) can be used: attach its image to a ROM unit\n"
+    " (see HELP ROM; the images are not part of the simulator) and start it,\n"
+    " for example from DEC's 23-248F1 console ROM with the command XE0:\n"
+    "\n"
+    "+sim> SET ROM0 ADDRESS=17765000\n"
+    "+sim> ATTACH ROM0 m9312_248F1.bin\n"
+    "+sim> SET ROM1 ADDRESS=17773000\n"
+    "+sim> ATTACH ROM1 m9312_xe.bin\n"
+    "+sim> GO 165020\n"
+    "+@XE0\n"
+    "\n"
+    " Both write a BR . at 2 and the CSR address at 4, give the port the BOOT\n"
+    " command and wait at 2.  The ROM also prints the port's Ethernet address.\n"
+    "2 Sequence\n"
+    " The BOOT port command asks for a secondary loader by a MOP Request\n"
+    " Program (device type 1 for a DEUNA, 11 for a DELUA; sent to the load\n"
+    " server address, else to the load assistant multicast AB-00-00-01-00-00;\n"
+    " repeated every 5 seconds, after 8 tries every 30 seconds).  A real board\n"
+    " runs that loader on its own processor.  The simulator does not run it but\n"
+    " does its work, as DEC's UNA secondary loader does: it asks the same host\n"
+    " for the tertiary loader, stores the Memory Loads in the PDP-11's memory\n"
+    " and starts the tertiary loader at its transfer address with R1 = CSR.\n"
+    " The tertiary loader then drives the port itself and loads the system.\n"
+    "2 Load Host\n"
+    " The load host needs a node entry for the %D's Ethernet address (SET %D\n"
+    " MAC) with service device UNA and CPU PDP11, a secondary loader (any\n"
+    " file: it is sent but not used), a tertiary loader (such as TERUNA.SYS of\n"
+    " DECnet-RSX) and a load file.  For VMS NCP, for example:\n"
+    "\n"
+    "+SET NODE PDPNET SERVICE CIRCUIT UNA-0 HARDWARE ADDRESS 08-00-2B-12-34-56\n"
+    "+SET NODE PDPNET SERVICE DEVICE UNA CPU PDP11\n"
+    "+SET NODE PDPNET SECONDARY LOADER SYS$SYSTEM:SECUNA.SYS\n"
+    "+SET NODE PDPNET TERTIARY LOADER SYS$SYSTEM:TERUNA.SYS\n"
+    "+SET NODE PDPNET LOAD FILE SYS$SYSTEM:system-image.SYS\n"
+    "\n"
+    " and SERVICE ENABLED on the Ethernet circuit.\n"
+    "2 Debugging\n"
+    " SET %D DEBUG=BOOT logs every MOP message of the boot.\n"
+    "2 Limits\n"
+    " The remote console boot message (MOP remote console, code 06) is not\n"
+    " implemented.  The requests for the secondary loader go on until a host\n"
+    " answers; a tertiary load is given up after 10 seconds without a Memory\n"
+    " Load; a port reset ends the boot.\n"
+#endif
     "1 Monitoring\n"
     " The %D device configuration and state can be displayed with one of the\n"
     " available show commands.\n"
