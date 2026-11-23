@@ -1,4 +1,4 @@
-open-simh-extended/tests/deuna_boot/README.txt  v3 (2026-11-22; v3: B9 with a real RSX-11S image (LOADFILE=, PDPMEM=): loaded completely; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
+open-simh-extended/tests/deuna_boot/README.txt  v4 (2026-11-23; v4: B9 with remwrt.tsk as LOAD FILE: VMS loads it and remwrt runs; v3: B9 with a real RSX-11S image (LOADFILE=, PDPMEM=): loaded completely; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
 
 DEUNA/DELUA BOOT port command (SIMH XU device, patch 23, known issue 109)
 =========================================================================
@@ -82,3 +82,15 @@ NETTEST.SYS); the PDP-11 boots with XE0.  State 2026-11-22:
   DECserver 500 image needs its own hardware (J-11, line cards, its
   Ethernet interface), not an 11/34 with a DEUNA.  So the whole chain VMS
   -> DEUNA boot engine -> TERUNA -> system image works (2026-11-22).
+  A task image works as well (2026-11-23): Ulli's remwrt.tsk (Lee Gleason's
+  LOCALWRITE client, 66 blocks, made with ../dmv11_vmsload/obj2tsk.py; not
+  in the repository):
+      LOADFILE=remwrt.tsk ./vmshost.sh BINDIR DISK
+  OPCOM: all three loads "Successful" ("... Operating system"); TERUNA
+  starts it, and the PDP-11 console shows "REMWRT V01A03 ... Control-G
+  Consultants" and "Choose disk unit to write to:" (on one line, known
+  issue 95), waiting for input.  remwrt itself needs a DEQNA and an
+  RQDX3 (Q-bus); SIMH's DEUNA is a Unibus device, so its LOCALWRITE part
+  cannot be used on this 11/34.  So a VMS load host also loads an RSX
+  task image (task label plus image) through the DEUNA, unlike the
+  task-labelled test file of mknettest.py v4.
