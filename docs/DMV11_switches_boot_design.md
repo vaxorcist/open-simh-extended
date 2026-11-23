@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v9, 2026-11-22 (v9: section 9, starting the M9312 'XM' ROM by hand: GO 173004, not BOOT CPU; v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v10, 2026-11-23 (v10: section 10, BOOT DMCn with a MOP bootstrap written for SIMH (patch 24), known issues 115, 116; v9: section 9, starting the M9312 'XM' ROM by hand: GO 173004, not BOOT CPU; v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -622,3 +622,60 @@ of the tests says how to build it. All 17 boot tests PASS; the VMS V4.7
 DECnet pairs PASS with the poll change (DMV11, DMP11, point-to-point and
 multipoint) and again with DTR kept, now also over a DMC11 and a DMR11
 (`pair.sh` v7, `DEV=DMC|DMR`): six of six.
+
+## 10. BOOT DMCn: a MOP bootstrap in place of the 'XM' ROM (2026-11-23, patch 24)
+
+Ulli asked why the DMC11 and DMR11 have no boot command like the
+DEUNA/DELUA. The real boards have none on the host's side: a local boot runs
+from the CPU's boot ROM (DEC's M9312 'XM'), which drives the board as a host
+program does. Ulli chose a built-in bootstrap in place of the ROM, the same
+way `BOOT XU` stands in for the 'XE' ROM (with the ROM route kept).
+
+- **The bootstrap** (`PDP11/pdp11_dmc_boot.mac`, written for SIMH, not
+  derived from DEC code; 550 words, position independent; assembled with
+  macro11 v0.3 and turned into `PDP11/pdp11_dmc_boot.h` by
+  `tools/dmc_bootstrap/mkdmcboot.py`). `BOOT DMCn` copies it to the 8 KB
+  below 160000 (or below the end of a smaller memory; at least 16 KB
+  needed), fills in the CSR, the MOP device type (12 DMC11, 40 DMR11), the
+  program type (SET DMCn PROGRAM) and the number of wait loops for about
+  5 s (from `sim_timer_inst_per_sec()`), and starts it at priority 7.
+- **What it does:** master clear, wait for RUN; BASE IN (base table in its
+  area); CONTROL IN with maintenance mode; four receive buffers (a load
+  host may send several messages back to back, and a maintenance message
+  that finds no buffer is lost; the completions go into a small queue);
+  Request Program `08 dd 01 pp`. Memory Load (2): stored, answered with
+  Request Memory Load (10) and the next number; a repeated load is answered
+  again, a load numbered 0 starts the load over; a load beyond 64 KB or
+  into the bootstrap is answered with error 1. Memory Load with Transfer
+  Address (0) or Parameter Load with Transfer Address (20): master clear,
+  then R1 = CSR, SP = 1000, priority 7, jump. Without an answer it repeats
+  its last message after about 5 s; after three repeats it starts over with
+  Request Program. It gives the board at most one transmit buffer.
+- **The host interface rules it follows** (found on the way): after
+  clearing RQI the host must wait until the board has taken the command
+  (RDI off) before the next request; SIMH acts on a register write about
+  10 instructions later. A transmit buffer too many crashed SIMH (known
+  issue 115, fixed).
+- **HELP:** HELP DMC Booting has a new subtopic "BOOT command"; HELP BOOT
+  lists the DMC device and names BOOT XU and BOOT DMCn.
+
+Tests:
+
+- `tests/dmv11_boot/` R8 (DMC11: a repeated Request Program, three loads,
+  start registers R1 = CSR 160070, SP 1000 at a breakpoint at 1000), R9
+  (DMR11, PROGRAM=TERTIARY: Request Program `08 28 01 01`, 64 KB), R10
+  (refusals: not attached, no such unit; HELP DMC, HELP BOOT): PASS; all
+  20 tests T1-T6, P1-P4, R1-R10 PASS (R6/R7 with the 'XM' ROM image).
+  `tests/deuna_boot` B2-B12 PASS.
+- VMS V4.7 as the load host over a DMC11 (`tests/dmc_boot/vmsdmc.sh`,
+  VAX-11/780 node VAX4 and PDP-11/34): VMS answers the bootstrap's Request
+  Program by itself (the circuit goes "on -autoloading", no NCP LOAD NODE).
+  PROGRAM=SECONDARY: VMS sends HELLO.TSK as one Memory Load with Transfer
+  Address at address 6; HELLO runs, R1 was the CSR: PASS. PROGRAM=SYSTEM:
+  VMS sends the LOAD FILE in Memory Loads and a Parameter Load with
+  Transfer Address: 2 of 4 runs loaded (HELLO.TSK; remwrt.tsk over a
+  DMR11, "Load, Successful", remwrt's banner), 2 failed with "Load, Line
+  protocol error": the Request Programs the bootstrap repeated while VMS's
+  DMC11 still ran DDCMP waited on the TCP line and reached VMS during the
+  load, where it expected a Request Memory Load. A real line loses such
+  messages; SIMH keeps them (known issue 116, decision for Ulli).

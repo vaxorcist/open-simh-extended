@@ -1,0 +1,672 @@
+From a3001eb0773109384409c7636f351f9ce621ff3c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 10:55:57 +0100
+Subject: [PATCH] DMC11/DMR11: BOOT DMCn with a built-in MOP bootstrap
+ (PDP-11); no crash on a transmit buffer too many
+
+A real DMC11 or DMR11 has no boot of its own on the host's side: a local
+boot runs from the CPU's boot ROM (DEC's M9312 DECnet ROM 'XM'), which
+drives the board as a host program does.  SIMH has no such ROM, so
+BOOT DMCn copies a small MOP bootstrap written for SIMH
+(pdp11_dmc_boot.mac, position independent; pdp11_dmc_boot.h generated
+from it) to the 8 KB below 160000 (or below the end of a smaller memory)
+and starts it.  It master-clears the board, enters maintenance mode, gives
+four receive buffers, sends Request Program (device type 12 DMC11 or 40
+DMR11, the program type of SET DMCn PROGRAM), stores Memory Loads and
+answers them with Request Memory Load, and starts the program at the
+transfer address of a Memory Load or Parameter Load with Transfer Address
+with R1 = CSR and SP = 1000, after a master clear.  Without an answer it
+asks again after about 5 s (wait loops computed from the simulated
+instruction rate); after three repeats, or on a load numbered 0, the load
+starts over.  HELP DMC (Booting, BOOT command) and HELP BOOT describe it;
+the 'XM' ROM route stays.
+
+A BA/CC IN transmit command when no buffer is free dereferenced NULL and
+crashed the simulator (also upstream); the command is now dropped
+(known issue 115).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_cpu.c        |  11 +-
+ PDP11/pdp11_dmc.c        |  89 +++++++++-
+ PDP11/pdp11_dmc_boot.h   |  89 ++++++++++
+ PDP11/pdp11_dmc_boot.mac | 366 +++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 550 insertions(+), 5 deletions(-)
+ create mode 100644 PDP11/pdp11_dmc_boot.h
+ create mode 100644 PDP11/pdp11_dmc_boot.mac
+
+diff --git a/PDP11/pdp11_cpu.c b/PDP11/pdp11_cpu.c
+index 6ff0d1f7..a4c9c43e 100644
+--- a/PDP11/pdp11_cpu.c
++++ b/PDP11/pdp11_cpu.c
+@@ -3746,10 +3746,13 @@ fprintf (st, "controller; SIMH also offers them on the Qbus, which DEC's own Qbu
+ fprintf (st, "systems did not have.  BOOT CPU starts the image attached to ROM0\n");
+ fprintf (st, "(HELP ROM); SIMH has no boot ROM images of its own.  BOOT DMVn and\n");
+ fprintf (st, "BOOT DMPn are the DMV11's and DMP11's primary MOP boot from a DECnet\n");
+-fprintf (st, "load host and need their switches (HELP DMV, HELP DMP).  The DMC11 and\n");
+-fprintf (st, "DMR11 have no BOOT command: a load host starts them by remote load\n");
+-fprintf (st, "detect, into a boot ROM such as the M9312 DECnet ROM or by their own\n");
+-fprintf (st, "load (HELP DMC).  For the details of a device's bootstrap see HELP <dev>.\n\n");
++fprintf (st, "load host and need their switches (HELP DMV, HELP DMP).  BOOT XU and\n");
++fprintf (st, "BOOT DMCn start a MOP bootstrap written for SIMH in place of a DECnet boot\n");
++fprintf (st, "ROM (DEC's 'XE' for the DEUNA/DELUA, 'XM' for the DMC11/DMR11); those\n");
++fprintf (st, "ROMs still work when attached to a ROM unit (HELP XU, HELP DMC).  A host\n");
++fprintf (st, "can also start a DMC11 or DMR11 by remote load detect, into a boot ROM or\n");
++fprintf (st, "the board's own load (HELP DMC).  For the details of a device's bootstrap\n");
++fprintf (st, "see HELP <dev>.\n\n");
+ return SCPE_OK;
+ }
+ 
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index c91c2e7d..219a3f2a 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -36,6 +36,8 @@
+                   with BOOT DMVn, invoke primary MOP) on the PDP-11
+   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
+                   request); a sent DDCMP maintenance message completes at once
++  23-Nov-26  Ulli DMC11/DMR11: BOOT DMCn with a built-in MOP bootstrap
++                  (pdp11_dmc_boot.mac) in place of a DECnet boot ROM
+   25-Jan-13  RJ   Error checking for already attached in dmc_settype() fixed.
+   25-Jan-13  RJ   If attach when already attached then detach first.
+   23-Jan-13  RJ   Don't do anything if not attached. See https://github.com/simh/simh/issues/28
+@@ -130,6 +132,7 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
+ extern int32 trap_req;                                  /* CPU trap requests */
+ extern int32 MMR0, MMR3;                                /* memory management */
+ extern t_stat (*iodispR[IOPAGESIZE >> 1])(int32 *dat, int32 ad, int32 md);  /* I/O page readers (DMR11 boot ROM) */
++#include "pdp11_dmc_boot.h"                             /* BOOT DMCn: the MOP bootstrap */
+ #else
+ #define DMV_BOOT_SUPPORTED  0
+ #endif
+@@ -1353,6 +1356,12 @@ t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ t_stat dmr_set_switchbyte (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+ t_stat dmr_show_switchbyte (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ t_stat dmv_boot (int32 unitno, DEVICE *dptr);
++t_stat dmc_boot (int32 unitno, DEVICE *dptr);
++#if DMV_BOOT_SUPPORTED
++#define DMC_BOOT_RTN    &dmc_boot
++#else
++#define DMC_BOOT_RTN    NULL                            /* VAX, PDP-10: no BOOT DMCn */
++#endif
+ t_bool dmv_boot_active (CTLR *controller);
+ t_bool dmv_boot_receive (CTLR *controller);
+ t_bool dmv_boot_invoke (CTLR *controller, uint8 soft_address);
+@@ -1771,7 +1780,7 @@ DEVICE dmc_dev =
+     "DMC", 
+ #endif
+     dmc_units, dmc_reg, dmc_mod, 3, DMC_RDX, 8, 1, DMC_RDX, 8,
+-    NULL, NULL, &dmc_reset, NULL, &dmc_attach, &dmc_detach,
++    NULL, NULL, &dmc_reset, DMC_BOOT_RTN, &dmc_attach, &dmc_detach,
+     &dmc_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_DEBUG | DEV_DONTAUTO, 0, dmc_debug,
+     NULL, NULL, &dmc_help, &dmc_help_attach, NULL, &dmc_description };
+ 
+@@ -2631,6 +2640,28 @@ const char helpDmrBoot[] =
+     "\n"
+     " An Enter MOP Mode with a wrong password does not boot.  The DMC11 and\n"
+     " DMR11 have no power-on boot and no invoke primary MOP function.\n"
++    "2 BOOT command\n"
++    " A real DMC11 or DMR11 has no boot of its own on the host's side: a\n"
++    " local boot runs from the CPU's boot ROM (DEC's M9312 DECnet ROM 'XM',\n"
++    " started from the console, for example XM0 at the 23-248F1 console's\n"
++    " prompt), which drives the board as a host program does.  That works in\n"
++    " SIMH with the ROM image attached to a ROM unit (HELP ROM).  Without a ROM\n"
++    " image,\n"
++    "\n"
++    "+sim> BOOT %U\n"
++    "\n"
++    " starts a small MOP bootstrap written for SIMH in place of the ROM.  The\n"
++    " line must be attached.  The bootstrap lies in the 8 KB below 160000 (or\n"
++    " below the end of a smaller memory).  It master-clears the board, puts it\n"
++    " into maintenance mode and asks the load host for the program: Request\n"
++    " Program with MOP device type 12 (DMC11) or 40 (DMR11) and the program\n"
++    " type of SET %U PROGRAM.  It stores each Memory Load and answers it with\n"
++    " Request Memory Load; a Memory Load with Transfer Address or a Parameter\n"
++    " Load with Transfer Address starts the program, with R1 = the board's CSR\n"
++    " and SP = 1000, after a master clear of the board.  Without an answer it\n"
++    " asks again after about 5 seconds.  Loads must lie below the bootstrap\n"
++    " (no memory management); a larger system is loaded through a secondary\n"
++    " or tertiary loader.\n"
+ #endif
+     "";
+ const char helpMonitor[] =
+@@ -5062,6 +5093,11 @@ if (dmc_is_dmc(controller)) {
+                     BUFFER *buffer = dmc_buffer_queue_add(controller->xmt_queue, addr, count, TransmitData);
+                     int n;
+ 
++                    if (buffer == NULL) {           /* no free buffer: the host gave more than the */
++                        controller->transfer_state = Idle;  /* board takes (known issue 115) */
++                        dmc_process_command (controller);
++                        return;
++                        }
+                     /* construct buffer - leaving room for DDCMP header and CRCs */
+                     buffer->transfer_buffer = (uint8 *)realloc (buffer->transfer_buffer, buffer->count + DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
+                     memset (buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
+@@ -6701,6 +6737,57 @@ dmv_boot_begin (controller, DMVB_HOW_POWERON, address, FALSE);
+ return SCPE_OK;
+ }
+ 
++/* BOOT DMCn: the DMC11 and DMR11 have no boot of their own on the host's
++   side (a local boot ran from the CPU's boot ROM, such as DEC's M9312
++   DECnet ROM 'XM', which drives the board as a host program does).  SIMH
++   has no such ROM, so BOOT DMCn copies a small MOP bootstrap written for
++   SIMH (pdp11_dmc_boot.mac, position independent) to the top of the low
++   56 KB of memory and starts it there.  It master-clears the board, puts
++   it into maintenance mode, asks the load host for the program (Request
++   Program with the board's MOP device type, 12 DMC11 or 40 DMR11, and the
++   program type of SET DMCn PROGRAM), stores Memory Loads below itself,
++   answers each with Request Memory Load, and starts the program at the
++   transfer address of the last load with R1 = CSR and SP = 1000, after a
++   master clear of the board.  A request without an answer is sent again
++   after about 5 s of simulated time (the wait loop count follows the
++   simulated instruction rate). */
++t_stat dmc_boot (int32 unitno, DEVICE *dptr)
++{
++#if DMV_BOOT_SUPPORTED
++CTLR *controller;
++uint32 top = (MEMSIZE < 0160000) ? MEMSIZE : 0160000;  /* no memory management */
++uint32 base, csr, ticks;
++double ips = sim_timer_inst_per_sec ();
++size_t i;
++
++if ((unitno < 0) || (unitno >= (int32)dptr->numunits - 2) || (unitno >= DMC_NUMDEVICE))
++    return SCPE_ARG;
++controller = (CTLR *)dptr->units[unitno].ctlr;
++if (!(dptr->units[unitno].flags & UNIT_ATT))
++    return sim_messagef (SCPE_UNATT, "%s%d is not attached to its line\n", dptr->name, unitno);
++if (top < 2 * DMCB_AREA)
++    return sim_messagef (SCPE_ARG, "BOOT %s needs at least %d KB of memory\n", dptr->name, (2 * DMCB_AREA) >> 10);
++base = top - DMCB_AREA;
++csr = (dmc_dib.ba + (IOLN_DMC * controller->index)) & 0177777;
++for (i = 0; i < sizeof (dmc_boot_code) / sizeof (dmc_boot_code[0]); i++)
++    WrMemW (base + (2 * i), dmc_boot_code[i]);
++WrMemW (base + DMCB_CSR, csr);
++WrMemW (base + DMCB_DEVT, dmx_board (controller)->mop_devtype | (*dmx_program (controller) << 8));
++ticks = (ips > 0.0) ? (uint32)((ips * 5.0) / DMCB_LOOP) : 0;
++if (ticks < 1)
++    ticks = 1;
++if (ticks > 0177777)
++    ticks = 0177777;
++WrMemW (base + DMCB_TICKS, ticks);
++sim_debug (DBG_INF, dptr, "%s%d: BOOT: MOP bootstrap at %06o, CSR %06o, device type %d, program type %d, wait loops %d\n",
++           dptr->name, unitno, base, csr, dmx_board (controller)->mop_devtype, *dmx_program (controller), ticks);
++cpu_set_boot (base);
++return SCPE_OK;
++#else
++return SCPE_NOFNC;
++#endif
++}
++
+ /* Invoke primary MOP (from the master clear): as the power-on boot.  A
+    multipoint tributary without a switch address uses the first tributary
+    the program established, not with the power-on boot switch (4.7.4.2).
+diff --git a/PDP11/pdp11_dmc_boot.h b/PDP11/pdp11_dmc_boot.h
+new file mode 100644
+index 00000000..d7eadecb
+--- /dev/null
++++ b/PDP11/pdp11_dmc_boot.h
+@@ -0,0 +1,89 @@
++/* pdp11_dmc_boot.h: DMC11/DMR11 MOP bootstrap for BOOT DMCn
++
++   Generated by tools/dmc_bootstrap/mkdmcboot.py (notes branch) from
++   pdp11_dmc_boot.mac, assembled with the macro11 cross assembler.
++   Do not edit: change pdp11_dmc_boot.mac and generate it again.
++
++   The program is position independent.  SIMH copies the words below
++   to the top of the low 56 KB of memory (DMCB_AREA bytes are used,
++   the receive buffer behind the copied words included), fills in
++   the parameters and starts it at its first word. */
++
++#define DMCB_AREA   020000     /* bytes of memory the bootstrap uses */
++#define DMCB_CSR    02        /* parameter: the board's CSR (word) */
++#define DMCB_DEVT   04        /* parameter: MOP device type (byte) */
++#define DMCB_PROGT  05        /* parameter: MOP program type (byte) */
++#define DMCB_TICKS  06        /* parameter: wait loops of about 5 s (word) */
++#define DMCB_LOOP   30000      /* instructions in one wait loop (10000 polls) */
++
++static const uint16 dmc_boot_code[] = {
++    0000433, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0010704, 0162704, 0000072, 0010406,
++    0062706, 0001474, 0016705, 0177672, 0004767, 0001242, 0005067, 0177670,
++    0005067, 0177672, 0005067, 0177670, 0005067, 0177726, 0010400, 0062700,
++    0001474, 0005001, 0012702, 0000003, 0004767, 0001000, 0005000, 0012701,
++    0000400, 0012702, 0000001, 0004767, 0000762, 0012746, 0000004, 0010400,
++    0062700, 0002114, 0010046, 0004767, 0000724, 0012600, 0062700, 0003354,
++    0005316, 0001370, 0005726, 0005067, 0177556, 0010400, 0062700, 0002074,
++    0112720, 0000010, 0116720, 0177534, 0112720, 0000001, 0116720, 0177525,
++    0012767, 0000004, 0177524, 0005067, 0177574, 0005767, 0177564, 0001014,
++    0010400, 0062700, 0002074, 0016701, 0177500, 0012702, 0000000, 0004767,
++    0000632, 0012767, 0000001, 0177532, 0016767, 0177452, 0177526, 0026767,
++    0177454, 0177454, 0001026, 0012703, 0023420, 0105765, 0000002, 0100413,
++    0077304, 0005367, 0177476, 0001367, 0005267, 0177472, 0026727, 0177466,
++    0000003, 0103733, 0000710, 0004767, 0000634, 0026767, 0177400, 0177400,
++    0001754, 0016701, 0177370, 0060401, 0062701, 0000022, 0011102, 0016167,
++    0000020, 0177350, 0062767, 0000002, 0177344, 0042767, 0177761, 0177336,
++    0111200, 0042700, 0177400, 0020027, 0000002, 0001412, 0020027, 0000000,
++    0001464, 0020027, 0000024, 0001501, 0010200, 0004767, 0000420, 0000707,
++    0004767, 0000262, 0103413, 0001370, 0016701, 0177260, 0162701, 0000006,
++    0002763, 0004767, 0000312, 0103421, 0105267, 0177234, 0010200, 0004767,
++    0000354, 0010400, 0062700, 0002074, 0112720, 0000012, 0116720, 0177210,
++    0105010, 0012767, 0000003, 0177202, 0000626, 0010200, 0004767, 0000316,
++    0010400, 0062700, 0002074, 0112720, 0000012, 0116720, 0177152, 0112710,
++    0000001, 0012767, 0000003, 0177142, 0000606, 0004767, 0000130, 0001314,
++    0016701, 0177130, 0162701, 0000012, 0002707, 0004767, 0000162, 0103745,
++    0010203, 0062703, 0000006, 0060103, 0000415, 0004767, 0000070, 0001274,
++    0010203, 0062703, 0000002, 0112300, 0001405, 0112300, 0042700, 0177400,
++    0060003, 0000771, 0112300, 0042700, 0177400, 0112301, 0000301, 0105001,
++    0050100, 0010002, 0004767, 0000366, 0010501, 0012706, 0001000, 0012737,
++    0000340, 0177776, 0000112, 0116200, 0000001, 0042700, 0177400, 0001002,
++    0005067, 0176764, 0016701, 0176760, 0020001, 0001411, 0005301, 0042701,
++    0177400, 0020001, 0001003, 0000244, 0000261, 0000207, 0000241, 0000207,
++    0005762, 0000004, 0001022, 0016200, 0000002, 0010003, 0060103, 0103415,
++    0020304, 0101013, 0010203, 0062703, 0000006, 0010146, 0001403, 0112320,
++    0005301, 0001375, 0012601, 0000241, 0000207, 0000261, 0000207, 0012701,
++    0003354, 0012702, 0000004, 0004767, 0000002, 0000207, 0010246, 0052716,
++    0000040, 0112665, 0000000, 0105765, 0000000, 0100412, 0105765, 0000002,
++    0100372, 0010046, 0010146, 0004767, 0000034, 0012601, 0012600, 0000763,
++    0010065, 0000004, 0010165, 0000006, 0142765, 0000040, 0000000, 0105765,
++    0000000, 0100775, 0000207, 0116500, 0000002, 0042700, 0177770, 0001006,
++    0005067, 0176576, 0016767, 0176516, 0176572, 0000426, 0020027, 0000004,
++    0001023, 0016701, 0176512, 0060401, 0062701, 0000022, 0016511, 0000004,
++    0016500, 0000006, 0042700, 0140000, 0010061, 0000020, 0062767, 0000002,
++    0176456, 0042767, 0177761, 0176450, 0105065, 0000002, 0000207, 0012765,
++    0040000, 0000000, 0005765, 0000000, 0100375, 0000207, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    };
+diff --git a/PDP11/pdp11_dmc_boot.mac b/PDP11/pdp11_dmc_boot.mac
+new file mode 100644
+index 00000000..d0552e3c
+--- /dev/null
++++ b/PDP11/pdp11_dmc_boot.mac
+@@ -0,0 +1,366 @@
++; DMC11/DMR11 down-line load bootstrap for SIMH's BOOT DMCn (PDP-11).
++; Written for SIMH (2026-11-23) in place of a boot ROM such as DEC's
++; M9312 'XM' (which SIMH does not include): a small MOP client that runs
++; on the PDP-11 and drives the DMC11/DMR11 through its normal host
++; interface, as a boot ROM does.  Not derived from DEC code.
++;
++; SIMH copies this program to the top of the low 56 KB of memory (the
++; 8 KB below 160000 or below the end of memory, whichever is lower; see
++; BOOTSZ) and
++; fills in the parameter words CSR, DEVT, PROGT and TICKS; then it starts
++; it at its first word.  The program is position independent.
++;
++; What it does:
++;   1. master clear the board, wait for RUN;
++;   2. BASE IN (base table inside this program's area), CONTROL IN with
++;      maintenance mode (MOP messages travel as DDCMP maintenance messages);
++;   3. give the board four receive buffers (a load host may send several
++;      messages back to back, and a DDCMP maintenance message that finds
++;      no buffer is lost; completions are queued) and send MOP Request
++;      Program
++;      (8, device type, format 1, program type);
++;   4. take the answers:
++;      Memory Load (code 2): store the data, answer Request Memory Load
++;        (code 10) with the next load number;
++;      Memory Load with Transfer Address (code 0) or Parameter Load with
++;        Transfer Address (code 20): store the data (code 0), then start;
++;      a load with the number of the previous load is answered again
++;      without storing; other messages are ignored;
++;   5. without an answer, send the last message again after about 5 s
++;      (after 3 repeats without an answer, start over with Request
++;      Program; a load numbered 0 also starts over)
++;      (TICKS, set by SIMH from the simulated instruction rate); a message
++;      is given to the board only when the last one has been sent, so the
++;      board never holds more than one transmit buffer;
++;   6. start: master clear the board (no buffer left with it), then
++;      R1 = CSR, SP = 1000, priority 7, JMP to the transfer address.
++; Loads must lie below this program (the low 56 KB, no memory management).
++;
++; Assemble: macro11 -o dmcboot.obj -l dmcboot.lst dmcboot.mac
++; (tools/dmc_bootstrap/mkdmcboot.py turns the object file into the C
++; array of PDP11/pdp11_dmc_boot.h).
++
++        .TITLE  DMCBOT  DMC11/DMR11 MOP bootstrap for SIMH
++        .ASECT
++        .=0
++
++; DMC11/DMR11 host interface (relative to the CSR)
++SEL0    = 0                     ; BSEL0: RQI 40, RDI 200, input type 0-3
++SEL2    = 2                     ; BSEL2: RDO 200, output type 0-2
++SEL4    = 4                     ; buffer address bits 0-15
++SEL6    = 6                     ; count, address bits 16-17 in 14-15
++RQI     = 40
++MCLR    = 40000                 ; master clear (BSEL1 bit 6)
++T.XMT   = 0                     ; BA/CC IN transmit / BA/CC OUT transmit done
++T.CTL   = 1                     ; CONTROL IN / CONTROL OUT
++T.BASE  = 3                     ; BASE IN
++T.RCV   = 4                     ; BA/CC IN receive / BA/CC OUT receive done
++MAINT   = 400                   ; CONTROL IN: maintenance mode
++
++; MOP codes (decimal values in comments)
++M.MLT   = 0                     ; Memory Load with Transfer Address
++M.ML    = 2                     ; Memory Load
++M.RPG   = 10                    ; 8  Request Program
++M.RML   = 12                    ; 10 Request Memory Load
++M.PLT   = 24                    ; 20 Parameter Load with Transfer Address
++
++BOOTSZ  = 20000                 ; size of the whole area (8192 bytes)
++
++; ---------------------------------------------------------------- parameters
++BOOT:   BR      START           ; 0: entry
++CSR:    .WORD   0               ; 2: the board's CSR (SIMH)
++DEVT:   .BYTE   0               ; 4: MOP device type (SIMH: 12 DMC11, 40 DMR11)
++PROGT:  .BYTE   0               ; 5: MOP program type (SET DMCn PROGRAM)
++TICKS:  .WORD   0               ; 6: wait loops of about 5 s (SIMH)
++
++; ---------------------------------------------------------------- variables
++NEXT:   .WORD   0               ; load number expected next (0-255)
++XLEN:   .WORD   0               ; length of the message in XBUF
++RCNT:   .WORD   0               ; byte count of the message being worked on
++PHEAD:  .WORD   0               ; receive completions: queue of 8 entries,
++PTAIL:  .WORD   0               ;   head and tail (0-16, step 2)
++PADDR:  .BLKW   10              ;   buffer address
++PCNT:   .BLKW   10              ;   byte count
++XBUSY:  .WORD   0               ; a transmit buffer is with the board
++TCNT:   .WORD   0               ; wait loops left before a resend
++RETRY:  .WORD   0               ; repeats of the last message without an answer
++
++; ---------------------------------------------------------------- start
++START:  MOV     PC,R4           ; R4 = address of BOOT (position independent)
++        SUB     #START+2-BOOT,R4
++        MOV     R4,SP           ; own stack inside the area
++        ADD     #STKTOP-BOOT,SP
++        MOV     CSR,R5          ; R5 = CSR
++        JSR     PC,MCLEAR
++        CLR     NEXT
++        CLR     PHEAD
++        CLR     PTAIL
++        CLR     XBUSY
++        MOV     R4,R0           ; BASE IN: the base table
++        ADD     #BTAB-BOOT,R0
++        CLR     R1
++        MOV     #T.BASE,R2
++        JSR     PC,INCMD
++        CLR     R0              ; CONTROL IN: maintenance mode
++        MOV     #MAINT,R1
++        MOV     #T.CTL,R2
++        JSR     PC,INCMD
++        MOV     #NRBUF,-(SP)    ; the receive buffers
++        MOV     R4,R0
++        ADD     #RBUF-BOOT,R0
++1$:     MOV     R0,-(SP)
++        JSR     PC,POSTR
++        MOV     (SP)+,R0
++        ADD     #RBLEN,R0
++        DEC     (SP)
++        BNE     1$
++        TST     (SP)+
++
++; Request Program: 8, device type, format version 1, program type
++REQPRG: CLR     NEXT            ; the load (again) from the start
++        MOV     R4,R0
++        ADD     #XBUF-BOOT,R0
++        MOVB    #M.RPG,(R0)+
++        MOVB    DEVT,(R0)+
++        MOVB    #1,(R0)+
++        MOVB    PROGT,(R0)+
++        MOV     #4,XLEN
++
++; send XBUF (SEND: a new message; SEND2: a repeat)
++SEND:   CLR     RETRY
++SEND2:  TST     XBUSY           ; the last message not sent yet (no line):
++        BNE     2$              ;   give no second buffer, wait again
++        MOV     R4,R0           ; BA/CC IN transmit
++        ADD     #XBUF-BOOT,R0
++        MOV     XLEN,R1
++        MOV     #T.XMT,R2
++        JSR     PC,INCMD
++        MOV     #1,XBUSY
++2$:     MOV     TICKS,TCNT
++
++; wait for a received message; resend after TCNT wait loops
++WAIT:   CMP     PHEAD,PTAIL     ; a message received meanwhile?
++        BNE     GOT
++1$:     MOV     #10000.,R3      ; one wait loop: 10000 polls
++2$:     TSTB    SEL2(R5)        ; RDO?
++        BMI     3$
++        SOB     R3,2$
++        DEC     TCNT
++        BNE     1$
++        INC     RETRY           ; no answer: send again, after 3 repeats
++        CMP     RETRY,#3        ;   start over
++        BLO     SEND2
++        BR      REQPRG
++3$:     JSR     PC,OUTPUT       ; take the output transfer
++        CMP     PHEAD,PTAIL
++        BEQ     2$
++GOT:    MOV     PHEAD,R1        ; the oldest received message
++        ADD     R4,R1
++        ADD     #PADDR-BOOT,R1
++        MOV     (R1),R2         ; R2 = the message
++        MOV     PCNT-PADDR(R1),RCNT
++        ADD     #2,PHEAD
++        BIC     #177761,PHEAD
++        MOVB    (R2),R0         ; MOP code
++        BIC     #177400,R0
++        CMP     R0,#M.ML
++        BEQ     ML
++        CMP     R0,#M.MLT
++        BEQ     MLT
++        CMP     R0,#M.PLT
++        BEQ     PLT
++IGNORE: MOV     R2,R0           ; anything else: the buffer back
++        JSR     PC,POSTR        ;   to the board, wait on
++        BR      WAIT
++
++; Memory Load: code, load number, address (4), data
++ML:     JSR     PC,CHKNUM       ; Z: the expected load, C: a repeated one
++        BCS     ACK
++        BNE     IGNORE
++        MOV     RCNT,R1         ; data length = count - 6
++        SUB     #6,R1
++        BLT     IGNORE
++        JSR     PC,STORE
++        BCS     LDERR
++        INCB    NEXT            ; next load number (0-255)
++ACK:    MOV     R2,R0           ; the buffer back to the board
++        JSR     PC,POSTR
++        MOV     R4,R0           ; Request Memory Load: 10, number, 0
++        ADD     #XBUF-BOOT,R0
++        MOVB    #M.RML,(R0)+
++        MOVB    NEXT,(R0)+
++        CLRB    (R0)
++        MOV     #3,XLEN
++        BR      SEND
++LDERR:  MOV     R2,R0           ; the buffer back to the board
++        JSR     PC,POSTR
++        MOV     R4,R0           ; not stored: ask again, error 1
++        ADD     #XBUF-BOOT,R0
++        MOVB    #M.RML,(R0)+
++        MOVB    NEXT,(R0)+
++        MOVB    #1,(R0)
++        MOV     #3,XLEN
++        BR      SEND
++
++; Memory Load with Transfer Address: code, number, address (4), data,
++; transfer address (4)
++MLT:    JSR     PC,CHKNUM
++        BNE     IGNORE          ; (also a repeated one: it was started)
++        MOV     RCNT,R1         ; data length = count - 10
++        SUB     #10.,R1
++        BLT     IGNORE
++        JSR     PC,STORE
++        BCS     LDERR
++        MOV     R2,R3           ; R3 -> transfer address
++        ADD     #6,R3
++        ADD     R1,R3
++        BR      GO
++
++; Parameter Load with Transfer Address: code, number, parameters (type,
++; length, value) up to a type 0, transfer address (4)
++PLT:    JSR     PC,CHKNUM
++        BNE     IGNORE
++        MOV     R2,R3
++        ADD     #2,R3
++1$:     MOVB    (R3)+,R0        ; parameter type
++        BEQ     GO
++        MOVB    (R3)+,R0        ; its length
++        BIC     #177400,R0
++        ADD     R0,R3
++        BR      1$
++
++; start the loaded program; R3 -> transfer address (bytes, any alignment)
++GO:     MOVB    (R3)+,R0
++        BIC     #177400,R0
++        MOVB    (R3)+,R1
++        SWAB    R1
++        CLRB    R1
++        BIS     R1,R0
++        MOV     R0,R2           ; R2 = transfer address (low 16 bits)
++        JSR     PC,MCLEAR       ; no buffer stays with the board
++        MOV     R5,R1           ; R1 = CSR
++        MOV     #1000,SP
++        MOV     #340,@#177776   ; priority 7
++        JMP     (R2)            ; (macro11 v0.3 wrongly rejects JMP (R0))
++
++; ---------------------------------------------------------------- routines
++
++; CHKNUM: R2 -> message.  A load numbered 0 starts the load (over): NEXT
++; = 0.  Z set: its load number is NEXT; C set: it is NEXT-1 (a repeated
++; load); otherwise neither.
++CHKNUM: MOVB    1(R2),R0
++        BIC     #177400,R0
++        BNE     3$              ; load 0: the load starts (over)
++        CLR     NEXT
++3$:
++        MOV     NEXT,R1
++        CMP     R0,R1
++        BEQ     2$              ; Z set, C clear
++        DEC     R1
++        BIC     #177400,R1
++        CMP     R0,R1
++        BNE     1$
++        CLZ                     ; repeated: Z clear,
++        SEC                     ;   C set
++        RTS     PC
++1$:     CLC                     ; neither: Z clear, C clear
++2$:     RTS     PC
++
++; STORE: copy R1 data bytes from 6(R2) to the load address in 2(R2)-5(R2).
++; C set if the address is beyond 64 KB or the data would reach this
++; program.  R1, R2 kept.
++STORE:  TST     4(R2)           ; address bits 16-31 must be 0
++        BNE     2$
++        MOV     2(R2),R0        ; load address
++        MOV     R0,R3
++        ADD     R1,R3           ; end of the data
++        BCS     2$
++        CMP     R3,R4           ; must stay below this program
++        BHI     2$
++        MOV     R2,R3           ; R3 -> data
++        ADD     #6,R3
++        MOV     R1,-(SP)
++        BEQ     1$
++3$:     MOVB    (R3)+,(R0)+
++        DEC     R1
++        BNE     3$
++1$:     MOV     (SP)+,R1
++        CLC
++        RTS     PC
++2$:     SEC
++        RTS     PC
++
++; POSTR: give the receive buffer at R0 to the board.  R0-R3 changed.
++POSTR:  MOV     #RBLEN,R1
++        MOV     #T.RCV,R2
++        JSR     PC,INCMD
++        RTS     PC
++
++; INCMD: input command R2 (type) with SEL4 = R0, SEL6 = R1: set RQI and
++; the type, wait for RDI, load SEL4 and SEL6, clear RQI and wait until the
++; board has taken the command (RDI off).  Output transfers that come
++; meanwhile are taken (OUTPUT).  R0-R3 changed.
++INCMD:  MOV     R2,-(SP)
++        BIS     #RQI,(SP)
++        MOVB    (SP)+,SEL0(R5)  ; request the input transfer
++1$:     TSTB    SEL0(R5)        ; RDI?
++        BMI     2$
++        TSTB    SEL2(R5)        ; RDO meanwhile: take it
++        BPL     1$
++        MOV     R0,-(SP)
++        MOV     R1,-(SP)
++        JSR     PC,OUTPUT
++        MOV     (SP)+,R1
++        MOV     (SP)+,R0
++        BR      1$
++2$:     MOV     R0,SEL4(R5)
++        MOV     R1,SEL6(R5)
++        BICB    #RQI,SEL0(R5)   ; the board takes the command
++3$:     TSTB    SEL0(R5)        ; and clears RDI when it has: wait, so
++        BMI     3$              ;   that the next command finds RDI off
++        RTS     PC
++
++; OUTPUT: an output transfer is ready (RDO).  Receive done: queue its
++; buffer address and count (at most NRBUF are pending, the queue has 8
++; places); R0 and R1 changed; transmit done: the buffer is back (XBUSY off), and the wait for
++; the answer starts again (the message may have waited for the line);
++; CONTROL OUT: nothing to do.
++OUTPUT: MOVB    SEL2(R5),R0
++        BIC     #177770,R0      ; output type
++        BNE     2$
++        CLR     XBUSY           ; transmit done: the wait for the answer
++        MOV     TICKS,TCNT      ;   starts now
++        BR      1$
++2$:     CMP     R0,#T.RCV
++        BNE     1$
++        MOV     PTAIL,R1        ; queue entry
++        ADD     R4,R1
++        ADD     #PADDR-BOOT,R1
++        MOV     SEL4(R5),(R1)   ; the buffer
++        MOV     SEL6(R5),R0     ; byte count
++        BIC     #140000,R0
++        MOV     R0,PCNT-PADDR(R1)
++        ADD     #2,PTAIL
++        BIC     #177761,PTAIL
++1$:     CLRB    SEL2(R5)        ; release the output transfer (RDO off)
++        RTS     PC
++
++; MCLEAR: master clear the board and wait for RUN
++MCLEAR: MOV     #MCLR,SEL0(R5)
++1$:     TST     SEL0(R5)        ; RUN (bit 15)
++        BPL     1$
++        RTS     PC
++
++; ---------------------------------------------------------------- data
++        .EVEN
++STACK:  .BLKW   40              ; own stack (32 words)
++STKTOP:
++BTAB:   .BLKW   200             ; base table (128 words)
++XBUF:   .BLKW   10              ; message to send
++RBUF:                           ; receive buffers up to the end of the area
++RBEND   = BOOTSZ
++NRBUF   = 4                     ; number of receive buffers
++RBLEN   = <<RBEND-RBUF>/NRBUF>&177776  ; the length of each
++CODLEN  = RBUF-BOOT             ; what SIMH copies: up to the receive buffer
++
++        .END
+-- 
+2.43.0
+

@@ -1,0 +1,27 @@
+; open-simh-extended/tests/dmc_boot/hello.mac  v1
+; Tiny position independent PDP-11 test program for SIMH's BOOT DMCn
+; (patch 24): VMS V4.7 sends it as the SECONDARY LOADER (or as the LOAD
+; FILE) to a PDP-11 that runs the DMC11/DMR11 MOP bootstrap.  It prints a
+; line on the console terminal (DL11 at 177560) and its start registers
+; are checked by the SIMH script (R1 = the board's CSR); then it halts.
+; Position independent: VMS V4.7 loads a secondary loader at address 6.
+        .TITLE  HELLO
+        .ENABL  LC
+TPS     = 177564                ; console transmitter status
+TPB     = 177566                ; console transmitter buffer
+START:  MOV     R1,R2           ; keep R1 (the CSR from the bootstrap)
+        MOV     PC,R1           ; R1 = run-time address of the next word
+BASE:   ADD     #MSG-BASE,R1    ; R1 -> text, wherever the program was loaded
+1$:     MOVB    (R1)+,R0        ; next character
+        BEQ     3$              ; zero byte: end of text
+2$:     TSTB    @#TPS           ; transmitter ready?
+        BPL     2$              ; no: wait
+        MOVB    R0,@#TPB        ; send the character
+        BR      1$
+3$:     HALT                    ; done: R2 = the CSR the bootstrap gave
+        BR      3$
+MSG:    .BYTE   15,12           ; CR LF
+        .ASCII  /HELLO from the VMS load host over the DMC11/
+        .BYTE   15,12,0         ; CR LF and the end mark
+        .EVEN
+        .END    START

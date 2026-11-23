@@ -1,4 +1,4 @@
-# open-simh-extended/tests/dmv11_boot/mopctl.py  v10 (v10: --rom also without --trigger: a boot ROM started by the console or the switch register asks by itself; v9: --rom, the load host of a boot ROM (M9312 'XM'): one Memory Load with Transfer Address of a position-independent program, reconnect after the ROM's RESET; v8: --shortreq, the DMC11's Request Program 8,12,1; v7: DMP11 and DMR11: --devtype, --dmrpw, --text, --noload; v6: wrong password: 3 s without a MOP answer, DDCMP messages ignored; v5: BPL offset of the test program fixed; v4: the simulator may close the line after the start; v3: load 0 covers 0-777, so the restored words at 400-402 are checked too; v2: connects to the DMV11's ATTACH port; the
+# open-simh-extended/tests/dmv11_boot/mopctl.py  v11 (v11: --mingap, the shortest accepted gap before a repeated Request Program (default 3.5 s); --listen, wait for the Request Program without polling (SIMH's BOOT DMCn bootstrap asks by itself), --progtype, the program type the Request Program must carry; v10: --rom also without --trigger: a boot ROM started by the console or the switch register asks by itself; v9: --rom, the load host of a boot ROM (M9312 'XM'): one Memory Load with Transfer Address of a position-independent program, reconnect after the ROM's RESET; v8: --shortreq, the DMC11's Request Program 8,12,1; v7: DMP11 and DMR11: --devtype, --dmrpw, --text, --noload; v6: wrong password: 3 s without a MOP answer, DDCMP messages ignored; v5: BPL offset of the test program fixed; v4: the simulator may close the line after the start; v3: load 0 covers 0-777, so the restored words at 400-402 are checked too; v2: connects to the DMV11's ATTACH port; the
 # simulator's outgoing connection to a listening script is reported failed here)
 # A minimal DDCMP/MOP control station for testing the DMV11 primary MOP
 # boot of the SIMH PDP-11 (pdp11_dmc.c).  It connects to the DMV11's ATTACH
@@ -24,7 +24,7 @@
 # usage: python3 -I mopctl.py PORT [--addr A] [--mp] [--trigger PW]
 #                                  [--wrongfirst] [--ignorefirst] [--dupload]
 #                                  [--devtype T] [--dmrpw] [--text S] [--noload]
-#                                  [--shortreq] [--rom]
+#                                  [--shortreq] [--rom] [--listen] [--progtype P]
 #   --addr A       DDCMP address of the remote station (multipoint), default 1
 #   --mp           multipoint: first poll a different address (must be ignored)
 #   --trigger PW   remote load detect with password PW
@@ -41,6 +41,11 @@
 #                  Transfer Address into memory at 0 and jumps to 6, so the
 #                  program sent is position independent (ROMPROG); the line
 #                  may drop at the ROM's RESET: connect again
+#   --listen       do not poll: a bootstrap on the host (SIMH's BOOT DMCn) puts the
+#                  board into maintenance mode and asks by itself
+#   --progtype P   the program type the Request Program must carry (default 0)
+#   --mingap S     with --ignorefirst: the repeated request may come after S
+#                  seconds at the earliest (default 3.5)
 # Exit code 0 when the whole exchange went as expected.
 import socket, struct, sys, time, argparse
 
@@ -165,6 +170,9 @@ def main():
     ap.add_argument('--noload', action='store_true')
     ap.add_argument('--shortreq', action='store_true')
     ap.add_argument('--rom', action='store_true')
+    ap.add_argument('--listen', action='store_true')
+    ap.add_argument('--progtype', type=int, default=0)
+    ap.add_argument('--mingap', type=float, default=3.5)
     a = ap.parse_args()
     text = a.text.encode() + b"\r\n\0"
     def enter_mop(pw):
@@ -235,6 +243,8 @@ def main():
             print("PASS: no MOP answer (the boot ROM took over)")
             return
         req = expect_mop(line, a.addr, "Request Program")
+    elif a.listen:                                      # the host's bootstrap asks
+        req = expect_mop(line, a.addr, "Request Program", 30.0)
     else:
         if a.mp:                                        # another tributary first
             line.send(ctl(6, addr=(a.addr + 1) & 0xFF))
@@ -254,7 +264,7 @@ def main():
         if req is None:
             raise SystemExit("FAIL: no Request Program after 20 polls")
     print("Request Program: %s" % req.hex())
-    expected = bytes([8, a.devtype, 1]) if a.shortreq else bytes([8, a.devtype, 1, 0])
+    expected = bytes([8, a.devtype, 1]) if a.shortreq else bytes([8, a.devtype, 1, a.progtype])
     if req != expected:
         raise SystemExit("FAIL: unexpected Request Program")
     if a.ignorefirst:
@@ -262,7 +272,7 @@ def main():
         req = expect_mop(line, a.addr, "repeated Request Program", 12.0)
         dt = time.time() - t0
         print("Request Program repeated after %.1f s: %s" % (dt, req.hex()))
-        if req != expected or dt < 3.5:
+        if req != expected or dt < a.mingap:
             raise SystemExit("FAIL: bad retransmission")
 
     line.send(maint(mop_load(2, 0, 0, PAGE0), a.addr))

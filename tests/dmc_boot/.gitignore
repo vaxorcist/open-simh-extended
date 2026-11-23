@@ -1,0 +1,7 @@
+# open-simh-extended/tests/dmc_boot/.gitignore  v1
+# run directories of vmsdmc.sh: copies of the VMS disk, tapes, logs (never in the repository)
+run_*/
+*.obj
+*.lst
+*.tsk
+*.tap

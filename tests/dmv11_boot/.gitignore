@@ -1,0 +1,6 @@
+# open-simh-extended/tests/dmv11_boot/.gitignore  v1
+# test output and DEC ROM images (m9312_xm.bin: Ulli only, see README.txt)
+*.bin
+*.out
+*.mop
+*.dbg
