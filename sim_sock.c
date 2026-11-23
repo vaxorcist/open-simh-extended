@@ -78,6 +78,7 @@ extern "C" {
    sim_connect_sock_ex  connect a socket to a remote destination
    sim_accept_conn      accept connection
    sim_read_sock        read from socket
+   sim_peek_closed_sock has the peer closed the connection already?
    sim_write_sock       write from socket
    sim_close_sock       close socket
    sim_setnonblock      set socket non-blocking
@@ -113,6 +114,11 @@ return INVALID_SOCKET;
 int sim_read_sock (SOCKET sock, char *buf, int nbytes)
 {
 return -1;
+}
+
+int sim_peek_closed_sock (SOCKET sock)
+{
+return 0;
 }
 
 int sim_write_sock (SOCKET sock, char *msg, int nbytes)
@@ -1366,6 +1372,41 @@ if (peernamebuf != NULL) {
 return 0;
 }
 
+
+/* Has the peer already closed (or reset) the connection of a connected
+   socket?  Looks without taking data: a socket with nothing to read, or
+   with data waiting, is open; a socket that is readable but gives 0 bytes
+   (an orderly close) or an error other than "would block" is closed.  A
+   listener uses it on a connection it has just accepted: connection
+   attempts that the peer gave up while they waited in the listen queue
+   are still accepted, already closed. */
+int sim_peek_closed_sock (SOCKET sock)
+{
+fd_set rd_set;
+struct timeval zero;
+char c;
+int rbytes, err;
+
+memset (&zero, 0, sizeof (zero));
+FD_ZERO (&rd_set);
+FD_SET (sock, &rd_set);
+if (select ((int) sock + 1, &rd_set, NULL, NULL, &zero) <= 0)
+    return 0;                                           /* nothing to read: open */
+rbytes = recv (sock, &c, 1, MSG_PEEK);
+if (rbytes == 0)                                        /* orderly close */
+    return 1;
+if (rbytes == SOCKET_ERROR) {
+    err = WSAGetLastError ();
+    if (err == WSAEWOULDBLOCK)
+        return 0;
+#if defined(EAGAIN)
+    if (err == EAGAIN)
+        return 0;
+#endif
+    return 1;                                           /* reset or other error */
+    }
+return 0;                                               /* data waiting: open */
+}
 
 int sim_read_sock (SOCKET sock, char *buf, int nbytes)
 {
