@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v10, 2026-11-23 (v10: section 10, BOOT DMCn with a MOP bootstrap written for SIMH (patch 24), known issues 115, 116; v9: section 9, starting the M9312 'XM' ROM by hand: GO 173004, not BOOT CPU; v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v11, 2026-11-23 (v11: known issue 116 is the crossing PEER connections; with one connection 3 of 3 system loads; v10: section 10, BOOT DMCn with a MOP bootstrap written for SIMH (patch 24), known issues 115, 116; v9: section 9, starting the M9312 'XM' ROM by hand: GO 173004, not BOOT CPU; v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -677,7 +677,11 @@ Tests:
   DMR11, "Load, Successful", remwrt's banner), 2 failed with "Load, Line
   protocol error": the Request Programs the bootstrap repeated while VMS's
   DMC11 still ran DDCMP waited on the TCP line and reached VMS during the
-  load, where it expected a Request Memory Load. A real line loses such
-  messages; SIMH keeps them (known issue 116, decision for Ulli).
+  load, where it expected a Request Memory Load. The CONNECT logs show
+  why they waited: with PEER on both sides the PDP-11's outgoing
+  connection was up at once, but the VAX took it as the line only much
+  later (known issue 116, like case 93). With the PDP-11's PEER pointing
+  nowhere (only the VAX's connection used; `vmsdmc.sh` default now):
+  3 of 3 system loads PASS.
 - VMS V4.7 DECnet pair over a DMC11 with the integration build of patch 24
   (`pair.sh`, `DEV=DMC`, vax780): PASS (3 of 3 compares).

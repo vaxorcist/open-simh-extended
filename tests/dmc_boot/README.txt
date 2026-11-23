@@ -1,4 +1,4 @@
-open-simh-extended/tests/dmc_boot/README.txt  v1 (2026-11-23)
+open-simh-extended/tests/dmc_boot/README.txt  v2 (2026-11-23; v2: PDPPEER, by default only the VAX's connection is used; system loads 3 of 3)
 
 SIMH's BOOT DMCn with a real load host (patch 24, docs/DMV11_switches_boot_design.md
 section 10).  BOOT DMCn starts a small MOP bootstrap written for SIMH
@@ -29,6 +29,10 @@ vmsdmc.sh BINDIR DISK
       TYPE=DMR           DMR11 instead of DMC11 on both sides
       WAITLOAD=1         NCP LOAD NODE PDPDMC instead of waiting
       VAXDEBUG=, PDPDEBUG=  SET DMC DEBUG= flags (logs vax.dbg, pdp.dbg)
+      PDPPEER=port       the PDP-11's PEER (a DMC needs one to ATTACH);
+                         default 21399, where nobody listens, so only the
+                         VAX's connection is used; 21301 (the VAX) gives
+                         crossing connections (known issue 116)
     PASS when the PDP-11 console shows "HELLO from the VMS load host over
     the DMC11".  The run directory run_<program>_<type>/ holds the disk
     copy and the logs (never in the repository).
@@ -37,9 +41,11 @@ hello.mac   the test program: prints its line and halts; R2 keeps the R1
 
 Results (2026-11-23, patch 24):
   PROGRAM=SECONDARY (DMC11): PASS (HELLO at 6, R2 = CSR 160070).
-  PROGRAM=SYSTEM (DMC11, HELLO.TSK): 1 of 3 PASS; the other two "Load, Line
-    protocol error": old Request Programs reached VMS during the load
-    (known issue 116).
+  PROGRAM=SYSTEM (DMC11, HELLO.TSK), PEER on both sides: 2 of 4 PASS; the
+    others "Load, Line protocol error": old Request Programs that had waited
+    in the PDP-11's connection reached VMS during the load (known issue 116).
+  PROGRAM=SYSTEM (DMC11, HELLO.TSK), PDPPEER=21399 (one connection): 3 of 3
+    PASS.
   PROGRAM=SYSTEM TYPE=DMR LOADFILE=remwrt.tsk: VMS "Load, Successful",
     remwrt's banner and prompt (the script says FAIL only because it looks
     for HELLO's line).
