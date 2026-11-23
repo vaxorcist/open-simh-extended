@@ -1,4 +1,4 @@
-open-simh-extended/tests/deuna_boot/README.txt  v4 (2026-11-23; v4: B9 with remwrt.tsk as LOAD FILE: VMS loads it and remwrt runs; v3: B9 with a real RSX-11S image (LOADFILE=, PDPMEM=): loaded completely; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
+open-simh-extended/tests/deuna_boot/README.txt  v5 (2026-11-23; v5: B10-B12, SIMH's BOOT XU and HELP XU Booting (patch 23 v2); v4: B9 with remwrt.tsk as LOAD FILE: VMS loads it and remwrt runs; v3: B9 with a real RSX-11S image (LOADFILE=, PDPMEM=): loaded completely; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
 
 DEUNA/DELUA BOOT port command (SIMH XU device, patch 23, known issue 109)
 =========================================================================
@@ -9,9 +9,11 @@ DEC's UNA secondary loader (SECUNA.SYS) does on the board's own processor:
 it asks for the tertiary loader, copies it into host memory and starts the
 host, which waits in BR . at location 2 with the CSR address at 4 (DEC's
 M9312 'XE' ROM, or any program, sets that up): JMP @#transfer at 6/10,
-then MOV #(4),R1 at 2 -- the tertiary starts with R1 = CSR.
+then MOV #(4),R1 at 2 -- the tertiary starts with R1 = CSR.  Since patch
+23 v2 SIMH's BOOT XU sets this up with a built-in bootstrap (no ROM image);
+HELP XU BOOTING describes both ways.
 
-run_tests.sh BIN/pdp11 [B2 ... B8]   runs the tests; PASS, FAIL or SKIP
+run_tests.sh BIN/pdp11 [B2 ... B12]  runs the tests; PASS, FAIL or SKIP
 mophost.py PORT SIMPORT [options]     the MOP load host (UDP transport)
 
 Tests
@@ -31,6 +33,12 @@ B7  DEC's UNA loaders: SECUNA.SYS as the secondary (SIMH does its work),
     DEUNA through its normal port and loads mophost's test system
     (SYSTEM_BOOT_OK, HALT at PC 002034)
 B8  BOOT without an attached network: refused (message, PCSR0 bit 14)
+B10 SIMH's BOOT XU: the built-in bootstrap gives BOOT; as B2 otherwise
+    (DEUNA BOOT OK, HALT at PC 002034, R1 = 174510)
+B11 BOOT XU without an attached network ("Unit not attached") and BOOT
+    XU1 ("Unit disabled"): refused by SIMH
+B12 HELP XU BOOTING and its subtopics Sequence and Limits
+(B9 is vmshost.sh, below.)
 
 Files that are not in the repository (DEC firmware/software, Ulli's copies):
   m9312_248F1.bin, m9312_xe.bin   built as ../m9312_roms/README.txt says

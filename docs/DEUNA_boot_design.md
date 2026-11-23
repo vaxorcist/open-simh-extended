@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DEUNA_boot_design.md  v5, 2026-11-23 (v5: B9 with remwrt.tsk, an RSX task image, as LOAD FILE: loads and runs; v4: B9 with a real RSX-11S image (DECserver 500 V2.2): VMS loads it completely; v3: VMS V4.7 as the load host (B9): loaders PASS, the system load needs a real RSX-11S image; v2: implemented in patch 23 (branch deuna-boot), tests B2-B8, DEC's TERUNA runs, known issues 111-114; v1: facts from the DEUNA TM, the DELUA UG and DEC's DECnet-11M V4.2 UNA loaders; design of the BOOT port command for SIMH's XU device; known issue 109) -->
+<!-- open-simh-extended/docs/DEUNA_boot_design.md  v6, 2026-11-23 (v6: section 7, SIMH's BOOT XU and the HELP XU Booting topic (patch 23 v2); v5: B9 with remwrt.tsk, an RSX task image, as LOAD FILE: loads and runs; v4: B9 with a real RSX-11S image (DECserver 500 V2.2): VMS loads it completely; v3: VMS V4.7 as the load host (B9): loaders PASS, the system load needs a real RSX-11S image; v2: implemented in patch 23 (branch deuna-boot), tests B2-B8, DEC's TERUNA runs, known issues 111-114; v1: facts from the DEUNA TM, the DELUA UG and DEC's DECnet-11M V4.2 UNA loaders; design of the BOOT port command for SIMH's XU device; known issue 109) -->
 # DEUNA/DELUA BOOT port command for the SIMH PDP-11 (known issue 109)
 
 Ulli's decision (2026-11-22): implement the BOOT port command, option 1:
@@ -198,3 +198,26 @@ Found on the way with DEC's TERUNA, fixed in the same patch: STOP/START
   why the task-labelled mknettest.py v4 file came out as zeros was not
   investigated (its label fields differ from obj2tsk.py's).
 
+## 7. BOOT XU and HELP XU (patch 23 v2, 2026-11-23)
+
+Ulli asked whether HELP XU explains booting (it did not; patch 23 only
+added the BOOT debug flag) and chose a help topic plus a SIMH boot
+command, with the ROM route kept as the alternative.
+
+- **`BOOT XU` / `BOOT XUB`** (PDP-11 only; the VAX simulators keep no boot
+  routine for the XU): `xu_boot()` writes a bootstrap to 002000 and starts
+  it. The bootstrap does what DEC's 'XE' ROM does after its address
+  printout: `MOV #777,@#2` (BR .), `MOV #csr,@#4`, `MOV #5,@#csr` (BOOT port
+  command), `JMP @#2`. The CSR is the device's configured address. The
+  tertiary loader (TERUNA links at 002000) may overwrite the bootstrap,
+  which has already run. Only unit 0 boots; SIMH itself refuses a port
+  that is not attached ("Unit not attached") and the timer unit XU1
+  ("Unit disabled").
+- **HELP XU Booting** (PDP-11 only), with subtopics Sequence, Load Host
+  (VMS NCP example), Debugging, Limits. It names DEC's 'XE' ROM with the
+  23-248F1 console (`XE0`) as the alternative; the ROM images are not part
+  of SIMH.
+- **Tests** (`tests/deuna_boot/run_tests.sh` v2): B10 `BOOT XU` with
+  mophost.py's test tertiary (as B2, no ROM), B11 the two refusals, B12
+  the help topic. B2-B8 PASS unchanged; integration build: B2, B6, B7,
+  B10-B12 PASS.
