@@ -1,0 +1,366 @@
+; DMC11/DMR11 down-line load bootstrap for SIMH's BOOT DMCn (PDP-11).
+; Written for SIMH (2026-11-23) in place of a boot ROM such as DEC's
+; M9312 'XM' (which SIMH does not include): a small MOP client that runs
+; on the PDP-11 and drives the DMC11/DMR11 through its normal host
+; interface, as a boot ROM does.  Not derived from DEC code.
+;
+; SIMH copies this program to the top of the low 56 KB of memory (the
+; 8 KB below 160000 or below the end of memory, whichever is lower; see
+; BOOTSZ) and
+; fills in the parameter words CSR, DEVT, PROGT and TICKS; then it starts
+; it at its first word.  The program is position independent.
+;
+; What it does:
+;   1. master clear the board, wait for RUN;
+;   2. BASE IN (base table inside this program's area), CONTROL IN with
+;      maintenance mode (MOP messages travel as DDCMP maintenance messages);
+;   3. give the board four receive buffers (a load host may send several
+;      messages back to back, and a DDCMP maintenance message that finds
+;      no buffer is lost; completions are queued) and send MOP Request
+;      Program
+;      (8, device type, format 1, program type);
+;   4. take the answers:
+;      Memory Load (code 2): store the data, answer Request Memory Load
+;        (code 10) with the next load number;
+;      Memory Load with Transfer Address (code 0) or Parameter Load with
+;        Transfer Address (code 20): store the data (code 0), then start;
+;      a load with the number of the previous load is answered again
+;      without storing; other messages are ignored;
+;   5. without an answer, send the last message again after about 5 s
+;      (after 3 repeats without an answer, start over with Request
+;      Program; a load numbered 0 also starts over)
+;      (TICKS, set by SIMH from the simulated instruction rate); a message
+;      is given to the board only when the last one has been sent, so the
+;      board never holds more than one transmit buffer;
+;   6. start: master clear the board (no buffer left with it), then
+;      R1 = CSR, SP = 1000, priority 7, JMP to the transfer address.
+; Loads must lie below this program (the low 56 KB, no memory management).
+;
+; Assemble: macro11 -o dmcboot.obj -l dmcboot.lst dmcboot.mac
+; (tools/dmc_bootstrap/mkdmcboot.py turns the object file into the C
+; array of PDP11/pdp11_dmc_boot.h).
+
+        .TITLE  DMCBOT  DMC11/DMR11 MOP bootstrap for SIMH
+        .ASECT
+        .=0
+
+; DMC11/DMR11 host interface (relative to the CSR)
+SEL0    = 0                     ; BSEL0: RQI 40, RDI 200, input type 0-3
+SEL2    = 2                     ; BSEL2: RDO 200, output type 0-2
+SEL4    = 4                     ; buffer address bits 0-15
+SEL6    = 6                     ; count, address bits 16-17 in 14-15
+RQI     = 40
+MCLR    = 40000                 ; master clear (BSEL1 bit 6)
+T.XMT   = 0                     ; BA/CC IN transmit / BA/CC OUT transmit done
+T.CTL   = 1                     ; CONTROL IN / CONTROL OUT
+T.BASE  = 3                     ; BASE IN
+T.RCV   = 4                     ; BA/CC IN receive / BA/CC OUT receive done
+MAINT   = 400                   ; CONTROL IN: maintenance mode
+
+; MOP codes (decimal values in comments)
+M.MLT   = 0                     ; Memory Load with Transfer Address
+M.ML    = 2                     ; Memory Load
+M.RPG   = 10                    ; 8  Request Program
+M.RML   = 12                    ; 10 Request Memory Load
+M.PLT   = 24                    ; 20 Parameter Load with Transfer Address
+
+BOOTSZ  = 20000                 ; size of the whole area (8192 bytes)
+
+; ---------------------------------------------------------------- parameters
+BOOT:   BR      START           ; 0: entry
+CSR:    .WORD   0               ; 2: the board's CSR (SIMH)
+DEVT:   .BYTE   0               ; 4: MOP device type (SIMH: 12 DMC11, 40 DMR11)
+PROGT:  .BYTE   0               ; 5: MOP program type (SET DMCn PROGRAM)
+TICKS:  .WORD   0               ; 6: wait loops of about 5 s (SIMH)
+
+; ---------------------------------------------------------------- variables
+NEXT:   .WORD   0               ; load number expected next (0-255)
+XLEN:   .WORD   0               ; length of the message in XBUF
+RCNT:   .WORD   0               ; byte count of the message being worked on
+PHEAD:  .WORD   0               ; receive completions: queue of 8 entries,
+PTAIL:  .WORD   0               ;   head and tail (0-16, step 2)
+PADDR:  .BLKW   10              ;   buffer address
+PCNT:   .BLKW   10              ;   byte count
+XBUSY:  .WORD   0               ; a transmit buffer is with the board
+TCNT:   .WORD   0               ; wait loops left before a resend
+RETRY:  .WORD   0               ; repeats of the last message without an answer
+
+; ---------------------------------------------------------------- start
+START:  MOV     PC,R4           ; R4 = address of BOOT (position independent)
+        SUB     #START+2-BOOT,R4
+        MOV     R4,SP           ; own stack inside the area
+        ADD     #STKTOP-BOOT,SP
+        MOV     CSR,R5          ; R5 = CSR
+        JSR     PC,MCLEAR
+        CLR     NEXT
+        CLR     PHEAD
+        CLR     PTAIL
+        CLR     XBUSY
+        MOV     R4,R0           ; BASE IN: the base table
+        ADD     #BTAB-BOOT,R0
+        CLR     R1
+        MOV     #T.BASE,R2
+        JSR     PC,INCMD
+        CLR     R0              ; CONTROL IN: maintenance mode
+        MOV     #MAINT,R1
+        MOV     #T.CTL,R2
+        JSR     PC,INCMD
+        MOV     #NRBUF,-(SP)    ; the receive buffers
+        MOV     R4,R0
+        ADD     #RBUF-BOOT,R0
+1$:     MOV     R0,-(SP)
+        JSR     PC,POSTR
+        MOV     (SP)+,R0
+        ADD     #RBLEN,R0
+        DEC     (SP)
+        BNE     1$
+        TST     (SP)+
+
+; Request Program: 8, device type, format version 1, program type
+REQPRG: CLR     NEXT            ; the load (again) from the start
+        MOV     R4,R0
+        ADD     #XBUF-BOOT,R0
+        MOVB    #M.RPG,(R0)+
+        MOVB    DEVT,(R0)+
+        MOVB    #1,(R0)+
+        MOVB    PROGT,(R0)+
+        MOV     #4,XLEN
+
+; send XBUF (SEND: a new message; SEND2: a repeat)
+SEND:   CLR     RETRY
+SEND2:  TST     XBUSY           ; the last message not sent yet (no line):
+        BNE     2$              ;   give no second buffer, wait again
+        MOV     R4,R0           ; BA/CC IN transmit
+        ADD     #XBUF-BOOT,R0
+        MOV     XLEN,R1
+        MOV     #T.XMT,R2
+        JSR     PC,INCMD
+        MOV     #1,XBUSY
+2$:     MOV     TICKS,TCNT
+
+; wait for a received message; resend after TCNT wait loops
+WAIT:   CMP     PHEAD,PTAIL     ; a message received meanwhile?
+        BNE     GOT
+1$:     MOV     #10000.,R3      ; one wait loop: 10000 polls
+2$:     TSTB    SEL2(R5)        ; RDO?
+        BMI     3$
+        SOB     R3,2$
+        DEC     TCNT
+        BNE     1$
+        INC     RETRY           ; no answer: send again, after 3 repeats
+        CMP     RETRY,#3        ;   start over
+        BLO     SEND2
+        BR      REQPRG
+3$:     JSR     PC,OUTPUT       ; take the output transfer
+        CMP     PHEAD,PTAIL
+        BEQ     2$
+GOT:    MOV     PHEAD,R1        ; the oldest received message
+        ADD     R4,R1
+        ADD     #PADDR-BOOT,R1
+        MOV     (R1),R2         ; R2 = the message
+        MOV     PCNT-PADDR(R1),RCNT
+        ADD     #2,PHEAD
+        BIC     #177761,PHEAD
+        MOVB    (R2),R0         ; MOP code
+        BIC     #177400,R0
+        CMP     R0,#M.ML
+        BEQ     ML
+        CMP     R0,#M.MLT
+        BEQ     MLT
+        CMP     R0,#M.PLT
+        BEQ     PLT
+IGNORE: MOV     R2,R0           ; anything else: the buffer back
+        JSR     PC,POSTR        ;   to the board, wait on
+        BR      WAIT
+
+; Memory Load: code, load number, address (4), data
+ML:     JSR     PC,CHKNUM       ; Z: the expected load, C: a repeated one
+        BCS     ACK
+        BNE     IGNORE
+        MOV     RCNT,R1         ; data length = count - 6
+        SUB     #6,R1
+        BLT     IGNORE
+        JSR     PC,STORE
+        BCS     LDERR
+        INCB    NEXT            ; next load number (0-255)
+ACK:    MOV     R2,R0           ; the buffer back to the board
+        JSR     PC,POSTR
+        MOV     R4,R0           ; Request Memory Load: 10, number, 0
+        ADD     #XBUF-BOOT,R0
+        MOVB    #M.RML,(R0)+
+        MOVB    NEXT,(R0)+
+        CLRB    (R0)
+        MOV     #3,XLEN
+        BR      SEND
+LDERR:  MOV     R2,R0           ; the buffer back to the board
+        JSR     PC,POSTR
+        MOV     R4,R0           ; not stored: ask again, error 1
+        ADD     #XBUF-BOOT,R0
+        MOVB    #M.RML,(R0)+
+        MOVB    NEXT,(R0)+
+        MOVB    #1,(R0)
+        MOV     #3,XLEN
+        BR      SEND
+
+; Memory Load with Transfer Address: code, number, address (4), data,
+; transfer address (4)
+MLT:    JSR     PC,CHKNUM
+        BNE     IGNORE          ; (also a repeated one: it was started)
+        MOV     RCNT,R1         ; data length = count - 10
+        SUB     #10.,R1
+        BLT     IGNORE
+        JSR     PC,STORE
+        BCS     LDERR
+        MOV     R2,R3           ; R3 -> transfer address
+        ADD     #6,R3
+        ADD     R1,R3
+        BR      GO
+
+; Parameter Load with Transfer Address: code, number, parameters (type,
+; length, value) up to a type 0, transfer address (4)
+PLT:    JSR     PC,CHKNUM
+        BNE     IGNORE
+        MOV     R2,R3
+        ADD     #2,R3
+1$:     MOVB    (R3)+,R0        ; parameter type
+        BEQ     GO
+        MOVB    (R3)+,R0        ; its length
+        BIC     #177400,R0
+        ADD     R0,R3
+        BR      1$
+
+; start the loaded program; R3 -> transfer address (bytes, any alignment)
+GO:     MOVB    (R3)+,R0
+        BIC     #177400,R0
+        MOVB    (R3)+,R1
+        SWAB    R1
+        CLRB    R1
+        BIS     R1,R0
+        MOV     R0,R2           ; R2 = transfer address (low 16 bits)
+        JSR     PC,MCLEAR       ; no buffer stays with the board
+        MOV     R5,R1           ; R1 = CSR
+        MOV     #1000,SP
+        MOV     #340,@#177776   ; priority 7
+        JMP     (R2)            ; (macro11 v0.3 wrongly rejects JMP (R0))
+
+; ---------------------------------------------------------------- routines
+
+; CHKNUM: R2 -> message.  A load numbered 0 starts the load (over): NEXT
+; = 0.  Z set: its load number is NEXT; C set: it is NEXT-1 (a repeated
+; load); otherwise neither.
+CHKNUM: MOVB    1(R2),R0
+        BIC     #177400,R0
+        BNE     3$              ; load 0: the load starts (over)
+        CLR     NEXT
+3$:
+        MOV     NEXT,R1
+        CMP     R0,R1
+        BEQ     2$              ; Z set, C clear
+        DEC     R1
+        BIC     #177400,R1
+        CMP     R0,R1
+        BNE     1$
+        CLZ                     ; repeated: Z clear,
+        SEC                     ;   C set
+        RTS     PC
+1$:     CLC                     ; neither: Z clear, C clear
+2$:     RTS     PC
+
+; STORE: copy R1 data bytes from 6(R2) to the load address in 2(R2)-5(R2).
+; C set if the address is beyond 64 KB or the data would reach this
+; program.  R1, R2 kept.
+STORE:  TST     4(R2)           ; address bits 16-31 must be 0
+        BNE     2$
+        MOV     2(R2),R0        ; load address
+        MOV     R0,R3
+        ADD     R1,R3           ; end of the data
+        BCS     2$
+        CMP     R3,R4           ; must stay below this program
+        BHI     2$
+        MOV     R2,R3           ; R3 -> data
+        ADD     #6,R3
+        MOV     R1,-(SP)
+        BEQ     1$
+3$:     MOVB    (R3)+,(R0)+
+        DEC     R1
+        BNE     3$
+1$:     MOV     (SP)+,R1
+        CLC
+        RTS     PC
+2$:     SEC
+        RTS     PC
+
+; POSTR: give the receive buffer at R0 to the board.  R0-R3 changed.
+POSTR:  MOV     #RBLEN,R1
+        MOV     #T.RCV,R2
+        JSR     PC,INCMD
+        RTS     PC
+
+; INCMD: input command R2 (type) with SEL4 = R0, SEL6 = R1: set RQI and
+; the type, wait for RDI, load SEL4 and SEL6, clear RQI and wait until the
+; board has taken the command (RDI off).  Output transfers that come
+; meanwhile are taken (OUTPUT).  R0-R3 changed.
+INCMD:  MOV     R2,-(SP)
+        BIS     #RQI,(SP)
+        MOVB    (SP)+,SEL0(R5)  ; request the input transfer
+1$:     TSTB    SEL0(R5)        ; RDI?
+        BMI     2$
+        TSTB    SEL2(R5)        ; RDO meanwhile: take it
+        BPL     1$
+        MOV     R0,-(SP)
+        MOV     R1,-(SP)
+        JSR     PC,OUTPUT
+        MOV     (SP)+,R1
+        MOV     (SP)+,R0
+        BR      1$
+2$:     MOV     R0,SEL4(R5)
+        MOV     R1,SEL6(R5)
+        BICB    #RQI,SEL0(R5)   ; the board takes the command
+3$:     TSTB    SEL0(R5)        ; and clears RDI when it has: wait, so
+        BMI     3$              ;   that the next command finds RDI off
+        RTS     PC
+
+; OUTPUT: an output transfer is ready (RDO).  Receive done: queue its
+; buffer address and count (at most NRBUF are pending, the queue has 8
+; places); R0 and R1 changed; transmit done: the buffer is back (XBUSY off), and the wait for
+; the answer starts again (the message may have waited for the line);
+; CONTROL OUT: nothing to do.
+OUTPUT: MOVB    SEL2(R5),R0
+        BIC     #177770,R0      ; output type
+        BNE     2$
+        CLR     XBUSY           ; transmit done: the wait for the answer
+        MOV     TICKS,TCNT      ;   starts now
+        BR      1$
+2$:     CMP     R0,#T.RCV
+        BNE     1$
+        MOV     PTAIL,R1        ; queue entry
+        ADD     R4,R1
+        ADD     #PADDR-BOOT,R1
+        MOV     SEL4(R5),(R1)   ; the buffer
+        MOV     SEL6(R5),R0     ; byte count
+        BIC     #140000,R0
+        MOV     R0,PCNT-PADDR(R1)
+        ADD     #2,PTAIL
+        BIC     #177761,PTAIL
+1$:     CLRB    SEL2(R5)        ; release the output transfer (RDO off)
+        RTS     PC
+
+; MCLEAR: master clear the board and wait for RUN
+MCLEAR: MOV     #MCLR,SEL0(R5)
+1$:     TST     SEL0(R5)        ; RUN (bit 15)
+        BPL     1$
+        RTS     PC
+
+; ---------------------------------------------------------------- data
+        .EVEN
+STACK:  .BLKW   40              ; own stack (32 words)
+STKTOP:
+BTAB:   .BLKW   200             ; base table (128 words)
+XBUF:   .BLKW   10              ; message to send
+RBUF:                           ; receive buffers up to the end of the area
+RBEND   = BOOTSZ
+NRBUF   = 4                     ; number of receive buffers
+RBLEN   = <<RBEND-RBUF>/NRBUF>&177776  ; the length of each
+CODLEN  = RBUF-BOOT             ; what SIMH copies: up to the receive buffer
+
+        .END
