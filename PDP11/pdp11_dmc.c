@@ -36,6 +36,8 @@
                   with BOOT DMVn, invoke primary MOP) on the PDP-11
   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
                   request); a sent DDCMP maintenance message completes at once
+  23-Nov-26  Ulli DMC11/DMR11: BOOT DMCn with a built-in MOP bootstrap
+                  (pdp11_dmc_boot.mac) in place of a DECnet boot ROM
   25-Jan-13  RJ   Error checking for already attached in dmc_settype() fixed.
   25-Jan-13  RJ   If attach when already attached then detach first.
   23-Jan-13  RJ   Don't do anything if not attached. See https://github.com/simh/simh/issues/28
@@ -130,6 +132,7 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
 extern int32 trap_req;                                  /* CPU trap requests */
 extern int32 MMR0, MMR3;                                /* memory management */
 extern t_stat (*iodispR[IOPAGESIZE >> 1])(int32 *dat, int32 ad, int32 md);  /* I/O page readers (DMR11 boot ROM) */
+#include "pdp11_dmc_boot.h"                             /* BOOT DMCn: the MOP bootstrap */
 #else
 #define DMV_BOOT_SUPPORTED  0
 #endif
@@ -1353,6 +1356,12 @@ t_stat dmv_show_program (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmr_set_switchbyte (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat dmr_show_switchbyte (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmv_boot (int32 unitno, DEVICE *dptr);
+t_stat dmc_boot (int32 unitno, DEVICE *dptr);
+#if DMV_BOOT_SUPPORTED
+#define DMC_BOOT_RTN    &dmc_boot
+#else
+#define DMC_BOOT_RTN    NULL                            /* VAX, PDP-10: no BOOT DMCn */
+#endif
 t_bool dmv_boot_active (CTLR *controller);
 t_bool dmv_boot_receive (CTLR *controller);
 t_bool dmv_boot_invoke (CTLR *controller, uint8 soft_address);
@@ -1771,7 +1780,7 @@ DEVICE dmc_dev =
     "DMC", 
 #endif
     dmc_units, dmc_reg, dmc_mod, 3, DMC_RDX, 8, 1, DMC_RDX, 8,
-    NULL, NULL, &dmc_reset, NULL, &dmc_attach, &dmc_detach,
+    NULL, NULL, &dmc_reset, DMC_BOOT_RTN, &dmc_attach, &dmc_detach,
     &dmc_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_DEBUG | DEV_DONTAUTO, 0, dmc_debug,
     NULL, NULL, &dmc_help, &dmc_help_attach, NULL, &dmc_description };
 
@@ -2631,6 +2640,28 @@ const char helpDmrBoot[] =
     "\n"
     " An Enter MOP Mode with a wrong password does not boot.  The DMC11 and\n"
     " DMR11 have no power-on boot and no invoke primary MOP function.\n"
+    "2 BOOT command\n"
+    " A real DMC11 or DMR11 has no boot of its own on the host's side: a\n"
+    " local boot runs from the CPU's boot ROM (DEC's M9312 DECnet ROM 'XM',\n"
+    " started from the console, for example XM0 at the 23-248F1 console's\n"
+    " prompt), which drives the board as a host program does.  That works in\n"
+    " SIMH with the ROM image attached to a ROM unit (HELP ROM).  Without a ROM\n"
+    " image,\n"
+    "\n"
+    "+sim> BOOT %U\n"
+    "\n"
+    " starts a small MOP bootstrap written for SIMH in place of the ROM.  The\n"
+    " line must be attached.  The bootstrap lies in the 8 KB below 160000 (or\n"
+    " below the end of a smaller memory).  It master-clears the board, puts it\n"
+    " into maintenance mode and asks the load host for the program: Request\n"
+    " Program with MOP device type 12 (DMC11) or 40 (DMR11) and the program\n"
+    " type of SET %U PROGRAM.  It stores each Memory Load and answers it with\n"
+    " Request Memory Load; a Memory Load with Transfer Address or a Parameter\n"
+    " Load with Transfer Address starts the program, with R1 = the board's CSR\n"
+    " and SP = 1000, after a master clear of the board.  Without an answer it\n"
+    " asks again after about 5 seconds.  Loads must lie below the bootstrap\n"
+    " (no memory management); a larger system is loaded through a secondary\n"
+    " or tertiary loader.\n"
 #endif
     "";
 const char helpMonitor[] =
@@ -5062,6 +5093,11 @@ if (dmc_is_dmc(controller)) {
                     BUFFER *buffer = dmc_buffer_queue_add(controller->xmt_queue, addr, count, TransmitData);
                     int n;
 
+                    if (buffer == NULL) {           /* no free buffer: the host gave more than the */
+                        controller->transfer_state = Idle;  /* board takes (known issue 115) */
+                        dmc_process_command (controller);
+                        return;
+                        }
                     /* construct buffer - leaving room for DDCMP header and CRCs */
                     buffer->transfer_buffer = (uint8 *)realloc (buffer->transfer_buffer, buffer->count + DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
                     memset (buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
@@ -6699,6 +6735,57 @@ if (dmv_switch_mode(controller) & 4) {      /* multipoint tributary */
     }
 dmv_boot_begin (controller, DMVB_HOW_POWERON, address, FALSE);
 return SCPE_OK;
+}
+
+/* BOOT DMCn: the DMC11 and DMR11 have no boot of their own on the host's
+   side (a local boot ran from the CPU's boot ROM, such as DEC's M9312
+   DECnet ROM 'XM', which drives the board as a host program does).  SIMH
+   has no such ROM, so BOOT DMCn copies a small MOP bootstrap written for
+   SIMH (pdp11_dmc_boot.mac, position independent) to the top of the low
+   56 KB of memory and starts it there.  It master-clears the board, puts
+   it into maintenance mode, asks the load host for the program (Request
+   Program with the board's MOP device type, 12 DMC11 or 40 DMR11, and the
+   program type of SET DMCn PROGRAM), stores Memory Loads below itself,
+   answers each with Request Memory Load, and starts the program at the
+   transfer address of the last load with R1 = CSR and SP = 1000, after a
+   master clear of the board.  A request without an answer is sent again
+   after about 5 s of simulated time (the wait loop count follows the
+   simulated instruction rate). */
+t_stat dmc_boot (int32 unitno, DEVICE *dptr)
+{
+#if DMV_BOOT_SUPPORTED
+CTLR *controller;
+uint32 top = (MEMSIZE < 0160000) ? MEMSIZE : 0160000;  /* no memory management */
+uint32 base, csr, ticks;
+double ips = sim_timer_inst_per_sec ();
+size_t i;
+
+if ((unitno < 0) || (unitno >= (int32)dptr->numunits - 2) || (unitno >= DMC_NUMDEVICE))
+    return SCPE_ARG;
+controller = (CTLR *)dptr->units[unitno].ctlr;
+if (!(dptr->units[unitno].flags & UNIT_ATT))
+    return sim_messagef (SCPE_UNATT, "%s%d is not attached to its line\n", dptr->name, unitno);
+if (top < 2 * DMCB_AREA)
+    return sim_messagef (SCPE_ARG, "BOOT %s needs at least %d KB of memory\n", dptr->name, (2 * DMCB_AREA) >> 10);
+base = top - DMCB_AREA;
+csr = (dmc_dib.ba + (IOLN_DMC * controller->index)) & 0177777;
+for (i = 0; i < sizeof (dmc_boot_code) / sizeof (dmc_boot_code[0]); i++)
+    WrMemW (base + (2 * i), dmc_boot_code[i]);
+WrMemW (base + DMCB_CSR, csr);
+WrMemW (base + DMCB_DEVT, dmx_board (controller)->mop_devtype | (*dmx_program (controller) << 8));
+ticks = (ips > 0.0) ? (uint32)((ips * 5.0) / DMCB_LOOP) : 0;
+if (ticks < 1)
+    ticks = 1;
+if (ticks > 0177777)
+    ticks = 0177777;
+WrMemW (base + DMCB_TICKS, ticks);
+sim_debug (DBG_INF, dptr, "%s%d: BOOT: MOP bootstrap at %06o, CSR %06o, device type %d, program type %d, wait loops %d\n",
+           dptr->name, unitno, base, csr, dmx_board (controller)->mop_devtype, *dmx_program (controller), ticks);
+cpu_set_boot (base);
+return SCPE_OK;
+#else
+return SCPE_NOFNC;
+#endif
 }
 
 /* Invoke primary MOP (from the master clear): as the power-on boot.  A

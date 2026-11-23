@@ -3746,10 +3746,13 @@ fprintf (st, "controller; SIMH also offers them on the Qbus, which DEC's own Qbu
 fprintf (st, "systems did not have.  BOOT CPU starts the image attached to ROM0\n");
 fprintf (st, "(HELP ROM); SIMH has no boot ROM images of its own.  BOOT DMVn and\n");
 fprintf (st, "BOOT DMPn are the DMV11's and DMP11's primary MOP boot from a DECnet\n");
-fprintf (st, "load host and need their switches (HELP DMV, HELP DMP).  The DMC11 and\n");
-fprintf (st, "DMR11 have no BOOT command: a load host starts them by remote load\n");
-fprintf (st, "detect, into a boot ROM such as the M9312 DECnet ROM or by their own\n");
-fprintf (st, "load (HELP DMC).  For the details of a device's bootstrap see HELP <dev>.\n\n");
+fprintf (st, "load host and need their switches (HELP DMV, HELP DMP).  BOOT XU and\n");
+fprintf (st, "BOOT DMCn start a MOP bootstrap written for SIMH in place of a DECnet boot\n");
+fprintf (st, "ROM (DEC's 'XE' for the DEUNA/DELUA, 'XM' for the DMC11/DMR11); those\n");
+fprintf (st, "ROMs still work when attached to a ROM unit (HELP XU, HELP DMC).  A host\n");
+fprintf (st, "can also start a DMC11 or DMR11 by remote load detect, into a boot ROM or\n");
+fprintf (st, "the board's own load (HELP DMC).  For the details of a device's bootstrap\n");
+fprintf (st, "see HELP <dev>.\n\n");
 return SCPE_OK;
 }
 
