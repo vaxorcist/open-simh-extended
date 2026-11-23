@@ -210,7 +210,8 @@ A failed `git am` leaves `.git/rebase-apply`; clear it with `git am --quit`
 - BOOT DMCn (patch 24): `tests/dmv11_boot/` T1-T6, P1-P4, R1-R10 PASS
   (2026-11-23); VMS V4.7 as the load host over a DMC11
   (`tests/dmc_boot/vmsdmc.sh`): secondary loader PASS, system load 2 of 4
-  (stale Request Programs kept on the TCP line, known issue 116).
+  (stale Request Programs kept on the TCP line, known issue 116); VMS DECnet
+  pair over a DMC11 (`pair.sh` `DEV=DMC`): PASS.
 - VMS V4.7 DECnet regressions after patch 18 v3 (`tests/dmv_regress/pair.sh`,
   two nodes, copies there and back, circuit off/on, `SET CPU IDLE=VMS`):
   DMV11 and DMP11, point-to-point and multipoint: PASS (2026-11-21).

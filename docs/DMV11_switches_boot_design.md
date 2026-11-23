@@ -679,3 +679,5 @@ Tests:
   DMC11 still ran DDCMP waited on the TCP line and reached VMS during the
   load, where it expected a Request Memory Load. A real line loses such
   messages; SIMH keeps them (known issue 116, decision for Ulli).
+- VMS V4.7 DECnet pair over a DMC11 with the integration build of patch 24
+  (`pair.sh`, `DEV=DMC`, vax780): PASS (3 of 3 compares).
