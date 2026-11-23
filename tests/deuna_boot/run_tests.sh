@@ -1,5 +1,5 @@
 #!/bin/bash
-# open-simh-extended/tests/deuna_boot/run_tests.sh  v1
+# open-simh-extended/tests/deuna_boot/run_tests.sh  v2 (v2: B10 BOOT XU with the built-in bootstrap, B11 BOOT XU refusals, B12 HELP XU BOOTING; patch 23 v2)
 # Tests of the DEUNA/DELUA BOOT port command of SIMH's XU device (patch 23,
 # known issue 109; docs/DEUNA_boot_design.md).  Each test starts the MOP
 # load host mophost.py (SIMH's UDP Ethernet transport: the simulator has
@@ -14,13 +14,16 @@
 #   B7  DEC's SECUNA.SYS/TERUNA.SYS: TERUNA loads a test system through
 #       the normal port (DEC files needed; also known issues 111-113)
 #   B8  BOOT without an attached network: refused (PCEI)
+#   B10 SIMH's BOOT XU (built-in bootstrap, no ROM image), test tertiary
+#   B11 BOOT XU without an attached network, BOOT XU1: refused
+#   B12 HELP XU BOOTING: the topic and its subtopics
 # Needs for B6/B7: m9312_248F1.bin, m9312_xe.bin (see ../m9312_roms/README.txt);
 # for B7 also SECUNA.SYS and TERUNA.SYS (DECnet-11M kit, [136,54]).  Missing
-# files: SKIP.  UDP ports 22241-22292.
+# files: SKIP.  UDP ports 22241-22292 and 22321-22332.
 #
-# usage: run_tests.sh BIN/pdp11 [B2 ... B8]
+# usage: run_tests.sh BIN/pdp11 [B2 ... B12]
 BIN=$(readlink -f "$1"); shift
-TESTS=${*:-B2 B3 B4 B5 B6 B7 B8}
+TESTS=${*:-B2 B3 B4 B5 B6 B7 B8 B10 B11 B12}
 cd "$(dirname "$0")"
 fail=0
 
@@ -47,14 +50,14 @@ for t in $TESTS; do
     n=$(echo $t | tr -d B)
     lp=$((22221 + 10 * n)); hp=$((lp + 1))
     case $t in
-    B2|B6) opts="";;
+    B2|B6|B10) opts="";;
     B3) opts="--dropfirst";;
     B4) opts="--resend";;
     B5) opts="--devtype 11";;
     B7) opts="--secondary SECUNA.SYS --tertiary TERUNA.SYS --system SYSTEM_BOOT_OK";;
     esac
     mpid=""
-    if [ $t != B8 ]; then
+    if [ $t != B8 -a $t != B11 -a $t != B12 ]; then
         python3 -I mophost.py $hp $lp $opts > $t.mop 2>&1 &
         mpid=$!
         sleep 0.3
@@ -63,11 +66,16 @@ for t in $TESTS; do
     [ -n "$mpid" ] && wait $mpid
     ok=1
     case $t in
-    B2|B3|B4|B5|B6)
+    B2|B3|B4|B5|B6|B10)
         grep_all $t.out "DEUNA BOOT OK" "HALT instruction, PC: 002034" "R1:	174510" \
                         "2:	012701" "4:	174510" "6:	000137" "10:	002000" || ok=0;;
     B7) grep_all $t.out "SYSTEM_BOOT_OK" "HALT instruction, PC: 002034" || ok=0;;
     B8) grep_all $t.out "BOOT needs an attached network" "R0:	04" || ok=0;;
+    B11) grep_all $t.out "Unit not attached" \
+                         "Unit disabled: XU-TMRSVC" "B11 END" || ok=0;;
+    B12) grep_all $t.out "Booting" "BOOT XU" "ATTACH ROM1 m9312_xe.bin" "@XE0" \
+                         "Sequence" "load assistant multicast AB-00-00-01-00-00" \
+                         "Limits" "remote console boot message" "B12 END" || ok=0;;
     esac
     [ $t = B6 -o $t = B7 ] && { grep -q "ETHERNET PHYSICAL ADDRESS = 08-00-2B-12-34-56" $t.out || { echo "  no address printout"; ok=0; }; }
     # B3: the board repeats its request (5 s of simulated time; the wall
