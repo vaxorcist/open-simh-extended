@@ -1,0 +1,141 @@
+From 68a534cae2e01e87bba23b209855422f190a1e1b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 12:25:38 +0100
+Subject: [PATCH] TMXR: a per-line listener discards incoming connections the
+ peer has already closed
+
+A line with a PEER and its own listening port took one pending incoming
+connection per poll.  Connection attempts the peer had given up while they
+waited in the listen queue (closed sockets) were taken as the line one
+after the other, found closed at the first read and dropped, one per
+connection poll.  The peer's live connection, which the peer already
+counted as established and used, was taken only many polls later, and what
+had been sent on it arrived in a burst.  Seen with two DMC11 lines with
+PEER on both sides: a PDP-11 booting with BOOT DMCn sent its MOP Request
+Program every few seconds; VMS V4.7 got several at once and, in 2 of 4
+runs, read an old one in the middle of the load and gave it up (known
+issue 116).
+
+sim_peek_closed_sock() tells, without taking data, whether the peer has
+already closed or reset a connection.  tmxr_poll_conn() uses it on every
+per-line incoming connection: a closed one is discarded and the next one
+in the listen queue is tried in the same poll.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ sim_sock.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ sim_sock.h |  1 +
+ sim_tmxr.c | 11 +++++++++++
+ 3 files changed, 53 insertions(+)
+
+diff --git a/sim_sock.c b/sim_sock.c
+index a672eeeb..f50c63c9 100644
+--- a/sim_sock.c
++++ b/sim_sock.c
+@@ -78,6 +78,7 @@ extern "C" {
+    sim_connect_sock_ex  connect a socket to a remote destination
+    sim_accept_conn      accept connection
+    sim_read_sock        read from socket
++   sim_peek_closed_sock has the peer closed the connection already?
+    sim_write_sock       write from socket
+    sim_close_sock       close socket
+    sim_setnonblock      set socket non-blocking
+@@ -115,6 +116,11 @@ int sim_read_sock (SOCKET sock, char *buf, int nbytes)
+ return -1;
+ }
+ 
++int sim_peek_closed_sock (SOCKET sock)
++{
++return 0;
++}
++
+ int sim_write_sock (SOCKET sock, char *msg, int nbytes)
+ {
+ return 0;
+@@ -1367,6 +1373,41 @@ return 0;
+ }
+ 
+ 
++/* Has the peer already closed (or reset) the connection of a connected
++   socket?  Looks without taking data: a socket with nothing to read, or
++   with data waiting, is open; a socket that is readable but gives 0 bytes
++   (an orderly close) or an error other than "would block" is closed.  A
++   listener uses it on a connection it has just accepted: connection
++   attempts that the peer gave up while they waited in the listen queue
++   are still accepted, already closed. */
++int sim_peek_closed_sock (SOCKET sock)
++{
++fd_set rd_set;
++struct timeval zero;
++char c;
++int rbytes, err;
++
++memset (&zero, 0, sizeof (zero));
++FD_ZERO (&rd_set);
++FD_SET (sock, &rd_set);
++if (select ((int) sock + 1, &rd_set, NULL, NULL, &zero) <= 0)
++    return 0;                                           /* nothing to read: open */
++rbytes = recv (sock, &c, 1, MSG_PEEK);
++if (rbytes == 0)                                        /* orderly close */
++    return 1;
++if (rbytes == SOCKET_ERROR) {
++    err = WSAGetLastError ();
++    if (err == WSAEWOULDBLOCK)
++        return 0;
++#if defined(EAGAIN)
++    if (err == EAGAIN)
++        return 0;
++#endif
++    return 1;                                           /* reset or other error */
++    }
++return 0;                                               /* data waiting: open */
++}
++
+ int sim_read_sock (SOCKET sock, char *buf, int nbytes)
+ {
+ int rbytes, err;
+diff --git a/sim_sock.h b/sim_sock.h
+index 7ae40f59..35bbd181 100644
+--- a/sim_sock.h
++++ b/sim_sock.h
+@@ -128,6 +128,7 @@ SOCKET sim_connect_sock_ex (const char *sourcehostport, const char *hostport, co
+ SOCKET sim_accept_conn_ex (SOCKET master, char **connectaddr, int opt_flags);
+ #define sim_accept_conn(master, connectaddr) sim_accept_conn_ex(master, connectaddr, 0)
+ int sim_check_conn (SOCKET sock, int rd);
++int sim_peek_closed_sock (SOCKET sock);
+ int sim_read_sock (SOCKET sock, char *buf, int nbytes);
+ int sim_write_sock (SOCKET sock, const char *msg, int nbytes);
+ void sim_close_sock (SOCKET sock);
+diff --git a/sim_tmxr.c b/sim_tmxr.c
+index 2ae57914..43ea8887 100644
+--- a/sim_tmxr.c
++++ b/sim_tmxr.c
+@@ -26,6 +26,11 @@
+    Based on the original DZ11 simulator by Thord Nilson, as updated by
+    Arthur Krewat.
+ 
++   23-Nov-26    Claude  Per line listener: an incoming connection that the
++                        peer has already closed is discarded and the next one
++                        is tried at once (connection attempts the peer gave up
++                        waited in the listen queue and kept its live
++                        connection from being taken for many polls)
+    12-Oct-12    MP      Revised serial port support to not require changes to
+                         any code in TMXR library using code.  Added support
+                         for per line listener ports and outgoing tcp connections.
+@@ -1328,6 +1333,12 @@ for (i = 0; i < mp->lines; i++) {                       /* check each line in se
+                         tmxr_debug_connect_line (lp, msg);
+                         free (sockname);
+                         free (peername);
++                        if (sim_peek_closed_sock (newsock)) {       /* given up by the peer while it waited? */
++                            tmxr_debug_connect_line (lp, "tmxr_poll_conn() - Incoming connection already closed by the peer, discarded");
++                            sim_close_sock (newsock);
++                            free (address);
++                            continue;                               /* try the next one now */
++                            }
+                         ++lp->sessions;                             /* count the new session */
+ 
+                         if (lp->acl) {                              /* Restrict connection with ACL rules? */
+-- 
+2.43.0
+

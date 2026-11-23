@@ -1,12 +1,11 @@
 #!/bin/bash
-# open-simh-extended/tests/dmc_boot/vmsdmc.sh  v2 (v2: PDPPEER, default 21399 so that only the VAX connection is used (known issue 116: crossing connections); PASS also on "Load, Successful" with LOADFILE; VAXDEBUG/PDPDEBUG)
+# open-simh-extended/tests/dmc_boot/vmsdmc.sh  v3 (v3: PDPPEER default 21301 again (PEER on both sides works since patch 25, known issue 116 fixed); v2: PDPPEER, default 21399 so that only the VAX connection is used (known issue 116: crossing connections); PASS also on "Load, Successful" with LOADFILE; VAXDEBUG/PDPDEBUG)
 #
 # SIMH's BOOT DMCn (patch 24) with a real load host: VMS V4.7 on a
 # VAX-11/780 with a DMC11 (VMS line and circuit DMC-0) loads a PDP-11/34
 # whose DMC11 (or DMR11 with TYPE=DMR) is joined to it by a SIMH TCP line
 # (VAX listens on 21301 and connects to 21302; the PDP-11 listens on 21302
-# and has PEER=PDPPEER, default 21399 where nobody listens, so that only the
-# VAX's connection is used; known issue 116).
+# and connects to PDPPEER, default 21301; known issue 116).
 #   VAX:    boots a copy of DISK (VMS V4.7, node VAX4 1.4, SYSTEM/MANAGER),
 #           copies HELLO.TSK and the load file from a tape (TS11, MSA0)
 #           into SYS$SYSTEM, defines line/circuit DMC-0 with SERVICE
@@ -88,13 +87,12 @@ echo 'MC NCP SHOW CIRCUIT DMC-0 STATUS' >> $R/vax.cmd
     echo "set dmc enable"
     echo "set dmc0 type=$TYPE"
     echo "set dmc0 program=$PROGRAM"
-    # PDPPEER: the PDP-11's PEER port (a DMC needs one).  Default 21399, where
-    # nobody listens: only the VAX's connection is used.  With 21301 (the
-    # VAX) both sides connect: the PDP-11's connection was up at once, but
-    # the VAX took it as the line only much later, so the bootstrap's
-    # repeated Request Programs waited in it and reached VMS in a burst,
-    # some in the middle of the load (known issue 116).
-    echo "set dmc0 peer=127.0.0.1:${PDPPEER:-21399}"
+    # PDPPEER: the PDP-11's PEER port (a DMC needs one).  Default 21301 (the
+    # VAX): both sides connect.  Before patch 25 the VAX took the PDP-11's
+    # live connection only after the closed attempts waiting before it, so
+    # the bootstrap's repeated Request Programs reached VMS in a burst (known
+    # issue 116); 21399 (nobody listens) uses only the VAX's connection.
+    echo "set dmc0 peer=127.0.0.1:${PDPPEER:-21301}"
     echo "attach dmc0 21302"
     echo "set debug $R/pdp.dbg"
     echo "set dmc debug=${PDPDEBUG:-INFO;WARN}"

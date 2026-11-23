@@ -1,4 +1,4 @@
-open-simh-extended/tests/dmc_boot/README.txt  v2 (2026-11-23; v2: PDPPEER, by default only the VAX's connection is used; system loads 3 of 3)
+open-simh-extended/tests/dmc_boot/README.txt  v3 (2026-11-23; v3: deadconn.py and d1.ini (known issue 116, patch 25); PDPPEER default 21301 again; v2: PDPPEER, by default only the VAX's connection is used; system loads 3 of 3)
 
 SIMH's BOOT DMCn with a real load host (patch 24, docs/DMV11_switches_boot_design.md
 section 10).  BOOT DMCn starts a small MOP bootstrap written for SIMH
@@ -30,14 +30,21 @@ vmsdmc.sh BINDIR DISK
       WAITLOAD=1         NCP LOAD NODE PDPDMC instead of waiting
       VAXDEBUG=, PDPDEBUG=  SET DMC DEBUG= flags (logs vax.dbg, pdp.dbg)
       PDPPEER=port       the PDP-11's PEER (a DMC needs one to ATTACH);
-                         default 21399, where nobody listens, so only the
-                         VAX's connection is used; 21301 (the VAX) gives
-                         crossing connections (known issue 116)
+                         default 21301 (the VAX: both sides connect);
+                         21399 (nobody listens): only the VAX's connection
     PASS when the PDP-11 console shows "HELLO from the VMS load host over
     the DMC11".  The run directory run_<program>_<type>/ holds the disk
     copy and the logs (never in the repository).
 hello.mac   the test program: prints its line and halts; R2 keeps the R1
             it was started with (the CSR).
+deadconn.py PORT [NDEAD], d1.ini
+            known issue 116 (patch 25): the PDP-11 of d1.ini runs BOOT DMC0
+            with its line listening on 21397; deadconn.py makes NDEAD
+            connections and closes them, then a live one, which must get
+            the Request Program within 3.5 s (the closed ones are discarded
+            in one poll).  Start deadconn.py first:
+                python3 -I deadconn.py 21397 3 &
+                BIN/pdp11 d1.ini
 
 Results (2026-11-23, patch 24):
   PROGRAM=SECONDARY (DMC11): PASS (HELLO at 6, R2 = CSR 160070).
@@ -46,6 +53,8 @@ Results (2026-11-23, patch 24):
     in the PDP-11's connection reached VMS during the load (known issue 116).
   PROGRAM=SYSTEM (DMC11, HELLO.TSK), PDPPEER=21399 (one connection): 3 of 3
     PASS.
+  With patch 25 (known issue 116 fixed), PEER on both sides: 4 of 4 PASS.
+  d1.ini/deadconn.py: 2.9 s with patch 25, 15.5 s before (FAIL).
   PROGRAM=SYSTEM TYPE=DMR LOADFILE=remwrt.tsk: VMS "Load, Successful",
     remwrt's banner and prompt (the script says FAIL only because it looks
     for HELLO's line).

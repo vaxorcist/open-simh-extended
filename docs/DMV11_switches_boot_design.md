@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v11, 2026-11-23 (v11: known issue 116 is the crossing PEER connections; with one connection 3 of 3 system loads; v10: section 10, BOOT DMCn with a MOP bootstrap written for SIMH (patch 24), known issues 115, 116; v9: section 9, starting the M9312 'XM' ROM by hand: GO 173004, not BOOT CPU; v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
+<!-- open-simh-extended/docs/DMV11_switches_boot_design.md  v12, 2026-11-23 (v12: section 11, patch 25: closed incoming connections discarded (known issue 116 fixed), BOOT DMCn system loads 4 of 4 with PEER on both sides; v11: known issue 116 is the crossing PEER connections; with one connection 3 of 3 system loads; v10: section 10, BOOT DMCn with a MOP bootstrap written for SIMH (patch 24), known issues 115, 116; v9: section 9, starting the M9312 'XM' ROM by hand: GO 173004, not BOOT CPU; v8: a master clear keeps DTR (Ulli), known issues 103 and 105, patch 21 v4; v7: section 9, DEC's M9312 DECnet boot ROM in SIMH, known issues 101-104, patch 21 v3; v6: section 8, the DMC11 (known issue 99, patch 21 v2); v5: VMS pair regressions PASS; v4: section 7, DMP11 and DMR11 switch packs and boot with one board model, DMC11 open, known issue 90 fixed, patch 21; v3: SET DMVn PROGRAM (Ulli: configurable, default secondary loader), SP 1000 for the started program, remwrt loaded and run, patch 18 v3; v2: section 6, VMS V4.7 as load host, the TM's DTR rule, patch 18 v2; v1: switch packs E101/E113 and the primary MOP boot of the PDP-11, patch 18, branch dmv-boot) -->
 # DMV11 switch packs and primary MOP boot (patch 18)
 
 Ulli received a real DMV11 and its User's Guide (EK-DMVQM-UG-003, QMA DMV11
@@ -685,3 +685,29 @@ Tests:
   3 of 3 system loads PASS.
 - VMS V4.7 DECnet pair over a DMC11 with the integration build of patch 24
   (`pair.sh`, `DEV=DMC`, vax780): PASS (3 of 3 compares).
+
+## 11. Crossing PEER connections (2026-11-23, patch 25, known issue 116)
+
+Ulli asked to investigate sim_tmxr after the failed system loads of section
+10 had been traced to the line connections.
+
+- **Cause:** the VAX's listen queue held, before the PDP-11's live
+  connection, attempts the PDP-11 had already closed (made at ATTACH and
+  at the BOOT reset). `tmxr_poll_conn()` took one incoming connection per
+  poll (every 2 s of simulated time while the line has none); each closed
+  one became the line, was found closed and dropped. The PDP-11 counted its
+  connection as established at once and sent on it; the VAX reached it only
+  after all closed ones, and its messages arrived in a burst.
+- **Fix:** `sim_peek_closed_sock()` (sim_sock.c) looks, without taking data,
+  whether the peer has closed or reset a connection; `tmxr_poll_conn()`
+  discards such a per-line incoming connection and tries the next in the
+  same poll (sim_tmxr.c; branch `tmxr-peer`, on `dmc-bootstrap`).
+- **Tests:** `tests/dmc_boot/deadconn.py` + `d1.ini` (three closed
+  connections before the live one): Request Program after 2.9 s (before:
+  15.5 s). VMS V4.7 system loads with BOOT DMCn and PEER on both sides
+  (`vmsdmc.sh` v3, default again): 4 of 4 PASS, the closed connections
+  discarded in one poll. `tests/dmv11_boot` T1-T6, P1-P4, R1-R10 and
+  `tests/deuna_boot` B2-B12 PASS. VMS DECnet pairs (`pair.sh`, PEER on both
+  sides): DMC11, DMR11, DMP11 (vax780), DMV11 (microvax2) PASS.
+- Known issue 93 (two DMV11s with PEER kept reconnecting) probably had the
+  same cause; not tested again.
