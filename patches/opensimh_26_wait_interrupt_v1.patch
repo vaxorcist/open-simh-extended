@@ -1,0 +1,191 @@
+From 087ce54d1b3f5d2f0072e516d47de7aacd83e809 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 24 Nov 2026 14:50:05 +0100
+Subject: [PATCH] Sound: the prompt's waits end on Ctrl-E or Ctrl-C; HELP SET
+ REALISM: SET -N
+
+In the realism mode, SET <unit> ONLINE/OFFLINE/LOAD/UNLOAD/REWIND at the
+sim> prompt waited for the spindle or tape transport without looking at
+the keyboard, so neither the WRU character nor Ctrl-C could end it
+(known issue 117).  The three waits (spindles, reels, streamers) now put
+the console into run mode and poll the keyboard every 50 ms: the WRU
+character (Ctrl-E) or Ctrl-C ends the wait early with a message; the
+drive goes on in the background and a DO script stops there.
+
+HELP SET REALISM describes the waits, the switch -N (return at once),
+SHOW <unit> SPINDLE/TRANSPORT and the interrupt; HELP SET SOUND points
+there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ scp.c       | 20 +++++++++++++--
+ sim_sound.c | 72 ++++++++++++++++++++++++++++++++++++++++++++++++-----
+ sim_sound.h |  4 ++-
+ 3 files changed, 87 insertions(+), 9 deletions(-)
+
+diff --git a/scp.c b/scp.c
+index 45a3aa8d..ffe643a7 100644
+--- a/scp.c
++++ b/scp.c
+@@ -1484,13 +1484,29 @@ static const char simh_help1[] =
+       " DISABLED removes it again).  The sounds of the devices and the system\n"
+       " (HELP SET SOUND) come with it.  SET REALISM ENABLED and DISABLED are\n"
+       " only allowed while no disk or tape unit is attached.  SET SOUND\n"
+-      " ENABLED and SET SOUND DISABLED do the same (older name).\n"
++      " ENABLED and SET SOUND DISABLED do the same (older name).\n\n"
++      " Waiting at the prompt: in the realism mode, a command that starts or\n"
++      " stops a disk spindle or loads, unloads or rewinds a tape waits until\n"
++      " the drive is ready or at rest, as the operator of the real drive\n"
++      " would.  The switch -N returns at once instead, and the drive goes on\n"
++      " in the background:\n\n"
++      "++SET -N RL0 ONLINE\n"
++      "++SET -N TS LOAD\n\n"
++      " This works for the disks RL, RP, HK, RQ, RB and CS (ONLINE, OFFLINE;\n"
++      " RL, RB and CS also LOAD, UNLOAD) and the tapes TS (LOAD, UNLOAD,\n"
++      " ONLINE, OFFLINE, REWIND) and TQ (LOAD, UNLOAD).\n"
++      " SHOW <unit> SPINDLE (disks) or SHOW <unit> TRANSPORT (tapes) shows\n"
++      " how far it has got.  A guest that uses the unit meanwhile finds it not\n"
++      " ready, as on the real hardware.  The WRU character (Ctrl-E) or Ctrl-C\n"
++      " also ends a wait early; the drive goes on, and a DO script stops.\n"
++      " The commands of each drive are in its own help (e.g. HELP RL).\n"
+ #define HLP_SET_SOUND "*Commands SET Sound"
+       "3Sound\n"
+       " Sound output with SDL2 audio: system sounds (power relay, fans), unit\n"
+       " loops (spindles) and events (seeks), in the realism mode (HELP SET\n"
+       " REALISM).  Without SDL2 or without an audio device, sounds are\n"
+-      " silently ignored.\n\n"
++      " silently ignored.  How to get a disk or tape ready without waiting\n"
++      " (SET -N) is in HELP SET REALISM.\n\n"
+       "+SET SOUND ENABLED            the same as SET REALISM ENABLED\n"
+       "+SET SOUND DISABLED           the same as SET REALISM DISABLED\n"
+       "+SET SOUND VOLUME=n           set the master volume (0..200 %%)\n"
+diff --git a/sim_sound.c b/sim_sound.c
+index aa81166c..1660668b 100644
+--- a/sim_sound.c
++++ b/sim_sound.c
+@@ -23,6 +23,8 @@
+    used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization from the author.
+ 
++   24-Nov-26    Ulli    The prompt's waits for spindles, tapes and streamers
++                        end on the WRU character (Ctrl-E) or Ctrl-C
+    17-Nov-26    Ulli    SET REALISM ENABLED/DISABLED and SHOW REALISM: the
+                         realism mode under its own name (SET SOUND
+                         ENABLED/DISABLED stays as a synonym)
+@@ -1777,6 +1779,39 @@ if (sp->uptr != NULL)
+ return sp->state;
+ }
+ 
++/* Waiting at the prompt (sim_spindle_wait, sim_reel_wait, sim_strm_wait):
++   the console is put into run mode for the wait, as during RUN, so that
++   each 50 ms step can poll the keyboard: the WRU character (Ctrl-E unless
++   SET CONSOLE WRU changed it) sets stop_cpu; Ctrl-C, an ordinary character
++   in run mode, is taken as an interrupt as well (and SIGINT from outside
++   sets stop_cpu too).  A step returns TRUE when the wait is to end early.  stop_cpu is left set:
++   a DO script that gave the command ends there, and the interactive
++   prompt clears it before the next command.  Other characters typed during
++   the wait are dropped (the guest is not running). */
++
++static void snd_prompt_wait_begin (void)
++{
++sim_ttrun ();
++}
++
++static t_bool snd_prompt_wait_step (void)
++{
++t_stat c;
++
++sim_os_ms_sleep (50);
++if (!stop_cpu) {
++    c = sim_poll_kbd ();                        /* the WRU character sets stop_cpu */
++    if ((c & SCPE_KFLAG) && ((c & 0377) == 003))/* the console is in run mode, where */
++        stop_cpu = TRUE;                        /* Ctrl-C is an ordinary character */
++    }
++return stop_cpu;
++}
++
++static void snd_prompt_wait_end (void)
++{
++sim_ttcmd ();
++}
++
+ void sim_spindle_wait (SND_SPINDLE *sp)
+ {
+ int32 st = sim_spindle_state (sp);
+@@ -1787,8 +1822,16 @@ if (st == SND_SPIN_UP)
+     sim_printf ("%s: spinning up, ready in %.0f s ...\n", sim_uname (sp->uptr), sim_sound_timer_left_s (&sp->tmr));
+ else
+     sim_printf ("%s: spinning down, at rest in %.0f s ...\n", sim_uname (sp->uptr), sim_sound_timer_left_s (&sp->tmr));
+-while (sim_spindle_state (sp) == st)
+-    sim_os_ms_sleep (50);
++snd_prompt_wait_begin ();
++while ((sim_spindle_state (sp) == st) && !snd_prompt_wait_step ())
++    ;
++snd_prompt_wait_end ();
++if (sp->state == st) {                          /* interrupted */
++    sim_printf ("%s: wait interrupted, still spinning %s (%.0f s left; SHOW %s SPINDLE)\n",
++                sim_uname (sp->uptr), (st == SND_SPIN_UP) ? "up" : "down",
++                sim_sound_timer_left_s (&sp->tmr), sim_uname (sp->uptr));
++    return;
++    }
+ if (sp->state == SND_SPIN_READY)
+     sim_printf ("%s: up to speed, ready\n", sim_uname (sp->uptr));
+ else if (sp->state == SND_SPIN_STOPPED)
+@@ -2362,8 +2405,17 @@ if (sim_is_running ||
+ what = (st == SND_REEL_LOADING) ? "loading, at BOT" :
+        ((st == SND_REEL_REWINDING) ? "rewinding, at BOT" : "unloading, unloaded");
+ sim_printf ("%s: %s in %.0f s ...\n", sim_uname (r->uptr), what, sim_sound_timer_left_s (&r->tmr));
+-while (sim_reel_state (r) == st)
+-    sim_os_ms_sleep (50);
++snd_prompt_wait_begin ();
++while ((sim_reel_state (r) == st) && !snd_prompt_wait_step ())
++    ;
++snd_prompt_wait_end ();
++if (r->state == st) {                           /* interrupted */
++    sim_printf ("%s: wait interrupted, still %s (%.0f s left; SHOW %s TRANSPORT)\n",
++                sim_uname (r->uptr),
++                (st == SND_REEL_LOADING) ? "loading" : ((st == SND_REEL_REWINDING) ? "rewinding" : "unloading"),
++                sim_sound_timer_left_s (&r->tmr), sim_uname (r->uptr));
++    return;
++    }
+ if (r->state == SND_REEL_READY)
+     sim_printf ("%s: at BOT\n", sim_uname (r->uptr));
+ else if (r->state == SND_REEL_MOUNTED)
+@@ -3252,8 +3304,16 @@ sim_printf ("%s: %s in %.0f s ...\n", sim_uname (s->uptr),
+                                                    : "loading, at BOT")
+                                      : "rewinding and unloading, unloaded",
+             sim_sound_timer_left_s (&s->tmr));
+-while (sim_strm_state (s) == st)
+-    sim_os_ms_sleep (50);
++snd_prompt_wait_begin ();
++while ((sim_strm_state (s) == st) && !snd_prompt_wait_step ())
++    ;
++snd_prompt_wait_end ();
++if (s->state == st) {                           /* interrupted */
++    sim_printf ("%s: wait interrupted, still %s (%.0f s left; SHOW %s TRANSPORT)\n",
++                sim_uname (s->uptr), (st == SND_STRM_LOADING) ? "loading" : "unloading",
++                sim_sound_timer_left_s (&s->tmr), sim_uname (s->uptr));
++    return;
++    }
+ if (s->state == SND_STRM_READY)
+     sim_printf ("%s: at BOT\n", sim_uname (s->uptr));
+ else if (s->state == SND_STRM_INSERTED)
+diff --git a/sim_sound.h b/sim_sound.h
+index cf46c3c9..bd675941 100644
+--- a/sim_sound.h
++++ b/sim_sound.h
+@@ -366,7 +366,9 @@ double sim_sound_timer_left_s (SND_TIMER *t);
+    sim_spindle_state ()  SND_SPIN_xxx; at the prompt it first takes the
+                          wall time into account (and may call back).
+    sim_spindle_wait ()   at the prompt: wait, with messages, until the
+-                         drive is ready or at rest.
++                         drive is ready or at rest; the WRU character
++                         (Ctrl-E) or Ctrl-C ends the wait early (the drive
++                         goes on; a DO script ends there).
+    sim_spindle_show ()   "offline", "spinning up, n s left", "online", ... */
+ 
+ #define SND_SPIN_STOPPED 0                      /* at rest (offline) */
+-- 
+2.43.0
+
