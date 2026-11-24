@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   24-Nov-26    Ulli    The prompt's waits for spindles, tapes and streamers
+                        end on the WRU character (Ctrl-E) or Ctrl-C
    17-Nov-26    Ulli    SET REALISM ENABLED/DISABLED and SHOW REALISM: the
                         realism mode under its own name (SET SOUND
                         ENABLED/DISABLED stays as a synonym)
@@ -1777,6 +1779,39 @@ if (sp->uptr != NULL)
 return sp->state;
 }
 
+/* Waiting at the prompt (sim_spindle_wait, sim_reel_wait, sim_strm_wait):
+   the console is put into run mode for the wait, as during RUN, so that
+   each 50 ms step can poll the keyboard: the WRU character (Ctrl-E unless
+   SET CONSOLE WRU changed it) sets stop_cpu; Ctrl-C, an ordinary character
+   in run mode, is taken as an interrupt as well (and SIGINT from outside
+   sets stop_cpu too).  A step returns TRUE when the wait is to end early.  stop_cpu is left set:
+   a DO script that gave the command ends there, and the interactive
+   prompt clears it before the next command.  Other characters typed during
+   the wait are dropped (the guest is not running). */
+
+static void snd_prompt_wait_begin (void)
+{
+sim_ttrun ();
+}
+
+static t_bool snd_prompt_wait_step (void)
+{
+t_stat c;
+
+sim_os_ms_sleep (50);
+if (!stop_cpu) {
+    c = sim_poll_kbd ();                        /* the WRU character sets stop_cpu */
+    if ((c & SCPE_KFLAG) && ((c & 0377) == 003))/* the console is in run mode, where */
+        stop_cpu = TRUE;                        /* Ctrl-C is an ordinary character */
+    }
+return stop_cpu;
+}
+
+static void snd_prompt_wait_end (void)
+{
+sim_ttcmd ();
+}
+
 void sim_spindle_wait (SND_SPINDLE *sp)
 {
 int32 st = sim_spindle_state (sp);
@@ -1787,8 +1822,16 @@ if (st == SND_SPIN_UP)
     sim_printf ("%s: spinning up, ready in %.0f s ...\n", sim_uname (sp->uptr), sim_sound_timer_left_s (&sp->tmr));
 else
     sim_printf ("%s: spinning down, at rest in %.0f s ...\n", sim_uname (sp->uptr), sim_sound_timer_left_s (&sp->tmr));
-while (sim_spindle_state (sp) == st)
-    sim_os_ms_sleep (50);
+snd_prompt_wait_begin ();
+while ((sim_spindle_state (sp) == st) && !snd_prompt_wait_step ())
+    ;
+snd_prompt_wait_end ();
+if (sp->state == st) {                          /* interrupted */
+    sim_printf ("%s: wait interrupted, still spinning %s (%.0f s left; SHOW %s SPINDLE)\n",
+                sim_uname (sp->uptr), (st == SND_SPIN_UP) ? "up" : "down",
+                sim_sound_timer_left_s (&sp->tmr), sim_uname (sp->uptr));
+    return;
+    }
 if (sp->state == SND_SPIN_READY)
     sim_printf ("%s: up to speed, ready\n", sim_uname (sp->uptr));
 else if (sp->state == SND_SPIN_STOPPED)
@@ -2362,8 +2405,17 @@ if (sim_is_running ||
 what = (st == SND_REEL_LOADING) ? "loading, at BOT" :
        ((st == SND_REEL_REWINDING) ? "rewinding, at BOT" : "unloading, unloaded");
 sim_printf ("%s: %s in %.0f s ...\n", sim_uname (r->uptr), what, sim_sound_timer_left_s (&r->tmr));
-while (sim_reel_state (r) == st)
-    sim_os_ms_sleep (50);
+snd_prompt_wait_begin ();
+while ((sim_reel_state (r) == st) && !snd_prompt_wait_step ())
+    ;
+snd_prompt_wait_end ();
+if (r->state == st) {                           /* interrupted */
+    sim_printf ("%s: wait interrupted, still %s (%.0f s left; SHOW %s TRANSPORT)\n",
+                sim_uname (r->uptr),
+                (st == SND_REEL_LOADING) ? "loading" : ((st == SND_REEL_REWINDING) ? "rewinding" : "unloading"),
+                sim_sound_timer_left_s (&r->tmr), sim_uname (r->uptr));
+    return;
+    }
 if (r->state == SND_REEL_READY)
     sim_printf ("%s: at BOT\n", sim_uname (r->uptr));
 else if (r->state == SND_REEL_MOUNTED)
@@ -3252,8 +3304,16 @@ sim_printf ("%s: %s in %.0f s ...\n", sim_uname (s->uptr),
                                                    : "loading, at BOT")
                                      : "rewinding and unloading, unloaded",
             sim_sound_timer_left_s (&s->tmr));
-while (sim_strm_state (s) == st)
-    sim_os_ms_sleep (50);
+snd_prompt_wait_begin ();
+while ((sim_strm_state (s) == st) && !snd_prompt_wait_step ())
+    ;
+snd_prompt_wait_end ();
+if (s->state == st) {                           /* interrupted */
+    sim_printf ("%s: wait interrupted, still %s (%.0f s left; SHOW %s TRANSPORT)\n",
+                sim_uname (s->uptr), (st == SND_STRM_LOADING) ? "loading" : "unloading",
+                sim_sound_timer_left_s (&s->tmr), sim_uname (s->uptr));
+    return;
+    }
 if (s->state == SND_STRM_READY)
     sim_printf ("%s: at BOT\n", sim_uname (s->uptr));
 else if (s->state == SND_STRM_INSERTED)

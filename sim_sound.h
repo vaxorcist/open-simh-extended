@@ -366,7 +366,9 @@ double sim_sound_timer_left_s (SND_TIMER *t);
    sim_spindle_state ()  SND_SPIN_xxx; at the prompt it first takes the
                          wall time into account (and may call back).
    sim_spindle_wait ()   at the prompt: wait, with messages, until the
-                         drive is ready or at rest.
+                         drive is ready or at rest; the WRU character
+                         (Ctrl-E) or Ctrl-C ends the wait early (the drive
+                         goes on; a DO script ends there).
    sim_spindle_show ()   "offline", "spinning up, n s left", "online", ... */
 
 #define SND_SPIN_STOPPED 0                      /* at rest (offline) */
