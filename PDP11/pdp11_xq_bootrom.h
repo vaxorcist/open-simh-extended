@@ -28,6 +28,7 @@
 
   Modification history:
 
+  24-Nov-26  Ulli Host bootstrap: the second QNA is at 174460 (was 177460)
   26-Mar-03  DTH  Removed 'static' declaration
   23-Mar-03  DTH  Created by extracting from merged DEQNA bootrom dumps
 
@@ -1246,7 +1247,7 @@ static const uint16 boot_rom[] = {
     0012701, 0174440,          // 0000         mov     #174440,r1      ; assume device is DEQNA #1
     0022700, 0000004,          // 0004         cmp     #4,r0
     0001402,                   // 0010         beq     10$             ; good assumption
-    0012701, 0177460,          // 0012         mov     #174460,r1      ; select device at DEQNA #2
+    0012701, 0174460,          // 0012         mov     #174460,r1      ; select device at DEQNA #2
 
     0012761, 0000002, 0000016, // 0016 10$:    mov     #SR,16(r1)      ; assert QNA software reset
     0032761, 0000062, 0000016, // 0024         bit     #<RL|XL|SR>,16(r1); "nominal" status during reset

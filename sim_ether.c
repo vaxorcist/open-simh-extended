@@ -170,6 +170,8 @@
 
   Modification history:
 
+  24-Nov-26  Ulli Writer thread: a request left on the request list at close
+                  is no longer also put on the free list (freed twice)
   30-Mar-12  MP   Added host NIC address determination on supported VMS platforms
   01-Mar-12  MP   Made host NIC address determination on *nix platforms more
                   robust.
@@ -2146,10 +2148,11 @@ sim_debug(dev->dbit, dev->dptr, "Writer Thread Starting\n");
 pthread_mutex_lock (&dev->writer_lock);
 while (dev->handle) {
   pthread_cond_wait (&dev->writer_cond, &dev->writer_lock);
-  while (NULL != (request = dev->write_requests)) {
+  while (dev->write_requests != NULL) {
     if (dev->handle == NULL)      /* Shutting down? */
-      break;
+      break;                      /* leave the rest on the request list */
     /* Pull buffer off request list */
+    request = dev->write_requests;
     dev->write_requests = request->next;
     pthread_mutex_unlock (&dev->writer_lock);
 
