@@ -1,5 +1,5 @@
 #!/bin/bash
-# /home/claude/vmsreg/pair.sh  v8 (v8: DEV=UNA runs the point-to-point test over Ethernet: a DEUNA (XU) on each vax780, joined by SIMH's UDP transport, VMS line and circuit UNA-0 (regression for patch 23, DEUNA/DELUA BOOT and the XU fixes of known issues 111-114); v7: DEV=DMC or DEV=DMR runs the point-to-point test over a DMC11/DMR11 (vax780, VMS line DMC-0); v6: MP=1 runs the same over a multipoint line: node A control station (listening, no PEER, circuit DMP-0.3), node B tributary 3; v5: errors are counted only after the login (the startup's own DEVOFFLINE is not part of the test); v4: SET CPU IDLE=VMS on both nodes (without it the two simulators load both host cores and a boot can hang, known issue 97); v3: node A waits 240 s more for B; node B boots only after node A has logged in: two MicroVAX II booting at the same time sometimes hang after the date, also without a DMV11 (known issue 97); v2: DEBUG variable for the DMV/DMP debug flags)
+# /home/claude/vmsreg/pair.sh  v9 (v9: DEV=QNA or DEV=DEQNA runs the point-to-point test over Ethernet on two microvax2 with a DELQA or a DEQNA (XQ), UDP link 21305/21306, VMS line and circuit QNA-0 (regression for patch 27, XQ loopback timing and sim_ether writer); v8: DEV=UNA runs the point-to-point test over Ethernet: a DEUNA (XU) on each vax780, joined by SIMH's UDP transport, VMS line and circuit UNA-0 (regression for patch 23, DEUNA/DELUA BOOT and the XU fixes of known issues 111-114); v7: DEV=DMC or DEV=DMR runs the point-to-point test over a DMC11/DMR11 (vax780, VMS line DMC-0); v6: MP=1 runs the same over a multipoint line: node A control station (listening, no PEER, circuit DMP-0.3), node B tributary 3; v5: errors are counted only after the login (the startup's own DEVOFFLINE is not part of the test); v4: SET CPU IDLE=VMS on both nodes (without it the two simulators load both host cores and a boot can hang, known issue 97); v3: node A waits 240 s more for B; node B boots only after node A has logged in: two MicroVAX II booting at the same time sometimes hang after the date, also without a DMV11 (known issue 97); v2: DEBUG variable for the DMV/DMP debug flags)
 # Two-node VMS V4.7 DECnet regression over a DMV11 (microvax2) or DMP11
 # (vax780) point-to-point line, after DMV11 patch 18 v2.
 #   usage: pair.sh microvax2|vax780 [BINDIR]
@@ -7,6 +7,8 @@
 #   (point-to-point only; VMS V4.7 line and circuit DMC-0)
 #   DEV=UNA pair.sh vax780 [BINDIR]: the same over Ethernet with a DEUNA
 #   (XU) on each node, UDP link 21303/21304; VMS line and circuit UNA-0
+#   DEV=QNA|DEQNA pair.sh microvax2 [BINDIR]: the same with a DELQA or a
+#   DEQNA (XQ) on each node, UDP link 21305/21306; line and circuit QNA-0
 # Node A = fresh copy of diskA.vhd (1.4 VAX4), node B = diskB.vhd (1.3 VAX3).
 # Each node defines line/circuit DMP-0, starts DECnet, copies HELPLIB.HLB
 # to the other node and back and runs DIFFERENCES; node A also switches its
@@ -17,6 +19,7 @@ cd "$(dirname "$0")" || exit 1
 R=run_$SIM${MP:+_mp}${DEV:+_$DEV}; rm -rf $R; mkdir -p $R
 LINE=DMP-0; [ -n "$DEV" ] && LINE=DMC-0         # VMS line/circuit name
 [ "$DEV" = UNA ] && LINE=UNA-0
+[ "$DEV" = QNA -o "$DEV" = DEQNA ] && LINE=QNA-0
 cp --sparse=always diskA.vhd $R/a.vhd
 cp --sparse=always diskB.vhd $R/b.vhd
 for n in a b; do
@@ -36,6 +39,15 @@ for n in a b; do
         echo "set debug $R/$n.dbg"
         echo "set xu debug=${DEBUG:-WARN}"
         echo "boot rq0"
+    elif [ "$DEV" = QNA -o "$DEV" = DEQNA ]; then   # DELQA/DEQNA, Ethernet over UDP
+        if [ $n = a ]; then U=21305; UP=21306; M=08:00:2b:00:0a:0a; else U=21306; UP=21305; M=08:00:2b:00:0b:0b; fi
+        echo "set xq type=$( [ "$DEV" = DEQNA ] && echo DEQNA || echo DELQA )"
+        echo "set xq mac=$M"
+        echo "attach xq udp:$U:127.0.0.1:$UP"
+        echo "set debug $R/$n.dbg"
+        echo "set xq debug=${DEBUG:-WARN}"
+        echo 'expect ">>>" send "B DUA0\r"; continue'
+        echo "boot cpu"
     elif [ -n "$DEV" ]; then                  # DMC11 or DMR11 (TYPE)
         echo "set dmc enable"
         echo "set dmc0 type=$DEV"
