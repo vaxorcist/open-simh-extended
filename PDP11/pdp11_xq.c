@@ -67,6 +67,9 @@
 
   Modification history:
 
+  24-Nov-26  Ulli A setup or loopback packet is received 400 instructions
+                  after its transmission, not 400 usecs of host time (BOOT XQ
+                  with the boot ROMs' self-test)
   20-Apr-11  MP   Fixed missing information from save/restore which
                   caused operations to not complete correctly after 
                   a restore until the OS reset the controller.
@@ -341,6 +344,7 @@ struct xq_device    xqb = {
 /* SIMH device structures */
 
 #define IOLN_XQ         020
+#define XQ_LOOPBACK_DELAY 400           /* setup/loopback packet received after (instructions) */
 
 DIB xqa_dib = { IOBA_AUTO, IOLN_XQ, &xq_rd, &xq_wr,
                 1, IVCL (XQ), 0, { &xq_int }, IOLN_XQ };
@@ -1252,10 +1256,11 @@ t_stat xq_process_rbdl(CTLR* xq)
       case ETH_ITM_LOOPBACK: /* loopback packet */
         xq->var->stats.loop += 1;
         xq->var->rbdl_buf[4] = XQ_RST_LASTNOERR;
+        /* the receiver enable bit as it was when the packet was sent */
         if (xq->var->type == XQ_T_DEQNA)
-          xq->var->rbdl_buf[4] |= ((rbl < ETH_MIN_PACKET) ? ((xq->var->csr & XQ_CSR_RE) ? XQ_RST_RUNT : 0) : 0);
+          xq->var->rbdl_buf[4] |= ((rbl < ETH_MIN_PACKET) ? (item->packet.status ? XQ_RST_RUNT : 0) : 0);
         else
-          xq->var->rbdl_buf[4] |= ((rbl < ETH_MIN_PACKET) ? ((xq->var->csr & XQ_CSR_RE) ? ((0 != memcmp(&xq->var->setup.macs[0], rbuf, 6)) ? XQ_RST_RUNT : 0) : 0) : 0);
+          xq->var->rbdl_buf[4] |= ((rbl < ETH_MIN_PACKET) ? (item->packet.status ? ((0 != memcmp(&xq->var->setup.macs[0], rbuf, 6)) ? XQ_RST_RUNT : 0) : 0) : 0);
         xq->var->rbdl_buf[4] |= (rbl & 0x0700); /* high bits of rbl */
         if (xq->var->csr & XQ_CSR_EL)
             xq->var->rbdl_buf[4] |= XQ_RST_ESETUP;/* loopback flag */
@@ -1563,7 +1568,8 @@ t_stat xq_process_xbdl(CTLR* xq)
           if (((~xq->var->csr & XQ_CSR_RL) &&        /* If a buffer descriptor list is good */
                (xq->var->rbdl_buf[1] & XQ_DSC_V)) || /* AND the descriptor is valid */
               (xq->var->csr & XQ_CSR_EL))            /* OR External Loopback */
-            ethq_insert (&xq->var->ReadQ, 1, &xq->var->write_buffer, 0);
+            ethq_insert (&xq->var->ReadQ, 1, &xq->var->write_buffer,
+                         (xq->var->csr & XQ_CSR_RE) ? 1 : 0);/* RE at transmission */
           else
             sim_debug(DBG_XBL, xq->dev, "Dropping Loopback packet: No Receive Buffer\n");
           write_success[0] |= XQ_XMT_FAIL;
@@ -1584,9 +1590,12 @@ t_stat xq_process_xbdl(CTLR* xq)
         /* signal transmission complete */
         xq_csr_set_clr(xq, XQ_CSR_XI, 0);
 
-        /* now schedule "reading" of setup or loopback packet */
+        /* now schedule "reading" of setup or loopback packet: about
+           400 usecs on real hardware, given as instructions of a CPU of
+           that time (about 1 MIPS), not as host time: the DEQNA/DELQA
+           boot ROMs poll for the packet a fixed number of times */
         if (~xq->var->csr & XQ_CSR_RL)
-          sim_activate_after_abs(xq->unit+3, 400);  /* 400usecs on real hardware */
+          sim_activate_abs(xq->unit+3, XQ_LOOPBACK_DELAY);
 
       } else { /* not loopback */
 
