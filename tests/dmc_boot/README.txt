@@ -1,4 +1,4 @@
-open-simh-extended/tests/dmc_boot/README.txt  v3 (2026-11-23; v3: deadconn.py and d1.ini (known issue 116, patch 25); PDPPEER default 21301 again; v2: PDPPEER, by default only the VAX's connection is used; system loads 3 of 3)
+open-simh-extended/tests/dmc_boot/README.txt  v4 (2026-11-25; v4: vmsdup.sh, BOOT DUPn with VMS V4.7 as the load host (patch 28); v3: deadconn.py and d1.ini (known issue 116, patch 25); PDPPEER default 21301 again; v2: PDPPEER, by default only the VAX's connection is used; system loads 3 of 3)
 
 SIMH's BOOT DMCn with a real load host (patch 24, docs/DMV11_switches_boot_design.md
 section 10).  BOOT DMCn starts a small MOP bootstrap written for SIMH
@@ -59,3 +59,24 @@ Results (2026-11-23, patch 24):
     remwrt's banner and prompt (the script says FAIL only because it looks
     for HELLO's line).
 See docs/DMV11_switches_boot_design.md section 10.
+
+vmsdup.sh (patch 28): BOOT DUPn with a real load host.  VMS V4.7 on a
+VAX-11/780 (DMC11, circuit DMC-0) loads a PDP-11/34 over its DUP11 (SIMH's
+MOP bootstrap for the DUP11).  Needs DEC's SECDUP.SYS and TERDUP.SYS
+(DECnet-11M V4.2 DECKIT [136,54]; never in the repository) in LOADERS=dir.
+
+  LOADERS=dir PROGRAM=SYSTEM ./vmsdup.sh BINDIR DISK
+      VMS sends the load file (HELLO) to the bootstrap directly.
+  LOADERS=dir PROGRAM=SECONDARY ./vmsdup.sh BINDIR DISK
+      VMS sends SECDUP.SYS, it asks for TERDUP.SYS, that for the load file.
+      DEC's loaders use the DUP11 with CRC inhibit (known issue 124) and
+      load characters into TXDBUF with byte writes (known issue 126).
+  BRURL=../deuna_boot/brusys.rl01 LOADERS=dir ./vmsdup.sh BINDIR DISK
+      the load file is BRUSYS.SYS (Ulli's RSX-11M standalone BRU).
+
+Results (2026-11-25, patch 28): SYSTEM PASS; SECONDARY PASS (VMS: Load
+Successful for SECDUP.SYS, TERDUP.SYS and the load file; HELLO's line);
+SECONDARY with BRURL PASS (BRU's banner "RSX-11M/RSX-11M-PLUS STANDALONE
+COPY SYSTEM V4.8" and "Enter first device:").  Before the 126 fix
+SECONDARY failed: SECDUP never asked for TERDUP ("aborted service request,
+Line open error").
