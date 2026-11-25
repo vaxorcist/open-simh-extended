@@ -1,0 +1,258 @@
+From db1521dd0f9cac1ee748bb2804f49db09839989e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 24 Nov 2026 21:29:16 +0100
+Subject: [PATCH 1/3] XQ: BOOT XQ/XQB work with the DEQNA, DELQA and DELQA-T
+ boot ROMs; sim_ether: no double free at close
+
+Known issue 118: the host bootstrap of BOOT XQB selected the second
+DEQNA/DELQA at 177460 instead of 174460 and halted at once.
+
+Known issue 120: a setup or loopback packet was "received" 400 usecs of
+host time after its transmission, some 17,000-40,000 instructions on
+today's hosts, while the boards' boot ROMs poll for it for about 2,000
+instructions: BOOT XQ with a DEQNA always halted in the ROM's self-test
+(and a DELQA on a fast host).  The delay is now 400 instructions (about
+400 usecs on the ~1 MIPS CPUs that carry these boards).  An internal
+loopback packet's "unsuccessful" (runt) status now depends on the
+receiver enable bit as it was at its transmission, not at its reception.
+
+Known issue 119: the Ethernet writer thread could put a request that was
+still on the request list on the free list too when the device closed;
+eth_close() then freed it twice ("double free or corruption" at DETACH or
+EXIT).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_xq.c         | 19 ++++++++++++++-----
+ PDP11/pdp11_xq_bootrom.h |  3 ++-
+ sim_ether.c              |  7 +++++--
+ 3 files changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/PDP11/pdp11_xq.c b/PDP11/pdp11_xq.c
+index 1e1a71dc..7b461728 100644
+--- a/PDP11/pdp11_xq.c
++++ b/PDP11/pdp11_xq.c
+@@ -67,6 +67,9 @@
+ 
+   Modification history:
+ 
++  24-Nov-26  Ulli A setup or loopback packet is received 400 instructions
++                  after its transmission, not 400 usecs of host time (BOOT XQ
++                  with the boot ROMs' self-test)
+   20-Apr-11  MP   Fixed missing information from save/restore which
+                   caused operations to not complete correctly after 
+                   a restore until the OS reset the controller.
+@@ -341,6 +344,7 @@ struct xq_device    xqb = {
+ /* SIMH device structures */
+ 
+ #define IOLN_XQ         020
++#define XQ_LOOPBACK_DELAY 400           /* setup/loopback packet received after (instructions) */
+ 
+ DIB xqa_dib = { IOBA_AUTO, IOLN_XQ, &xq_rd, &xq_wr,
+                 1, IVCL (XQ), 0, { &xq_int }, IOLN_XQ };
+@@ -1252,10 +1256,11 @@ t_stat xq_process_rbdl(CTLR* xq)
+       case ETH_ITM_LOOPBACK: /* loopback packet */
+         xq->var->stats.loop += 1;
+         xq->var->rbdl_buf[4] = XQ_RST_LASTNOERR;
++        /* the receiver enable bit as it was when the packet was sent */
+         if (xq->var->type == XQ_T_DEQNA)
+-          xq->var->rbdl_buf[4] |= ((rbl < ETH_MIN_PACKET) ? ((xq->var->csr & XQ_CSR_RE) ? XQ_RST_RUNT : 0) : 0);
++          xq->var->rbdl_buf[4] |= ((rbl < ETH_MIN_PACKET) ? (item->packet.status ? XQ_RST_RUNT : 0) : 0);
+         else
+-          xq->var->rbdl_buf[4] |= ((rbl < ETH_MIN_PACKET) ? ((xq->var->csr & XQ_CSR_RE) ? ((0 != memcmp(&xq->var->setup.macs[0], rbuf, 6)) ? XQ_RST_RUNT : 0) : 0) : 0);
++          xq->var->rbdl_buf[4] |= ((rbl < ETH_MIN_PACKET) ? (item->packet.status ? ((0 != memcmp(&xq->var->setup.macs[0], rbuf, 6)) ? XQ_RST_RUNT : 0) : 0) : 0);
+         xq->var->rbdl_buf[4] |= (rbl & 0x0700); /* high bits of rbl */
+         if (xq->var->csr & XQ_CSR_EL)
+             xq->var->rbdl_buf[4] |= XQ_RST_ESETUP;/* loopback flag */
+@@ -1563,7 +1568,8 @@ t_stat xq_process_xbdl(CTLR* xq)
+           if (((~xq->var->csr & XQ_CSR_RL) &&        /* If a buffer descriptor list is good */
+                (xq->var->rbdl_buf[1] & XQ_DSC_V)) || /* AND the descriptor is valid */
+               (xq->var->csr & XQ_CSR_EL))            /* OR External Loopback */
+-            ethq_insert (&xq->var->ReadQ, 1, &xq->var->write_buffer, 0);
++            ethq_insert (&xq->var->ReadQ, 1, &xq->var->write_buffer,
++                         (xq->var->csr & XQ_CSR_RE) ? 1 : 0);/* RE at transmission */
+           else
+             sim_debug(DBG_XBL, xq->dev, "Dropping Loopback packet: No Receive Buffer\n");
+           write_success[0] |= XQ_XMT_FAIL;
+@@ -1584,9 +1590,12 @@ t_stat xq_process_xbdl(CTLR* xq)
+         /* signal transmission complete */
+         xq_csr_set_clr(xq, XQ_CSR_XI, 0);
+ 
+-        /* now schedule "reading" of setup or loopback packet */
++        /* now schedule "reading" of setup or loopback packet: about
++           400 usecs on real hardware, given as instructions of a CPU of
++           that time (about 1 MIPS), not as host time: the DEQNA/DELQA
++           boot ROMs poll for the packet a fixed number of times */
+         if (~xq->var->csr & XQ_CSR_RL)
+-          sim_activate_after_abs(xq->unit+3, 400);  /* 400usecs on real hardware */
++          sim_activate_abs(xq->unit+3, XQ_LOOPBACK_DELAY);
+ 
+       } else { /* not loopback */
+ 
+diff --git a/PDP11/pdp11_xq_bootrom.h b/PDP11/pdp11_xq_bootrom.h
+index 9b9a0021..4a943c54 100644
+--- a/PDP11/pdp11_xq_bootrom.h
++++ b/PDP11/pdp11_xq_bootrom.h
+@@ -28,6 +28,7 @@
+ 
+   Modification history:
+ 
++  24-Nov-26  Ulli Host bootstrap: the second QNA is at 174460 (was 177460)
+   26-Mar-03  DTH  Removed 'static' declaration
+   23-Mar-03  DTH  Created by extracting from merged DEQNA bootrom dumps
+ 
+@@ -1246,7 +1247,7 @@ static const uint16 boot_rom[] = {
+     0012701, 0174440,          // 0000         mov     #174440,r1      ; assume device is DEQNA #1
+     0022700, 0000004,          // 0004         cmp     #4,r0
+     0001402,                   // 0010         beq     10$             ; good assumption
+-    0012701, 0177460,          // 0012         mov     #174460,r1      ; select device at DEQNA #2
++    0012701, 0174460,          // 0012         mov     #174460,r1      ; select device at DEQNA #2
+ 
+     0012761, 0000002, 0000016, // 0016 10$:    mov     #SR,16(r1)      ; assert QNA software reset
+     0032761, 0000062, 0000016, // 0024         bit     #<RL|XL|SR>,16(r1); "nominal" status during reset
+diff --git a/sim_ether.c b/sim_ether.c
+index 2311664a..0d4f2e46 100644
+--- a/sim_ether.c
++++ b/sim_ether.c
+@@ -170,6 +170,8 @@
+ 
+   Modification history:
+ 
++  24-Nov-26  Ulli Writer thread: a request left on the request list at close
++                  is no longer also put on the free list (freed twice)
+   30-Mar-12  MP   Added host NIC address determination on supported VMS platforms
+   01-Mar-12  MP   Made host NIC address determination on *nix platforms more
+                   robust.
+@@ -2146,10 +2148,11 @@ sim_debug(dev->dbit, dev->dptr, "Writer Thread Starting\n");
+ pthread_mutex_lock (&dev->writer_lock);
+ while (dev->handle) {
+   pthread_cond_wait (&dev->writer_cond, &dev->writer_lock);
+-  while (NULL != (request = dev->write_requests)) {
++  while (dev->write_requests != NULL) {
+     if (dev->handle == NULL)      /* Shutting down? */
+-      break;
++      break;                      /* leave the rest on the request list */
+     /* Pull buffer off request list */
++    request = dev->write_requests;
+     dev->write_requests = request->next;
+     pthread_mutex_unlock (&dev->writer_lock);
+ 
+-- 
+2.43.0
+
+
+From 10885dcf021bead16e6fc023a6e3c8e2f82128f1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 09:24:25 +0100
+Subject: [PATCH 2/3] XQ: the DELQA's MOP system ID uses the board's address
+ while the setup address is zero
+
+Known issue 121: during the boot ROM's self-test the guest's setup packet
+holds a zero address for a while, and a periodic system ID sent then went
+out with source address 00-00-00-00-00-00.  The setup address is used only
+when it is not zero; otherwise the board's own station address.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_xq.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/PDP11/pdp11_xq.c b/PDP11/pdp11_xq.c
+index 7b461728..bf0c7f5f 100644
+--- a/PDP11/pdp11_xq.c
++++ b/PDP11/pdp11_xq.c
+@@ -67,6 +67,8 @@
+ 
+   Modification history:
+ 
++  25-Nov-26  Ulli The MOP system ID's source address is the board's own
++                  address while the guest's setup address is zero
+   24-Nov-26  Ulli A setup or loopback packet is received 400 instructions
+                   after its transmission, not 400 usecs of host time (BOOT XQ
+                   with the boot ROMs' self-test)
+@@ -2693,7 +2695,13 @@ t_stat xq_system_id (CTLR* xq, const ETH_MAC dest, uint16 receipt_id)
+ 
+   memset (&system_id, 0, sizeof(system_id));
+   eth_copy_mac(&msg[0], dest);
+-  eth_copy_mac(&msg[6], xq->var->setup.valid ? xq->var->setup.macs[0] : xq->var->mac);
++  /* source: the address the guest set up, unless that is still zero
++     (e.g. during the boot ROM's self-test): then the board's own address */
++  {
++  static const ETH_MAC zero_mac = {0, 0, 0, 0, 0, 0};
++  eth_copy_mac(&msg[6], (xq->var->setup.valid && eth_mac_cmp(xq->var->setup.macs[0], zero_mac)) ?
++                        xq->var->setup.macs[0] : xq->var->mac);
++  }
+   msg[12] = 0x60;                         /* type */
+   msg[13] = 0x02;                         /* type */
+   msg[14] = 0x1C;                         /* character count */
+-- 
+2.43.0
+
+
+From 83a92bbc36466c868151231d4febf0936d35bf3e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 12:50:52 +0100
+Subject: [PATCH 3/3] XQ: a software reset adds the station address to the
+ address filter
+
+Known issue 123: a software reset (CSR SR) rebuilt the Ethernet filter
+from the last setup packet only.  The DELQA boot ROM's self-test leaves a
+test address (7F-00-2B-...) in all setup entries and, after the software
+reset it does before sending its Request Program to the load host,
+expects to receive frames sent to its station address: the load host's
+Memory Loads were dropped and a DELQA or DELQA-T never booted (VMS:
+"aborted service request, Line communication error").  The setup
+addresses stay (VMS relies on them after a reset) and the board's station
+address is added last (sim_ether takes the first unicast address as the
+physical address in use).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_xq.c | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/PDP11/pdp11_xq.c b/PDP11/pdp11_xq.c
+index bf0c7f5f..b2ab19b4 100644
+--- a/PDP11/pdp11_xq.c
++++ b/PDP11/pdp11_xq.c
+@@ -67,6 +67,8 @@
+ 
+   Modification history:
+ 
++  25-Nov-26  Ulli A software reset adds the board's station address to the
++                  address filter (the DELQA boot ROM needs it)
+   25-Nov-26  Ulli The MOP system ID's source address is the board's own
+                   address while the guest's setup address is zero
+   24-Nov-26  Ulli A setup or loopback packet is received 400 instructions
+@@ -2176,11 +2178,22 @@ void xq_sw_reset(CTLR* xq)
+     int count = 0;
+     ETH_MAC filters[XQ_FILTER_MAX + 1];
+ 
+-    /* set ethernet filter */
+-    /* eth_copy_mac(filters[count++], xq->mac); */
++    /* set ethernet filter: the addresses of the last setup packet stay
++       (VMS relies on that after a reset), and the board's own station
++       address is added: the DELQA boot ROM leaves a test address in the
++       setup and, after a software reset, expects to receive frames sent
++       to its station address (the load host's Memory Loads).  It goes
++       last: sim_ether takes the first unicast address in the list as the
++       physical address in use (e.g. the DECnet address) */
++    int has_mac = 0;
+     for (i = 0; i < XQ_FILTER_MAX; i++)
+-      if (eth_mac_cmp(eth_mac_any, xq->var->setup.macs[i]))
++      if (eth_mac_cmp(eth_mac_any, xq->var->setup.macs[i])) {
++        if (!eth_mac_cmp(xq->var->mac, xq->var->setup.macs[i]))
++          has_mac = 1;
+         eth_copy_mac(filters[count++], xq->var->setup.macs[i]);
++        }
++    if (!has_mac)
++      eth_copy_mac(filters[count++], xq->var->mac);
+     eth_filter (xq->var->etherface, count, filters, xq->var->setup.multicast, xq->var->setup.promiscuous);
+     }
+ 
+-- 
+2.43.0
+

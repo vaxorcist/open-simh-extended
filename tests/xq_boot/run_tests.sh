@@ -1,5 +1,5 @@
 #!/bin/bash
-# open-simh-extended/tests/xq_boot/run_tests.sh  v1
+# open-simh-extended/tests/xq_boot/run_tests.sh  v2 (v2: Q1-Q5 also check that no frame has source address 0 (known issue 121))
 # Tests of patch 27 (known issues 118, 119, 120): PDP-11/83 BOOT XQ / BOOT XQB
 # with the DEQNA, DELQA and DELQA-T boot ROMs over SIMH's UDP Ethernet
 # transport; no load host, so a passing boot ROM keeps sending MOP Request
@@ -31,6 +31,7 @@ boot_case() {   # name dev type realism
   local req=$(grep -c "type 6001 len 60 0b0008" $n.frames)
   if grep -q "HALT instruction" $n.out; then res $n bad "$(grep HALT $n.out)"
   elif [ "$req" -lt 3 ]; then res $n bad "only $req MOP Request Program frames"
+  elif grep -q "<- 00-00-00-00-00-00" $n.frames; then res $n bad "frame with source address 0"
   else res $n ok; fi
 }
 boot_case Q1 xq DEQNA
