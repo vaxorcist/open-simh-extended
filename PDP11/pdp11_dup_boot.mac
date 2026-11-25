@@ -1,0 +1,383 @@
+;
+; DUP11 down-line load bootstrap for SIMH's BOOT DUPn (PDP-11, Unibus).
+; Written for SIMH (2026-11-25).  The DUP11 has no boot logic of its own
+; (no microprocessor, no boot ROM on the board), so a down-line load needs
+; a primary loader in the host; this is one: a small MOP client that runs
+; on the PDP-11 and drives the DUP11 through its registers, doing the DDCMP
+; maintenance framing in software and letting the board generate and check
+; the CRCs (DEC mode, CRC not inhibited), as the real DUP11 does.  Not
+; derived from DEC code.  Design: docs/DUP11_boot_design.md.
+;
+; SIMH copies this program to the top of the low 56 KB of memory (the
+; 8 KB below 160000 or below the end of memory, whichever is lower; see
+; BOOTSZ), fills in the parameter words CSR, DEVT, PROGT and TICKS, and
+; starts it at its first word.  The program is position independent.
+;
+; What it does:
+;   1. device reset; PARCSR = DEC mode, CRC on, sync character 226;
+;      RXCSR = data terminal ready, request to send, receiver enable,
+;      strip sync;
+;   2. sends MOP Request Program (8, device type, format 1, program type)
+;      in a DDCMP maintenance message: TSOM with a sync character, the
+;      6 header bytes (DLE, count with QSYNC and SELECT, 0, 0, address 1),
+;      TEOM (the board sends the header CRC), the MOP message, TEOM (the
+;      board sends the data CRC), SEND off;
+;   3. receives byte by byte: 8 header bytes (the CRC is good when RXDBUF
+;      "RCRC ERR + ZERO" is set after the 8th byte: in DDCMP it means the
+;      CRC register is zero), then count + 2 bytes (the same check).  A
+;      DDCMP control message (ENQ) or data message (SOH), from a peer still
+;      running DDCMP, is read and ignored;
+;   4. takes the answers:
+;      Memory Load (code 2): store the data, answer Request Memory Load
+;        (code 10) with the next load number;
+;      Memory Load with Transfer Address (code 0) or Parameter Load with
+;        Transfer Address (code 20): store the data (code 0), then start;
+;      a load with the number of the previous load is answered again
+;      without storing; a load numbered 0 starts the load over; other
+;      messages are ignored;
+;   5. without an answer, sends the last message again after about 5 s
+;      (TICKS, set by SIMH from the simulated instruction rate); after 3
+;      repeats without an answer it starts over with Request Program;
+;   6. start: R1 = CSR, SP = 1000, priority 7, JMP to the transfer
+;      address.  The line stays set up (DEC's SECDUP sets it up again).
+; Loads must lie below this program (the low 56 KB, no memory management).
+;
+; Assemble: macro11 -o dupboot.obj -l dupboot.lst dupboot.mac
+; (tools/dmc_bootstrap/mkdmcboot.py turns the object file into the C
+; array of PDP11/pdp11_dup_boot.h).
+
+        .TITLE  DUPBOT  DUP11 MOP bootstrap for SIMH
+        .ASECT
+        .=0
+
+; DUP11 registers (relative to the CSR) and bits
+RXCSR   = 0
+RXDBUF  = 2                     ; read: received character and status
+PARCSR  = 2                     ; write: parameters
+TXCSR   = 4
+TXDBUF  = 6
+DTR     = 2                     ; RXCSR data terminal ready
+RTS     = 4                     ;       request to send
+RCVEN   = 20                    ;       receiver enable
+STRSYN  = 400                   ;       strip sync
+RXDONE  = 200                   ;       character received (bit 7)
+TXSND   = 20                    ; TXCSR send
+TXDONE  = 200                   ;       ready for the next character (bit 7)
+DRESET  = 400                   ;       device reset
+TSOM    = 400                   ; TXDBUF transmit start of message
+TEOM    = 1000                  ;        transmit end of message
+DECMOD  = 100000                ; PARCSR DEC mode (DDCMP)
+RCRCOK  = 10000                 ; RXDBUF bit 12: in DDCMP, CRC register zero
+
+; DDCMP
+SYN     = 226
+DLE     = 220                   ; maintenance message
+SOH     = 201                   ; data message
+ENQ     = 5                     ; control message
+QSYNSL  = 140000                ; count word: QSYNC and SELECT flags
+
+; MOP codes (decimal values in comments)
+M.MLT   = 0                     ; Memory Load with Transfer Address
+M.ML    = 2                     ; Memory Load
+M.RPG   = 10                    ; 8  Request Program
+M.RML   = 12                    ; 10 Request Memory Load
+M.PLT   = 24                    ; 20 Parameter Load with Transfer Address
+
+BOOTSZ  = 20000                 ; size of the whole area (8192 bytes)
+BYTTMO  = 60000.                ; polls for the next byte of a message
+
+; ---------------------------------------------------------------- parameters
+BOOT:   BR      START           ; 0: entry
+CSR:    .WORD   0               ; 2: the board's CSR (SIMH)
+DEVT:   .BYTE   0               ; 4: MOP device type (SIMH: 10, DUP11)
+PROGT:  .BYTE   0               ; 5: MOP program type (SET DUPn PROGRAM)
+TICKS:  .WORD   0               ; 6: wait loops of about 5 s (SIMH)
+
+; ---------------------------------------------------------------- variables
+NEXT:   .WORD   0               ; load number expected next (0-255)
+XLEN:   .WORD   0               ; length of the MOP message in XBUF
+RCNT:   .WORD   0               ; byte count of the received MOP message
+TCNT:   .WORD   0               ; wait loops left before a resend
+RETRY:  .WORD   0               ; repeats of the last message without an answer
+
+; ---------------------------------------------------------------- start
+START:  MOV     PC,R4           ; R4 = address of BOOT (position independent)
+        SUB     #START+2-BOOT,R4
+        MOV     R4,SP           ; own stack inside the area
+        ADD     #STKTOP-BOOT,SP
+        MOV     CSR,R5          ; R5 = CSR
+        MOV     #DRESET,TXCSR(R5)
+        MOV     #DECMOD+SYN,PARCSR(R5)
+        MOV     #DTR+RTS+RCVEN+STRSYN,RXCSR(R5)
+
+; Request Program: 8, device type, format version 1, program type
+REQPRG: CLR     NEXT            ; the load (again) from the start
+        MOV     R4,R0
+        ADD     #XBUF-BOOT,R0
+        MOVB    #M.RPG,(R0)+
+        MOVB    DEVT,(R0)+
+        MOVB    #1,(R0)+
+        MOVB    PROGT,(R0)+
+        MOV     #4,XLEN
+
+; send XBUF (SEND: a new message; SEND2: a repeat)
+SEND:   CLR     RETRY
+SEND2:  JSR     PC,XMIT
+        MOV     TICKS,TCNT
+
+; wait for a received message; resend after TCNT wait loops
+WAIT:   MOV     #10000.,R3      ; one wait loop: 10000 polls
+1$:     TSTB    RXCSR(R5)       ; RXDONE: a message begins
+        BMI     2$
+        SOB     R3,1$
+        DEC     TCNT
+        BNE     WAIT
+        INC     RETRY           ; no answer: send again, after 3 repeats
+        CMP     RETRY,#3        ;   start over
+        BLO     SEND2
+        BR      REQPRG
+2$:     JSR     PC,RCVMSG       ; R2 -> MOP message, RCNT; C: none for us
+        BCS     WAIT
+        MOVB    (R2),R0         ; MOP code
+        BIC     #177400,R0
+        CMP     R0,#M.ML
+        BEQ     ML
+        CMP     R0,#M.MLT
+        BEQ     MLT
+        CMP     R0,#M.PLT
+        BEQ     PLT
+        BR      WAIT            ; anything else: wait on
+
+; Memory Load: code, load number, address (4), data
+ML:     JSR     PC,CHKNUM       ; Z: the expected load, C: a repeated one
+        BCS     ACK
+        BNE     WAIT
+        MOV     RCNT,R1         ; data length = count - 6
+        SUB     #6,R1
+        BLT     WAIT
+        JSR     PC,STORE
+        BCS     LDERR
+        INCB    NEXT            ; next load number (0-255)
+ACK:    MOV     R4,R0           ; Request Memory Load: 10, number, 0
+        ADD     #XBUF-BOOT,R0
+        MOVB    #M.RML,(R0)+
+        MOVB    NEXT,(R0)+
+        CLRB    (R0)
+        MOV     #3,XLEN
+        BR      SEND
+LDERR:  MOV     R4,R0           ; not stored: ask again, error 1
+        ADD     #XBUF-BOOT,R0
+        MOVB    #M.RML,(R0)+
+        MOVB    NEXT,(R0)+
+        MOVB    #1,(R0)
+        MOV     #3,XLEN
+        BR      SEND
+
+; Memory Load with Transfer Address: code, number, address (4), data,
+; transfer address (4)
+MLT:    JSR     PC,CHKNUM
+        BNE     WAIT            ; (also a repeated one: it was started)
+        MOV     RCNT,R1         ; data length = count - 10
+        SUB     #10.,R1
+        BLT     WAIT
+        JSR     PC,STORE
+        BCS     LDERR
+        MOV     R2,R3           ; R3 -> transfer address
+        ADD     #6,R3
+        ADD     R1,R3
+        BR      GO
+
+; Parameter Load with Transfer Address: code, number, parameters (type,
+; length, value) up to a type 0, transfer address (4)
+PLT:    JSR     PC,CHKNUM
+        BNE     WAIT
+        MOV     R2,R3
+        ADD     #2,R3
+1$:     MOVB    (R3)+,R0        ; parameter type
+        BEQ     GO
+        MOVB    (R3)+,R0        ; its length
+        BIC     #177400,R0
+        ADD     R0,R3
+        BR      1$
+
+; start the loaded program; R3 -> transfer address (bytes, any alignment)
+GO:     MOVB    (R3)+,R0
+        BIC     #177400,R0
+        MOVB    (R3)+,R1
+        SWAB    R1
+        CLRB    R1
+        BIS     R1,R0
+        MOV     R0,R2           ; R2 = transfer address (low 16 bits)
+        MOV     R5,R1           ; R1 = CSR
+        MOV     #1000,SP
+        MOV     #340,@#177776   ; priority 7
+        JMP     (R2)            ; (macro11 v0.3 wrongly rejects JMP (R0))
+
+; ---------------------------------------------------------------- routines
+
+; CHKNUM: R2 -> message.  A load numbered 0 starts the load (over): NEXT
+; = 0.  Z set: its load number is NEXT; C set: it is NEXT-1 (a repeated
+; load); otherwise neither.
+CHKNUM: MOVB    1(R2),R0
+        BIC     #177400,R0
+        BNE     3$              ; load 0: the load starts (over)
+        CLR     NEXT
+3$:
+        MOV     NEXT,R1
+        CMP     R0,R1
+        BEQ     2$              ; Z set, C clear
+        DEC     R1
+        BIC     #177400,R1
+        CMP     R0,R1
+        BNE     1$
+        CLZ                     ; repeated: Z clear,
+        SEC                     ;   C set
+        RTS     PC
+1$:     CLC                     ; neither: Z clear, C clear
+2$:     RTS     PC
+
+; STORE: copy R1 data bytes from 6(R2) to the load address in 2(R2)-5(R2).
+; C set if the address is beyond 64 KB or the data would reach this
+; program.  R1, R2 kept.
+STORE:  TST     4(R2)           ; address bits 16-31 must be 0
+        BNE     2$
+        MOV     2(R2),R0        ; load address
+        MOV     R0,R3
+        ADD     R1,R3           ; end of the data
+        BCS     2$
+        CMP     R3,R4           ; must stay below this program
+        BHI     2$
+        MOV     R2,R3           ; R3 -> data
+        ADD     #6,R3
+        MOV     R1,-(SP)
+        BEQ     1$
+3$:     MOVB    (R3)+,(R0)+
+        DEC     R1
+        BNE     3$
+1$:     MOV     (SP)+,R1
+        CLC
+        RTS     PC
+2$:     SEC
+        RTS     PC
+
+; XMIT: send the MOP message in XBUF (XLEN bytes) as a DDCMP maintenance
+; message.  The board adds the header CRC at the first TEOM and the data
+; CRC at the second.  R0-R3 changed.
+XMIT:   MOV     R4,R2           ; header in HBUF: DLE, count + flags, 0, 0, 1
+        ADD     #HBUF-BOOT,R2
+        MOV     R2,R3
+        MOVB    #DLE,(R3)+
+        MOV     XLEN,R0
+        BIS     #QSYNSL,R0
+        MOVB    R0,(R3)+
+        SWAB    R0
+        MOVB    R0,(R3)+
+        CLRB    (R3)+
+        CLRB    (R3)+
+        MOVB    #1,(R3)+
+        BIS     #TXSND,TXCSR(R5) ; transmitter on
+        MOV     #TSOM+SYN,R0    ; start of message: a sync character
+        JSR     PC,TXCHR
+        MOV     #6,R1           ; the header
+1$:     MOVB    (R2)+,R0
+        BIC     #177400,R0
+        JSR     PC,TXCHR
+        SOB     R1,1$
+        MOV     #TEOM,R0        ; the header CRC
+        JSR     PC,TXCHR
+        MOV     R4,R2           ; the MOP message
+        ADD     #XBUF-BOOT,R2
+        MOV     XLEN,R1
+2$:     MOVB    (R2)+,R0
+        BIC     #177400,R0
+        JSR     PC,TXCHR
+        SOB     R1,2$
+        MOV     #TEOM,R0        ; the data CRC
+        JSR     PC,TXCHR
+        JSR     PC,TXWAIT       ; all sent:
+        BIC     #TXSND,TXCSR(R5) ;   transmitter off
+        RTS     PC
+
+; TXCHR: write R0 to TXDBUF when the transmitter is ready
+TXCHR:  JSR     PC,TXWAIT
+        MOV     R0,TXDBUF(R5)
+        RTS     PC
+TXWAIT: TSTB    TXCSR(R5)       ; TXDONE (bit 7)
+        BPL     TXWAIT
+        RTS     PC
+
+; RCVMSG: the first character of a message is in RXDBUF.  Reads the DDCMP
+; message: 8 header bytes, then for a data or maintenance message count + 2
+; bytes.  For a maintenance message with good CRCs that fits RBUF: C clear,
+; R2 -> the MOP message, RCNT = its length.  Otherwise (control or data
+; message, bad CRC, too long, a byte missing): C set.  R0-R3 changed.
+RCVMSG: MOV     R4,R2           ; R2 -> RBUF
+        ADD     #RBUF-BOOT,R2
+        MOV     R2,R3
+        MOV     #8.,R1          ; the header with its CRC
+1$:     JSR     PC,RXCHR
+        BCS     9$
+        MOVB    R0,(R3)+
+        SOB     R1,1$
+        BIT     #RCRCOK,RXWORD  ; header CRC
+        BEQ     9$
+        CMPB    (R2),#ENQ       ; control message: nothing more
+        BEQ     9$
+        MOVB    1(R2),R1        ; count (14 bits)
+        BIC     #177400,R1
+        MOVB    2(R2),R0
+        SWAB    R0
+        CLRB    R0
+        BIS     R0,R1
+        BIC     #140000,R1
+        MOV     R1,RCNT
+        ADD     #2,R1           ; data and its CRC
+        CMP     R1,#RBLEN-8.
+        BHI     5$              ; too long: read and drop it
+3$:     JSR     PC,RXCHR
+        BCS     9$
+        MOVB    R0,(R3)+
+        SOB     R1,3$
+        BIT     #RCRCOK,RXWORD  ; data CRC
+        BEQ     9$
+        CMPB    (R2),#DLE       ; a maintenance message is for us
+        BNE     9$
+        ADD     #8.,R2          ; R2 -> the MOP message
+        CLC
+        RTS     PC
+5$:     JSR     PC,RXCHR
+        BCS     9$
+        SOB     R1,5$
+9$:     SEC
+        RTS     PC
+
+; RXCHR: wait (at most BYTTMO polls) for a received character: R0 = the
+; character, RXWORD = the whole RXDBUF word; C set if none came.
+RXCHR:  MOV     R1,-(SP)
+        MOV     #BYTTMO,R1
+1$:     TSTB    RXCSR(R5)       ; RXDONE (bit 7)
+        BMI     2$
+        SOB     R1,1$
+        MOV     (SP)+,R1
+        SEC
+        RTS     PC
+2$:     MOV     RXDBUF(R5),R0
+        MOV     R0,RXWORD
+        BIC     #177400,R0
+        MOV     (SP)+,R1
+        CLC
+        RTS     PC
+
+; ---------------------------------------------------------------- data
+        .EVEN
+RXWORD: .WORD   0               ; the last RXDBUF word read
+HBUF:   .BLKW   4               ; DDCMP header to send
+STACK:  .BLKW   40              ; own stack (32 words)
+STKTOP:
+XBUF:   .BLKW   10              ; MOP message to send
+RBUF:                           ; receive buffer up to the end of the area
+RBEND   = BOOTSZ
+RBLEN   = RBEND-RBUF
+CODLEN  = RBUF-BOOT             ; what SIMH copies: up to the receive buffer
+
+        .END
