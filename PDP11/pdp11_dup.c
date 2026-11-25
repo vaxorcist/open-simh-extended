@@ -36,6 +36,8 @@
    characters both initially and between DDCMP packets.
 
    15-May-13    MP      Initial implementation
+   25-Nov-26    Ulli    BOOT DUPn (PDP-11): a MOP bootstrap written for SIMH,
+                        SET DUPn PROGRAM, HELP DUP Booting
    25-Nov-26    Ulli    DEC mode with CRC inhibit: no CRC appended, the message
                         ends at its DDCMP header count (known issue 124)
 
@@ -54,6 +56,9 @@
 #include "sim_tmxr.h"
 #include "pdp11_ddcmp.h"
 #include "pdp11_dup.h"
+#if defined (VM_PDP11)
+#include "pdp11_dup_boot.h"                             /* BOOT DUPn: the MOP bootstrap */
+#endif
 
 #if !defined(DUP_LINES)
 #define DUP_LINES 8
@@ -94,6 +99,7 @@ static uint16 dup_xmtpkdelaying[DUP_LINES];                    /* xmt packet spe
 static int32 dup_corruption[DUP_LINES];                       /* data corrupting troll hunger value */
 
 static PACKET_DATA_AVAILABLE_CALLBACK dup_rcv_packet_data_callback[DUP_LINES];
+static uint8 dup_progtype[DUP_LINES];   /* BOOT DUPn: MOP program type asked for (0 secondary) */
 static PACKET_TRANSMIT_COMPLETE_CALLBACK dup_xmt_complete_callback[DUP_LINES];
 static MODEM_CHANGE_CALLBACK dup_modem_change_callback[DUP_LINES];
 
@@ -106,6 +112,14 @@ static t_stat dup_poll_svc (UNIT *uptr);
 static t_stat dup_rcv_byte (int32 dup);
 static t_stat dup_reset (DEVICE *dptr);
 static t_stat dup_attach (UNIT *uptr, CONST char *ptr);
+#if defined (VM_PDP11)
+static t_stat dup_boot (int32 unitno, DEVICE *dptr);
+#define DUP_BOOT_RTN    &dup_boot
+#else
+#define DUP_BOOT_RTN    NULL                            /* VAX, PDP-10: no BOOT DUPn */
+#endif
+static t_stat dup_setprogram (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+static t_stat dup_showprogram (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 static t_stat dup_detach (UNIT *uptr);
 static t_stat dup_clear (int32 dup, t_bool flag);
 static int32 dup_rxinta (void);
@@ -625,6 +639,10 @@ static MTAB dup_mod[] = {
         &dup_setnl, &tmxr_show_lines, (void *) &dup_desc, "Display number of lines" },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "SYNC", NULL,
       NULL, &tmxr_show_sync, NULL, "Display attachable DDCMP synchronous links" },
+#if defined (VM_PDP11)
+    { MTAB_XTD|MTAB_VUN,          0, "PROGRAM", "PROGRAM={SECONDARY|TERTIARY|SYSTEM}",
+        &dup_setprogram, &dup_showprogram, NULL, "Program BOOT DUPn asks the load host for" },
+#endif
     { 0 }
     };
 
@@ -697,7 +715,7 @@ DEVICE dup_dev = {
     "DUP", dup_units, dup_reg, dup_mod,
     2, 10, 31, 1, DEV_RDX, 8,
     NULL, NULL, &dup_reset,
-    NULL, &dup_attach, &dup_detach,
+    DUP_BOOT_RTN, &dup_attach, &dup_detach,
     &dup_dib, DEV_DIS | DEV_DISABLE | DEV_UBUS | DEV_DEBUG | DEV_DONTAUTO, 0,
     dup_debug, NULL, NULL, &dup_help, dup_help_attach, &dup_desc, 
     &dup_description
@@ -1716,6 +1734,82 @@ if ((r == SCPE_OK) && (attached))
 return r;
 }
 
+/* SET/SHOW DUPn PROGRAM: the MOP program type BOOT DUPn asks for */
+
+static const char *dup_progname[] = { "SECONDARY", "TERTIARY", "SYSTEM" };
+
+static t_stat dup_setprogram (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+int32 dup = (int32)(uptr - dup_units);
+uint8 i;
+
+if ((cptr == NULL) || (*cptr == 0))
+    return SCPE_MISVAL;
+if ((dup < 0) || (dup >= DUP_LINES))
+    return SCPE_IERR;
+for (i = 0; i < 3; i++)
+    if (MATCH_CMD (cptr, dup_progname[i]) == 0) {
+        dup_progtype[dup] = i;
+        return SCPE_OK;
+        }
+return SCPE_ARG;
+}
+
+static t_stat dup_showprogram (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+int32 dup = (int32)(uptr - dup_units);
+
+if ((dup < 0) || (dup >= DUP_LINES))
+    return SCPE_IERR;
+fprintf (st, "program=%s", dup_progname[dup_progtype[dup] % 3]);
+return SCPE_OK;
+}
+
+#if defined (VM_PDP11)
+/* BOOT DUPn (PDP-11, Unibus DUP11).  The DUP11 has no boot logic of its
+   own (no microprocessor, no boot ROM on the board), so a down-line load
+   needs a primary loader in the host.  BOOT DUPn copies one written for
+   SIMH (pdp11_dup_boot.mac, position independent) to the top of the low
+   56 KB of memory and starts it there.  It sets the line up for DDCMP (DEC
+   mode, CRC generated and checked by the board), sends MOP Request Program
+   in a DDCMP maintenance message with device type 10 (the DUP11's, as DEC's
+   own DUP11 loaders ask) and the program type of SET DUPn PROGRAM, stores
+   Memory Loads below itself, answers each with Request Memory Load, and
+   starts the program at the transfer address with R1 = CSR and SP = 1000.
+   A request without an answer is sent again after about 5 s of simulated
+   time. */
+static t_stat dup_boot (int32 unitno, DEVICE *dptr)
+{
+uint32 top = (MEMSIZE < 0160000) ? MEMSIZE : 0160000;  /* no memory management */
+uint32 base, csr, ticks;
+double ips = sim_timer_inst_per_sec ();
+size_t i;
+
+if ((unitno < 0) || (unitno >= dup_desc.lines))
+    return SCPE_ARG;
+if (!(dup_units[unitno].flags & UNIT_ATT))
+    return sim_messagef (SCPE_UNATT, "%s%d is not attached to its line\n", dptr->name, unitno);
+if (top < 2 * DUPB_AREA)
+    return sim_messagef (SCPE_ARG, "BOOT %s needs at least %d KB of memory\n", dptr->name, (2 * DUPB_AREA) >> 10);
+base = top - DUPB_AREA;
+csr = (dup_dib.ba + (IOLN_DUP * unitno)) & 0177777;
+for (i = 0; i < sizeof (dup_boot_code) / sizeof (dup_boot_code[0]); i++)
+    WrMemW (base + (2 * i), dup_boot_code[i]);
+WrMemW (base + DUPB_CSR, csr);
+WrMemW (base + DUPB_DEVT, 10 | (dup_progtype[unitno] << 8));  /* MOP device type 10: DUP11 */
+ticks = (ips > 0.0) ? (uint32)((ips * 5.0) / DUPB_LOOP) : 0;
+if (ticks < 1)
+    ticks = 1;
+if (ticks > 0177777)
+    ticks = 0177777;
+WrMemW (base + DUPB_TICKS, ticks);
+sim_debug (DBG_TRC, dptr, "%s%d: BOOT: MOP bootstrap at %06o, CSR %06o, device type 10, program type %d, wait loops %d\n",
+           dptr->name, unitno, base, csr, dup_progtype[unitno], ticks);
+cpu_set_boot (base);
+return SCPE_OK;
+}
+#endif
+
 static t_stat dup_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
@@ -2056,6 +2150,15 @@ const char helpString[] =
     " every message has a 1/1000 chance of being selected to be corrupted\n"
     " or discarded.\n"
      /****************************************************************************/
+    "3 Program\n"
+    " The program BOOT DUPn asks the load host for (PDP-11 only):\n"
+    "\n"
+    "+sim> SET %U PROGRAM={SECONDARY|TERTIARY|SYSTEM}\n"
+    "\n"
+    " SECONDARY (the default) asks for the secondary loader, as the first\n"
+    " stage of a down-line load does: VMS then sends the SECONDARY LOADER of\n"
+    " the node (e.g. SECDUP.SYS), which loads the TERTIARY LOADER (TERDUP.SYS)\n"
+    " and that the system.  SYSTEM asks for the LOAD FILE directly.\n"
 #define DUP_HLP_ATTACH "Configuration Attach"
     "2 Attach\n"
     " The communication line performs input and output through a TCP session\n"
@@ -2103,6 +2206,35 @@ const char helpString[] =
     "\n"
     " To communicate with an \"integral modem\" DMC or similar, at 56 kbps:\n"
     "+sim> ATTACH %U SYNC=sync0:INTEGRAL:56000\n"
+    "1 Booting\n"
+    " The DUP11 has no boot logic of its own: a down-line load needs a\n"
+    " primary loader in the PDP-11.  On the PDP-11 simulator BOOT DUPn\n"
+    " provides one, a MOP bootstrap written for SIMH:\n"
+    "\n"
+    "+sim> SET DUP ENABLE\n"
+    "+sim> SET DUP0 PEER=loadhost:port\n"
+    "+sim> ATTACH DUP0 port\n"
+    "+sim> BOOT DUP0\n"
+    "\n"
+    " It sets the line up for DDCMP, sends MOP Request Program (device type\n"
+    " 10, the DUP11's) in a DDCMP maintenance message, stores the Memory Loads\n"
+    " of the load host below itself (it uses the 8 KB below 160000 or below\n"
+    " the end of memory), and starts the loaded program with R1 = CSR and\n"
+    " SP = 1000.  Without an answer it asks again about every 5 seconds.  SET\n"
+    " DUPn PROGRAM selects what it asks for.\n"
+    "\n"
+    " The load host is a DECnet node on the other end of the line, e.g. VMS on\n"
+    " a VAX with a DMC11 (SIMH's DMC device) whose circuit has SERVICE\n"
+    " ENABLED, and a node entry such as:\n"
+    "\n"
+    "+DEFINE NODE 1.20 NAME PDPDUP SERVICE CIRCUIT DMC-0\n"
+    "+DEFINE NODE PDPDUP SERVICE DEVICE DUP CPU PDP11\n"
+    "+DEFINE NODE PDPDUP SECONDARY LOADER SYS$SYSTEM:SECDUP.SYS\n"
+    "+DEFINE NODE PDPDUP TERTIARY LOADER SYS$SYSTEM:TERDUP.SYS\n"
+    "+DEFINE NODE PDPDUP LOAD FILE SYS$SYSTEM:PDPDUP.SYS\n"
+    "\n"
+    " SET %D DEBUG=TRC shows the start of the bootstrap.  (The DPV11 on the\n"
+    " Qbus has no BOOT.)\n"
     "1 Monitoring\n"
     " The %D device and %U line configuration and state can be displayed with\n"
     " one of the available show commands.\n"
