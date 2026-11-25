@@ -67,6 +67,8 @@
 
   Modification history:
 
+  25-Nov-26  Ulli A software reset adds the board's station address to the
+                  address filter (the DELQA boot ROM needs it)
   25-Nov-26  Ulli The MOP system ID's source address is the board's own
                   address while the guest's setup address is zero
   24-Nov-26  Ulli A setup or loopback packet is received 400 instructions
@@ -2176,11 +2178,22 @@ void xq_sw_reset(CTLR* xq)
     int count = 0;
     ETH_MAC filters[XQ_FILTER_MAX + 1];
 
-    /* set ethernet filter */
-    /* eth_copy_mac(filters[count++], xq->mac); */
+    /* set ethernet filter: the addresses of the last setup packet stay
+       (VMS relies on that after a reset), and the board's own station
+       address is added: the DELQA boot ROM leaves a test address in the
+       setup and, after a software reset, expects to receive frames sent
+       to its station address (the load host's Memory Loads).  It goes
+       last: sim_ether takes the first unicast address in the list as the
+       physical address in use (e.g. the DECnet address) */
+    int has_mac = 0;
     for (i = 0; i < XQ_FILTER_MAX; i++)
-      if (eth_mac_cmp(eth_mac_any, xq->var->setup.macs[i]))
+      if (eth_mac_cmp(eth_mac_any, xq->var->setup.macs[i])) {
+        if (!eth_mac_cmp(xq->var->mac, xq->var->setup.macs[i]))
+          has_mac = 1;
         eth_copy_mac(filters[count++], xq->var->setup.macs[i]);
+        }
+    if (!has_mac)
+      eth_copy_mac(filters[count++], xq->var->mac);
     eth_filter (xq->var->etherface, count, filters, xq->var->setup.multicast, xq->var->setup.promiscuous);
     }
 
