@@ -36,6 +36,8 @@
    characters both initially and between DDCMP packets.
 
    15-May-13    MP      Initial implementation
+   25-Nov-26    Ulli    A byte write to the TXDBUF data byte clears TSOM, TEOM
+                        (DEC's DUP11 loaders; known issue 126); DEBUG=DATA
    25-Nov-26    Ulli    Trace of the end of a message by clearing SEND: no NULL
                         dereference (known issue 125)
    25-Nov-26    Ulli    BOOT DUPn (PDP-11): a MOP bootstrap written for SIMH,
@@ -676,6 +678,7 @@ static MTAB dpv_mod[] = {
 #define DBG_CON  TMXR_DBG_CON                           /* display connection activities */
 #define DBG_TRC  TMXR_DBG_TRC                           /* display trace routine calls */
 #define DBG_ASY  TMXR_DBG_ASY                           /* display Asynchronous Activities */
+#define DBG_DAT  DDCMP_DBG_PDAT                         /* display packet data (with PKT) */
 
 static DEBTAB dup_debug[] = {
   {"REG",    DBG_REG},
@@ -687,6 +690,7 @@ static DEBTAB dup_debug[] = {
   {"CON",    DBG_CON},
   {"TRC",    DBG_TRC},
   {"ASY",    DBG_ASY},
+  {"DATA",   DBG_DAT},
   {0}
 };
 
@@ -817,8 +821,12 @@ orig_val = regs[(PA >> 1) & 03][dup];
 if (PA & 1)
     data = ((data << 8) | (orig_val & 0xFF)) & 0xFFFF;  /* Merge with original word */
 else
-    if (access == WRITEB)                               /* byte access? */
-        data = (orig_val & 0xFF00) | (data & 0xFF);     /* Merge with original high word */
+    if (access == WRITEB) {                             /* byte access? */
+        if (UNIBUS && (((PA >> 1) & 03) == 03))         /* DUP11 TXDBUF: a new character */
+            data = data & 0xFF;                         /*   without TSOM, TEOM, ... (known issue 126) */
+        else
+            data = (orig_val & 0xFF00) | (data & 0xFF); /* Merge with original high word */
+        }
 
 switch ((PA >> 1) & 03) {                               /* case on PA<2:1> */
 
