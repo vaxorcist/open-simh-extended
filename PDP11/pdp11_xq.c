@@ -67,6 +67,8 @@
 
   Modification history:
 
+  25-Nov-26  Ulli The MOP system ID's source address is the board's own
+                  address while the guest's setup address is zero
   24-Nov-26  Ulli A setup or loopback packet is received 400 instructions
                   after its transmission, not 400 usecs of host time (BOOT XQ
                   with the boot ROMs' self-test)
@@ -2693,7 +2695,13 @@ t_stat xq_system_id (CTLR* xq, const ETH_MAC dest, uint16 receipt_id)
 
   memset (&system_id, 0, sizeof(system_id));
   eth_copy_mac(&msg[0], dest);
-  eth_copy_mac(&msg[6], xq->var->setup.valid ? xq->var->setup.macs[0] : xq->var->mac);
+  /* source: the address the guest set up, unless that is still zero
+     (e.g. during the boot ROM's self-test): then the board's own address */
+  {
+  static const ETH_MAC zero_mac = {0, 0, 0, 0, 0, 0};
+  eth_copy_mac(&msg[6], (xq->var->setup.valid && eth_mac_cmp(xq->var->setup.macs[0], zero_mac)) ?
+                        xq->var->setup.macs[0] : xq->var->mac);
+  }
   msg[12] = 0x60;                         /* type */
   msg[13] = 0x02;                         /* type */
   msg[14] = 0x1C;                         /* character count */
