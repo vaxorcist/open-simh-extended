@@ -36,6 +36,8 @@
    characters both initially and between DDCMP packets.
 
    15-May-13    MP      Initial implementation
+   25-Nov-26    Ulli    Trace of the end of a message by clearing SEND: no NULL
+                        dereference (known issue 125)
    25-Nov-26    Ulli    BOOT DUPn (PDP-11): a MOP bootstrap written for SIMH,
                         SET DUPn PROGRAM, HELP DUP Booting
    25-Nov-26    Ulli    DEC mode with CRC inhibit: no CRC appended, the message
@@ -1307,7 +1309,7 @@ if (!tmxr_tpbusyln(&dup_ldsc[dup])) {  /* Not Busy sending? */
     breturn = TRUE;
     }
 sim_debug (DBG_TRC, DUPDPTR, "dup_put_msg_bytes(dup=%d, len=%d, start=%s, end=%s, byte=0x%02hhx) %s\n", 
-           dup, (int)len, start ? "TRUE" : "FALSE", end ? "TRUE" : "FALSE", *bytes, breturn ? "Good" : "Busy");
+           dup, (int)len, start ? "TRUE" : "FALSE", end ? "TRUE" : "FALSE", (bytes && len) ? *bytes : 0, breturn ? "Good" : "Busy");
 if (breturn && (tmxr_tpbusyln (&dup_ldsc[dup]) || dup_xmtpkbytes[dup])) {
     if (dup_xmt_complete_callback[dup])
         dup_svc(dup_units+dup);
