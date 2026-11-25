@@ -1,4 +1,4 @@
-# open-simh-extended/tests/deuna_boot/.gitignore  v2 (v2: run_b9/, NETTEST.SYS, *.tap: run directories of vmshost.sh)
+# open-simh-extended/tests/deuna_boot/.gitignore  v3 (v3: brusys.rl01 (Ulli's RSX-11M standalone BRU, DEC software) and run_xq*/ of vmshost_xq.sh; v2: run_b9/, NETTEST.SYS, *.tap: run directories of vmshost.sh)
 # DEC firmware and software (ROM images, DECnet-11M's UNA loaders) are not
 # part of the repository; run outputs are not either.
 *.bin
@@ -10,3 +10,5 @@
 run_b9/
 NETTEST.SYS
 *.tap
+brusys.rl01
+run_xq*/
