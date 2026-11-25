@@ -36,6 +36,8 @@
    characters both initially and between DDCMP packets.
 
    15-May-13    MP      Initial implementation
+   25-Nov-26    Ulli    DEC mode with CRC inhibit: no CRC appended, the message
+                        ends at its DDCMP header count (known issue 124)
 
 */
 
@@ -1244,6 +1246,28 @@ if (!tmxr_tpbusyln(&dup_ldsc[dup])) {  /* Not Busy sending? */
     if (end) {
         uint16 crc16;
 
+        if (charmode && UNIBUS && (dup_parcsr[dup] & PARCSR_M_NOCRC)) {
+            /* CRC inhibited: the program sent the CRCs itself; the message
+               ends where its DDCMP header says (drop trailing sync fill) */
+            uint8 *msg = dup_xmtpacket[dup];
+            uint16 msglen = dup_xmtpkoffset[dup];
+
+            if ((msglen >= 8) && (msg[0] == DDCMP_ENQ))
+                msglen = 8;
+            else
+                if ((msglen >= 8) && ((msg[0] == DDCMP_SOH) || (msg[0] == DDCMP_DLE))) {
+                    uint16 count = (msg[1] | (msg[2] << 8)) & 0x3FFF;
+
+                    if (msglen > 8 + count + 2)
+                        msglen = 8 + count + 2;
+                    }
+            dup_xmtpkoffset[dup] = msglen;
+            if (msglen >= 8) {
+                dup_xmtpkbytes[dup] = msglen;
+                ddcmp_tmxr_put_packet_ln (&dup_ldsc[dup], msg, dup_xmtpkbytes[dup], dup_corruption[dup]);
+                }
+            }
+        else
         if (charmode) {
             crc16 = ddcmp_crc16 (0, dup_xmtpacket[dup], dup_xmtpkoffset[dup]);
             dup_xmtpacket[dup][dup_xmtpkoffset[dup]++] = crc16 & 0xFF;
