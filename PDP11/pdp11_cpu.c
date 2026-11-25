@@ -3751,8 +3751,9 @@ fprintf (st, "BOOT DMCn start a MOP bootstrap written for SIMH in place of a DEC
 fprintf (st, "ROM (DEC's 'XE' for the DEUNA/DELUA, 'XM' for the DMC11/DMR11); those\n");
 fprintf (st, "ROMs still work when attached to a ROM unit (HELP XU, HELP DMC).  A host\n");
 fprintf (st, "can also start a DMC11 or DMR11 by remote load detect, into a boot ROM or\n");
-fprintf (st, "the board's own load (HELP DMC).  For the details of a device's bootstrap\n");
-fprintf (st, "see HELP <dev>.\n\n");
+fprintf (st, "the board's own load (HELP DMC).  BOOT DUPn starts such a bootstrap for\n");
+fprintf (st, "the Unibus DUP11, which has no boot logic of its own (HELP DUP).  For the\n");
+fprintf (st, "details of a device's bootstrap see HELP <dev>.\n\n");
 return SCPE_OK;
 }
 
