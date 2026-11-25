@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DUP11_boot_design.md  v3, 2026-11-25 (v3: Ulli: model the DUP11 as the real hardware; the manual on CRC generation and CRC inhibit; D1, D2, 124 settled; v2: facts from DEC's SECDUP.SYS (MOP device type 10, software CRC with CRC inhibit), a likely SIMH gap for that mode (known issue 124), decisions for Ulli; v1: design only, Ulli: "Design only now"; the build follows when the weekly limit allows) -->
+<!-- open-simh-extended/docs/DUP11_boot_design.md  v4, 2026-11-25 (v4: built and tested as patch 28: section 6; known issues 124 fixed, 125 and 126 found and fixed; 1.6 and the open points settled; v3: Ulli: model the DUP11 as the real hardware; the manual on CRC generation and CRC inhibit; D1, D2, 124 settled; v2: facts from DEC's SECDUP.SYS (MOP device type 10, software CRC with CRC inhibit), a likely SIMH gap for that mode (known issue 124), decisions for Ulli; v1: design only, Ulli: "Design only now"; the build follows when the weekly limit allows) -->
 # DUP11: BOOT DUPn (design)
 
 Ulli asked (2026-11-25) to make the DUP11 bootable on Unibus PDP-11s. With
@@ -108,7 +108,7 @@ for the tertiary. Facts from its code (our own reading, no DEC text):
   compute and send the CRCs itself, which is what SECDUP does.
 - So both ways are real hardware behaviour; SIMH models only the first.
 
-### 1.6 Consequence for SIMH (known issue 124, not tested yet)
+### 1.6 Consequence for SIMH (known issue 124; fixed in patch 28, see section 6)
 
 SIMH's DUP does not look at PARCSR CRC inhibit: in DEC mode it appends its
 own CRC when the message ends (TEOM, or SEND cleared) and strips only the
@@ -186,8 +186,8 @@ it. The program is the PDP-11 side of a primary loader:
 | D2: default program type | **SECONDARY** (as BOOT DMCn; VMS then sends the real chain SECDUP.SYS, TERDUP.SYS, the system); SET DUPn PROGRAM=SYSTEM loads the LOAD FILE at once. Claude's choice, not asked again (Ulli: stop asking); can be changed |
 | Known issue 124 (SIMH DUP ignores CRC inhibit) | **Test and fix** (first step of the build): with CRC inhibit SIMH appends no CRC and sends the bytes as written, taking the message end from the DDCMP header count (the trailing sync characters, line fill on a real line, are dropped); receive delivers the CRC bytes as now |
 | DPV11 (Qbus) too | Ulli asked for the Unibus; the DPV11's registers differ slightly (TBEMPTY, protocol select); possible later (DEC's SECDPV asks with device type 36) |
-| Sharing the MOP part with pdp11_dmc_boot.mac | One source with two link layers (conditional assembly) or two files; decide when building |
-| DUP11 modem control in SIMH | SECDUP waits for CTS and DSR after raising DTR and RTS; check that SIMH's DUP gives them on a connected line (W3/W5/W6 options) |
+| Sharing the MOP part with pdp11_dmc_boot.mac | **Two files:** `pdp11_dup_boot.mac` took the MOP part of the DMC bootstrap (CHKNUM, STORE, the dispatch) as a copy; one generator, `mkdmcboot.py` v4 (option DUP) |
+| DUP11 modem control in SIMH | **Works:** SIMH gives DSR and CTS on a connected line; SECDUP's waits pass (section 6) |
 
 ## 5. Order of work (when building)
 
@@ -199,3 +199,51 @@ it. The program is the PDP-11 side of a primary loader:
 3. T3 with VMS V4.7: PROGRAM=SYSTEM (BRUSYS.SYS), then SECONDARY (SECDUP,
    TERDUP, BRUSYS.SYS).
 4. Patch, docs, known issues, delivery.
+
+## 6. Built and tested (patch 28, 2026-11-25)
+
+Branch `dup-boot` (from `xq-boot`), patch file
+`patches/opensimh_28_dup_boot_v1.patch` (5 commits), in `integration`.
+
+**What was built:**
+
+- `PDP11/pdp11_dup.c`:
+  - known issue 124: DEC mode with CRC inhibit appends no CRC; the message
+    is cut at its DDCMP length (8 header bytes, count, 2 CRC bytes);
+  - `dup_boot()` (PDP-11 only, `DUP_BOOT_RTN`): copies the bootstrap to the
+    8 KB below min(MEMSIZE, 160000), fills in CSR, device type 10, program
+    type, wait loops for about 5 s, starts it;
+  - `SET/SHOW DUPn PROGRAM={SECONDARY|TERTIARY|SYSTEM}` (default
+    SECONDARY); HELP DUP topics Booting and Set Program;
+  - known issue 125: no crash of the DBG_TRC line when SEND ends a message;
+  - known issue 126: a byte write to the TXDBUF character clears TSOM/TEOM;
+  - `SET DUP DEBUG=DATA`: packet contents (with PKT).
+- `PDP11/pdp11_dup_boot.mac` (position independent, assembled with macro11)
+  and the generated `PDP11/pdp11_dup_boot.h` (396 words). Framing with the
+  board's CRC: the 6 header bytes after TSOM+SYN, TEOM (header CRC), the MOP
+  message, TEOM (data CRC), then SEND cleared. Receive: 8 header bytes,
+  check RCRC ERR+ZERO (CRC good), count, count + 2 bytes, check again; only
+  DLE messages are used.
+- `PDP11/pdp11_cpu.c`: HELP BOOT mentions BOOT DUPn.
+
+**Found on the way (126):** with only 124 fixed, VMS loaded SECDUP.SYS, but
+SECDUP's own Request Program never went out. SECDUP writes `TSOM+SYN` as a
+word and every further character with MOVB; SIMH kept TSOM, began the
+message with every character and sent nothing.
+
+**Tests:**
+
+| Test | Result |
+|---|---|
+| `tests/dmv11_boot` D1: mopctl.py, first request ignored, three loads, R1 = CSR 160050, SP 1000 | PASS |
+| D2: PROGRAM=SYSTEM, 64 KB | PASS |
+| D3: refusals, SET/SHOW PROGRAM, HELP DUP BOOTING | PASS |
+| Whole `tests/dmv11_boot` suite (T1-T6, P1-P4, R1-R10) | PASS (R6, R7 SKIP: no DEC ROM image) |
+| `tests/dmc_boot/vmsdup.sh` PROGRAM=SYSTEM (VMS V4.7, VAX DMC11 ↔ PDP-11/34 DUP11) | PASS (HELLO) |
+| vmsdup.sh PROGRAM=SECONDARY: SECDUP.SYS → TERDUP.SYS → load file | PASS (VMS: three "Load, Successful"; HELLO) |
+| vmsdup.sh SECONDARY with BRUSYS.SYS (Ulli's brusys.rl01) | PASS ("RSX-11M/RSX-11M-PLUS STANDALONE COPY SYSTEM V4.8", "Enter first device:") |
+| Builds: pdp11, vax780, pdp10-ks | no warnings |
+
+**Not tested:** a real RSX/DECnet DUP11 driver over the changed TXDBUF byte
+write (126); the DPV11 is unchanged and has no BOOT; TERTIARY as the
+first program type.

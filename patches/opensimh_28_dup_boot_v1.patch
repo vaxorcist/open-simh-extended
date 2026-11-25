@@ -1,0 +1,898 @@
+From f7ef808a920c44a9eb325b6bb932cc8871ea7266 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 21:51:45 +0100
+Subject: [PATCH 1/5] DUP: DEC mode with CRC inhibit appends no CRC (known
+ issue 124)
+
+The DUP11 sends the CRC check character at the end of a DDCMP message only
+when CRC is not inhibited (User's Manual, TXCSR SEND/TEOM).  With PARCSR
+CRC inhibit the program supplies the CRCs itself (DEC's DUP11 loader
+SECDUP.SYS does so); SIMH appended its own CRC anyway.  Now no CRC is
+appended and the message ends at the length its DDCMP header gives, so
+trailing sync fill is dropped.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dup.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/PDP11/pdp11_dup.c b/PDP11/pdp11_dup.c
+index 225f34f0..e7608a30 100644
+--- a/PDP11/pdp11_dup.c
++++ b/PDP11/pdp11_dup.c
+@@ -36,6 +36,8 @@
+    characters both initially and between DDCMP packets.
+ 
+    15-May-13    MP      Initial implementation
++   25-Nov-26    Ulli    DEC mode with CRC inhibit: no CRC appended, the message
++                        ends at its DDCMP header count (known issue 124)
+ 
+ */
+ 
+@@ -1244,6 +1246,28 @@ if (!tmxr_tpbusyln(&dup_ldsc[dup])) {  /* Not Busy sending? */
+     if (end) {
+         uint16 crc16;
+ 
++        if (charmode && UNIBUS && (dup_parcsr[dup] & PARCSR_M_NOCRC)) {
++            /* CRC inhibited: the program sent the CRCs itself; the message
++               ends where its DDCMP header says (drop trailing sync fill) */
++            uint8 *msg = dup_xmtpacket[dup];
++            uint16 msglen = dup_xmtpkoffset[dup];
++
++            if ((msglen >= 8) && (msg[0] == DDCMP_ENQ))
++                msglen = 8;
++            else
++                if ((msglen >= 8) && ((msg[0] == DDCMP_SOH) || (msg[0] == DDCMP_DLE))) {
++                    uint16 count = (msg[1] | (msg[2] << 8)) & 0x3FFF;
++
++                    if (msglen > 8 + count + 2)
++                        msglen = 8 + count + 2;
++                    }
++            dup_xmtpkoffset[dup] = msglen;
++            if (msglen >= 8) {
++                dup_xmtpkbytes[dup] = msglen;
++                ddcmp_tmxr_put_packet_ln (&dup_ldsc[dup], msg, dup_xmtpkbytes[dup], dup_corruption[dup]);
++                }
++            }
++        else
+         if (charmode) {
+             crc16 = ddcmp_crc16 (0, dup_xmtpacket[dup], dup_xmtpkoffset[dup]);
+             dup_xmtpacket[dup][dup_xmtpkoffset[dup]++] = crc16 & 0xFF;
+-- 
+2.43.0
+
+
+From 33ed631a43d239f21fd77148ad0b22ecb7f19194 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 21:59:43 +0100
+Subject: [PATCH 2/5] PDP11 DUP: BOOT DUPn with a MOP bootstrap written for
+ SIMH
+
+The DUP11 has no boot logic of its own.  BOOT DUPn (PDP-11 only) copies
+a position-independent MOP bootstrap (pdp11_dup_boot.mac, generated into
+pdp11_dup_boot.h) to the top of the low 56 KB and starts it.  It uses
+the board in DEC mode with its own CRC generation and checking, sends
+MOP Request Program with device type 10 and the program type of the new
+SET DUPn PROGRAM={SECONDARY|TERTIARY|SYSTEM} (default SECONDARY), loads
+and starts the program with R1 = CSR.  HELP DUP gets a Booting topic.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dup.c        | 134 +++++++++++++-
+ PDP11/pdp11_dup_boot.h   |  70 +++++++
+ PDP11/pdp11_dup_boot.mac | 383 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 586 insertions(+), 1 deletion(-)
+ create mode 100644 PDP11/pdp11_dup_boot.h
+ create mode 100644 PDP11/pdp11_dup_boot.mac
+
+diff --git a/PDP11/pdp11_dup.c b/PDP11/pdp11_dup.c
+index e7608a30..103f2135 100644
+--- a/PDP11/pdp11_dup.c
++++ b/PDP11/pdp11_dup.c
+@@ -36,6 +36,8 @@
+    characters both initially and between DDCMP packets.
+ 
+    15-May-13    MP      Initial implementation
++   25-Nov-26    Ulli    BOOT DUPn (PDP-11): a MOP bootstrap written for SIMH,
++                        SET DUPn PROGRAM, HELP DUP Booting
+    25-Nov-26    Ulli    DEC mode with CRC inhibit: no CRC appended, the message
+                         ends at its DDCMP header count (known issue 124)
+ 
+@@ -54,6 +56,9 @@
+ #include "sim_tmxr.h"
+ #include "pdp11_ddcmp.h"
+ #include "pdp11_dup.h"
++#if defined (VM_PDP11)
++#include "pdp11_dup_boot.h"                             /* BOOT DUPn: the MOP bootstrap */
++#endif
+ 
+ #if !defined(DUP_LINES)
+ #define DUP_LINES 8
+@@ -94,6 +99,7 @@ static uint16 dup_xmtpkdelaying[DUP_LINES];                    /* xmt packet spe
+ static int32 dup_corruption[DUP_LINES];                       /* data corrupting troll hunger value */
+ 
+ static PACKET_DATA_AVAILABLE_CALLBACK dup_rcv_packet_data_callback[DUP_LINES];
++static uint8 dup_progtype[DUP_LINES];   /* BOOT DUPn: MOP program type asked for (0 secondary) */
+ static PACKET_TRANSMIT_COMPLETE_CALLBACK dup_xmt_complete_callback[DUP_LINES];
+ static MODEM_CHANGE_CALLBACK dup_modem_change_callback[DUP_LINES];
+ 
+@@ -106,6 +112,14 @@ static t_stat dup_poll_svc (UNIT *uptr);
+ static t_stat dup_rcv_byte (int32 dup);
+ static t_stat dup_reset (DEVICE *dptr);
+ static t_stat dup_attach (UNIT *uptr, CONST char *ptr);
++#if defined (VM_PDP11)
++static t_stat dup_boot (int32 unitno, DEVICE *dptr);
++#define DUP_BOOT_RTN    &dup_boot
++#else
++#define DUP_BOOT_RTN    NULL                            /* VAX, PDP-10: no BOOT DUPn */
++#endif
++static t_stat dup_setprogram (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
++static t_stat dup_showprogram (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ static t_stat dup_detach (UNIT *uptr);
+ static t_stat dup_clear (int32 dup, t_bool flag);
+ static int32 dup_rxinta (void);
+@@ -625,6 +639,10 @@ static MTAB dup_mod[] = {
+         &dup_setnl, &tmxr_show_lines, (void *) &dup_desc, "Display number of lines" },
+     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "SYNC", NULL,
+       NULL, &tmxr_show_sync, NULL, "Display attachable DDCMP synchronous links" },
++#if defined (VM_PDP11)
++    { MTAB_XTD|MTAB_VUN,          0, "PROGRAM", "PROGRAM={SECONDARY|TERTIARY|SYSTEM}",
++        &dup_setprogram, &dup_showprogram, NULL, "Program BOOT DUPn asks the load host for" },
++#endif
+     { 0 }
+     };
+ 
+@@ -697,7 +715,7 @@ DEVICE dup_dev = {
+     "DUP", dup_units, dup_reg, dup_mod,
+     2, 10, 31, 1, DEV_RDX, 8,
+     NULL, NULL, &dup_reset,
+-    NULL, &dup_attach, &dup_detach,
++    DUP_BOOT_RTN, &dup_attach, &dup_detach,
+     &dup_dib, DEV_DIS | DEV_DISABLE | DEV_UBUS | DEV_DEBUG | DEV_DONTAUTO, 0,
+     dup_debug, NULL, NULL, &dup_help, dup_help_attach, &dup_desc, 
+     &dup_description
+@@ -1716,6 +1734,82 @@ if ((r == SCPE_OK) && (attached))
+ return r;
+ }
+ 
++/* SET/SHOW DUPn PROGRAM: the MOP program type BOOT DUPn asks for */
++
++static const char *dup_progname[] = { "SECONDARY", "TERTIARY", "SYSTEM" };
++
++static t_stat dup_setprogram (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++int32 dup = (int32)(uptr - dup_units);
++uint8 i;
++
++if ((cptr == NULL) || (*cptr == 0))
++    return SCPE_MISVAL;
++if ((dup < 0) || (dup >= DUP_LINES))
++    return SCPE_IERR;
++for (i = 0; i < 3; i++)
++    if (MATCH_CMD (cptr, dup_progname[i]) == 0) {
++        dup_progtype[dup] = i;
++        return SCPE_OK;
++        }
++return SCPE_ARG;
++}
++
++static t_stat dup_showprogram (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
++{
++int32 dup = (int32)(uptr - dup_units);
++
++if ((dup < 0) || (dup >= DUP_LINES))
++    return SCPE_IERR;
++fprintf (st, "program=%s", dup_progname[dup_progtype[dup] % 3]);
++return SCPE_OK;
++}
++
++#if defined (VM_PDP11)
++/* BOOT DUPn (PDP-11, Unibus DUP11).  The DUP11 has no boot logic of its
++   own (no microprocessor, no boot ROM on the board), so a down-line load
++   needs a primary loader in the host.  BOOT DUPn copies one written for
++   SIMH (pdp11_dup_boot.mac, position independent) to the top of the low
++   56 KB of memory and starts it there.  It sets the line up for DDCMP (DEC
++   mode, CRC generated and checked by the board), sends MOP Request Program
++   in a DDCMP maintenance message with device type 10 (the DUP11's, as DEC's
++   own DUP11 loaders ask) and the program type of SET DUPn PROGRAM, stores
++   Memory Loads below itself, answers each with Request Memory Load, and
++   starts the program at the transfer address with R1 = CSR and SP = 1000.
++   A request without an answer is sent again after about 5 s of simulated
++   time. */
++static t_stat dup_boot (int32 unitno, DEVICE *dptr)
++{
++uint32 top = (MEMSIZE < 0160000) ? MEMSIZE : 0160000;  /* no memory management */
++uint32 base, csr, ticks;
++double ips = sim_timer_inst_per_sec ();
++size_t i;
++
++if ((unitno < 0) || (unitno >= dup_desc.lines))
++    return SCPE_ARG;
++if (!(dup_units[unitno].flags & UNIT_ATT))
++    return sim_messagef (SCPE_UNATT, "%s%d is not attached to its line\n", dptr->name, unitno);
++if (top < 2 * DUPB_AREA)
++    return sim_messagef (SCPE_ARG, "BOOT %s needs at least %d KB of memory\n", dptr->name, (2 * DUPB_AREA) >> 10);
++base = top - DUPB_AREA;
++csr = (dup_dib.ba + (IOLN_DUP * unitno)) & 0177777;
++for (i = 0; i < sizeof (dup_boot_code) / sizeof (dup_boot_code[0]); i++)
++    WrMemW (base + (2 * i), dup_boot_code[i]);
++WrMemW (base + DUPB_CSR, csr);
++WrMemW (base + DUPB_DEVT, 10 | (dup_progtype[unitno] << 8));  /* MOP device type 10: DUP11 */
++ticks = (ips > 0.0) ? (uint32)((ips * 5.0) / DUPB_LOOP) : 0;
++if (ticks < 1)
++    ticks = 1;
++if (ticks > 0177777)
++    ticks = 0177777;
++WrMemW (base + DUPB_TICKS, ticks);
++sim_debug (DBG_TRC, dptr, "%s%d: BOOT: MOP bootstrap at %06o, CSR %06o, device type 10, program type %d, wait loops %d\n",
++           dptr->name, unitno, base, csr, dup_progtype[unitno], ticks);
++cpu_set_boot (base);
++return SCPE_OK;
++}
++#endif
++
+ static t_stat dup_attach (UNIT *uptr, CONST char *cptr)
+ {
+ t_stat r;
+@@ -2056,6 +2150,15 @@ const char helpString[] =
+     " every message has a 1/1000 chance of being selected to be corrupted\n"
+     " or discarded.\n"
+      /****************************************************************************/
++    "3 Program\n"
++    " The program BOOT DUPn asks the load host for (PDP-11 only):\n"
++    "\n"
++    "+sim> SET %U PROGRAM={SECONDARY|TERTIARY|SYSTEM}\n"
++    "\n"
++    " SECONDARY (the default) asks for the secondary loader, as the first\n"
++    " stage of a down-line load does: VMS then sends the SECONDARY LOADER of\n"
++    " the node (e.g. SECDUP.SYS), which loads the TERTIARY LOADER (TERDUP.SYS)\n"
++    " and that the system.  SYSTEM asks for the LOAD FILE directly.\n"
+ #define DUP_HLP_ATTACH "Configuration Attach"
+     "2 Attach\n"
+     " The communication line performs input and output through a TCP session\n"
+@@ -2103,6 +2206,35 @@ const char helpString[] =
+     "\n"
+     " To communicate with an \"integral modem\" DMC or similar, at 56 kbps:\n"
+     "+sim> ATTACH %U SYNC=sync0:INTEGRAL:56000\n"
++    "1 Booting\n"
++    " The DUP11 has no boot logic of its own: a down-line load needs a\n"
++    " primary loader in the PDP-11.  On the PDP-11 simulator BOOT DUPn\n"
++    " provides one, a MOP bootstrap written for SIMH:\n"
++    "\n"
++    "+sim> SET DUP ENABLE\n"
++    "+sim> SET DUP0 PEER=loadhost:port\n"
++    "+sim> ATTACH DUP0 port\n"
++    "+sim> BOOT DUP0\n"
++    "\n"
++    " It sets the line up for DDCMP, sends MOP Request Program (device type\n"
++    " 10, the DUP11's) in a DDCMP maintenance message, stores the Memory Loads\n"
++    " of the load host below itself (it uses the 8 KB below 160000 or below\n"
++    " the end of memory), and starts the loaded program with R1 = CSR and\n"
++    " SP = 1000.  Without an answer it asks again about every 5 seconds.  SET\n"
++    " DUPn PROGRAM selects what it asks for.\n"
++    "\n"
++    " The load host is a DECnet node on the other end of the line, e.g. VMS on\n"
++    " a VAX with a DMC11 (SIMH's DMC device) whose circuit has SERVICE\n"
++    " ENABLED, and a node entry such as:\n"
++    "\n"
++    "+DEFINE NODE 1.20 NAME PDPDUP SERVICE CIRCUIT DMC-0\n"
++    "+DEFINE NODE PDPDUP SERVICE DEVICE DUP CPU PDP11\n"
++    "+DEFINE NODE PDPDUP SECONDARY LOADER SYS$SYSTEM:SECDUP.SYS\n"
++    "+DEFINE NODE PDPDUP TERTIARY LOADER SYS$SYSTEM:TERDUP.SYS\n"
++    "+DEFINE NODE PDPDUP LOAD FILE SYS$SYSTEM:PDPDUP.SYS\n"
++    "\n"
++    " SET %D DEBUG=TRC shows the start of the bootstrap.  (The DPV11 on the\n"
++    " Qbus has no BOOT.)\n"
+     "1 Monitoring\n"
+     " The %D device and %U line configuration and state can be displayed with\n"
+     " one of the available show commands.\n"
+diff --git a/PDP11/pdp11_dup_boot.h b/PDP11/pdp11_dup_boot.h
+new file mode 100644
+index 00000000..e6e5caea
+--- /dev/null
++++ b/PDP11/pdp11_dup_boot.h
+@@ -0,0 +1,70 @@
++/* pdp11_dup_boot.h: DUP11 MOP bootstrap for BOOT DUPn
++
++   Generated by tools/dmc_bootstrap/mkdmcboot.py (notes branch) from
++   pdp11_dup_boot.mac, assembled with the macro11 cross assembler.
++   Do not edit: change pdp11_dup_boot.mac and generate it again.
++
++   The program is position independent.  SIMH copies the words below
++   to the top of the low 56 KB of memory (DUPB_AREA bytes are used,
++   the receive buffer behind the copied words included), fills in
++   the parameters and starts it at its first word. */
++
++#define DUPB_AREA   020000     /* bytes of memory the bootstrap uses */
++#define DUPB_CSR    02        /* parameter: the board's CSR (word) */
++#define DUPB_DEVT   04        /* parameter: MOP device type (byte) */
++#define DUPB_PROGT  05        /* parameter: MOP program type (byte) */
++#define DUPB_TICKS  06        /* parameter: wait loops of about 5 s (word) */
++#define DUPB_LOOP   30000      /* instructions in one wait loop (10000 polls) */
++
++static const uint16 dup_boot_code[] = {
++    0000410, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0010704, 0162704, 0000024, 0010406, 0062706, 0001410, 0016705,
++    0177740, 0012765, 0000400, 0000004, 0012765, 0100226, 0000002, 0012765,
++    0000426, 0000000, 0005067, 0177720, 0010400, 0062700, 0001410, 0112720,
++    0000010, 0116720, 0177676, 0112720, 0000001, 0116720, 0177667, 0012767,
++    0000004, 0177666, 0005067, 0177670, 0004767, 0000504, 0016767, 0177646,
++    0177654, 0012703, 0023420, 0105765, 0000000, 0100413, 0077304, 0005367,
++    0177634, 0001367, 0005267, 0177630, 0026727, 0177624, 0000003, 0103754,
++    0000731, 0004767, 0000636, 0103755, 0111200, 0042700, 0177400, 0020027,
++    0000002, 0001407, 0020027, 0000000, 0001453, 0020027, 0000024, 0001470,
++    0000740, 0004767, 0000242, 0103413, 0001334, 0016701, 0177536, 0162701,
++    0000006, 0002727, 0004767, 0000272, 0103416, 0105267, 0177512, 0010400,
++    0062700, 0001410, 0112720, 0000012, 0116720, 0177474, 0105010, 0012767,
++    0000003, 0177466, 0000677, 0010400, 0062700, 0001410, 0112720, 0000012,
++    0116720, 0177444, 0112710, 0000001, 0012767, 0000003, 0177434, 0000662,
++    0004767, 0000124, 0001266, 0016701, 0177422, 0162701, 0000012, 0002661,
++    0004767, 0000156, 0103750, 0010203, 0062703, 0000006, 0060103, 0000415,
++    0004767, 0000064, 0001246, 0010203, 0062703, 0000002, 0112300, 0001405,
++    0112300, 0042700, 0177400, 0060003, 0000771, 0112300, 0042700, 0177400,
++    0112301, 0000301, 0105001, 0050100, 0010002, 0010501, 0012706, 0001000,
++    0012737, 0000340, 0177776, 0000112, 0116200, 0000001, 0042700, 0177400,
++    0001002, 0005067, 0177262, 0016701, 0177256, 0020001, 0001411, 0005301,
++    0042701, 0177400, 0020001, 0001003, 0000244, 0000261, 0000207, 0000241,
++    0000207, 0005762, 0000004, 0001022, 0016200, 0000002, 0010003, 0060103,
++    0103415, 0020304, 0101013, 0010203, 0062703, 0000006, 0010146, 0001403,
++    0112320, 0005301, 0001375, 0012601, 0000241, 0000207, 0000261, 0000207,
++    0010402, 0062702, 0001300, 0010203, 0112723, 0000220, 0016700, 0177132,
++    0052700, 0140000, 0110023, 0000300, 0110023, 0105023, 0105023, 0112723,
++    0000001, 0052765, 0000020, 0000004, 0012700, 0000626, 0004767, 0000102,
++    0012701, 0000006, 0112200, 0042700, 0177400, 0004767, 0000064, 0077106,
++    0012700, 0001000, 0004767, 0000052, 0010402, 0062702, 0001410, 0016701,
++    0177030, 0112200, 0042700, 0177400, 0004767, 0000026, 0077106, 0012700,
++    0001000, 0004767, 0000014, 0004767, 0000022, 0042765, 0000020, 0000004,
++    0000207, 0004767, 0000006, 0010065, 0000006, 0000207, 0105765, 0000004,
++    0100375, 0000207, 0010402, 0062702, 0001430, 0010203, 0012701, 0000010,
++    0004767, 0000144, 0103457, 0110023, 0077105, 0032767, 0010000, 0000176,
++    0001451, 0121227, 0000005, 0001446, 0116201, 0000001, 0042701, 0177400,
++    0116200, 0000002, 0000300, 0105000, 0050001, 0042701, 0140000, 0010167,
++    0176652, 0062701, 0000002, 0020127, 0016340, 0101020, 0004767, 0000050,
++    0103421, 0110023, 0077105, 0032767, 0010000, 0000102, 0001413, 0121227,
++    0000220, 0001010, 0062702, 0000010, 0000241, 0000207, 0004767, 0000010,
++    0103401, 0077104, 0000261, 0000207, 0010146, 0012701, 0165140, 0105765,
++    0000000, 0100404, 0077104, 0012601, 0000261, 0000207, 0016500, 0000002,
++    0010067, 0000012, 0042700, 0177400, 0012601, 0000241, 0000207, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000, 0000000, 0000000,
++    };
+diff --git a/PDP11/pdp11_dup_boot.mac b/PDP11/pdp11_dup_boot.mac
+new file mode 100644
+index 00000000..1568b300
+--- /dev/null
++++ b/PDP11/pdp11_dup_boot.mac
+@@ -0,0 +1,383 @@
++;
++; DUP11 down-line load bootstrap for SIMH's BOOT DUPn (PDP-11, Unibus).
++; Written for SIMH (2026-11-25).  The DUP11 has no boot logic of its own
++; (no microprocessor, no boot ROM on the board), so a down-line load needs
++; a primary loader in the host; this is one: a small MOP client that runs
++; on the PDP-11 and drives the DUP11 through its registers, doing the DDCMP
++; maintenance framing in software and letting the board generate and check
++; the CRCs (DEC mode, CRC not inhibited), as the real DUP11 does.  Not
++; derived from DEC code.  Design: docs/DUP11_boot_design.md.
++;
++; SIMH copies this program to the top of the low 56 KB of memory (the
++; 8 KB below 160000 or below the end of memory, whichever is lower; see
++; BOOTSZ), fills in the parameter words CSR, DEVT, PROGT and TICKS, and
++; starts it at its first word.  The program is position independent.
++;
++; What it does:
++;   1. device reset; PARCSR = DEC mode, CRC on, sync character 226;
++;      RXCSR = data terminal ready, request to send, receiver enable,
++;      strip sync;
++;   2. sends MOP Request Program (8, device type, format 1, program type)
++;      in a DDCMP maintenance message: TSOM with a sync character, the
++;      6 header bytes (DLE, count with QSYNC and SELECT, 0, 0, address 1),
++;      TEOM (the board sends the header CRC), the MOP message, TEOM (the
++;      board sends the data CRC), SEND off;
++;   3. receives byte by byte: 8 header bytes (the CRC is good when RXDBUF
++;      "RCRC ERR + ZERO" is set after the 8th byte: in DDCMP it means the
++;      CRC register is zero), then count + 2 bytes (the same check).  A
++;      DDCMP control message (ENQ) or data message (SOH), from a peer still
++;      running DDCMP, is read and ignored;
++;   4. takes the answers:
++;      Memory Load (code 2): store the data, answer Request Memory Load
++;        (code 10) with the next load number;
++;      Memory Load with Transfer Address (code 0) or Parameter Load with
++;        Transfer Address (code 20): store the data (code 0), then start;
++;      a load with the number of the previous load is answered again
++;      without storing; a load numbered 0 starts the load over; other
++;      messages are ignored;
++;   5. without an answer, sends the last message again after about 5 s
++;      (TICKS, set by SIMH from the simulated instruction rate); after 3
++;      repeats without an answer it starts over with Request Program;
++;   6. start: R1 = CSR, SP = 1000, priority 7, JMP to the transfer
++;      address.  The line stays set up (DEC's SECDUP sets it up again).
++; Loads must lie below this program (the low 56 KB, no memory management).
++;
++; Assemble: macro11 -o dupboot.obj -l dupboot.lst dupboot.mac
++; (tools/dmc_bootstrap/mkdmcboot.py turns the object file into the C
++; array of PDP11/pdp11_dup_boot.h).
++
++        .TITLE  DUPBOT  DUP11 MOP bootstrap for SIMH
++        .ASECT
++        .=0
++
++; DUP11 registers (relative to the CSR) and bits
++RXCSR   = 0
++RXDBUF  = 2                     ; read: received character and status
++PARCSR  = 2                     ; write: parameters
++TXCSR   = 4
++TXDBUF  = 6
++DTR     = 2                     ; RXCSR data terminal ready
++RTS     = 4                     ;       request to send
++RCVEN   = 20                    ;       receiver enable
++STRSYN  = 400                   ;       strip sync
++RXDONE  = 200                   ;       character received (bit 7)
++TXSND   = 20                    ; TXCSR send
++TXDONE  = 200                   ;       ready for the next character (bit 7)
++DRESET  = 400                   ;       device reset
++TSOM    = 400                   ; TXDBUF transmit start of message
++TEOM    = 1000                  ;        transmit end of message
++DECMOD  = 100000                ; PARCSR DEC mode (DDCMP)
++RCRCOK  = 10000                 ; RXDBUF bit 12: in DDCMP, CRC register zero
++
++; DDCMP
++SYN     = 226
++DLE     = 220                   ; maintenance message
++SOH     = 201                   ; data message
++ENQ     = 5                     ; control message
++QSYNSL  = 140000                ; count word: QSYNC and SELECT flags
++
++; MOP codes (decimal values in comments)
++M.MLT   = 0                     ; Memory Load with Transfer Address
++M.ML    = 2                     ; Memory Load
++M.RPG   = 10                    ; 8  Request Program
++M.RML   = 12                    ; 10 Request Memory Load
++M.PLT   = 24                    ; 20 Parameter Load with Transfer Address
++
++BOOTSZ  = 20000                 ; size of the whole area (8192 bytes)
++BYTTMO  = 60000.                ; polls for the next byte of a message
++
++; ---------------------------------------------------------------- parameters
++BOOT:   BR      START           ; 0: entry
++CSR:    .WORD   0               ; 2: the board's CSR (SIMH)
++DEVT:   .BYTE   0               ; 4: MOP device type (SIMH: 10, DUP11)
++PROGT:  .BYTE   0               ; 5: MOP program type (SET DUPn PROGRAM)
++TICKS:  .WORD   0               ; 6: wait loops of about 5 s (SIMH)
++
++; ---------------------------------------------------------------- variables
++NEXT:   .WORD   0               ; load number expected next (0-255)
++XLEN:   .WORD   0               ; length of the MOP message in XBUF
++RCNT:   .WORD   0               ; byte count of the received MOP message
++TCNT:   .WORD   0               ; wait loops left before a resend
++RETRY:  .WORD   0               ; repeats of the last message without an answer
++
++; ---------------------------------------------------------------- start
++START:  MOV     PC,R4           ; R4 = address of BOOT (position independent)
++        SUB     #START+2-BOOT,R4
++        MOV     R4,SP           ; own stack inside the area
++        ADD     #STKTOP-BOOT,SP
++        MOV     CSR,R5          ; R5 = CSR
++        MOV     #DRESET,TXCSR(R5)
++        MOV     #DECMOD+SYN,PARCSR(R5)
++        MOV     #DTR+RTS+RCVEN+STRSYN,RXCSR(R5)
++
++; Request Program: 8, device type, format version 1, program type
++REQPRG: CLR     NEXT            ; the load (again) from the start
++        MOV     R4,R0
++        ADD     #XBUF-BOOT,R0
++        MOVB    #M.RPG,(R0)+
++        MOVB    DEVT,(R0)+
++        MOVB    #1,(R0)+
++        MOVB    PROGT,(R0)+
++        MOV     #4,XLEN
++
++; send XBUF (SEND: a new message; SEND2: a repeat)
++SEND:   CLR     RETRY
++SEND2:  JSR     PC,XMIT
++        MOV     TICKS,TCNT
++
++; wait for a received message; resend after TCNT wait loops
++WAIT:   MOV     #10000.,R3      ; one wait loop: 10000 polls
++1$:     TSTB    RXCSR(R5)       ; RXDONE: a message begins
++        BMI     2$
++        SOB     R3,1$
++        DEC     TCNT
++        BNE     WAIT
++        INC     RETRY           ; no answer: send again, after 3 repeats
++        CMP     RETRY,#3        ;   start over
++        BLO     SEND2
++        BR      REQPRG
++2$:     JSR     PC,RCVMSG       ; R2 -> MOP message, RCNT; C: none for us
++        BCS     WAIT
++        MOVB    (R2),R0         ; MOP code
++        BIC     #177400,R0
++        CMP     R0,#M.ML
++        BEQ     ML
++        CMP     R0,#M.MLT
++        BEQ     MLT
++        CMP     R0,#M.PLT
++        BEQ     PLT
++        BR      WAIT            ; anything else: wait on
++
++; Memory Load: code, load number, address (4), data
++ML:     JSR     PC,CHKNUM       ; Z: the expected load, C: a repeated one
++        BCS     ACK
++        BNE     WAIT
++        MOV     RCNT,R1         ; data length = count - 6
++        SUB     #6,R1
++        BLT     WAIT
++        JSR     PC,STORE
++        BCS     LDERR
++        INCB    NEXT            ; next load number (0-255)
++ACK:    MOV     R4,R0           ; Request Memory Load: 10, number, 0
++        ADD     #XBUF-BOOT,R0
++        MOVB    #M.RML,(R0)+
++        MOVB    NEXT,(R0)+
++        CLRB    (R0)
++        MOV     #3,XLEN
++        BR      SEND
++LDERR:  MOV     R4,R0           ; not stored: ask again, error 1
++        ADD     #XBUF-BOOT,R0
++        MOVB    #M.RML,(R0)+
++        MOVB    NEXT,(R0)+
++        MOVB    #1,(R0)
++        MOV     #3,XLEN
++        BR      SEND
++
++; Memory Load with Transfer Address: code, number, address (4), data,
++; transfer address (4)
++MLT:    JSR     PC,CHKNUM
++        BNE     WAIT            ; (also a repeated one: it was started)
++        MOV     RCNT,R1         ; data length = count - 10
++        SUB     #10.,R1
++        BLT     WAIT
++        JSR     PC,STORE
++        BCS     LDERR
++        MOV     R2,R3           ; R3 -> transfer address
++        ADD     #6,R3
++        ADD     R1,R3
++        BR      GO
++
++; Parameter Load with Transfer Address: code, number, parameters (type,
++; length, value) up to a type 0, transfer address (4)
++PLT:    JSR     PC,CHKNUM
++        BNE     WAIT
++        MOV     R2,R3
++        ADD     #2,R3
++1$:     MOVB    (R3)+,R0        ; parameter type
++        BEQ     GO
++        MOVB    (R3)+,R0        ; its length
++        BIC     #177400,R0
++        ADD     R0,R3
++        BR      1$
++
++; start the loaded program; R3 -> transfer address (bytes, any alignment)
++GO:     MOVB    (R3)+,R0
++        BIC     #177400,R0
++        MOVB    (R3)+,R1
++        SWAB    R1
++        CLRB    R1
++        BIS     R1,R0
++        MOV     R0,R2           ; R2 = transfer address (low 16 bits)
++        MOV     R5,R1           ; R1 = CSR
++        MOV     #1000,SP
++        MOV     #340,@#177776   ; priority 7
++        JMP     (R2)            ; (macro11 v0.3 wrongly rejects JMP (R0))
++
++; ---------------------------------------------------------------- routines
++
++; CHKNUM: R2 -> message.  A load numbered 0 starts the load (over): NEXT
++; = 0.  Z set: its load number is NEXT; C set: it is NEXT-1 (a repeated
++; load); otherwise neither.
++CHKNUM: MOVB    1(R2),R0
++        BIC     #177400,R0
++        BNE     3$              ; load 0: the load starts (over)
++        CLR     NEXT
++3$:
++        MOV     NEXT,R1
++        CMP     R0,R1
++        BEQ     2$              ; Z set, C clear
++        DEC     R1
++        BIC     #177400,R1
++        CMP     R0,R1
++        BNE     1$
++        CLZ                     ; repeated: Z clear,
++        SEC                     ;   C set
++        RTS     PC
++1$:     CLC                     ; neither: Z clear, C clear
++2$:     RTS     PC
++
++; STORE: copy R1 data bytes from 6(R2) to the load address in 2(R2)-5(R2).
++; C set if the address is beyond 64 KB or the data would reach this
++; program.  R1, R2 kept.
++STORE:  TST     4(R2)           ; address bits 16-31 must be 0
++        BNE     2$
++        MOV     2(R2),R0        ; load address
++        MOV     R0,R3
++        ADD     R1,R3           ; end of the data
++        BCS     2$
++        CMP     R3,R4           ; must stay below this program
++        BHI     2$
++        MOV     R2,R3           ; R3 -> data
++        ADD     #6,R3
++        MOV     R1,-(SP)
++        BEQ     1$
++3$:     MOVB    (R3)+,(R0)+
++        DEC     R1
++        BNE     3$
++1$:     MOV     (SP)+,R1
++        CLC
++        RTS     PC
++2$:     SEC
++        RTS     PC
++
++; XMIT: send the MOP message in XBUF (XLEN bytes) as a DDCMP maintenance
++; message.  The board adds the header CRC at the first TEOM and the data
++; CRC at the second.  R0-R3 changed.
++XMIT:   MOV     R4,R2           ; header in HBUF: DLE, count + flags, 0, 0, 1
++        ADD     #HBUF-BOOT,R2
++        MOV     R2,R3
++        MOVB    #DLE,(R3)+
++        MOV     XLEN,R0
++        BIS     #QSYNSL,R0
++        MOVB    R0,(R3)+
++        SWAB    R0
++        MOVB    R0,(R3)+
++        CLRB    (R3)+
++        CLRB    (R3)+
++        MOVB    #1,(R3)+
++        BIS     #TXSND,TXCSR(R5) ; transmitter on
++        MOV     #TSOM+SYN,R0    ; start of message: a sync character
++        JSR     PC,TXCHR
++        MOV     #6,R1           ; the header
++1$:     MOVB    (R2)+,R0
++        BIC     #177400,R0
++        JSR     PC,TXCHR
++        SOB     R1,1$
++        MOV     #TEOM,R0        ; the header CRC
++        JSR     PC,TXCHR
++        MOV     R4,R2           ; the MOP message
++        ADD     #XBUF-BOOT,R2
++        MOV     XLEN,R1
++2$:     MOVB    (R2)+,R0
++        BIC     #177400,R0
++        JSR     PC,TXCHR
++        SOB     R1,2$
++        MOV     #TEOM,R0        ; the data CRC
++        JSR     PC,TXCHR
++        JSR     PC,TXWAIT       ; all sent:
++        BIC     #TXSND,TXCSR(R5) ;   transmitter off
++        RTS     PC
++
++; TXCHR: write R0 to TXDBUF when the transmitter is ready
++TXCHR:  JSR     PC,TXWAIT
++        MOV     R0,TXDBUF(R5)
++        RTS     PC
++TXWAIT: TSTB    TXCSR(R5)       ; TXDONE (bit 7)
++        BPL     TXWAIT
++        RTS     PC
++
++; RCVMSG: the first character of a message is in RXDBUF.  Reads the DDCMP
++; message: 8 header bytes, then for a data or maintenance message count + 2
++; bytes.  For a maintenance message with good CRCs that fits RBUF: C clear,
++; R2 -> the MOP message, RCNT = its length.  Otherwise (control or data
++; message, bad CRC, too long, a byte missing): C set.  R0-R3 changed.
++RCVMSG: MOV     R4,R2           ; R2 -> RBUF
++        ADD     #RBUF-BOOT,R2
++        MOV     R2,R3
++        MOV     #8.,R1          ; the header with its CRC
++1$:     JSR     PC,RXCHR
++        BCS     9$
++        MOVB    R0,(R3)+
++        SOB     R1,1$
++        BIT     #RCRCOK,RXWORD  ; header CRC
++        BEQ     9$
++        CMPB    (R2),#ENQ       ; control message: nothing more
++        BEQ     9$
++        MOVB    1(R2),R1        ; count (14 bits)
++        BIC     #177400,R1
++        MOVB    2(R2),R0
++        SWAB    R0
++        CLRB    R0
++        BIS     R0,R1
++        BIC     #140000,R1
++        MOV     R1,RCNT
++        ADD     #2,R1           ; data and its CRC
++        CMP     R1,#RBLEN-8.
++        BHI     5$              ; too long: read and drop it
++3$:     JSR     PC,RXCHR
++        BCS     9$
++        MOVB    R0,(R3)+
++        SOB     R1,3$
++        BIT     #RCRCOK,RXWORD  ; data CRC
++        BEQ     9$
++        CMPB    (R2),#DLE       ; a maintenance message is for us
++        BNE     9$
++        ADD     #8.,R2          ; R2 -> the MOP message
++        CLC
++        RTS     PC
++5$:     JSR     PC,RXCHR
++        BCS     9$
++        SOB     R1,5$
++9$:     SEC
++        RTS     PC
++
++; RXCHR: wait (at most BYTTMO polls) for a received character: R0 = the
++; character, RXWORD = the whole RXDBUF word; C set if none came.
++RXCHR:  MOV     R1,-(SP)
++        MOV     #BYTTMO,R1
++1$:     TSTB    RXCSR(R5)       ; RXDONE (bit 7)
++        BMI     2$
++        SOB     R1,1$
++        MOV     (SP)+,R1
++        SEC
++        RTS     PC
++2$:     MOV     RXDBUF(R5),R0
++        MOV     R0,RXWORD
++        BIC     #177400,R0
++        MOV     (SP)+,R1
++        CLC
++        RTS     PC
++
++; ---------------------------------------------------------------- data
++        .EVEN
++RXWORD: .WORD   0               ; the last RXDBUF word read
++HBUF:   .BLKW   4               ; DDCMP header to send
++STACK:  .BLKW   40              ; own stack (32 words)
++STKTOP:
++XBUF:   .BLKW   10              ; MOP message to send
++RBUF:                           ; receive buffer up to the end of the area
++RBEND   = BOOTSZ
++RBLEN   = RBEND-RBUF
++CODLEN  = RBUF-BOOT             ; what SIMH copies: up to the receive buffer
++
++        .END
+-- 
+2.43.0
+
+
+From c88d0e2b2c42654c3fcabcac15081952ce12ab84 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 22:20:46 +0100
+Subject: [PATCH 3/5] PDP11 DUP: no NULL dereference in the trace of an end of
+ message (known issue 125)
+
+Clearing SEND ends a message with dup_put_msg_bytes(dup, NULL, 0, ...);
+its DBG_TRC line printed *bytes and crashed with SET DUP DEBUG=TRC.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dup.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/PDP11/pdp11_dup.c b/PDP11/pdp11_dup.c
+index 103f2135..d9fde7a0 100644
+--- a/PDP11/pdp11_dup.c
++++ b/PDP11/pdp11_dup.c
+@@ -36,6 +36,8 @@
+    characters both initially and between DDCMP packets.
+ 
+    15-May-13    MP      Initial implementation
++   25-Nov-26    Ulli    Trace of the end of a message by clearing SEND: no NULL
++                        dereference (known issue 125)
+    25-Nov-26    Ulli    BOOT DUPn (PDP-11): a MOP bootstrap written for SIMH,
+                         SET DUPn PROGRAM, HELP DUP Booting
+    25-Nov-26    Ulli    DEC mode with CRC inhibit: no CRC appended, the message
+@@ -1307,7 +1309,7 @@ if (!tmxr_tpbusyln(&dup_ldsc[dup])) {  /* Not Busy sending? */
+     breturn = TRUE;
+     }
+ sim_debug (DBG_TRC, DUPDPTR, "dup_put_msg_bytes(dup=%d, len=%d, start=%s, end=%s, byte=0x%02hhx) %s\n", 
+-           dup, (int)len, start ? "TRUE" : "FALSE", end ? "TRUE" : "FALSE", *bytes, breturn ? "Good" : "Busy");
++           dup, (int)len, start ? "TRUE" : "FALSE", end ? "TRUE" : "FALSE", (bytes && len) ? *bytes : 0, breturn ? "Good" : "Busy");
+ if (breturn && (tmxr_tpbusyln (&dup_ldsc[dup]) || dup_xmtpkbytes[dup])) {
+     if (dup_xmt_complete_callback[dup])
+         dup_svc(dup_units+dup);
+-- 
+2.43.0
+
+
+From 9b216799424d92d06337906956ab5ccff4b361ea Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 22:53:04 +0100
+Subject: [PATCH 4/5] PDP11 DUP: a byte write to the TXDBUF character clears
+ TSOM/TEOM (known issue 126)
+
+DEC's DUP11 loaders start a message with a word write of TSOM and the
+SYN character and load every further character with MOVB.  SIMH merged
+the byte with the old high byte, so TSOM stayed set, every character
+began the message anew and nothing was sent: the secondary loader never
+asked for the tertiary one.  A low-byte write to TXDBUF now loads the
+character with the control bits clear.  SET DUP DEBUG=DATA shows the
+packet contents (with PKT).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dup.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/PDP11/pdp11_dup.c b/PDP11/pdp11_dup.c
+index d9fde7a0..11b49734 100644
+--- a/PDP11/pdp11_dup.c
++++ b/PDP11/pdp11_dup.c
+@@ -36,6 +36,8 @@
+    characters both initially and between DDCMP packets.
+ 
+    15-May-13    MP      Initial implementation
++   25-Nov-26    Ulli    A byte write to the TXDBUF data byte clears TSOM, TEOM
++                        (DEC's DUP11 loaders; known issue 126); DEBUG=DATA
+    25-Nov-26    Ulli    Trace of the end of a message by clearing SEND: no NULL
+                         dereference (known issue 125)
+    25-Nov-26    Ulli    BOOT DUPn (PDP-11): a MOP bootstrap written for SIMH,
+@@ -676,6 +678,7 @@ static MTAB dpv_mod[] = {
+ #define DBG_CON  TMXR_DBG_CON                           /* display connection activities */
+ #define DBG_TRC  TMXR_DBG_TRC                           /* display trace routine calls */
+ #define DBG_ASY  TMXR_DBG_ASY                           /* display Asynchronous Activities */
++#define DBG_DAT  DDCMP_DBG_PDAT                         /* display packet data (with PKT) */
+ 
+ static DEBTAB dup_debug[] = {
+   {"REG",    DBG_REG},
+@@ -687,6 +690,7 @@ static DEBTAB dup_debug[] = {
+   {"CON",    DBG_CON},
+   {"TRC",    DBG_TRC},
+   {"ASY",    DBG_ASY},
++  {"DATA",   DBG_DAT},
+   {0}
+ };
+ 
+@@ -817,8 +821,12 @@ orig_val = regs[(PA >> 1) & 03][dup];
+ if (PA & 1)
+     data = ((data << 8) | (orig_val & 0xFF)) & 0xFFFF;  /* Merge with original word */
+ else
+-    if (access == WRITEB)                               /* byte access? */
+-        data = (orig_val & 0xFF00) | (data & 0xFF);     /* Merge with original high word */
++    if (access == WRITEB) {                             /* byte access? */
++        if (UNIBUS && (((PA >> 1) & 03) == 03))         /* DUP11 TXDBUF: a new character */
++            data = data & 0xFF;                         /*   without TSOM, TEOM, ... (known issue 126) */
++        else
++            data = (orig_val & 0xFF00) | (data & 0xFF); /* Merge with original high word */
++        }
+ 
+ switch ((PA >> 1) & 03) {                               /* case on PA<2:1> */
+ 
+-- 
+2.43.0
+
+
+From 4e0d553e12c26b5d72aa46f3561c8e5ac761d058 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 23:06:52 +0100
+Subject: [PATCH 5/5] PDP11 CPU: HELP BOOT mentions BOOT DUPn
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_cpu.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/PDP11/pdp11_cpu.c b/PDP11/pdp11_cpu.c
+index a4c9c43e..c140f9e2 100644
+--- a/PDP11/pdp11_cpu.c
++++ b/PDP11/pdp11_cpu.c
+@@ -3751,8 +3751,9 @@ fprintf (st, "BOOT DMCn start a MOP bootstrap written for SIMH in place of a DEC
+ fprintf (st, "ROM (DEC's 'XE' for the DEUNA/DELUA, 'XM' for the DMC11/DMR11); those\n");
+ fprintf (st, "ROMs still work when attached to a ROM unit (HELP XU, HELP DMC).  A host\n");
+ fprintf (st, "can also start a DMC11 or DMR11 by remote load detect, into a boot ROM or\n");
+-fprintf (st, "the board's own load (HELP DMC).  For the details of a device's bootstrap\n");
+-fprintf (st, "see HELP <dev>.\n\n");
++fprintf (st, "the board's own load (HELP DMC).  BOOT DUPn starts such a bootstrap for\n");
++fprintf (st, "the Unibus DUP11, which has no boot logic of its own (HELP DUP).  For the\n");
++fprintf (st, "details of a device's bootstrap see HELP <dev>.\n\n");
+ return SCPE_OK;
+ }
+ 
+-- 
+2.43.0
+
