@@ -1,4 +1,4 @@
-<!-- open-simh-extended/docs/DUP11_boot_design.md  v2, 2026-11-25 (v2: facts from DEC's SECDUP.SYS (MOP device type 10, software CRC with CRC inhibit), a likely SIMH gap for that mode (known issue 124), decisions for Ulli; v1: design only, Ulli: "Design only now"; the build follows when the weekly limit allows) -->
+<!-- open-simh-extended/docs/DUP11_boot_design.md  v3, 2026-11-25 (v3: Ulli: model the DUP11 as the real hardware; the manual on CRC generation and CRC inhibit; D1, D2, 124 settled; v2: facts from DEC's SECDUP.SYS (MOP device type 10, software CRC with CRC inhibit), a likely SIMH gap for that mode (known issue 124), decisions for Ulli; v1: design only, Ulli: "Design only now"; the build follows when the weekly limit allows) -->
 # DUP11: BOOT DUPn (design)
 
 Ulli asked (2026-11-25) to make the DUP11 bootable on Unibus PDP-11s. With
@@ -97,7 +97,18 @@ for the tertiary. Facts from its code (our own reading, no DEC text):
   SEND. It does not use TEOM. On receive it reads the bytes and checks both
   CRCs itself.
 
-### 1.5 Consequence for SIMH (known issue 124, not tested yet)
+### 1.5 The real DUP11's CRC (User's Manual, TXCSR SEND/TEOM, our summary)
+
+- In DEC mode with CRC **not** inhibited, the board computes the CRC-16
+  over the characters it sends and, at the end of a message (TEOM with SEND
+  cleared in the same character time), sends the CRC check character
+  automatically after the last character; on receive it checks the CRC.
+- With **CRC inhibit** set, no CRC is generated: the character being sent
+  when the message ends is the last one on the line. A program then has to
+  compute and send the CRCs itself, which is what SECDUP does.
+- So both ways are real hardware behaviour; SIMH models only the first.
+
+### 1.6 Consequence for SIMH (known issue 124, not tested yet)
 
 SIMH's DUP does not look at PARCSR CRC inhibit: in DEC mode it appends its
 own CRC when the message ends (TEOM, or SEND cleared) and strips only the
@@ -171,9 +182,9 @@ it. The program is the PDP-11 side of a primary loader:
 |---|---|
 | MOP device type for a DUP11 | **10** (from DEC's SECDUP.SYS, section 1.4) |
 | MOP messages a DUP11 loader handles | Memory Load (2), Parameter Load with Transfer Address (20), Request Memory Load (10); our MOP part (from BOOT DMCn) also takes Memory Load with Transfer Address (0) |
-| D1: how the bootstrap frames messages | (a) the board's CRC (works with SIMH's DUP now) or (b) DEC's way with CRC inhibit (needs 124). Proposal: (a) for the bootstrap, and fix 124 so DEC's SECDUP works too |
-| D2: default program type | SECONDARY (VMS sends SECDUP.SYS, then TERDUP.SYS, then the system: the real chain; needs 124) or SYSTEM (VMS sends the LOAD FILE at once; works without 124). Proposal: SECONDARY as default, as on the DMC, once 124 is fixed |
-| Known issue 124 (SIMH DUP ignores CRC inhibit) | To be tested first (a SECDUP message over a DUP line to a VAX DMC11), then fixed if needed: with CRC inhibit SIMH sends the bytes as written, finds the message end from the DDCMP header count, and drops the trailing sync characters |
+| D1: how the bootstrap frames messages | **Settled (Ulli: model the real hardware):** the bootstrap uses the board's CRC generation (TSOM ... TEOM, a feature of the real DUP11); SIMH's DUP is made to follow the manual for CRC inhibit too (124), so DEC's own SECDUP works as on a real DUP11 |
+| D2: default program type | **SECONDARY** (as BOOT DMCn; VMS then sends the real chain SECDUP.SYS, TERDUP.SYS, the system); SET DUPn PROGRAM=SYSTEM loads the LOAD FILE at once. Claude's choice, not asked again (Ulli: stop asking); can be changed |
+| Known issue 124 (SIMH DUP ignores CRC inhibit) | **Test and fix** (first step of the build): with CRC inhibit SIMH appends no CRC and sends the bytes as written, taking the message end from the DDCMP header count (the trailing sync characters, line fill on a real line, are dropped); receive delivers the CRC bytes as now |
 | DPV11 (Qbus) too | Ulli asked for the Unibus; the DPV11's registers differ slightly (TBEMPTY, protocol select); possible later (DEC's SECDPV asks with device type 36) |
 | Sharing the MOP part with pdp11_dmc_boot.mac | One source with two link layers (conditional assembly) or two files; decide when building |
 | DUP11 modem control in SIMH | SECDUP waits for CTS and DSR after raising DTR and RTS; check that SIMH's DUP gives them on a connected line (W3/W5/W6 options) |
