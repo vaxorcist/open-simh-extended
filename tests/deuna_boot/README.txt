@@ -1,4 +1,4 @@
-open-simh-extended/tests/deuna_boot/README.txt  v5 (2026-11-23; v5: B10-B12, SIMH's BOOT XU and HELP XU Booting (patch 23 v2); v4: B9 with remwrt.tsk as LOAD FILE: VMS loads it and remwrt runs; v3: B9 with a real RSX-11S image (LOADFILE=, PDPMEM=): loaded completely; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
+open-simh-extended/tests/deuna_boot/README.txt  v6 (2026-11-25; v6: B13, vmshost_xq.sh: a PDP-11/83 boots over a DEQNA/DELQA/DELQA-T from VMS V4.7 (known issue 122); v5: B10-B12, SIMH's BOOT XU and HELP XU Booting (patch 23 v2); v4: B9 with remwrt.tsk as LOAD FILE: VMS loads it and remwrt runs; v3: B9 with a real RSX-11S image (LOADFILE=, PDPMEM=): loaded completely; v2: B9, VMS V4.7 as the load host: vmshost.sh, mknettest.py, mktap.py)
 
 DEUNA/DELUA BOOT port command (SIMH XU device, patch 23, known issue 109)
 =========================================================================
@@ -38,7 +38,7 @@ B10 SIMH's BOOT XU: the built-in bootstrap gives BOOT; as B2 otherwise
 B11 BOOT XU without an attached network ("Unit not attached") and BOOT
     XU1 ("Unit disabled"): refused by SIMH
 B12 HELP XU BOOTING and its subtopics Sequence and Limits
-(B9 is vmshost.sh, below.)
+(B9 is vmshost.sh, B13 vmshost_xq.sh, below.)
 
 Files that are not in the repository (DEC firmware/software, Ulli's copies):
   m9312_248F1.bin, m9312_xe.bin   built as ../m9312_roms/README.txt says
@@ -102,3 +102,17 @@ NETTEST.SYS); the PDP-11 boots with XE0.  State 2026-11-22:
   cannot be used on this 11/34.  So a VMS load host also loads an RSX
   task image (task label plus image) through the DEUNA, unlike the
   task-labelled test file of mknettest.py v4.
+
+B13: VMS V4.7 as the load host of a PDP-11/83 that boots over its XQ
+(TYPE=DEQNA|DELQA|DELQA-T [SVCDEV=QNA|NONE] vmshost_xq.sh BINDIR DISK).
+  The VAX (DEUNA, circuit UNA-0) gets SECQNA.SYS and TERQNA.SYS from a
+  tape and BRUSYS.SYS (Ulli's RSX-11M standalone BRU) from brusys.rl01
+  (RL01, ODS-1); the PDP-11/83 runs SIMH's BOOT XQ (patch 27).  Needs here,
+  not in the repository: SECQNA.SYS, TERQNA.SYS (DECnet-11M V4.2 DECKIT
+  [136,54]), brusys.rl01.
+  Results (2026-11-25): DEQNA PASS (TERQNA, then BRUSYS.SYS; BRU's
+  banner "RSX-11M/RSX-11M-PLUS STANDALONE COPY SYSTEM"); DELQA FAIL: VMS
+  answers the request with an assistance volunteer, then aborts on the
+  DELQA's direct request with "Line open error, Line communication error":
+  the DELQA's boot ROM gives MOP device type 37 (DELQA-T 75), which VMS
+  V4.7 does not know (known issue 122; not a SIMH bug).
