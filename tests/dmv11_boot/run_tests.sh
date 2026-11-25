@@ -1,8 +1,9 @@
 #!/bin/bash
-# open-simh-extended/tests/dmv11_boot/run_tests.sh  v9 (v9: R8-R10, SIMH's BOOT DMCn MOP bootstrap (patch 24): DMC11 with a repeated request, DMR11 with PROGRAM=TERTIARY and 64 KB, refusals and help; v8: R6, R7 boot through DEC's M9312 'XM' DECnet ROM (DMR11, DMC11; image m9312_xm.bin, see README.txt; SKIP without it); v7: DMC11 tests R4, R5, R3 checks the DMC11's switch packs (known issue 99); v6: DMP11 tests P1-P4, DMR11 tests R1-R3; common_check.ini gets the unit; v5: checks 774-776 instead of 400-402 (start trap at SP 1000); v4: T5 BOOT refusals, T6 switch mode and address with the host interface; v3: also 400-402; v2: mopctl.py connects to the ATTACH port)
+# open-simh-extended/tests/dmv11_boot/run_tests.sh  v10 (v10: D1-D3, BOOT DUPn on the DUP11 (patch 28): secondary loader with a repeated request, PROGRAM=SYSTEM with 64 KB, refusals and help; v9: R8-R10, SIMH's BOOT DMCn MOP bootstrap (patch 24): DMC11 with a repeated request, DMR11 with PROGRAM=TERTIARY and 64 KB, refusals and help; v8: R6, R7 boot through DEC's M9312 'XM' DECnet ROM (DMR11, DMC11; image m9312_xm.bin, see README.txt; SKIP without it); v7: DMC11 tests R4, R5, R3 checks the DMC11's switch packs (known issue 99); v6: DMP11 tests P1-P4, DMR11 tests R1-R3; common_check.ini gets the unit; v5: checks 774-776 instead of 400-402 (start trap at SP 1000); v4: T5 BOOT refusals, T6 switch mode and address with the host interface; v3: also 400-402; v2: mopctl.py connects to the ATTACH port)
 # Runs the boot tests of the DMV11 (T1-T6), DMP11 (P1-P4), DMR11 (R1-R3) and
 # DMC11 (R4, R5), and through DEC's M9312 DECnet boot ROM (R6 DMR11, R7 DMC11);
-# SIMH's BOOT DMCn bootstrap (R8 DMC11, R9 DMR11, R10 refusals and help).
+# SIMH's BOOT DMCn bootstrap (R8 DMC11, R9 DMR11, R10 refusals and help) and
+# BOOT DUPn bootstrap (D1, D2 DUP11, D3 refusals and help).
 # For a load test the MOP control station (mopctl.py) is started in the
 # background, then the PDP-11 simulator with the test's ini file.  A load
 # test passes when mopctl.py reports PASS, the console shows the program's
@@ -11,9 +12,9 @@
 # T5, P4 and R3 check refusals (messages), T6 the DMV11 mode and tributary
 # address switches with the host interface (debug log), R2 the DMR11's
 # restart into a boot ROM, R5 the DMC11's (offset in words).
-# usage: run_tests.sh BIN/pdp11 [T1 ... T6 P1 ... P4 R1 ... R10]
+# usage: run_tests.sh BIN/pdp11 [T1 ... T6 P1 ... P4 R1 ... R10 D1 ... D3]
 BIN=$1; shift
-TESTS=${*:-T1 T2 T3 T4 T5 T6 P1 P2 P3 P4 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10}
+TESTS=${*:-T1 T2 T3 T4 T5 T6 P1 P2 P3 P4 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 D1 D2 D3}
 cd "$(dirname "$0")"
 fail=0
 
@@ -31,9 +32,9 @@ result () {     # result TEST OK
 }
 
 for t in $TESTS; do
-    ini=$(echo $t | tr TPR tpr).ini
+    ini=$(echo $t | tr TPRD tprd).ini
     case $t in
-    T5|P4|R3|R10)                           # refusals: messages only
+    T5|P4|R3|R10|D3)                        # refusals: messages only
         SDL_AUDIODRIVER=dummy timeout 30 "$BIN" $ini < /dev/null > $t.out 2>&1
         case $t in
         T5) msgs=("power-on boot switch (E101 SW4) is off" "needs the station mode set by the mode switches"
@@ -41,6 +42,7 @@ for t in $TESTS; do
         P4) msgs=("power-on boot switch (E121 SW10) is off" "SET DMPn MODE"
                   "control station is not booted" "Unit number for booting must be 0-15"
                   "SW1-4  unit number          15" "SW10   power-on boot        ON:  enabled");;
+        D3) msgs=("Unit not attached" "Invalid argument" "program=TERTIARY" "Booting" "SECDUP.SYS" "D3 END");;
         R3) msgs=("PASSWORD=377" "BOOTOFFSET=377" "377 octal words: boot address 173776"
                   "010 octal words: boot address 173020" "switch pack no. 2 (register 15"
                   "The value must be octal 0-377" "BOOTOFFSET=356");;
@@ -78,6 +80,8 @@ for t in $TESTS; do
         R5) port=21124; opts="--trigger 83 --dmrpw --noload";;
         R8) port=21127; opts="--listen --ignorefirst --mingap 1.0 --devtype 12"; text="DMC BOOT OK";;
         R9) port=21128; opts="--listen --devtype 40 --progtype 1"; text="DMR BOOT OK";;
+        D1) port=21131; opts="--listen --ignorefirst --mingap 1.0 --devtype 10"; text="DUP BOOT OK";;
+        D2) port=21132; opts="--listen --devtype 10 --progtype 2"; text="DUP BOOT OK";;
         R6|R7)                              # DEC's M9312 'XM' ROM (not in the repository)
             if [ ! -f m9312_xm.bin ]; then echo "$t SKIP (no m9312_xm.bin, see README.txt)"; continue; fi
             port=$([ $t = R6 ] && echo 21125 || echo 21126)
@@ -102,6 +106,9 @@ for t in $TESTS; do
     else
         if [ $t = R8 -o $t = R9 ]; then       # BOOT DMCn: start registers at the breakpoint
             grep_all $t.out "Breakpoint, PC: 001000" "R1:	160070" "SP:	001000" || ok=0
+        fi
+        if [ $t = D1 -o $t = D2 ]; then       # BOOT DUPn: start registers at the breakpoint
+            grep_all $t.out "Breakpoint, PC: 001000" "R1:	160050" "SP:	001000" || ok=0
         fi
         grep -q "$text" $t.out || ok=0
         grep -q "HALT instruction, PC: 001032" $t.out || ok=0

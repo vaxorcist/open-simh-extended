@@ -1,9 +1,9 @@
-open-simh-extended/tests/dmv11_boot/README.txt  v7 (2026-11-23; v7: R8-R10, SIMH's BOOT DMCn bootstrap (patch 24); mopctl.py v11 --listen, --progtype, --mingap; .gitignore; v6: mopctl.py --rom also without --trigger (tests/m9312_roms); v5: R6, R7 boot through DEC's M9312 'XM' DECnet ROM; v4: DMC11 tests R4, R5, R3 for the DMC11's switch packs; v3: DMP11 tests P1-P4 and DMR11 tests R1-R3 (patch 21); v2: the start trap words are at 774-776)
+open-simh-extended/tests/dmv11_boot/README.txt  v8 (2026-11-25; v8: D1-D3, SIMH's BOOT DUPn bootstrap for the DUP11 (patch 28); v7: R8-R10, SIMH's BOOT DMCn bootstrap (patch 24); mopctl.py v11 --listen, --progtype, --mingap; .gitignore; v6: mopctl.py --rom also without --trigger (tests/m9312_roms); v5: R6, R7 boot through DEC's M9312 'XM' DECnet ROM; v4: DMC11 tests R4, R5, R3 for the DMC11's switch packs; v3: DMP11 tests P1-P4 and DMR11 tests R1-R3 (patch 21); v2: the start trap words are at 774-776)
 
 DMV11, DMP11, DMR11 and DMC11 switch packs and boot (patches 18 and 21, PDP-11
 simulator).
 
-run_tests.sh BIN/pdp11 [T1 ... R10]  runs all tests (about 3 minutes); prints
+run_tests.sh BIN/pdp11 [T1 ... D3]  runs all tests (about 3 minutes); prints
                                      "PASS" or "FAIL" per test.
 
 mopctl.py   a minimal DDCMP/MOP control station in Python: connects to the
@@ -83,6 +83,13 @@ R9  BOOT DMC0 on a DMR11 with PROGRAM=TERTIARY and 64 KB: Request Program
     8,40,1,1; "DMR BOOT OK".
 R10 BOOT DMCn refusals (not attached, no such unit), HELP DMC BOOTING
     (BOOT command) and HELP BOOT.
+D1  BOOT DUP0 on a DUP11 (patch 28): SIMH's MOP bootstrap at 140000 uses
+    the board in DEC mode with its own CRC and asks with Request Program
+    8,10,1,0; the first is not answered (repeated after about 5 s); three
+    loads; at the start R1 = CSR 160050 and SP = 1000; "DUP BOOT OK".
+D2  BOOT DUP0 with PROGRAM=SYSTEM and 64 KB: Request Program 8,10,1,2.
+D3  BOOT DUPn refusals (not attached, no such unit), SET DUP0 PROGRAM
+    with a wrong value, SHOW DUP0 PROGRAM, HELP DUP BOOTING.
 
 R6 and R7 need the ROM image m9312_xm.bin in this directory (DEC firmware,
 not in the repository; run_tests.sh says SKIP without it).  Build it from
