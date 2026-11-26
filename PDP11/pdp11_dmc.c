@@ -36,6 +36,8 @@
                   with BOOT DMVn, invoke primary MOP) on the PDP-11
   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
                   request); a sent DDCMP maintenance message completes at once
+  26-Nov-26  Ulli DMP/DMV: a maintenance message received in Run, ISTRT or
+                  ASTRT is reported with 012, not 014 (known issue 128)
   26-Nov-26  Ulli Booting: an Enter MOP Mode from the load host is answered
                   with Request Program at once, also before the first poll
                   of a multipoint tributary (known issue 127)
@@ -744,6 +746,9 @@ typedef struct {
     uint8 nak_reason;       /*  */
     uint8 nak_crc_reason;   /* CRC status for current received packet */
     DDCMP_LinkState state;  /* Current State */
+    DDCMP_LinkState rule_state; /* State the rule being executed fired in
+                               (its actions may change state, e.g.
+                               ResetVariables sets Halt) */
     t_bool TimerRunning;    /* Timer Running Flag */
     t_bool TimeRemaining;   /* Seconds remaining before timeout (when timer running) */
     t_bool Scanning;        /* Event Scanning in progress */
@@ -4102,8 +4107,9 @@ if (slot >= 0)
 
 /* Link events the shared DDCMP engine reports with DMC control-out bits,
    translated to the DMV11 output codes of Table 3-7.  The engine calls this
-   from the rule's actions, before the link state changes, so
-   controller->link.state is still the state the event happened in.
+   from the rule's actions; the state the event happened in is
+   controller->link.rule_state (an earlier action of the same rule,
+   ResetVariables, may already have set link.state to Halt: known issue 128).
      DISCONN   line/DSR dropped (rule 19)        -> 304, global (BSEL3 = 0)
      STRTRCVD  STRT received in Run (rule 20)    -> 010, tributary halted
                (rule 19 also reports STRTRCVD after a disconnect: the 304
@@ -4131,7 +4137,7 @@ if ((dmc_sel6 & DMC_SEL6_M_STRTRCVD) && !ddcmp_LineDisconnected(controller)) {
     dmp_return_buffers(controller, station);    /* Table 3-8 case 1 */
     }
 if (dmc_sel6 & DMC_SEL6_M_MAINTRCV) {
-    t_bool was_halted = (controller->link.state == Halt);
+    t_bool was_halted = (controller->link.rule_state == Halt);
 
     dmp_control_response(controller, station, was_halted ? DMP_RSP_MAINT_HALT : DMP_RSP_MAINT_RUN);
     dmp_session_halted(controller, 2);
@@ -5823,6 +5829,7 @@ for (table=DDCMP_TABLE; table->Conditions[0] != NULL; ++table) {
         ++matched;
         sim_debug (DBG_INF, controller->device, "%s%d: ddcmp_dispatch(%X) - %s conditions matching for rule %2d(%s)%s,\n"
                                                 "                                           initiating actions (%s)\n", controller->device->name, controller->index, EventMask, states[table->State], table->RuleNumber, ddcmp_conditions(table->Conditions), ddcmp_link_state(&controller->link), ddcmp_actions(table->Actions));
+        controller->link.rule_state = controller->link.state;
         while (*action != NULL) {
             (*action)(controller);
             ++action;
