@@ -1,0 +1,169 @@
+From 42a7fca29550f7dfa26bdd64f410f256617f05d9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 10:01:45 +0100
+Subject: [PATCH 1/3] PDP11 DMV/DMP/DMR boot: answer Enter MOP Mode at once
+ (known issue 127)
+
+A board that is booting ignored an Enter MOP Mode from the load host.  As
+a multipoint tributary it only began after a DDCMP poll, so NCP LOAD
+NODE from a VMS control station timed out (Line communication error).
+An Enter MOP Mode for the station now counts as the poll before the
+first request and makes an outstanding Request Program go out at once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dmc.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index 219a3f2a..3806041e 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -36,6 +36,9 @@
+                   with BOOT DMVn, invoke primary MOP) on the PDP-11
+   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
+                   request); a sent DDCMP maintenance message completes at once
++  26-Nov-26  Ulli Booting: an Enter MOP Mode from the load host is answered
++                  with Request Program at once, also before the first poll
++                  of a multipoint tributary (known issue 127)
+   23-Nov-26  Ulli DMC11/DMR11: BOOT DMCn with a built-in MOP bootstrap
+                   (pdp11_dmc_boot.mac) in place of a DECnet boot ROM
+   25-Jan-13  RJ   Error checking for already attached in dmc_settype() fixed.
+@@ -7094,7 +7097,18 @@ switch (mop[0]) {
+         xfer = dmv_le32 (mop + i + 1);      /* the parameters are not used */
+         transfer = TRUE;
+         break;
+-    case DMV_MOP_ENTER:                     /* again: the request is on its way */
++    case DMV_MOP_ENTER:                     /* the load host starts the load */
++        /* An Enter MOP Mode for this station selects it (multipoint: it
++           comes with the select flag) and asks for the program: the first
++           Request Program goes out now, before any DDCMP poll, and an
++           outstanding one is sent again at once (known issue 127). */
++        if (controller->dmv_boot.state == DMVB_POLLWAIT) {
++            sim_debug(DBG_INF, controller->device, "%s%d: Boot: Enter MOP Mode received before the first poll\n",
++                      controller->device->name, controller->index);
++            dmv_boot_request_program (controller);
++            }
++        else if ((controller->dmv_boot.state == DMVB_REQUEST) && controller->dmv_boot.last_len)
++            dmv_boot_send (controller, controller->dmv_boot.last, controller->dmv_boot.last_len);
+         return;
+     default:
+         sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message %d ignored\n",
+-- 
+2.43.0
+
+
+From 2b9dc703e02ec31fe1964c36c09bd61a3337c964 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 14:38:33 +0100
+Subject: [PATCH 2/3] PDP11 DUP: HELP DUP Booting gives the other end in ATTACH
+
+The example used SET DUP0 PEER=, which the DUP device does not have.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dup.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/PDP11/pdp11_dup.c b/PDP11/pdp11_dup.c
+index 11b49734..572160a1 100644
+--- a/PDP11/pdp11_dup.c
++++ b/PDP11/pdp11_dup.c
+@@ -36,6 +36,7 @@
+    characters both initially and between DDCMP packets.
+ 
+    15-May-13    MP      Initial implementation
++   26-Nov-26    Ulli    HELP DUP Booting: the other end is given in ATTACH
+    25-Nov-26    Ulli    A byte write to the TXDBUF data byte clears TSOM, TEOM
+                         (DEC's DUP11 loaders; known issue 126); DEBUG=DATA
+    25-Nov-26    Ulli    Trace of the end of a message by clearing SEND: no NULL
+@@ -2222,8 +2223,7 @@ const char helpString[] =
+     " provides one, a MOP bootstrap written for SIMH:\n"
+     "\n"
+     "+sim> SET DUP ENABLE\n"
+-    "+sim> SET DUP0 PEER=loadhost:port\n"
+-    "+sim> ATTACH DUP0 port\n"
++    "+sim> ATTACH DUP0 port,CONNECT=loadhost:port\n"
+     "+sim> BOOT DUP0\n"
+     "\n"
+     " It sets the line up for DDCMP, sends MOP Request Program (device type\n"
+-- 
+2.43.0
+
+
+From c3ce60e251027851c6c3c3d33d691a939e1938b4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 17:50:33 +0100
+Subject: [PATCH 3/3] PDP11 DMP/DMV: maintenance message while starting or
+ running reported as 012 (known issue 128)
+
+The DDCMP rules for a maintenance message in Run, ISTRT and ASTRT run
+ResetVariables (state Halt) before NotifyMaintRcvd, so the DMP/DMV
+translation always reported 014 (received while halted) instead of 012
+(now in maintenance state, buffers returned).  VMS then never served a
+Request Program the PDP-11 sent on its own (BOOT DMVn).  The dispatcher
+keeps the state a rule fired in and the translation uses it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dmc.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index 3806041e..26af2503 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -36,6 +36,8 @@
+                   with BOOT DMVn, invoke primary MOP) on the PDP-11
+   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
+                   request); a sent DDCMP maintenance message completes at once
++  26-Nov-26  Ulli DMP/DMV: a maintenance message received in Run, ISTRT or
++                  ASTRT is reported with 012, not 014 (known issue 128)
+   26-Nov-26  Ulli Booting: an Enter MOP Mode from the load host is answered
+                   with Request Program at once, also before the first poll
+                   of a multipoint tributary (known issue 127)
+@@ -744,6 +746,9 @@ typedef struct {
+     uint8 nak_reason;       /*  */
+     uint8 nak_crc_reason;   /* CRC status for current received packet */
+     DDCMP_LinkState state;  /* Current State */
++    DDCMP_LinkState rule_state; /* State the rule being executed fired in
++                               (its actions may change state, e.g.
++                               ResetVariables sets Halt) */
+     t_bool TimerRunning;    /* Timer Running Flag */
+     t_bool TimeRemaining;   /* Seconds remaining before timeout (when timer running) */
+     t_bool Scanning;        /* Event Scanning in progress */
+@@ -4102,8 +4107,9 @@ if (slot >= 0)
+ 
+ /* Link events the shared DDCMP engine reports with DMC control-out bits,
+    translated to the DMV11 output codes of Table 3-7.  The engine calls this
+-   from the rule's actions, before the link state changes, so
+-   controller->link.state is still the state the event happened in.
++   from the rule's actions; the state the event happened in is
++   controller->link.rule_state (an earlier action of the same rule,
++   ResetVariables, may already have set link.state to Halt: known issue 128).
+      DISCONN   line/DSR dropped (rule 19)        -> 304, global (BSEL3 = 0)
+      STRTRCVD  STRT received in Run (rule 20)    -> 010, tributary halted
+                (rule 19 also reports STRTRCVD after a disconnect: the 304
+@@ -4131,7 +4137,7 @@ if ((dmc_sel6 & DMC_SEL6_M_STRTRCVD) && !ddcmp_LineDisconnected(controller)) {
+     dmp_return_buffers(controller, station);    /* Table 3-8 case 1 */
+     }
+ if (dmc_sel6 & DMC_SEL6_M_MAINTRCV) {
+-    t_bool was_halted = (controller->link.state == Halt);
++    t_bool was_halted = (controller->link.rule_state == Halt);
+ 
+     dmp_control_response(controller, station, was_halted ? DMP_RSP_MAINT_HALT : DMP_RSP_MAINT_RUN);
+     dmp_session_halted(controller, 2);
+@@ -5823,6 +5829,7 @@ for (table=DDCMP_TABLE; table->Conditions[0] != NULL; ++table) {
+         ++matched;
+         sim_debug (DBG_INF, controller->device, "%s%d: ddcmp_dispatch(%X) - %s conditions matching for rule %2d(%s)%s,\n"
+                                                 "                                           initiating actions (%s)\n", controller->device->name, controller->index, EventMask, states[table->State], table->RuleNumber, ddcmp_conditions(table->Conditions), ddcmp_link_state(&controller->link), ddcmp_actions(table->Actions));
++        controller->link.rule_state = controller->link.state;
+         while (*action != NULL) {
+             (*action)(controller);
+             ++action;
+-- 
+2.43.0
+
