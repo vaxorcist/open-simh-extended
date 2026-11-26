@@ -36,6 +36,9 @@
                   with BOOT DMVn, invoke primary MOP) on the PDP-11
   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
                   request); a sent DDCMP maintenance message completes at once
+  26-Nov-26  Ulli Booting: an Enter MOP Mode from the load host is answered
+                  with Request Program at once, also before the first poll
+                  of a multipoint tributary (known issue 127)
   23-Nov-26  Ulli DMC11/DMR11: BOOT DMCn with a built-in MOP bootstrap
                   (pdp11_dmc_boot.mac) in place of a DECnet boot ROM
   25-Jan-13  RJ   Error checking for already attached in dmc_settype() fixed.
@@ -7094,7 +7097,18 @@ switch (mop[0]) {
         xfer = dmv_le32 (mop + i + 1);      /* the parameters are not used */
         transfer = TRUE;
         break;
-    case DMV_MOP_ENTER:                     /* again: the request is on its way */
+    case DMV_MOP_ENTER:                     /* the load host starts the load */
+        /* An Enter MOP Mode for this station selects it (multipoint: it
+           comes with the select flag) and asks for the program: the first
+           Request Program goes out now, before any DDCMP poll, and an
+           outstanding one is sent again at once (known issue 127). */
+        if (controller->dmv_boot.state == DMVB_POLLWAIT) {
+            sim_debug(DBG_INF, controller->device, "%s%d: Boot: Enter MOP Mode received before the first poll\n",
+                      controller->device->name, controller->index);
+            dmv_boot_request_program (controller);
+            }
+        else if ((controller->dmv_boot.state == DMVB_REQUEST) && controller->dmv_boot.last_len)
+            dmv_boot_send (controller, controller->dmv_boot.last, controller->dmv_boot.last_len);
         return;
     default:
         sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message %d ignored\n",
