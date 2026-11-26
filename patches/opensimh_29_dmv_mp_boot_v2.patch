@@ -1,0 +1,94 @@
+From 42a7fca29550f7dfa26bdd64f410f256617f05d9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 10:01:45 +0100
+Subject: [PATCH 1/2] PDP11 DMV/DMP/DMR boot: answer Enter MOP Mode at once
+ (known issue 127)
+
+A board that is booting ignored an Enter MOP Mode from the load host.  As
+a multipoint tributary it only began after a DDCMP poll, so NCP LOAD
+NODE from a VMS control station timed out (Line communication error).
+An Enter MOP Mode for the station now counts as the poll before the
+first request and makes an outstanding Request Program go out at once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dmc.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index 219a3f2a..3806041e 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -36,6 +36,9 @@
+                   with BOOT DMVn, invoke primary MOP) on the PDP-11
+   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
+                   request); a sent DDCMP maintenance message completes at once
++  26-Nov-26  Ulli Booting: an Enter MOP Mode from the load host is answered
++                  with Request Program at once, also before the first poll
++                  of a multipoint tributary (known issue 127)
+   23-Nov-26  Ulli DMC11/DMR11: BOOT DMCn with a built-in MOP bootstrap
+                   (pdp11_dmc_boot.mac) in place of a DECnet boot ROM
+   25-Jan-13  RJ   Error checking for already attached in dmc_settype() fixed.
+@@ -7094,7 +7097,18 @@ switch (mop[0]) {
+         xfer = dmv_le32 (mop + i + 1);      /* the parameters are not used */
+         transfer = TRUE;
+         break;
+-    case DMV_MOP_ENTER:                     /* again: the request is on its way */
++    case DMV_MOP_ENTER:                     /* the load host starts the load */
++        /* An Enter MOP Mode for this station selects it (multipoint: it
++           comes with the select flag) and asks for the program: the first
++           Request Program goes out now, before any DDCMP poll, and an
++           outstanding one is sent again at once (known issue 127). */
++        if (controller->dmv_boot.state == DMVB_POLLWAIT) {
++            sim_debug(DBG_INF, controller->device, "%s%d: Boot: Enter MOP Mode received before the first poll\n",
++                      controller->device->name, controller->index);
++            dmv_boot_request_program (controller);
++            }
++        else if ((controller->dmv_boot.state == DMVB_REQUEST) && controller->dmv_boot.last_len)
++            dmv_boot_send (controller, controller->dmv_boot.last, controller->dmv_boot.last_len);
+         return;
+     default:
+         sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message %d ignored\n",
+-- 
+2.43.0
+
+
+From 2b9dc703e02ec31fe1964c36c09bd61a3337c964 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 14:38:33 +0100
+Subject: [PATCH 2/2] PDP11 DUP: HELP DUP Booting gives the other end in ATTACH
+
+The example used SET DUP0 PEER=, which the DUP device does not have.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dup.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/PDP11/pdp11_dup.c b/PDP11/pdp11_dup.c
+index 11b49734..572160a1 100644
+--- a/PDP11/pdp11_dup.c
++++ b/PDP11/pdp11_dup.c
+@@ -36,6 +36,7 @@
+    characters both initially and between DDCMP packets.
+ 
+    15-May-13    MP      Initial implementation
++   26-Nov-26    Ulli    HELP DUP Booting: the other end is given in ATTACH
+    25-Nov-26    Ulli    A byte write to the TXDBUF data byte clears TSOM, TEOM
+                         (DEC's DUP11 loaders; known issue 126); DEBUG=DATA
+    25-Nov-26    Ulli    Trace of the end of a message by clearing SEND: no NULL
+@@ -2222,8 +2223,7 @@ const char helpString[] =
+     " provides one, a MOP bootstrap written for SIMH:\n"
+     "\n"
+     "+sim> SET DUP ENABLE\n"
+-    "+sim> SET DUP0 PEER=loadhost:port\n"
+-    "+sim> ATTACH DUP0 port\n"
++    "+sim> ATTACH DUP0 port,CONNECT=loadhost:port\n"
+     "+sim> BOOT DUP0\n"
+     "\n"
+     " It sets the line up for DDCMP, sends MOP Request Program (device type\n"
+-- 
+2.43.0
+
