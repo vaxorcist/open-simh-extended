@@ -36,6 +36,7 @@
    characters both initially and between DDCMP packets.
 
    15-May-13    MP      Initial implementation
+   26-Nov-26    Ulli    HELP DUP Booting: the other end is given in ATTACH
    25-Nov-26    Ulli    A byte write to the TXDBUF data byte clears TSOM, TEOM
                         (DEC's DUP11 loaders; known issue 126); DEBUG=DATA
    25-Nov-26    Ulli    Trace of the end of a message by clearing SEND: no NULL
@@ -2222,8 +2223,7 @@ const char helpString[] =
     " provides one, a MOP bootstrap written for SIMH:\n"
     "\n"
     "+sim> SET DUP ENABLE\n"
-    "+sim> SET DUP0 PEER=loadhost:port\n"
-    "+sim> ATTACH DUP0 port\n"
+    "+sim> ATTACH DUP0 port,CONNECT=loadhost:port\n"
     "+sim> BOOT DUP0\n"
     "\n"
     " It sets the line up for DDCMP, sends MOP Request Program (device type\n"
