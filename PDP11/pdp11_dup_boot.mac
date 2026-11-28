@@ -82,6 +82,9 @@ M.ML    = 2                     ; Memory Load
 M.RPG   = 10                    ; 8  Request Program
 M.RML   = 12                    ; 10 Request Memory Load
 M.PLT   = 24                    ; 20 Parameter Load with Transfer Address
+M.EMM   =       6               ; Enter MOP Mode
+M.RUN   =       12.             ; code 12, sent by VMS when it has switched
+                                ;   the circuit to maintenance
 
 BOOTSZ  = 20000                 ; size of the whole area (8192 bytes)
 BYTTMO  = 60000.                ; polls for the next byte of a message
@@ -146,6 +149,11 @@ WAIT:   MOV     #10000.,R3      ; one wait loop: 10000 polls
         BEQ     MLT
         CMP     R0,#M.PLT
         BEQ     PLT
+        CMP     R0,#M.EMM       ; Enter MOP Mode (NCP LOAD NODE), or
+        BEQ     SEND2
+        CMP     R0,#M.RUN       ;   VMS's code 12 after it switched the
+        BEQ     SEND2           ;   circuit to maintenance: the load host
+                                ;   waits for us, repeat at once
         BR      WAIT            ; anything else: wait on
 
 ; Memory Load: code, load number, address (4), data
