@@ -1,0 +1,278 @@
+From 1b34c21d331a8fdad15e37aa6063dc366f4eacb7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 17:57:30 +0100
+Subject: [PATCH 1/2] DMC/DMP/DMV, DMF32, DMB32: SET ... NOPEER clears the peer
+ (known issue 131)
+
+A PEER, once set, could not be cleared: SET <unit> PEER= with no value is
+refused.  New commands, each only while the unit is detached:
+  SET DMCn NOPEER, SET DMPn NOPEER, SET DMVn NOPEER
+  SET DMF NOPEER / SET DMF-SYNC NOPEER
+  SET DMB-SYNC NOPEER
+combo_sync_clear_peer() serves the DMF32 and DMB32.  HELP texts updated.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dmc.c   | 27 +++++++++++++++++++++++++++
+ VAX/vax_combo_lib.c | 14 ++++++++++++++
+ VAX/vax_combo_lib.h |  1 +
+ VAX/vax_dmb.c       | 13 +++++++++++++
+ VAX/vax_dmf.c       | 10 ++++++++++
+ 5 files changed, 65 insertions(+)
+
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index 26af2503..85a8a01a 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -30,6 +30,8 @@
+ 
+   Modification history:
+ 
++  28-Nov-26  Ulli SET DMCn/DMPn/DMVn NOPEER clears the peer address
++                  (known issue 131)
+   20-Nov-26  Ulli DMV11: switch packs E101/E113 (SET DMVn MODE, TRIBUTARY,
+                   BOOTUNIT, POWERONBOOT, REMOTELOAD; SHOW DMVn SWITCHES) and
+                   the primary MOP boot (remote load detect, power-on boot
+@@ -1283,6 +1285,7 @@ int32 dmc_outinta (void);
+ t_stat dmc_setnumdevices (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+ t_stat dmc_shownumdevices (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+ t_stat dmc_setpeer (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
++t_stat dmc_setnopeer (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
+ t_stat dmc_showpeer (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
+ t_stat dmc_setspeed (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
+ t_stat dmc_showspeed (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
+@@ -1678,6 +1681,8 @@ MTAB dmc_mod[] = {
+         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmc_dev, "Display number of devices" },
+     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
+         &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
++    { MTAB_XTD|MTAB_VUN,          0, NULL, "NOPEER",
++        &dmc_setnopeer, NULL, NULL, "Clear the peer address (only while detached)" },
+     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
+         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
+     { MTAB_XTD|MTAB_VUN,          0, "MICRODIAG", "MICRODIAG={ENABLE,DISABLE}" ,
+@@ -1720,6 +1725,8 @@ MTAB dmp_mod[] = {
+         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmp_dev, "Display number of devices" },
+     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
+         &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
++    { MTAB_XTD|MTAB_VUN,          0, NULL, "NOPEER",
++        &dmc_setnopeer, NULL, NULL, "Clear the peer address (only while detached)" },
+     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
+         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
+     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
+@@ -1747,6 +1754,8 @@ MTAB dmv_mod[] = {
+         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmv_dev, "Display number of devices" },
+     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
+         &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
++    { MTAB_XTD|MTAB_VUN,          0, NULL, "NOPEER",
++        &dmc_setnopeer, NULL, NULL, "Clear the peer address (only while detached)" },
+     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
+         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
+     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
+@@ -1894,6 +1903,23 @@ strncpy(peer, cptr, PEERSIZE-1);
+ return SCPE_OK;
+ }
+ 
++/* SET <unit> NOPEER: forget the peer address, so that the next ATTACH
++   only listens (a DMP/DMV control station or listening point-to-point
++   station).  Like PEER=, only while the unit is detached. */
++t_stat dmc_setnopeer (UNIT* uptr, int32 val, CONST char* cptr, void* desc)
++{
++DEVICE *dptr = (UNIBUS) ? ((&dmc_dev == find_dev_from_unit(uptr)) ? &dmc_dev : &dmp_dev) : &dmv_dev;
++int32 dmc = (int32)(uptr-dptr->units);
++char *peer = ((dptr == &dmc_dev)? &dmc_peer[dmc][0] : &dmp_peer[dmc][0]);
++
++if ((cptr) && (*cptr))                  /* NOPEER takes no value */
++    return SCPE_ARG;
++if (dmc_is_attached(uptr))
++    return SCPE_ALATT;
++memset (peer, 0, PEERSIZE);
++return SCPE_OK;
++}
++
+ t_stat dmc_showspeed (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
+ {
+ DEVICE *dptr = (UNIBUS) ? ((&dmc_dev == find_dev_from_unit(uptr)) ? &dmc_dev : &dmp_dev) : &dmv_dev;
+@@ -2510,6 +2536,7 @@ const char helpMid[] =
+     " A DMC11 or DMR11 needs its PEER (host:port) set before the ATTACH command.\n"
+     " A DMP11 or DMV11 attached without a PEER listens for the other station(s)\n"
+     " (see Multipoint).\n"
++    " SET %U NOPEER clears the peer address again (only while detached).\n"
+     " The default connection uses TCP transport between the local system and\n"
+     " the peer.  Alternatively, UDP can be used by specifying UDP on the\n"
+     " ATTACH command:\n"
+diff --git a/VAX/vax_combo_lib.c b/VAX/vax_combo_lib.c
+index d96777cf..8c0cd60c 100644
+--- a/VAX/vax_combo_lib.c
++++ b/VAX/vax_combo_lib.c
+@@ -28,6 +28,8 @@
+ 
+    Modification history:
+ 
++   28-Nov-26    Ulli/Claude  combo_sync_clear_peer (SET ... NOPEER,
++                             known issue 131)
+    17-Nov-26    Ulli/Claude  Synchronous line link and DDCMP framing (from
+                              vax_dmf.c), for the DMB32 sync line
+    15-Nov-26    Ulli/Claude  First version: printer formatter (from vax_dmf.c)
+@@ -200,6 +202,18 @@ strlcpy (cs->peer, cptr, sizeof (cs->peer));
+ return SCPE_OK;
+ }
+ 
++/* SET <unit> NOPEER: forget the peer, so that the next ATTACH only
++   listens (only while not attached, like PEER=) */
++t_stat combo_sync_clear_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr)
++{
++if ((cptr != NULL) && (*cptr != 0))     /* NOPEER takes no value */
++    return SCPE_ARG;
++if (uptr->flags & UNIT_ATT)
++    return SCPE_ALATT;
++memset (cs->peer, 0, sizeof (cs->peer));
++return SCPE_OK;
++}
++
+ t_stat combo_sync_show_peer (FILE *st, COMBO_SYNC *cs)
+ {
+ fprintf (st, "peer=%s", cs->peer[0] ? cs->peer : "unspecified");
+diff --git a/VAX/vax_combo_lib.h b/VAX/vax_combo_lib.h
+index a66ab89f..7d9c02a0 100644
+--- a/VAX/vax_combo_lib.h
++++ b/VAX/vax_combo_lib.h
+@@ -124,6 +124,7 @@ struct combo_sync {
+ 
+ void combo_sync_setup (COMBO_SYNC *cs, DEVICE *dptr, UNIT *uptr, uint32 dbg);
+ t_stat combo_sync_set_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
++t_stat combo_sync_clear_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
+ t_stat combo_sync_show_peer (FILE *st, COMBO_SYNC *cs);
+ t_stat combo_sync_attach (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
+ t_stat combo_sync_detach (COMBO_SYNC *cs, UNIT *uptr);
+diff --git a/VAX/vax_dmb.c b/VAX/vax_dmb.c
+index e55e0def..f5a42e13 100644
+--- a/VAX/vax_dmb.c
++++ b/VAX/vax_dmb.c
+@@ -59,6 +59,7 @@
+ 
+    Modification history:
+ 
++   28-Nov-26    Ulli/Claude  SET DMB-SYNC NOPEER (known issue 131)
+    17-Nov-26    Ulli/Claude  Synchronous line (DDCMP), with the link and
+                              framing of vax_combo_lib.c (VMS V5.5 SIDRIVER)
+    15-Nov-26    Ulli/Claude  First version (BI node, self-test, async lines)
+@@ -458,6 +459,7 @@ static void dmb_async_init (t_bool power);
+ static void dmb_sync_init (void);
+ static t_stat dmb_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+ static t_stat dmb_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static t_stat dmb_set_nopeer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+ static void dmb_lp_init (void);
+ static void dmb_transmit (int32 ln);
+ 
+@@ -533,6 +535,8 @@ MTAB dmb_mod[] = {
+         NULL, &tmxr_show_cstat, (void *) &dmb_desc, "Display multiplexer statistics" },
+     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "PEER", "PEER=address:port",
+         &dmb_set_peer, &dmb_show_peer, NULL, "Peer of the synchronous line (DMB-SYNC)" },
++    { MTAB_XTD|MTAB_VUN, 0, NULL, "NOPEER",
++        &dmb_set_nopeer, NULL, NULL, "Clear the peer of the synchronous line (only while detached)" },
+     { 0 }
+     };
+ 
+@@ -1457,6 +1461,14 @@ if (uptr != DMB_SYNC_UNIT)
+ return combo_sync_set_peer (&dmb_sl, uptr, cptr);
+ }
+ 
++/* SET DMB-SYNC NOPEER (known issue 131) */
++static t_stat dmb_set_nopeer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++if (uptr != DMB_SYNC_UNIT)
++    return SCPE_NOFNC;
++return combo_sync_clear_peer (&dmb_sl, uptr, cptr);
++}
++
+ static t_stat dmb_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ {
+ if (uptr != DMB_SYNC_UNIT)
+@@ -1977,6 +1989,7 @@ fprintf (st, "another simulator, as for the DMC and DMF-SYNC.  Listen on a port
+ fprintf (st, "connect to the peer's port:\n\n");
+ fprintf (st, "   sim> SET DMB-SYNC PEER=localhost:4001\n");
+ fprintf (st, "   sim> ATTACH DMB-SYNC 4000\n\n");
++fprintf (st, "SET DMB-SYNC NOPEER clears the peer again (only while detached).\n");
+ fprintf (st, "The peer does the same with the ports swapped.  While connected the\n");
+ fprintf (st, "modem signals (DSR, DCD, CTS, clocks) are on.  Only DDCMP is supported;\n");
+ fprintf (st, "a buffer for another protocol ends with a buffer error.\n\n");
+diff --git a/VAX/vax_dmf.c b/VAX/vax_dmf.c
+index 59a5373a..b9e459ea 100644
+--- a/VAX/vax_dmf.c
++++ b/VAX/vax_dmf.c
+@@ -337,6 +337,7 @@ static t_stat dmf_sync_attach (UNIT *uptr, CONST char *cptr);
+ static t_stat dmf_sync_detach (UNIT *uptr);
+ static t_stat dmf_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+ static t_stat dmf_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
++static t_stat dmf_set_nopeer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+ static int32 dmf_ack_dra (void);
+ static int32 dmf_ack_drb (void);
+ t_stat dmf_dr_svc (UNIT *uptr);
+@@ -442,6 +443,8 @@ MTAB dmf_mod[] = {
+        with the device (SHOW DMF, SHOW DMF PEER) */
+     { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_VALR, 0, NULL, "PEER=address:port",
+         &dmf_set_peer, NULL, NULL, "Synchronous line: the peer to connect to" },
++    { MTAB_XTD|MTAB_VDV|MTAB_VUN, 0, NULL, "NOPEER",
++        &dmf_set_nopeer, NULL, NULL, "Synchronous line: clear the peer (only while detached)" },
+     { MTAB_XTD|MTAB_VDV, 0, "PEER", NULL,
+         NULL, &dmf_show_peer, NULL, "Synchronous line: the peer" },
+     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 020, "ADDRESS", "ADDRESS",
+@@ -1678,6 +1681,12 @@ static t_stat dmf_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+ return combo_sync_set_peer (&dmf_sl, DMF_SYNC_UNIT, cptr);
+ }
+ 
++/* SET DMF NOPEER, SET DMF-SYNC NOPEER (known issue 131) */
++static t_stat dmf_set_nopeer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
++{
++return combo_sync_clear_peer (&dmf_sl, DMF_SYNC_UNIT, cptr);
++}
++
+ static t_stat dmf_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+ {
+ return combo_sync_show_peer (st, &dmf_sl);
+@@ -2506,6 +2515,7 @@ fprintf (st, "Synchronous line: DMF-SYNC is a TCP connection to the peer system.
+ fprintf (st, "peer's address and port, then attach the local port the peer connects to:\n\n");
+ fprintf (st, "   sim> SET DMF-SYNC PEER=host:port\n");
+ fprintf (st, "   sim> ATTACH DMF-SYNC port\n\n");
++fprintf (st, "SET DMF-SYNC NOPEER clears the peer again (only while detached).\n");
+ fprintf (st, "Without a PEER the line only listens.  In DDCMP mode (as used by DECnet,\n");
+ fprintf (st, "VMS line DMF-0) the connection carries standard DDCMP frames, so the peer\n");
+ fprintf (st, "can be another DMF32 or a DMC11, DMR11, DMP11 or DMV11 emulation.  HDLC/SDLC\n");
+-- 
+2.43.0
+
+
+From 917a99162b94a068d784a04b5a723edd54d3aebe Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 21:56:10 +0100
+Subject: [PATCH 2/2] DMC/DMP/DMV: HELP Configuration Set Peer names SET <unit>
+ NOPEER (known issue 131)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dmc.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index 85a8a01a..0feff510 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -2366,6 +2366,13 @@ const char helpString[] =
+     " following command:\n"
+     "\n"
+     "+sim> SET %U PEER=host:port\n"
++    "\n"
++    " To clear the peer again (only while the unit is detached):\n"
++    "\n"
++    "+sim> SET %U NOPEER\n"
++    "\n"
++    " A DMP11 or DMV11 without a peer only listens for the other station(s);\n"
++    " a DMC11 or DMR11 needs a peer to be attached.\n"
+     "3 Connectpoll\n"
+     " The minimum interval between attempts to connect to the other side is set\n"
+     " using the following command:\n"
+-- 
+2.43.0
+
