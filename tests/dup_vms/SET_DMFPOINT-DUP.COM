@@ -1,9 +1,13 @@
-$! open-simh-extended/tests/dup_vms/SET_DMFPOINT-DUP.COM  v1
+$! open-simh-extended/tests/dup_vms/SET_DMFPOINT-DUP.COM  v2
 $!
 $! DECnet set-up of a VAX with a DMF32 synchronous line (SIMH unit
 $! DMF-SYNC, VMS line and circuit DMF-0) as the load host of PDP-11 node
 $! PDPNET (1.20) with a DUP11 (BOOT DUP0), point-to-point. Made from
 $! Ulli's SET_DMPPOINT-DUP.COM.
+$!
+$! v2: does NOT work: no down-line load over the DMF32 (Ulli's test,
+$! 2026-11-28; he remembers the manual saying it cannot). Kept for DECnet
+$! set-ups without loading.
 $!
 $  SET VER
 $!
