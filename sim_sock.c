@@ -23,6 +23,10 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   28-Nov-26    Claude  Listening sockets always get SO_REUSEADDR, except on
+                        Windows: a port can be listened on again at once after
+                        a simulator with connections on it exited (before
+                        only with -U on both the old and the new listener)
    15-Oct-12    MP      Added definitions needed to detect possible tcp 
                         connect failures
    25-Sep-12    MP      Reworked for RFC3493 interfaces supporting IPv6 and IPv4
@@ -1072,6 +1076,15 @@ if (preferred->ai_family == AF_INET6) {
     int off = 0;
     sta = setsockopt (newsock, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&off, sizeof(off));
     }
+#endif
+#if !defined (_WIN32)
+/* On POSIX systems SO_REUSEADDR only lets a listener bind while earlier
+   connections on the port are still shutting down (TIME_WAIT, FIN_WAIT2);
+   it never allows two listeners on the same address and port.  Linux
+   honours it only when the old sockets had it as well, so it is set on
+   every listening socket, not only with -U.  On Windows SO_REUSEADDR
+   would let a second program share a port in use: there it stays -U. */
+opt_flags |= SIM_SOCK_OPT_REUSEADDR;
 #endif
 if (opt_flags & SIM_SOCK_OPT_REUSEADDR) {
     int on = 1;
