@@ -26,6 +26,8 @@
    Based on the original DZ11 simulator by Thord Nilson, as updated by
    Arthur Krewat.
 
+   28-Nov-26    Claude  HELP: -U is needed on Windows only (listening ports
+                        are always reusable elsewhere, see sim_sock.c)
    23-Nov-26    Claude  Per line listener: an incoming connection that the
                         peer has already closed is discarded and the next one
                         is tried at once (connection attempts the peer gave up
@@ -4968,9 +4970,10 @@ if (single_line) {          /* Single Line Multiplexer */
     fprintf (st, "or network block in CIDR form.  Rules are interpreted in order and if,\n");
     fprintf (st, "while processing the list, the end is reached the connection will be\n");
     fprintf (st, "rejected.\n\n");
-    fprintf (st, "The -U switch can be specified on the attach command that specifies\n");
-    fprintf (st, "a listening port.  This will allow a listening port to be reused if\n");
-    fprintf (st, "some prior connections haven't completely shutdown.\n\n");
+    fprintf (st, "A listening port can be attached again at once, even while connections\n");
+    fprintf (st, "of a simulator that used it before have not completely shut down.  On\n");
+    fprintf (st, "Windows this needs the -U switch on the attach command that specifies\n");
+    fprintf (st, "the listening port.\n\n");
     fprintf (st, "Line buffering can be enabled for the %s device with:\n\n", dptr->name);
     fprintf (st, "   sim> ATTACH %s Buffer{=bufsize}\n\n", dptr->name);
     fprintf (st, "Line buffering can be disabled for the %s device with:\n\n", dptr->name);
@@ -4997,9 +5000,10 @@ else {
     fprintf (st, "   sim> ATTACH %s Line=n,NoModem\n\n", dptr->name);
     fprintf (st, "A Telnet listening port can be configured with:\n\n");
     fprintf (st, "   sim> ATTACH %s {interface:}port\n\n", dptr->name);
-    fprintf (st, "The -U switch can be specified on the attach command that specifies\n");
-    fprintf (st, "a listening port.  This will allow a listening port to be reused if\n");
-    fprintf (st, "some prior connections haven't completely shutdown.\n\n");
+    fprintf (st, "A listening port can be attached again at once, even while connections\n");
+    fprintf (st, "of a simulator that used it before have not completely shut down.  On\n");
+    fprintf (st, "Windows this needs the -U switch on the attach command that specifies\n");
+    fprintf (st, "the listening port.\n\n");
     if (mux)
         fprintf (st, "Line buffering for all %d lines on the %s device can be configured with:\n\n", mux->lines, dptr->name);
     else
