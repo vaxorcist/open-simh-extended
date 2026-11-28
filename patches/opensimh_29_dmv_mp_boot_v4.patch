@@ -1,0 +1,335 @@
+From 42a7fca29550f7dfa26bdd64f410f256617f05d9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 10:01:45 +0100
+Subject: [PATCH 1/4] PDP11 DMV/DMP/DMR boot: answer Enter MOP Mode at once
+ (known issue 127)
+
+A board that is booting ignored an Enter MOP Mode from the load host.  As
+a multipoint tributary it only began after a DDCMP poll, so NCP LOAD
+NODE from a VMS control station timed out (Line communication error).
+An Enter MOP Mode for the station now counts as the poll before the
+first request and makes an outstanding Request Program go out at once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dmc.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index 219a3f2a..3806041e 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -36,6 +36,9 @@
+                   with BOOT DMVn, invoke primary MOP) on the PDP-11
+   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
+                   request); a sent DDCMP maintenance message completes at once
++  26-Nov-26  Ulli Booting: an Enter MOP Mode from the load host is answered
++                  with Request Program at once, also before the first poll
++                  of a multipoint tributary (known issue 127)
+   23-Nov-26  Ulli DMC11/DMR11: BOOT DMCn with a built-in MOP bootstrap
+                   (pdp11_dmc_boot.mac) in place of a DECnet boot ROM
+   25-Jan-13  RJ   Error checking for already attached in dmc_settype() fixed.
+@@ -7094,7 +7097,18 @@ switch (mop[0]) {
+         xfer = dmv_le32 (mop + i + 1);      /* the parameters are not used */
+         transfer = TRUE;
+         break;
+-    case DMV_MOP_ENTER:                     /* again: the request is on its way */
++    case DMV_MOP_ENTER:                     /* the load host starts the load */
++        /* An Enter MOP Mode for this station selects it (multipoint: it
++           comes with the select flag) and asks for the program: the first
++           Request Program goes out now, before any DDCMP poll, and an
++           outstanding one is sent again at once (known issue 127). */
++        if (controller->dmv_boot.state == DMVB_POLLWAIT) {
++            sim_debug(DBG_INF, controller->device, "%s%d: Boot: Enter MOP Mode received before the first poll\n",
++                      controller->device->name, controller->index);
++            dmv_boot_request_program (controller);
++            }
++        else if ((controller->dmv_boot.state == DMVB_REQUEST) && controller->dmv_boot.last_len)
++            dmv_boot_send (controller, controller->dmv_boot.last, controller->dmv_boot.last_len);
+         return;
+     default:
+         sim_debug(DBG_INF, controller->device, "%s%d: Boot: MOP message %d ignored\n",
+-- 
+2.43.0
+
+
+From 2b9dc703e02ec31fe1964c36c09bd61a3337c964 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 14:38:33 +0100
+Subject: [PATCH 2/4] PDP11 DUP: HELP DUP Booting gives the other end in ATTACH
+
+The example used SET DUP0 PEER=, which the DUP device does not have.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dup.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/PDP11/pdp11_dup.c b/PDP11/pdp11_dup.c
+index 11b49734..572160a1 100644
+--- a/PDP11/pdp11_dup.c
++++ b/PDP11/pdp11_dup.c
+@@ -36,6 +36,7 @@
+    characters both initially and between DDCMP packets.
+ 
+    15-May-13    MP      Initial implementation
++   26-Nov-26    Ulli    HELP DUP Booting: the other end is given in ATTACH
+    25-Nov-26    Ulli    A byte write to the TXDBUF data byte clears TSOM, TEOM
+                         (DEC's DUP11 loaders; known issue 126); DEBUG=DATA
+    25-Nov-26    Ulli    Trace of the end of a message by clearing SEND: no NULL
+@@ -2222,8 +2223,7 @@ const char helpString[] =
+     " provides one, a MOP bootstrap written for SIMH:\n"
+     "\n"
+     "+sim> SET DUP ENABLE\n"
+-    "+sim> SET DUP0 PEER=loadhost:port\n"
+-    "+sim> ATTACH DUP0 port\n"
++    "+sim> ATTACH DUP0 port,CONNECT=loadhost:port\n"
+     "+sim> BOOT DUP0\n"
+     "\n"
+     " It sets the line up for DDCMP, sends MOP Request Program (device type\n"
+-- 
+2.43.0
+
+
+From c3ce60e251027851c6c3c3d33d691a939e1938b4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 17:50:33 +0100
+Subject: [PATCH 3/4] PDP11 DMP/DMV: maintenance message while starting or
+ running reported as 012 (known issue 128)
+
+The DDCMP rules for a maintenance message in Run, ISTRT and ASTRT run
+ResetVariables (state Halt) before NotifyMaintRcvd, so the DMP/DMV
+translation always reported 014 (received while halted) instead of 012
+(now in maintenance state, buffers returned).  VMS then never served a
+Request Program the PDP-11 sent on its own (BOOT DMVn).  The dispatcher
+keeps the state a rule fired in and the translation uses it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dmc.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/PDP11/pdp11_dmc.c b/PDP11/pdp11_dmc.c
+index 3806041e..26af2503 100644
+--- a/PDP11/pdp11_dmc.c
++++ b/PDP11/pdp11_dmc.c
+@@ -36,6 +36,8 @@
+                   with BOOT DMVn, invoke primary MOP) on the PDP-11
+   21-Nov-26  Ulli DMV11: SET DMVn PROGRAM= (MOP program type of the boot
+                   request); a sent DDCMP maintenance message completes at once
++  26-Nov-26  Ulli DMP/DMV: a maintenance message received in Run, ISTRT or
++                  ASTRT is reported with 012, not 014 (known issue 128)
+   26-Nov-26  Ulli Booting: an Enter MOP Mode from the load host is answered
+                   with Request Program at once, also before the first poll
+                   of a multipoint tributary (known issue 127)
+@@ -744,6 +746,9 @@ typedef struct {
+     uint8 nak_reason;       /*  */
+     uint8 nak_crc_reason;   /* CRC status for current received packet */
+     DDCMP_LinkState state;  /* Current State */
++    DDCMP_LinkState rule_state; /* State the rule being executed fired in
++                               (its actions may change state, e.g.
++                               ResetVariables sets Halt) */
+     t_bool TimerRunning;    /* Timer Running Flag */
+     t_bool TimeRemaining;   /* Seconds remaining before timeout (when timer running) */
+     t_bool Scanning;        /* Event Scanning in progress */
+@@ -4102,8 +4107,9 @@ if (slot >= 0)
+ 
+ /* Link events the shared DDCMP engine reports with DMC control-out bits,
+    translated to the DMV11 output codes of Table 3-7.  The engine calls this
+-   from the rule's actions, before the link state changes, so
+-   controller->link.state is still the state the event happened in.
++   from the rule's actions; the state the event happened in is
++   controller->link.rule_state (an earlier action of the same rule,
++   ResetVariables, may already have set link.state to Halt: known issue 128).
+      DISCONN   line/DSR dropped (rule 19)        -> 304, global (BSEL3 = 0)
+      STRTRCVD  STRT received in Run (rule 20)    -> 010, tributary halted
+                (rule 19 also reports STRTRCVD after a disconnect: the 304
+@@ -4131,7 +4137,7 @@ if ((dmc_sel6 & DMC_SEL6_M_STRTRCVD) && !ddcmp_LineDisconnected(controller)) {
+     dmp_return_buffers(controller, station);    /* Table 3-8 case 1 */
+     }
+ if (dmc_sel6 & DMC_SEL6_M_MAINTRCV) {
+-    t_bool was_halted = (controller->link.state == Halt);
++    t_bool was_halted = (controller->link.rule_state == Halt);
+ 
+     dmp_control_response(controller, station, was_halted ? DMP_RSP_MAINT_HALT : DMP_RSP_MAINT_RUN);
+     dmp_session_halted(controller, 2);
+@@ -5823,6 +5829,7 @@ for (table=DDCMP_TABLE; table->Conditions[0] != NULL; ++table) {
+         ++matched;
+         sim_debug (DBG_INF, controller->device, "%s%d: ddcmp_dispatch(%X) - %s conditions matching for rule %2d(%s)%s,\n"
+                                                 "                                           initiating actions (%s)\n", controller->device->name, controller->index, EventMask, states[table->State], table->RuleNumber, ddcmp_conditions(table->Conditions), ddcmp_link_state(&controller->link), ddcmp_actions(table->Actions));
++        controller->link.rule_state = controller->link.state;
+         while (*action != NULL) {
+             (*action)(controller);
+             ++action;
+-- 
+2.43.0
+
+
+From 863b003efd09644f401a553866b9bed51b8c58c3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 15:44:23 +0100
+Subject: [PATCH 4/4] PDP11 DUP: BOOT DUPn answers Enter MOP Mode and MOP code
+ 12 at once (known issue 129)
+
+Over a DMF32 (software DDCMP) VMS switches the circuit to maintenance
+on the first Request Program, sends MOP code 12 and waits for a new
+request for its service timer (4 s).  The bootstrap repeated its
+request only after 5 s, so on a slow PDP-11 (11/84 in the realism mode)
+VMS gave up: Receive error, Line communication error.  The bootstrap
+now repeats its last message at once on code 12 and on Enter MOP Mode;
+other messages (e.g. a DECnet routing message over a DMC11) are still
+ignored.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ PDP11/pdp11_dup.c        |  3 ++
+ PDP11/pdp11_dup_boot.h   | 81 ++++++++++++++++++++--------------------
+ PDP11/pdp11_dup_boot.mac |  8 ++++
+ 3 files changed, 52 insertions(+), 40 deletions(-)
+
+diff --git a/PDP11/pdp11_dup.c b/PDP11/pdp11_dup.c
+index 572160a1..5703195a 100644
+--- a/PDP11/pdp11_dup.c
++++ b/PDP11/pdp11_dup.c
+@@ -36,6 +36,9 @@
+    characters both initially and between DDCMP packets.
+ 
+    15-May-13    MP      Initial implementation
++   28-Nov-26    Ulli    BOOT DUPn: Enter MOP Mode and VMS's MOP code 12 (sent
++                        when it has switched to maintenance) are answered at
++                        once by repeating the last message (known issue 129)
+    26-Nov-26    Ulli    HELP DUP Booting: the other end is given in ATTACH
+    25-Nov-26    Ulli    A byte write to the TXDBUF data byte clears TSOM, TEOM
+                         (DEC's DUP11 loaders; known issue 126); DEBUG=DATA
+diff --git a/PDP11/pdp11_dup_boot.h b/PDP11/pdp11_dup_boot.h
+index e6e5caea..a26aa4c3 100644
+--- a/PDP11/pdp11_dup_boot.h
++++ b/PDP11/pdp11_dup_boot.h
+@@ -18,53 +18,54 @@
+ 
+ static const uint16 dup_boot_code[] = {
+     0000410, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
+-    0000000, 0010704, 0162704, 0000024, 0010406, 0062706, 0001410, 0016705,
++    0000000, 0010704, 0162704, 0000024, 0010406, 0062706, 0001424, 0016705,
+     0177740, 0012765, 0000400, 0000004, 0012765, 0100226, 0000002, 0012765,
+-    0000426, 0000000, 0005067, 0177720, 0010400, 0062700, 0001410, 0112720,
++    0000426, 0000000, 0005067, 0177720, 0010400, 0062700, 0001424, 0112720,
+     0000010, 0116720, 0177676, 0112720, 0000001, 0116720, 0177667, 0012767,
+-    0000004, 0177666, 0005067, 0177670, 0004767, 0000504, 0016767, 0177646,
++    0000004, 0177666, 0005067, 0177670, 0004767, 0000520, 0016767, 0177646,
+     0177654, 0012703, 0023420, 0105765, 0000000, 0100413, 0077304, 0005367,
+     0177634, 0001367, 0005267, 0177630, 0026727, 0177624, 0000003, 0103754,
+-    0000731, 0004767, 0000636, 0103755, 0111200, 0042700, 0177400, 0020027,
+-    0000002, 0001407, 0020027, 0000000, 0001453, 0020027, 0000024, 0001470,
+-    0000740, 0004767, 0000242, 0103413, 0001334, 0016701, 0177536, 0162701,
+-    0000006, 0002727, 0004767, 0000272, 0103416, 0105267, 0177512, 0010400,
+-    0062700, 0001410, 0112720, 0000012, 0116720, 0177474, 0105010, 0012767,
+-    0000003, 0177466, 0000677, 0010400, 0062700, 0001410, 0112720, 0000012,
+-    0116720, 0177444, 0112710, 0000001, 0012767, 0000003, 0177434, 0000662,
+-    0004767, 0000124, 0001266, 0016701, 0177422, 0162701, 0000012, 0002661,
+-    0004767, 0000156, 0103750, 0010203, 0062703, 0000006, 0060103, 0000415,
+-    0004767, 0000064, 0001246, 0010203, 0062703, 0000002, 0112300, 0001405,
+-    0112300, 0042700, 0177400, 0060003, 0000771, 0112300, 0042700, 0177400,
+-    0112301, 0000301, 0105001, 0050100, 0010002, 0010501, 0012706, 0001000,
+-    0012737, 0000340, 0177776, 0000112, 0116200, 0000001, 0042700, 0177400,
+-    0001002, 0005067, 0177262, 0016701, 0177256, 0020001, 0001411, 0005301,
+-    0042701, 0177400, 0020001, 0001003, 0000244, 0000261, 0000207, 0000241,
+-    0000207, 0005762, 0000004, 0001022, 0016200, 0000002, 0010003, 0060103,
+-    0103415, 0020304, 0101013, 0010203, 0062703, 0000006, 0010146, 0001403,
+-    0112320, 0005301, 0001375, 0012601, 0000241, 0000207, 0000261, 0000207,
+-    0010402, 0062702, 0001300, 0010203, 0112723, 0000220, 0016700, 0177132,
+-    0052700, 0140000, 0110023, 0000300, 0110023, 0105023, 0105023, 0112723,
+-    0000001, 0052765, 0000020, 0000004, 0012700, 0000626, 0004767, 0000102,
+-    0012701, 0000006, 0112200, 0042700, 0177400, 0004767, 0000064, 0077106,
+-    0012700, 0001000, 0004767, 0000052, 0010402, 0062702, 0001410, 0016701,
+-    0177030, 0112200, 0042700, 0177400, 0004767, 0000026, 0077106, 0012700,
+-    0001000, 0004767, 0000014, 0004767, 0000022, 0042765, 0000020, 0000004,
+-    0000207, 0004767, 0000006, 0010065, 0000006, 0000207, 0105765, 0000004,
+-    0100375, 0000207, 0010402, 0062702, 0001430, 0010203, 0012701, 0000010,
+-    0004767, 0000144, 0103457, 0110023, 0077105, 0032767, 0010000, 0000176,
+-    0001451, 0121227, 0000005, 0001446, 0116201, 0000001, 0042701, 0177400,
+-    0116200, 0000002, 0000300, 0105000, 0050001, 0042701, 0140000, 0010167,
+-    0176652, 0062701, 0000002, 0020127, 0016340, 0101020, 0004767, 0000050,
+-    0103421, 0110023, 0077105, 0032767, 0010000, 0000102, 0001413, 0121227,
+-    0000220, 0001010, 0062702, 0000010, 0000241, 0000207, 0004767, 0000010,
+-    0103401, 0077104, 0000261, 0000207, 0010146, 0012701, 0165140, 0105765,
+-    0000000, 0100404, 0077104, 0012601, 0000261, 0000207, 0016500, 0000002,
+-    0010067, 0000012, 0042700, 0177400, 0012601, 0000241, 0000207, 0000000,
++    0000731, 0004767, 0000652, 0103755, 0111200, 0042700, 0177400, 0020027,
++    0000002, 0001415, 0020027, 0000000, 0001461, 0020027, 0000024, 0001476,
++    0020027, 0000006, 0001731, 0020027, 0000014, 0001726, 0000732, 0004767,
++    0000242, 0103413, 0001326, 0016701, 0177522, 0162701, 0000006, 0002721,
++    0004767, 0000272, 0103416, 0105267, 0177476, 0010400, 0062700, 0001424,
++    0112720, 0000012, 0116720, 0177460, 0105010, 0012767, 0000003, 0177452,
++    0000671, 0010400, 0062700, 0001424, 0112720, 0000012, 0116720, 0177430,
++    0112710, 0000001, 0012767, 0000003, 0177420, 0000654, 0004767, 0000124,
++    0001260, 0016701, 0177406, 0162701, 0000012, 0002653, 0004767, 0000156,
++    0103750, 0010203, 0062703, 0000006, 0060103, 0000415, 0004767, 0000064,
++    0001240, 0010203, 0062703, 0000002, 0112300, 0001405, 0112300, 0042700,
++    0177400, 0060003, 0000771, 0112300, 0042700, 0177400, 0112301, 0000301,
++    0105001, 0050100, 0010002, 0010501, 0012706, 0001000, 0012737, 0000340,
++    0177776, 0000112, 0116200, 0000001, 0042700, 0177400, 0001002, 0005067,
++    0177246, 0016701, 0177242, 0020001, 0001411, 0005301, 0042701, 0177400,
++    0020001, 0001003, 0000244, 0000261, 0000207, 0000241, 0000207, 0005762,
++    0000004, 0001022, 0016200, 0000002, 0010003, 0060103, 0103415, 0020304,
++    0101013, 0010203, 0062703, 0000006, 0010146, 0001403, 0112320, 0005301,
++    0001375, 0012601, 0000241, 0000207, 0000261, 0000207, 0010402, 0062702,
++    0001314, 0010203, 0112723, 0000220, 0016700, 0177116, 0052700, 0140000,
++    0110023, 0000300, 0110023, 0105023, 0105023, 0112723, 0000001, 0052765,
++    0000020, 0000004, 0012700, 0000626, 0004767, 0000102, 0012701, 0000006,
++    0112200, 0042700, 0177400, 0004767, 0000064, 0077106, 0012700, 0001000,
++    0004767, 0000052, 0010402, 0062702, 0001424, 0016701, 0177014, 0112200,
++    0042700, 0177400, 0004767, 0000026, 0077106, 0012700, 0001000, 0004767,
++    0000014, 0004767, 0000022, 0042765, 0000020, 0000004, 0000207, 0004767,
++    0000006, 0010065, 0000006, 0000207, 0105765, 0000004, 0100375, 0000207,
++    0010402, 0062702, 0001444, 0010203, 0012701, 0000010, 0004767, 0000144,
++    0103457, 0110023, 0077105, 0032767, 0010000, 0000176, 0001451, 0121227,
++    0000005, 0001446, 0116201, 0000001, 0042701, 0177400, 0116200, 0000002,
++    0000300, 0105000, 0050001, 0042701, 0140000, 0010167, 0176636, 0062701,
++    0000002, 0020127, 0016324, 0101020, 0004767, 0000050, 0103421, 0110023,
++    0077105, 0032767, 0010000, 0000102, 0001413, 0121227, 0000220, 0001010,
++    0062702, 0000010, 0000241, 0000207, 0004767, 0000010, 0103401, 0077104,
++    0000261, 0000207, 0010146, 0012701, 0165140, 0105765, 0000000, 0100404,
++    0077104, 0012601, 0000261, 0000207, 0016500, 0000002, 0010067, 0000012,
++    0042700, 0177400, 0012601, 0000241, 0000207, 0000000, 0000000, 0000000,
+     0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
+     0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
+     0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
+     0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
+     0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000, 0000000,
+-    0000000, 0000000, 0000000, 0000000,
++    0000000, 0000000,
+     };
+diff --git a/PDP11/pdp11_dup_boot.mac b/PDP11/pdp11_dup_boot.mac
+index 1568b300..6ff3197f 100644
+--- a/PDP11/pdp11_dup_boot.mac
++++ b/PDP11/pdp11_dup_boot.mac
+@@ -82,6 +82,9 @@ M.ML    = 2                     ; Memory Load
+ M.RPG   = 10                    ; 8  Request Program
+ M.RML   = 12                    ; 10 Request Memory Load
+ M.PLT   = 24                    ; 20 Parameter Load with Transfer Address
++M.EMM   =       6               ; Enter MOP Mode
++M.RUN   =       12.             ; code 12, sent by VMS when it has switched
++                                ;   the circuit to maintenance
+ 
+ BOOTSZ  = 20000                 ; size of the whole area (8192 bytes)
+ BYTTMO  = 60000.                ; polls for the next byte of a message
+@@ -146,6 +149,11 @@ WAIT:   MOV     #10000.,R3      ; one wait loop: 10000 polls
+         BEQ     MLT
+         CMP     R0,#M.PLT
+         BEQ     PLT
++        CMP     R0,#M.EMM       ; Enter MOP Mode (NCP LOAD NODE), or
++        BEQ     SEND2
++        CMP     R0,#M.RUN       ;   VMS's code 12 after it switched the
++        BEQ     SEND2           ;   circuit to maintenance: the load host
++                                ;   waits for us, repeat at once
+         BR      WAIT            ; anything else: wait on
+ 
+ ; Memory Load: code, load number, address (4), data
+-- 
+2.43.0
+
