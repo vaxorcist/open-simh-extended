@@ -36,6 +36,9 @@
    characters both initially and between DDCMP packets.
 
    15-May-13    MP      Initial implementation
+   28-Nov-26    Ulli    BOOT DUPn: Enter MOP Mode and VMS's MOP code 12 (sent
+                        when it has switched to maintenance) are answered at
+                        once by repeating the last message (known issue 129)
    26-Nov-26    Ulli    HELP DUP Booting: the other end is given in ATTACH
    25-Nov-26    Ulli    A byte write to the TXDBUF data byte clears TSOM, TEOM
                         (DEC's DUP11 loaders; known issue 126); DEBUG=DATA
