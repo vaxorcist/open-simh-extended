@@ -1,0 +1,100 @@
+From 4655653e99cab36b56a37589abf079a8127647ec Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 20:08:14 +0100
+Subject: [PATCH] SOCK: listening sockets always reusable (SO_REUSEADDR),
+ except on Windows (known issue 132)
+
+After a simulator that had connections on a listening port exited, the
+port could not be attached again for about a minute ("Sockets: bind error
+98 - Address already in use"): the closed connections wait in TIME_WAIT
+or FIN_WAIT2, and Linux lets a new listener bind meanwhile only when the
+old sockets and the new one both have SO_REUSEADDR.  It was set only with
+ATTACH -U, so -U helped only if the earlier simulator had used -U too.
+
+sim_master_sock_ex now sets SO_REUSEADDR on every listening socket on
+all systems but Windows (POSIX semantics: still never two listeners on
+one address and port).  Windows keeps SO_EXCLUSIVEADDRUSE unless -U.
+HELP texts of sim_tmxr.c updated.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SuavtcpUxEC2vXhit3JaAg
+---
+ sim_sock.c | 13 +++++++++++++
+ sim_tmxr.c | 16 ++++++++++------
+ 2 files changed, 23 insertions(+), 6 deletions(-)
+
+diff --git a/sim_sock.c b/sim_sock.c
+index f50c63c9..02fd5997 100644
+--- a/sim_sock.c
++++ b/sim_sock.c
+@@ -23,6 +23,10 @@
+    used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization from Robert M Supnik.
+ 
++   28-Nov-26    Claude  Listening sockets always get SO_REUSEADDR, except on
++                        Windows: a port can be listened on again at once after
++                        a simulator with connections on it exited (before
++                        only with -U on both the old and the new listener)
+    15-Oct-12    MP      Added definitions needed to detect possible tcp 
+                         connect failures
+    25-Sep-12    MP      Reworked for RFC3493 interfaces supporting IPv6 and IPv4
+@@ -1073,6 +1077,15 @@ if (preferred->ai_family == AF_INET6) {
+     sta = setsockopt (newsock, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&off, sizeof(off));
+     }
+ #endif
++#if !defined (_WIN32)
++/* On POSIX systems SO_REUSEADDR only lets a listener bind while earlier
++   connections on the port are still shutting down (TIME_WAIT, FIN_WAIT2);
++   it never allows two listeners on the same address and port.  Linux
++   honours it only when the old sockets had it as well, so it is set on
++   every listening socket, not only with -U.  On Windows SO_REUSEADDR
++   would let a second program share a port in use: there it stays -U. */
++opt_flags |= SIM_SOCK_OPT_REUSEADDR;
++#endif
+ if (opt_flags & SIM_SOCK_OPT_REUSEADDR) {
+     int on = 1;
+ 
+diff --git a/sim_tmxr.c b/sim_tmxr.c
+index 43ea8887..84da1934 100644
+--- a/sim_tmxr.c
++++ b/sim_tmxr.c
+@@ -26,6 +26,8 @@
+    Based on the original DZ11 simulator by Thord Nilson, as updated by
+    Arthur Krewat.
+ 
++   28-Nov-26    Claude  HELP: -U is needed on Windows only (listening ports
++                        are always reusable elsewhere, see sim_sock.c)
+    23-Nov-26    Claude  Per line listener: an incoming connection that the
+                         peer has already closed is discarded and the next one
+                         is tried at once (connection attempts the peer gave up
+@@ -4968,9 +4970,10 @@ if (single_line) {          /* Single Line Multiplexer */
+     fprintf (st, "or network block in CIDR form.  Rules are interpreted in order and if,\n");
+     fprintf (st, "while processing the list, the end is reached the connection will be\n");
+     fprintf (st, "rejected.\n\n");
+-    fprintf (st, "The -U switch can be specified on the attach command that specifies\n");
+-    fprintf (st, "a listening port.  This will allow a listening port to be reused if\n");
+-    fprintf (st, "some prior connections haven't completely shutdown.\n\n");
++    fprintf (st, "A listening port can be attached again at once, even while connections\n");
++    fprintf (st, "of a simulator that used it before have not completely shut down.  On\n");
++    fprintf (st, "Windows this needs the -U switch on the attach command that specifies\n");
++    fprintf (st, "the listening port.\n\n");
+     fprintf (st, "Line buffering can be enabled for the %s device with:\n\n", dptr->name);
+     fprintf (st, "   sim> ATTACH %s Buffer{=bufsize}\n\n", dptr->name);
+     fprintf (st, "Line buffering can be disabled for the %s device with:\n\n", dptr->name);
+@@ -4997,9 +5000,10 @@ else {
+     fprintf (st, "   sim> ATTACH %s Line=n,NoModem\n\n", dptr->name);
+     fprintf (st, "A Telnet listening port can be configured with:\n\n");
+     fprintf (st, "   sim> ATTACH %s {interface:}port\n\n", dptr->name);
+-    fprintf (st, "The -U switch can be specified on the attach command that specifies\n");
+-    fprintf (st, "a listening port.  This will allow a listening port to be reused if\n");
+-    fprintf (st, "some prior connections haven't completely shutdown.\n\n");
++    fprintf (st, "A listening port can be attached again at once, even while connections\n");
++    fprintf (st, "of a simulator that used it before have not completely shut down.  On\n");
++    fprintf (st, "Windows this needs the -U switch on the attach command that specifies\n");
++    fprintf (st, "the listening port.\n\n");
+     if (mux)
+         fprintf (st, "Line buffering for all %d lines on the %s device can be configured with:\n\n", mux->lines, dptr->name);
+     else
+-- 
+2.43.0
+
