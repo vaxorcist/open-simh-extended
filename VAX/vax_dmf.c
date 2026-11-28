@@ -337,6 +337,7 @@ static t_stat dmf_sync_attach (UNIT *uptr, CONST char *cptr);
 static t_stat dmf_sync_detach (UNIT *uptr);
 static t_stat dmf_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 static t_stat dmf_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat dmf_set_nopeer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 static int32 dmf_ack_dra (void);
 static int32 dmf_ack_drb (void);
 t_stat dmf_dr_svc (UNIT *uptr);
@@ -442,6 +443,8 @@ MTAB dmf_mod[] = {
        with the device (SHOW DMF, SHOW DMF PEER) */
     { MTAB_XTD|MTAB_VDV|MTAB_VUN|MTAB_VALR, 0, NULL, "PEER=address:port",
         &dmf_set_peer, NULL, NULL, "Synchronous line: the peer to connect to" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VUN, 0, NULL, "NOPEER",
+        &dmf_set_nopeer, NULL, NULL, "Synchronous line: clear the peer (only while detached)" },
     { MTAB_XTD|MTAB_VDV, 0, "PEER", NULL,
         NULL, &dmf_show_peer, NULL, "Synchronous line: the peer" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 020, "ADDRESS", "ADDRESS",
@@ -1678,6 +1681,12 @@ static t_stat dmf_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 return combo_sync_set_peer (&dmf_sl, DMF_SYNC_UNIT, cptr);
 }
 
+/* SET DMF NOPEER, SET DMF-SYNC NOPEER (known issue 131) */
+static t_stat dmf_set_nopeer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+return combo_sync_clear_peer (&dmf_sl, DMF_SYNC_UNIT, cptr);
+}
+
 static t_stat dmf_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 return combo_sync_show_peer (st, &dmf_sl);
@@ -2506,6 +2515,7 @@ fprintf (st, "Synchronous line: DMF-SYNC is a TCP connection to the peer system.
 fprintf (st, "peer's address and port, then attach the local port the peer connects to:\n\n");
 fprintf (st, "   sim> SET DMF-SYNC PEER=host:port\n");
 fprintf (st, "   sim> ATTACH DMF-SYNC port\n\n");
+fprintf (st, "SET DMF-SYNC NOPEER clears the peer again (only while detached).\n");
 fprintf (st, "Without a PEER the line only listens.  In DDCMP mode (as used by DECnet,\n");
 fprintf (st, "VMS line DMF-0) the connection carries standard DDCMP frames, so the peer\n");
 fprintf (st, "can be another DMF32 or a DMC11, DMR11, DMP11 or DMV11 emulation.  HDLC/SDLC\n");

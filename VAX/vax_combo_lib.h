@@ -124,6 +124,7 @@ struct combo_sync {
 
 void combo_sync_setup (COMBO_SYNC *cs, DEVICE *dptr, UNIT *uptr, uint32 dbg);
 t_stat combo_sync_set_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
+t_stat combo_sync_clear_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
 t_stat combo_sync_show_peer (FILE *st, COMBO_SYNC *cs);
 t_stat combo_sync_attach (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr);
 t_stat combo_sync_detach (COMBO_SYNC *cs, UNIT *uptr);

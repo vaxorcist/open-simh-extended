@@ -30,6 +30,8 @@
 
   Modification history:
 
+  28-Nov-26  Ulli SET DMCn/DMPn/DMVn NOPEER clears the peer address
+                  (known issue 131)
   20-Nov-26  Ulli DMV11: switch packs E101/E113 (SET DMVn MODE, TRIBUTARY,
                   BOOTUNIT, POWERONBOOT, REMOTELOAD; SHOW DMVn SWITCHES) and
                   the primary MOP boot (remote load detect, power-on boot
@@ -1283,6 +1285,7 @@ int32 dmc_outinta (void);
 t_stat dmc_setnumdevices (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat dmc_shownumdevices (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat dmc_setpeer (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
+t_stat dmc_setnopeer (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
 t_stat dmc_showpeer (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
 t_stat dmc_setspeed (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
 t_stat dmc_showspeed (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
@@ -1678,6 +1681,8 @@ MTAB dmc_mod[] = {
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmc_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
         &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
+    { MTAB_XTD|MTAB_VUN,          0, NULL, "NOPEER",
+        &dmc_setnopeer, NULL, NULL, "Clear the peer address (only while detached)" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
     { MTAB_XTD|MTAB_VUN,          0, "MICRODIAG", "MICRODIAG={ENABLE,DISABLE}" ,
@@ -1720,6 +1725,8 @@ MTAB dmp_mod[] = {
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmp_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
         &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
+    { MTAB_XTD|MTAB_VUN,          0, NULL, "NOPEER",
+        &dmc_setnopeer, NULL, NULL, "Clear the peer address (only while detached)" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
@@ -1747,6 +1754,8 @@ MTAB dmv_mod[] = {
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmv_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
         &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
+    { MTAB_XTD|MTAB_VUN,          0, NULL, "NOPEER",
+        &dmc_setnopeer, NULL, NULL, "Clear the peer address (only while detached)" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
@@ -1891,6 +1900,23 @@ if (sim_parse_addr (cptr, host, sizeof(host), NULL, port, sizeof(port), NULL, NU
 if (host[0] == '\0')
     return SCPE_ARG;
 strncpy(peer, cptr, PEERSIZE-1);
+return SCPE_OK;
+}
+
+/* SET <unit> NOPEER: forget the peer address, so that the next ATTACH
+   only listens (a DMP/DMV control station or listening point-to-point
+   station).  Like PEER=, only while the unit is detached. */
+t_stat dmc_setnopeer (UNIT* uptr, int32 val, CONST char* cptr, void* desc)
+{
+DEVICE *dptr = (UNIBUS) ? ((&dmc_dev == find_dev_from_unit(uptr)) ? &dmc_dev : &dmp_dev) : &dmv_dev;
+int32 dmc = (int32)(uptr-dptr->units);
+char *peer = ((dptr == &dmc_dev)? &dmc_peer[dmc][0] : &dmp_peer[dmc][0]);
+
+if ((cptr) && (*cptr))                  /* NOPEER takes no value */
+    return SCPE_ARG;
+if (dmc_is_attached(uptr))
+    return SCPE_ALATT;
+memset (peer, 0, PEERSIZE);
 return SCPE_OK;
 }
 
@@ -2510,6 +2536,7 @@ const char helpMid[] =
     " A DMC11 or DMR11 needs its PEER (host:port) set before the ATTACH command.\n"
     " A DMP11 or DMV11 attached without a PEER listens for the other station(s)\n"
     " (see Multipoint).\n"
+    " SET %U NOPEER clears the peer address again (only while detached).\n"
     " The default connection uses TCP transport between the local system and\n"
     " the peer.  Alternatively, UDP can be used by specifying UDP on the\n"
     " ATTACH command:\n"

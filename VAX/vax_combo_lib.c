@@ -28,6 +28,8 @@
 
    Modification history:
 
+   28-Nov-26    Ulli/Claude  combo_sync_clear_peer (SET ... NOPEER,
+                             known issue 131)
    17-Nov-26    Ulli/Claude  Synchronous line link and DDCMP framing (from
                              vax_dmf.c), for the DMB32 sync line
    15-Nov-26    Ulli/Claude  First version: printer formatter (from vax_dmf.c)
@@ -197,6 +199,18 @@ if (uptr->flags & UNIT_ATT)
 if (sim_parse_addr (cptr, host, sizeof (host), NULL, port, sizeof (port), NULL, NULL))
     return SCPE_ARG;
 strlcpy (cs->peer, cptr, sizeof (cs->peer));
+return SCPE_OK;
+}
+
+/* SET <unit> NOPEER: forget the peer, so that the next ATTACH only
+   listens (only while not attached, like PEER=) */
+t_stat combo_sync_clear_peer (COMBO_SYNC *cs, UNIT *uptr, CONST char *cptr)
+{
+if ((cptr != NULL) && (*cptr != 0))     /* NOPEER takes no value */
+    return SCPE_ARG;
+if (uptr->flags & UNIT_ATT)
+    return SCPE_ALATT;
+memset (cs->peer, 0, sizeof (cs->peer));
 return SCPE_OK;
 }
 

@@ -59,6 +59,7 @@
 
    Modification history:
 
+   28-Nov-26    Ulli/Claude  SET DMB-SYNC NOPEER (known issue 131)
    17-Nov-26    Ulli/Claude  Synchronous line (DDCMP), with the link and
                              framing of vax_combo_lib.c (VMS V5.5 SIDRIVER)
    15-Nov-26    Ulli/Claude  First version (BI node, self-test, async lines)
@@ -458,6 +459,7 @@ static void dmb_async_init (t_bool power);
 static void dmb_sync_init (void);
 static t_stat dmb_set_peer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 static t_stat dmb_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat dmb_set_nopeer (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 static void dmb_lp_init (void);
 static void dmb_transmit (int32 ln);
 
@@ -533,6 +535,8 @@ MTAB dmb_mod[] = {
         NULL, &tmxr_show_cstat, (void *) &dmb_desc, "Display multiplexer statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "PEER", "PEER=address:port",
         &dmb_set_peer, &dmb_show_peer, NULL, "Peer of the synchronous line (DMB-SYNC)" },
+    { MTAB_XTD|MTAB_VUN, 0, NULL, "NOPEER",
+        &dmb_set_nopeer, NULL, NULL, "Clear the peer of the synchronous line (only while detached)" },
     { 0 }
     };
 
@@ -1457,6 +1461,14 @@ if (uptr != DMB_SYNC_UNIT)
 return combo_sync_set_peer (&dmb_sl, uptr, cptr);
 }
 
+/* SET DMB-SYNC NOPEER (known issue 131) */
+static t_stat dmb_set_nopeer (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+if (uptr != DMB_SYNC_UNIT)
+    return SCPE_NOFNC;
+return combo_sync_clear_peer (&dmb_sl, uptr, cptr);
+}
+
 static t_stat dmb_show_peer (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 if (uptr != DMB_SYNC_UNIT)
@@ -1977,6 +1989,7 @@ fprintf (st, "another simulator, as for the DMC and DMF-SYNC.  Listen on a port 
 fprintf (st, "connect to the peer's port:\n\n");
 fprintf (st, "   sim> SET DMB-SYNC PEER=localhost:4001\n");
 fprintf (st, "   sim> ATTACH DMB-SYNC 4000\n\n");
+fprintf (st, "SET DMB-SYNC NOPEER clears the peer again (only while detached).\n");
 fprintf (st, "The peer does the same with the ports swapped.  While connected the\n");
 fprintf (st, "modem signals (DSR, DCD, CTS, clocks) are on.  Only DDCMP is supported;\n");
 fprintf (st, "a buffer for another protocol ends with a buffer error.\n\n");
